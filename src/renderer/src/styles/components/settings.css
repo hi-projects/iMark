@@ -1,0 +1,229 @@
+/* ---------- 设置面板(Obsidian 风格:左侧分类 + 右侧内容) ---------- */
+
+.settings-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.settings-dialog {
+  display: flex;
+  width: min(880px, 90vw);
+  height: min(620px, 86vh);
+  overflow: hidden;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px var(--shadow);
+}
+
+/* 左侧分类 */
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 200px;
+  padding: 14px 10px;
+  background: var(--bg-app);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.settings-nav-group {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+}
+
+/* 第二组起(「插件」)与上面拉开一点距离 */
+.settings-nav-group:not(:first-child) {
+  margin-top: 14px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: var(--font-editor);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.settings-nav-active,
+.settings-nav-active:hover {
+  background: var(--bg-selection);
+  color: var(--accent);
+}
+
+/* 右侧内容 */
+
+.settings-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-main-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 16px 20px 12px;
+}
+
+.settings-main-header h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.settings-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 20px 24px;
+}
+
+.settings-section + .settings-section {
+  margin-top: 14px;
+}
+
+.settings-section-head {
+  padding: 4px 2px 12px;
+}
+
+.settings-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-section-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* 主题选项 */
+
+.settings-themes {
+  display: flex;
+  gap: 12px;
+}
+
+.settings-theme {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 116px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-editor);
+  cursor: pointer;
+}
+
+.settings-theme:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.settings-theme-active,
+.settings-theme-active:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* 缩略预览:顶栏 + 两行文字,用各主题自身配色,不走当前主题变量 */
+.settings-theme-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  height: 56px;
+  padding: 6px 7px;
+  border: 1px solid var(--sw-border);
+  border-radius: 5px;
+  background: var(--sw-bg);
+}
+
+.settings-theme-swatch-bar {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--sw-bar);
+}
+
+.settings-theme-swatch-line {
+  height: 5px;
+  border-radius: 2px;
+  background: var(--sw-line);
+}
+
+.settings-theme-swatch-line-short {
+  width: 55%;
+}
+
+.settings-theme-swatch[data-preview='light'] {
+  --sw-bg: #ffffff;
+  --sw-border: #d0d7de;
+  --sw-bar: #f0f2f5;
+  --sw-line: #c9ced6;
+}
+
+.settings-theme-swatch[data-preview='dark'] {
+  --sw-bg: #0d1117;
+  --sw-border: #30363d;
+  --sw-bar: #22272e;
+  --sw-line: #3d444d;
+}
+
+.settings-theme-swatch[data-preview='black'] {
+  --sw-bg: #000000;
+  --sw-border: #2e2e2e;
+  --sw-bar: #121212;
+  --sw-line: #333333;
+}

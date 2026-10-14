@@ -1,0 +1,33 @@
+appId: com.imarkdown.app
+productName: iMark
+directories:
+  buildResources: build
+files:
+  - out/**
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 本机无符号链接权限(winCodeSign 解压需要管理员/开发者模式)时跳过 rcedit+签名工具链;
+  # 启用 Windows 开发者模式后可移除此项以获得自定义图标与 exe 元数据
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: iMark
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Office
+  # deb 的维护者字段会用 package.json 的 author(已含邮箱)
+  synopsis: 所见即所得 Markdown 编辑器
+  desktop:
+    entry:
+      Name: iMark
+      Comment: 所见即所得 Markdown 编辑器
+      Categories: Office;TextEditor;

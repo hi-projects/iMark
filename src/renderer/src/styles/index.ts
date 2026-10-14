@@ -1,0 +1,31 @@
+/**
+ * 样式模块入口 —— 应用所有样式的唯一装配点。
+ *
+ * **手动导入(核心)**:`main.ts` 里只写一行 `import './styles'`,
+ * 层叠顺序与主题变量都在这里统一维护,组件与服务不再直接引用 CSS 文件。
+ *
+ * **间接导入(插件)**:插件模块从 `@renderer/styles` 取注册表 API
+ * (`registerStyle` / `unregisterStyle`),把自己的一段 CSS 交给注册表运行时注入 ——
+ * 用法与样式约定见 `./registry.ts`。
+ *
+ * 分层(导入顺序即层叠顺序):
+ *   1. 第三方样式(KaTeX,编辑器公式与导出共用)
+ *   2. tokens —— 设计令牌:CSS 变量,三档主题(亮/暗/纯黑)都在这里
+ *   3. base   —— 全局 reset 与基础排版
+ *   4. shell  —— 应用外壳:三栏布局、侧栏(文件列表/大纲)、状态栏
+ *   5. editor —— CodeMirror 外观与所见即所得样式(标题/强调/代码/公式/widget)
+ *   6. components —— 独立组件:快速切换器、仓库选择界面、设置面板
+ */
+
+import 'katex/dist/katex.min.css'
+
+import './tokens.css'
+import './base.css'
+import './shell.css'
+import './editor.css'
+import './components/switcher.css'
+import './components/picker.css'
+import './components/settings.css'
+import './components/plugins.css'
+
+export { registerStyle, unregisterStyle, hasStyle, listStyles } from './registry'

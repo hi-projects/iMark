@@ -1,0 +1,60 @@
+:root {
+  --font-editor: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  --font-mono: 'Cascadia Code', Consolas, 'JetBrains Mono', 'Courier New', monospace;
+}
+
+:root,
+:root[data-theme='light'] {
+  --bg-app: #f8f9fb;
+  --bg-editor: #ffffff;
+  --bg-toolbar: #f0f2f5;
+  --bg-toolbar-btn-hover: #e4e7ec;
+  --text-primary: #24292f;
+  --text-secondary: #57606a;
+  --text-tertiary: #8b949e;
+  --border: #d0d7de;
+  --accent: #0969da;
+  --bg-code: rgba(175, 184, 193, 0.25);
+  --bg-codeblock: #f6f8fa;
+  --bg-selection: rgba(9, 105, 218, 0.18);
+  --shadow: rgba(31, 35, 40, 0.08);
+  --success: #1a7f37;
+  --danger: #cf222e;
+}
+
+:root[data-theme='dark'] {
+  --bg-app: #1c2128;
+  --bg-editor: #0d1117;
+  --bg-toolbar: #22272e;
+  --bg-toolbar-btn-hover: #2d333b;
+  --text-primary: #e6edf3;
+  --text-secondary: #9198a1;
+  --text-tertiary: #6e7681;
+  --border: #30363d;
+  --accent: #4493f8;
+  --bg-code: rgba(110, 118, 129, 0.4);
+  --bg-codeblock: #161b22;
+  --bg-selection: rgba(68, 147, 248, 0.28);
+  --shadow: rgba(1, 4, 9, 0.4);
+  --success: #3fb950;
+  --danger: #f85149;
+}
+
+/* 纯黑:编辑区与侧栏全黑,仅用描边与文字层级区分 */
+:root[data-theme='black'] {
+  --bg-app: #000000;
+  --bg-editor: #000000;
+  --bg-toolbar: #0a0a0a;
+  --bg-toolbar-btn-hover: #1c1c1c;
+  --text-primary: #e3e3e3;
+  --text-secondary: #9a9a9a;
+  --text-tertiary: #6b6b6b;
+  --border: #262626;
+  --accent: #4d9fff;
+  --bg-code: rgba(140, 148, 160, 0.22);
+  --bg-codeblock: #141414;
+  --bg-selection: rgba(77, 159, 255, 0.26);
+  --shadow: rgba(0, 0, 0, 0.75);
+  --success: #4ec46a;
+  --danger: #ff5f56;
+}

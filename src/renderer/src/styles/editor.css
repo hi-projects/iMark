@@ -1,0 +1,227 @@
+/* CodeMirror 基础外观(全部引用 CSS 变量,一套样式双主题)
+ *
+ * 注意:凡是 base theme 也定了的 .cm-xxx(.cm-cursor / .cm-scroller / .cm-content /
+ * .cm-line 等),这里的裸类选择器特异度只有 0-1-0,一定输给 base theme 的作用域规则
+ * (`.ͼN .cm-xxx`)而被静默忽略——那几条必须写进 editor/setup.ts 的 editorTheme。
+ * 只有 base theme 没碰过的属性(背景、文字色、选区背景)才放这里。 */
+
+.cm-editor {
+  height: 100%;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-selectionBackground,
+.cm-content ::selection {
+  background: var(--bg-selection) !important;
+}
+
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--bg-selection) !important;
+}
+
+/* ---------- WYSIWYG 内容样式 ---------- */
+
+.cm-md-h1 {
+  font-size: 1.8em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.cm-md-h2 {
+  font-size: 1.55em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.cm-md-h3 {
+  font-size: 1.35em;
+  font-weight: 650;
+}
+
+.cm-md-h4 {
+  font-size: 1.2em;
+  font-weight: 650;
+}
+
+.cm-md-h5 {
+  font-size: 1.08em;
+  font-weight: 650;
+}
+
+.cm-md-h6 {
+  font-size: 1em;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.cm-md-strong {
+  font-weight: 700;
+}
+
+.cm-md-em {
+  font-style: italic;
+}
+
+.cm-md-strike {
+  text-decoration: line-through;
+}
+
+.cm-md-inlinecode {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-code);
+  border-radius: 4px;
+  padding: 0.12em 0.4em;
+}
+
+.cm-md-code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-codeblock);
+}
+
+.cm-md-codeinfo {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.cm-md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.cm-md-url {
+  color: var(--text-tertiary);
+}
+
+.cm-md-quote {
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.cm-md-listmark {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 无序列表标记渲染为圆点:原字符(font-size: 0)不可见,由伪元素画点。
+   字符本身仍在文档里,光标/删除等编辑行为不受影响 */
+.cm-md-listmark-bullet {
+  font-size: 0;
+}
+
+.cm-md-listmark-bullet::after {
+  content: '•';
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.cm-md-headermark {
+  color: var(--text-tertiary);
+}
+
+.cm-md-table {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--text-secondary);
+}
+
+/* ---------- LaTeX 公式 ---------- */
+
+.cm-md-math {
+  cursor: pointer;
+}
+
+.cm-md-math-inline {
+  padding: 0 2px;
+}
+
+/* 块级公式:独占一行并居中(内容行由 cm-md-math-void 折叠) */
+.cm-md-math-display {
+  display: block;
+  margin: 2px 0;
+  padding: 4px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+/* KaTeX 自带 1em 上下外边距,编辑器内叠加上去留白过大 */
+.cm-md-math-display .katex-display {
+  margin: 0;
+}
+
+/* 多行公式的后续行为空并折叠高度 */
+.cm-md-math-void {
+  line-height: 0;
+  font-size: 0;
+  min-height: 0;
+}
+
+/* 光标在公式内时的源码态 */
+.cm-md-math-src {
+  background: var(--bg-code);
+  border-radius: 3px;
+}
+
+.cm-md-mathmark {
+  color: var(--text-tertiary);
+}
+
+.cm-md-math-error {
+  color: #d1242f;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* ---------- Widget ---------- */
+
+.cm-md-widget {
+  user-select: none;
+}
+
+.cm-md-checkbox {
+  accent-color: var(--accent);
+  margin: 0 6px 0 2px;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.cm-md-hr {
+  display: inline-block;
+  width: 100%;
+  height: 0;
+  border-top: 2px solid var(--border);
+  vertical-align: middle;
+}
+
+.cm-md-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  margin: 4px 0;
+  border-radius: 6px;
+}
+
+.cm-md-image.cm-md-image-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 120px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-size: 0.9em;
+}
+
+.cm-md-image.cm-md-image-error img {
+  display: none;
+}

@@ -1,0 +1,331 @@
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---------- 编辑区 ---------- */
+
+.app-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- 文件浏览器 ---------- */
+
+.explorer {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 240px;
+  min-width: 0;
+  background: var(--bg-app);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+/* 仅承载左上角操作按钮(新建文件 / 新建文件夹 / 刷新),无标题文字 */
+.explorer-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 6px 10px 4px 8px;
+}
+
+.explorer-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.explorer-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.explorer-actions button:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.explorer-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 0 16px;
+}
+
+.explorer-open-vault {
+  display: block;
+  margin: 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.explorer-open-vault:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.explorer-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-right: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.explorer-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.explorer-item .explorer-chevron {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.explorer-item .explorer-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.explorer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer-file-active {
+  color: var(--accent);
+  background: var(--bg-selection);
+}
+
+.explorer-file-active .explorer-icon {
+  color: var(--accent);
+}
+
+.explorer-item-actions {
+  display: none;
+  gap: 1px;
+}
+
+.explorer-item:hover .explorer-item-actions {
+  display: inline-flex;
+}
+
+.explorer-item-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.explorer-item-actions button:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.explorer-editing input {
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+/* ---------- 大纲侧栏 ---------- */
+
+/* 大纲固定在窗口右侧 */
+.outline-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 240px;
+  min-width: 0;
+  background: var(--bg-app);
+  border-left: 1px solid var(--border);
+  user-select: none;
+}
+
+.outline-header {
+  flex: 0 0 auto;
+  padding: 10px 14px 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+}
+
+.outline-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 0 16px;
+}
+
+.outline-item {
+  padding: 4px 14px 4px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+}
+
+.outline-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.outline-item.outline-active {
+  border-left-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-selection);
+}
+
+.outline-h1 {
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.outline-h2 {
+  font-weight: 600;
+}
+
+.outline-h5,
+.outline-h6 {
+  font-size: 12px;
+}
+
+.outline-empty {
+  padding: 16px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.editor-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-editor);
+}
+
+/* ---------- 状态栏 ---------- */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-toolbar);
+  border-top: 1px solid var(--border);
+  user-select: none;
+}
+
+.status-bar .status-spacer {
+  flex: 1;
+}
+
+.status-bar .status-file {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  max-width: 40%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 主题切换 / 设置:靠在一起,与左侧统计项拉开距离 */
+.status-bar .status-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 侧栏开关组 */
+.status-bar .status-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 10px;
+  border-right: 1px solid var(--border);
+}
+
+.status-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.status-bar button:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+/* 侧栏展开时按钮高亮 */
+.status-bar button.status-toggle-on {
+  background: var(--bg-selection);
+  color: var(--accent);
+}
+
+/* 仓库名按钮:宽度自适应,过长省略 */
+.status-bar button.status-vault {
+  width: auto;
+  max-width: 200px;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-editor);
+}
+
+.status-bar .status-vault-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

@@ -1,0 +1,511 @@
+/* ---------- 插件设置页(设置面板「插件」分类) ---------- */
+
+.plugin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 左侧导航里的插件条目:状态点 + 名字 */
+.settings-nav-empty {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.plugin-detail-version {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+/* 开关 */
+
+.plugin-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 19px;
+  cursor: pointer;
+}
+
+.plugin-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.plugin-switch-track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  background: var(--bg-toolbar-btn-hover);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.plugin-switch-track::after {
+  content: '';
+  display: block;
+  width: 13px;
+  height: 13px;
+  margin: 2px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.plugin-switch input:checked + .plugin-switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.plugin-switch input:checked + .plugin-switch-track::after {
+  background: var(--bg-editor);
+  transform: translateX(15px);
+}
+
+/* 状态点 / 状态卡 */
+
+.plugin-status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.plugin-status-idle {
+  background: var(--text-tertiary);
+}
+
+.plugin-status-running {
+  background: var(--accent);
+}
+
+.plugin-status-ok {
+  background: var(--success);
+}
+
+.plugin-status-error {
+  background: var(--danger);
+}
+
+.plugin-status-card {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-tertiary);
+  border-radius: 8px;
+  background: var(--bg-app);
+}
+
+.plugin-status-card-ok {
+  border-left-color: var(--success);
+}
+
+.plugin-status-card-error {
+  border-left-color: var(--danger);
+}
+
+.plugin-status-card-running {
+  border-left-color: var(--accent);
+}
+
+.plugin-status-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.plugin-status-line b {
+  color: var(--text-primary);
+}
+
+.plugin-status-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.plugin-status-detail {
+  max-height: 180px;
+  margin: 8px 0 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg-codeblock);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 详情页头部与动作 */
+
+.plugin-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plugin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plugin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: var(--font-editor);
+  cursor: pointer;
+}
+
+.plugin-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.plugin-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plugin-btn-action {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.plugin-btn-add {
+  align-self: flex-start;
+}
+
+.plugin-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.plugin-icon-btn:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--danger);
+}
+
+.plugin-action-result {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+}
+
+.plugin-action-result.is-ok {
+  border-left: 3px solid var(--success);
+}
+
+.plugin-action-result.is-bad {
+  border-left: 3px solid var(--danger);
+}
+
+/* 表单 */
+
+.plugin-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 4px;
+}
+
+.plugin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 一行式字段:标签在左、控件在右(与远端那几行保持一致) */
+.plugin-field-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 标签格固定宽度:输入框与开关都从同一条竖线开始 */
+.plugin-field-row .plugin-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 172px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.plugin-field-row .plugin-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+/* 数字/下拉不需要占满整行 */
+.plugin-field-row .plugin-input-num {
+  flex: 0 0 auto;
+  width: 120px;
+}
+
+.plugin-field-row .plugin-input-select {
+  flex: 0 0 auto;
+  width: 220px;
+}
+
+.plugin-field-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plugin-field-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 字段分组:标题 + 分隔线 */
+.plugin-group {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.plugin-group + .plugin-group {
+  margin-top: 8px;
+}
+
+.plugin-group-title {
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+/* 字段说明的问号(悬停出提示) */
+.plugin-field-help {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  cursor: help;
+}
+
+.plugin-field-help:hover {
+  color: var(--accent);
+}
+
+.plugin-field-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.plugin-input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-family: var(--font-editor);
+  outline: none;
+}
+
+.plugin-input:focus {
+  border-color: var(--accent);
+}
+
+.plugin-input-num {
+  max-width: 140px;
+}
+
+/* 密钥行 */
+
+.plugin-secret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-secret-state {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.plugin-secret-on {
+  color: var(--success);
+}
+
+/* 已配置时显示的掩码:占满剩余宽度,和输入框视觉对齐 */
+.plugin-secret-mask {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-secret-off {
+  color: var(--text-tertiary);
+}
+
+/* 远端列表 */
+
+.plugin-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plugin-target {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-app);
+}
+
+/* 填写完整度:齐了绿框、缺东西红框、什么都没填保持默认 */
+.plugin-target-ok {
+  border-color: var(--success);
+}
+
+.plugin-target-bad {
+  border-color: var(--danger);
+}
+
+.plugin-target-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-target-url {
+  flex: 1;
+}
+
+.plugin-target-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.plugin-target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-target-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* 标签不换行(否则「远程分支」会被挤成两行);输入框撑满自己的那一格 */
+.plugin-target-cell > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.plugin-target-cell .plugin-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 64px;
+}
+
+/* 整行的格子(远程仓库 / 账号) */
+.plugin-target-cell-wide {
+  flex: 1 1 100%;
+}
+
+/* 认证方式下拉框不用占满 */
+.plugin-target-auth {
+  flex: 0 1 auto;
+  max-width: 180px;
+}
+
+.plugin-target-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.plugin-btn-danger {
+  color: var(--danger);
+}
+
+.plugin-btn-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.plugin-target-secret {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 状态栏同步图标(选择器要压过 shell.css 的 .status-bar button) */
+
+.status-bar .status-sync-btn .status-sync-running {
+  animation: plugin-spin 1s linear infinite;
+}
+
+.status-bar .status-sync-error,
+.status-bar .status-sync-error:hover {
+  color: var(--danger);
+}
+
+.status-bar .status-sync-ok {
+  color: var(--success);
+}
+
+@keyframes plugin-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

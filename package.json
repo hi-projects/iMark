@@ -1,0 +1,49 @@
+{
+  "name": "imarkdown",
+  "version": "0.1.0",
+  "description": "iMark — 基于 CodeMirror 6 的所见即所得 Markdown 编辑器",
+  "main": "out/main/index.js",
+  "private": true,
+  "author": "Chuxiao Xiang <13439022108@163.com>",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "dist": "electron-vite build && electron-builder",
+    "dist:win": "electron-vite build && electron-builder --win nsis",
+    "dist:linux": "electron-vite build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.14",
+    "@lezer/highlight": "^1.2.5",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^20.14.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^3.1.0",
+    "highlight.js": "^11.12.0",
+    "lucide-vue-next": "^1.0.0",
+    "markdown-it": "^14.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vue": "^3.5.13",
+    "vue-tsc": "^3.0.0"
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.25.12": true,
+    "electron@44.7.0": true
+  },
+  "dependencies": {
+    "katex": "^0.19.0"
+  }
+}
