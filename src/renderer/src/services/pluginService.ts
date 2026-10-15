@@ -3,10 +3,31 @@ import type { PluginActionResult, PluginView } from '@shared/plugins'
 import { appStore, editorHolder, openSettings } from '../stores/app'
 import { saveCurrentFile } from './fileService'
 
-/** 设置面板当前选中项:外观,或某个插件的配置(与设置面板共享,便于从状态栏直达) */
-export const settingsNav = reactive<{ page: 'appearance' | 'plugin'; pluginId: string | null }>({
+/** 市场页内部的子导航:三个页签 + 列表页的搜索条件 */
+export interface MarketNav {
+  tab: 'browse' | 'installed' | 'publish'
+  /** 打开某个插件的详情页(仅 browse 页签用);null = 显示列表 */
+  detailId: string | null
+  query: string
+  page: number
+  sort: 'updated' | 'name' | 'downloads'
+}
+
+/** 设置面板当前选中项:外观、某个插件的配置,或插件市场(与设置面板共享,便于从状态栏/菜单直达) */
+export const settingsNav = reactive<{
+  page: 'appearance' | 'plugin' | 'market'
+  pluginId: string | null
+  /**
+   * 市场内部的子导航放在这里,而不是继续往 page 联合里塞 ——
+   * 市场里的「列表 / 详情 / 发布」是同一页的状态,不是三个并列的设置页,
+   * 拆成三个 page 会让「从哪个入口进来的」变得无从恢复。
+   */
+  market: MarketNav
+}>({
   page: 'appearance',
-  pluginId: null
+  pluginId: null,
+  // 默认落在「已安装」:没有市场服务端时这一页照样有内容,不会一进来就看到报错
+  market: { tab: 'installed', detailId: null, query: '', page: 1, sort: 'updated' }
 })
 
 /** 选中某个插件(右侧直接显示它的配置) */
@@ -15,9 +36,27 @@ export function selectPluginSettings(pluginId: string): void {
   settingsNav.pluginId = pluginId
 }
 
-/** 打开设置面板并定位到插件(不指定就选第一个) */
+/**
+ * 打开设置面板并定位到插件市场(菜单项与左栏入口用)。
+ *
+ * 默认落在「浏览市场」页签 —— 入口的名字就叫这个,点进去却停在别的页签
+ * 会让人以为点错了。调用方想直接去某一页(如插件设置里的「在市场里管理」)
+ * 就把 tab 传进来。
+ */
+export function openMarketSettings(tab: MarketNav['tab'] = 'browse'): void {
+  settingsNav.market.tab = tab
+  settingsNav.market.detailId = null
+  settingsNav.page = 'market'
+  openSettings()
+}
+
+/**
+ * 打开设置面板并定位到某个插件。
+ * 不指定时优先选「定时上传（Git）」—— 它是绝大多数用户唯一装的插件,
+ * 而 `list[0]` 只是「谁先被扫到」,没有任何意义。
+ */
 export function openPluginSettings(pluginId?: string): void {
-  selectPluginSettings(pluginId ?? pluginStore.list[0]?.descriptor.id ?? '')
+  selectPluginSettings(pluginId ?? gitSyncPlugin()?.descriptor.id ?? pluginStore.list[0]?.descriptor.id ?? '')
   openSettings()
 }
 
@@ -37,9 +76,19 @@ export function pluginById(id: string): PluginView | undefined {
   return pluginStore.list.find(p => p.descriptor.id === id)
 }
 
-/** 状态栏用的主同步插件(内置插件里第一个带状态的) */
-export function primaryPlugin(): PluginView | undefined {
-  return pluginStore.list[0]
+/** 「定时上传（Git）」插件的 id(disc 里的同步按钮与状态栏都按它来找) */
+export const GIT_SYNC_ID = 'git-sync'
+
+/**
+ * 取「定时上传（Git）」这个插件。
+ *
+ * 从前这里写的是 `pluginStore.list[0]`,在插件只有内置那一个、且固定排在数组首位时
+ * 恰好等价。现在插件可以任意装/卸,`list[0]` 会是**随便哪个**插件 ——
+ * 那样状态栏的同步按钮就会拿着别的插件 id 去跑 `sync-now`,得到一句「未知动作」。
+ * 所以这里按 id 明确地找,找不到就是不显示。
+ */
+export function gitSyncPlugin(): PluginView | undefined {
+  return pluginById(GIT_SYNC_ID)
 }
 
 function fail(err: unknown, action: string): void {
@@ -53,7 +102,7 @@ function fail(err: unknown, action: string): void {
  * 遇到 Proxy 会直接抛 "An object could not be cloned." —— 而且嵌套在数组里的元素同样是代理,
  * 所以展开一层({...config})没用,必须整体序列化一次。
  */
-function plain<T>(value: T): T {
+export function plain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? null)) as T
 }
 
@@ -114,7 +163,7 @@ export async function runPluginAction(
 
 /** 一键手动同步(状态栏图标用) */
 export async function syncNow(): Promise<void> {
-  const plugin = primaryPlugin()
+  const plugin = gitSyncPlugin()
   if (!plugin) return
   if (!plugin.state.enabled) {
     alert('定时上传插件未启用:请在 设置 → 插件 中开启')

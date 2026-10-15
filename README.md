@@ -18,9 +18,9 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
-- **插件系统(内置核心插件)**:设置面板「插件」分类统一管理——启用/停用、按字段表自动渲染配置表单、动作按钮、运行状态与错误详情;密钥类字段经 Electron safeStorage 加密后单独存于 `userData/secrets.json`,**渲染层永远拿不到明文**
-  - **定时上传(Git)**:按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)
-  - 同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
+- **插件系统**:插件是**可装可卸可升级的包** —— 两种形态:**脚本插件**(包内 `main.js`,主进程执行)与**声明式插件**(不含代码,只绑定内置能力,如 Webhook 推送)。设置面板「插件」分类统一管理:启用/停用、按字段表自动渲染配置表单、动作按钮、运行状态与错误详情;密钥类字段经 Electron safeStorage 加密后单独存于 `userData/secrets.json`,**渲染层永远拿不到明文**
+  - **定时上传(Git)**:市场里的官方插件(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
+- **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;安装前有安全基线确认框(逐条中文权限解释、体积、可跨渠道核对的 sha256、来源与发布者,脚本插件须勾选「我已了解风险」),并可**先查看源码**。详见下文「五、插件市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 暗色 / 纯黑三档,状态栏一键循环切换,或在 **设置面板**(状态栏齿轮 / `Ctrl+,`)的「外观」中挑选;持久化到 `userData/settings.json`
 - 状态栏字数统计(中文按字、拉丁按词)、导出 HTML(markdown-it + highlight.js 内联样式)
@@ -173,7 +173,7 @@ styles/
 ```
 
 - **手动导入(核心)**:`main.ts` → `import './styles'`;组件与服务不再各自引用 CSS 文件,层叠顺序集中维护。
-- **间接导入(插件)**:插件不依赖任何 CSS 文件路径,而是把一段 CSS 交给注册表运行时注入:
+- **运行时注入(注册表,预留)**:`styles/registry.ts` 提供 `registerStyle(name, css)` / `unregisterStyle(name)`,把一段 CSS 作为 `<style>` 注入与卸载,不需要任何文件路径约定:
 
   ```ts
   import css from './my-plugin.css?inline'            // Vite ?inline:读成字符串,不自动注入
@@ -183,54 +183,228 @@ styles/
   export function deactivate() { unregisterStyle('my-plugin') }
   ```
 
-- **插件样式约定**:类名加 `imk-` 前缀;颜色/边框一律用 `tokens.css` 的变量(亮/暗/纯黑三档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
+- **这个注册表目前没有调用方**。它是为「插件能改界面」预留的扩展点,而现在市场的插件跑在主进程里(见 §四),**没有 UI 扩展点** —— 既拿不到渲染层的模块,也无从调用它。留在原处是因为它自身的实现与主题无关、成本为零;等真有界面扩展需求时,要补的是「插件 → 渲染层」这条通道,而不是这个注册表。
+- **样式约定**:插件若要注入 CSS,类名加 `imk-` 前缀(内置样式用语义化类名,不加前缀);颜色/边框一律用 `tokens.css` 的变量(亮/暗/纯黑三档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
 
-### 四、插件系统与 Git 定时同步
+### 四、插件系统
 
-**内置核心插件注册表**(仿 Obsidian「核心插件」):插件是仓库内实现统一接口的代码,注册进 `src/main/plugins/registry.ts` 即可被宿主接管——设置面板会自动列出它、渲染配置表单、调度动作。接口留了将来挂载外部插件的余地(`MainPlugin` 的 `onEnable/onDisable/onConfigChange/runAction` 不依赖任何内部细节)。
+插件是**可以装、可以卸、可以升级的包**,而不再是仓库里的 TS 模块。一个插件 = 一份清单(`manifest.json`)+ 若干文件,打包成一个 `.imkpkg.json` 信封(单文件 JSON,包内每个文件 base64 编码并带逐文件 sha256)。安装后落在 `userData/plugins/<id>/`,启用态与配置在 `settings.json` 的 `plugins.<id>`,密钥在 `userData/secrets.json` 且**明文不出主进程**。
 
 | 文件 | 职责 |
 |---|---|
-| `shared/plugins.ts` | 共享类型:字段表 / 目标 / 状态 / 视图,以及 `secretKey()` 约定 |
-| `main/plugins/types.ts` | 插件契约(`MainPlugin`)与宿主给插件的 `PluginContext` |
-| `main/plugins/host.ts` | 宿主:配置归一化、启停生命周期、动作调度、状态广播、保存握手 |
-| `main/plugins/gitSync.ts` | 「定时上传」插件:字段表、定时器、提交流水线、动作与错误翻译 |
+| `shared/pluginPackage.ts` | 包格式、清单校验、版本比较、路径/体积/图标规则 —— 主进程、服务端、渲染层共用同一份 |
+| `shared/pluginApi.ts` | 插件拿到的 `ImkApi` 接口:主进程的实现与插件源码 import 的是同一份,接口漂移 = 类型报错 |
+| `main/plugins/host.ts` | 宿主:登记、加载、生命周期、动作调度、安装/升级/回滚/卸载、失败熔断、状态广播 |
+| `main/plugins/script.ts` | 脚本插件加载:`createRequire` + 清 `require.cache` |
+| `main/plugins/capabilities.ts` | 内置能力注册表 —— 声明式插件绑定的实现都在这里 |
+| `main/plugins/api.ts` | `ImkApi` 实现:按权限注入命名空间,密钥作用域校验 |
+| `main/plugins/installed.ts` | 安装登记表 `userData/plugins/installed.json`(只存来源信息,磁盘目录才是权威) |
+| `main/market/*` | 市场客户端(见 §五) |
 | `main/git.ts` | git 子进程封装:超时/中止、防交互挂起、URL 脱敏、一次性凭据 helper |
 | `main/secrets.ts` | safeStorage 加解密 + `userData/secrets.json` 读写 |
-| `renderer/services/pluginService.ts` | 渲染层封装:状态订阅、调用、flush 握手回执 |
-| `renderer/components/plugins/` | 插件列表 / 详情 / 字段控件 / 远端列表 |
+| `renderer/components/plugins/` | 插件设置页 / 通用字段控件 / 远端列表(插件列表本身在设置面板的导航分组里) |
 
-**两条设计要点**
+**内置核心插件清单现在是空的** —— `main/plugins/registry.ts` 的 `builtinPlugins` 数组里一个都没有:「定时上传(Git)」原本在那儿,现在它是市场里的普通插件。数组留着,是因为「必须随应用启动、不该由用户卸载」的能力将来仍可能出现;但走那条路的插件**不过包校验、没有安装确认环节**,加之前要清楚这一点。
 
-- **声明式配置**:插件的配置项用 `PluginField[]` 描述(kind = text / password / number / boolean / select / targets),设置面板据此**通用渲染表单**,新增插件不必写任何 Vue 组件;需要特殊交互的结构化字段通过新增 kind 扩展(如 git 的远端列表)。
-- **密钥与配置分离**:`password` 字段与 `targets.targetSecret` 的值不写进 `settings.json`,而是 `safeStorage.encryptString()` 后存 `secrets.json`(每条记录带 `enc` 标记,加密不可用时降级为明文并保留读回能力)。渲染层只拿到「是否已配置」。`settings.plugins` 只允许插件宿主写——渲染层的 `saveSettings` 会被主进程剔除该字段。
+**两种形态**
 
-**Git 上传的两个实现要点**
+- **脚本插件**(`kind: "script"`):包里带 `main.js`,在主进程里以 CommonJS 加载,**拿到与 iMark 相同的 Node 权限**。入口必须是工厂函数 `module.exports = (imk) => ({ onEnable, onDisable, onConfigChange, runAction })` —— 工厂式只有一个绑定点、不污染全局,宿主也才能在跑任何生命周期之前先拒绝非法导出。
+- **声明式插件**(`kind: "declarative"`):包里**没有代码**,只声明绑定的内置能力(`capability`,目前实现了 `webhook`)。它把「配置一下就能用」的需求(推送到某个地址、导出到某处)从「必须信任一段任意代码」里摘出来 —— 这类插件的行为完全由 iMark 自己实现,安全性等同内置功能。
 
-- **凭据既不落盘也不进命令行**:推送时 URL 保持干净(不带 user:token),而是临时挂一个一次性 credential helper `-c credential.helper=` + `-c credential.helper=!f(){…}`,用户名与 token 从子进程**环境变量**读取(`GIT_IMK_USER` / `GIT_IMK_TOKEN`)。这样既不会把 token 写进 `.git/config`,也不出现在进程命令行里;同时固定 `GIT_TERMINAL_PROMPT=0` 与 `GCM_INTERACTIVE=never`,缺凭据时快速失败而不是弹凭据窗口把同步卡死。**用户名可留空**:留空按 `oauth2` 认证(GitLab / GitHub 通用),Gitee 建议填真实用户名;未填 token 时完全不注入凭据(公开仓库或无凭据场景)。
+**加载为什么用 `createRequire`** 而不是 `vm` 或动态 `import()`:`vm` 在「已经授予完整 Node 权限」的信任模型下给不了任何隔离,却要自己重写一遍 CJS 解析;ESM 的模块缓存是永久的,插件升级后没法热重载。加载前先清掉该插件目录下所有 `require.cache` 条目,于是升级可以是**原子的**:新目录先就位并加载,**成功了**才删旧目录;加载失败就把旧目录 rename 回来并恢复旧运行时 —— 用户手上那个插件不会因为一次失败的升级而消失。代价是入口必须是 CJS(用 TS 写的插件由 `plugins-src/tsconfig.json` 编译成 CJS,作者无感;给了 ESM 入口会得到一句中文错误)。
+
+**每次调用都有护栏** 宿主对插件的每一次调用(`onEnable` / `onConfigChange` / `runAction` / …)都过 `safeCall`:try/catch + 10 秒超时,失败写进状态(红色徽标 + 截断的堆栈)并累加计数;连续 3 次失败自动停用,**绝不自动恢复** —— 要用户在设置里显式重新启用。没有它,一个坏 `main.js` 的 `onEnable` 抛异常会让 `app.whenReady()` 整个 reject,应用直接起不来。
+
+**配置与密钥** 配置项用 `PluginField[]` 描述(kind = text / password / number / boolean / select / targets),设置面板据此**通用渲染表单** —— 新增插件不必写任何 Vue 组件,也不需要为它改设置面板。`password` 字段与 `targets.targetSecret` 的值不写进 `settings.json`,而是 `safeStorage.encryptString()` 后存 `secrets.json`;渲染层只拿到「是否已配置」与主进程算好的掩码(`ab****23`)。插件读密钥只能走 `imk.secrets.get(fieldKey, targetId)`:宿主会校验「这个 fieldKey 确实是它清单里声明的密钥字段、这个 targetId 确实在当前配置的目标列表里」,并且密钥 key 由宿主用**插件自己的 id** 拼出 —— 插件永远拿不到、也传不了自己的 id。`secretKey()` 用 `:` 拼接,所以**插件 id 的字符集里禁止出现 `:`**:否则 `a:b` + 字段 `c` 会和 `a` + 字段 `b:c` 撞成同一个密钥。这是安全规则,不是格式洁癖。
+
+> 说明白:**密钥作用域防的是误用与 API 卫生,它不是安全边界。** 脚本插件拥有完整 Node 能力,本来就能直接读 `userData/secrets.json`。真正的边界是安装时那一次知情确认(见 §五)。
+
+**内置兜底包** 「定时上传(Git)」现在是市场里的一个普通插件,但应用仍然内置同一份包(以 `?raw` 字符串内联进主进程产物,绕开 asar 与 `files` 打包限制):启动时若它没装过,就走**完全相同的校验与安装代码路径**补装一次。于是全新用户不联网也能用上它,卸载后想装回来也不必连市场。**「内置」不是绕过校验的通道** —— 内置包坏了,表现与下载到的包坏掉完全一样。
+
+**卸载**的顺序是:停用 → 移出运行时 → 删目录 → **删这个 id 名下的全部密钥** → 删登记 →(可选)删配置。密钥一律删、不受「是否保留配置」影响,这是有意的:配置是偏好(留着,重装省得重填),密钥是凭据。凭据的危险在于 id 是可以被别人重新认领的 —— 今天卸载的 `git-sync`,明天可能是另一个人发布的同名插件,它会直接读出残留的访问令牌。
+
+### 五、插件市场
+
+市场服务端**在仓库里**(`server/`,零依赖、纯 `.mjs`,Node ≥18 直接跑),应用里填一个地址即可:
+
+```bash
+npm run market                      # → http://127.0.0.1:8787
+IMK_MARKET_PORT=8787 HOST=127.0.0.1 DATA=./server/data ADMIN_TOKEN=… node server/index.mjs
+```
+
+存储就是 `server/data/` 下的几个 JSON 与按 sha256 去重的 blob 文件(临时文件 + rename 原子写);备份 = 拷目录。
+
+**为什么自托管**:市场分发的是一段将在用户机器上执行的代码,「谁来发布」这件事交给一个你自己能看见、能备份、能关掉的服务端,比交给任何第三方都合理。
+
+**接口一览**(`server/src/routes/`):
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/health` | – | `{ok,version,time}`(应用里的「测试连接」打的就是它) |
+| POST | `/api/v1/auth/register` \| `/login` | – | → `{user, token}` |
+| GET | `/api/v1/auth/me` | Bearer | 当前账号与发布令牌列表 |
+| POST · DELETE | `/api/v1/auth/tokens[/:id]` | Bearer | 长期发布令牌(明文只在创建时返回一次,服务端只留 sha256) |
+| GET | `/api/v1/search?q=&page=&sort=&kind=` | – | 搜索 / 排序 / 按形态过滤 |
+| GET | `/api/v1/packages/:id` \| `/latest` \| `/versions/:v` | – | 详情(含 README、版本列表、下架标记) |
+| GET | `/api/v1/packages/:id/versions/:v/download` | – | 信封字节 + `X-Imk-Integrity` 响应头,下载计数 +1 |
+| GET | `/api/v1/packages/:id/icon` | – | 图标字节(≤64 KiB) |
+| POST | `/api/v1/packages` | Bearer | 发布:信封 JSON |
+| POST | `/api/v1/packages/:id/versions/:v/yank` \| `/unyank` | Bearer(owner) | 下架 / 恢复 |
+
+另有 `GET /api/v1/users/:username/packages`(某作者的全部插件)与 `/api/v1/admin/*`(统计、把被抢注的 id 转移给真正的作者,需 `ADMIN_TOKEN`)。
+
+**发布**:注册账号(scrypt 加盐哈希,密码 ≥8 位)→ 在「发布插件」页选目录 → 打包预览(文件清单、权限、体积、整包 sha256)→ 发布。服务端会**重算**逐文件 sha256 与整包 integrity,不符就 400。`manifest.id` 首次发布即被该账号认领,别人再发同 id → 403;同一个 `(id, 版本)` 不能重发(409)—— 已发布的版本不可变,要改就升版本号。版本可以**下架**(yanked):下架后从搜索、`latest` 与版本列表里消失,但按精确版本号仍能下载 —— 已经锁定了这个版本的安装不会被破坏;下架当前最新版时,次高的非下架版本会自动成为 latest。**没有硬删除。**
+
+**安装**:下载 → 把响应头声明的 integrity 与自算的比对 → `verifyEnvelope()`(结构、路径、扩展名、体积、逐文件 sha256)→ 检查「这个包在这台机器上装不装得上」(绑定的能力是否存在、声明的 `engines.imark` 是否满足)→ 解到 `.staging/` → 交给宿主原子就位。任何一步失败都不落盘。更新检查在启动后、打开市场页时、手动刷新时各跑一次,结果缓存 10 分钟;**绝不循环重试** —— 离线是正常状态,界面安静降级。
+
+**安装确认框是安全基线**。按下按钮之前,它必须摆出:插件名 / 版本 / 发布者 / 来源地址、**逐条中文解释的权限清单**、文件数与总体积、可跨渠道核对的整包 sha256(脚本插件另给入口文件的 sha256);脚本插件还有一条红字警告,并且**不勾选「我已了解风险」就不给点安装**。声明式插件没有这段警告,但会点名它借的是哪个内置能力(「不含代码」本身说明不了任何事 —— 一个号称笔记统计的插件完全可以绑 webhook)。详情页另配「**查看源码**」:显示的内容与将要安装的那份**来自同一次下载、过了同一套校验**,不是另取的一份「参考源码」—— README 是作者写的散文,只有源码是他真正要跑的字节。
+
+**要如实说明的边界**
+
+- **脚本插件 = 主进程里的任意代码执行。** 它能读写你电脑上的任意文件(笔记、SSH 密钥、`secrets.json`)、发起网络请求、启动其他程序。上面那一整套(sha256、发布者、权限清单、确认框、失败熔断、失败回滚)降低的是**误装**的概率、让**决策知情**,它们**不做沙箱**。
+- 默认市场地址 `http://127.0.0.1:8787` 是**明文**的(且只监听回环)。填非回环的 `http://` 地址时界面会给一次性警告;正式部署必须自己前置 TLS 终止 —— 否则「下载的包没被篡改」这件事就只靠一次明文 HTTP 撑着。
+- 发布是「**已认证但不审计**」:任何能注册的人都能认领一个还没被占用的 id。共享的注册表上,官方 id 应当先占掉。
+- 服务端按 IP 的内存限流(10 次失败 / 5 分钟)只够自托管;公开部署需要真正的限流组件与审计。
+- 插件跑在主进程,**目前没有 UI 扩展点** —— 它能做的是后台动作、文件与网络,不能往界面里加面板或按钮。
+
+**官方插件:定时上传(Git)**
+
+按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意远端,可配置**多个远端**(一次提交推全部);动作有「立即上传」「测试连接」,状态栏有同步图标(成功 / 失败 / 进行中 / 未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交。
+
+- **凭据既不落盘也不进命令行**:推送时 URL 保持干净(不带 `user:token`),而是临时挂一个一次性 credential helper(`-c credential.helper=` + `-c credential.helper=!f(){…}`),用户名与 token 从子进程**环境变量**读取(`GIT_IMK_USER` / `GIT_IMK_TOKEN`)。这样既不会把 token 写进 `.git/config`,也不出现在进程命令行里;同时固定 `GIT_TERMINAL_PROMPT=0` 与 `GCM_INTERACTIVE=never`,缺凭据时快速失败,而不是弹一个凭据窗口把同步卡死。**用户名可留空**:留空按 `oauth2` 认证(GitLab / GitHub 通用),Gitee 建议填真实用户名;未填 token 时完全不注入凭据(公开仓库或无凭据场景)。
 - **全链路脱敏**:任何要展示、写状态或落盘的 git 输出都先过 `redactUrl()`,把 `://user:token@host` 洗成 `://user:***@host`;失败按类型翻成可操作的中文提示(远端有新提交被拒 / 认证失败 / 连不上 / 仓库不存在)。
+- **远端配置项**(每个远端一行):**远程仓库**(必填,HTTPS 或 SSH 地址)+ **本地分支**(必填)/ **远程分支**(留空则与本地分支同名)+ **认证方式**:
 
-**远端配置项**(每个远端一行):**远程仓库**(必填,HTTPS 或 SSH 地址)+ **本地分支**(必填)/ **远程分支**(留空则与本地分支同名)+ **认证方式**(三选一):
+  | 认证方式 | 说明 |
+  |---|---|
+  | 访问令牌 | 默认。GitHub / GitLab 的 personal access token,按 `oauth2:<令牌>` 认证;私有仓库必填(界面提示会写明) |
+  | 账号密码 | 填账号 + 密码(如 Gitee 用账号名 + 私人令牌) |
+  | SSH | 用本机 SSH 密钥,不需要填写密钥;地址写成 `git@host:用户名/仓库.git` |
 
-| 认证方式 | 说明 |
+  密钥经 safeStorage 加密保存,界面上只显示**掩码**(`ab****23`,由主进程算好下发),旁边是「更换 / 清除」;点「更换」才展开输入框。地址是 `file://` 这类本地路径时不需要凭据。
+- **首次同步会做的事**(都可在插件设置里关闭):不是 git 仓库时 `git init -b <分支>`;写入推荐 `.gitignore`(`.obsidian/`、`node_modules/`、`.imark-tmp` 等,**已存在则不覆盖**)。**插件不改动仓库的 remote 配置** —— 推送直接推给配置里的地址,你的 `origin` 是谁、命令行 `git pull` 认哪一套,由你自己决定。作者身份仅在仓库与全局都没配 `user.name/user.email` 时用插件配置兜底,否则尊重你的 git 配置。
+- **它只做上传**:不替你处理仓库层面的疑难(远端已有无关历史、两边都改过同一文件、需要合并或变基等)。遇到这类情况插件会**如实报错**(状态变红、详情里给出 git 的原始信息),请你在仓库目录自己用 git 处理完再点「立即上传」—— 插件保持简单,行为可预期。
+- **配置改完会自动试跑一次**(3 秒后):否则容易出现「先启用插件(还没填远端)→「启动后同步一次」当场失败并被消耗 → 要干等一个完整间隔才再试」的错觉。
+- **边界**:定时器跑在主进程,而应用是「窗口全关即退出」(无托盘),所以**关掉应用期间不会上传** —— 用「启动后同步一次」弥补;仓库切换后始终同步 `settings.vaultPath` 指向的当前仓库。
+
+### 六、插件开发
+
+#### 写一个脚本插件
+
+官方插件「定时上传(Git)」就是一份可以照抄的样板:`plugins-src/git-sync/{main.ts, manifest.json, README.md}`。目录长这样:
+
+```
+my-plugin/
+├── manifest.json     # 清单:id、名称、版本、权限、字段表、动作
+├── main.ts           # 源码(TypeScript,也可以直接写 main.js)
+└── README.md         # 会显示在详情页(纯文本渲染)
+```
+
+```ts
+// main.ts —— 入口必须是**工厂函数**,导出对象不行
+import type { ImkApi, PluginRuntime } from '@shared/pluginApi'
+
+class MyPlugin implements PluginRuntime {
+  constructor(private imk: ImkApi) {}
+  onEnable(): void { /* 启动定时器、建立连接… */ }
+  onDisable(): void { /* 收尾 */ }
+  onConfigChange(): void { /* 配置变了 */ }
+  async runAction(actionId: string): Promise<{ ok: boolean; message: string }> {
+    if (actionId !== 'ping') return { ok: false, message: `未知动作:${actionId}` }
+    return { ok: true, message: 'pong' }
+  }
+}
+
+export = (imk: ImkApi) => new MyPlugin(imk)
+```
+
+- 编译:插件源码是独立 TS 工程(`plugins-src/tsconfig.json`),`module: CommonJS`。`npm run plugins:build` 会编译官方插件并把清单 + 产物 + README + 图标打成内置兜底包;你自己的插件用 `tsc`(或任意工具)编译出 `main.js`,再在界面「发布插件」页选目录打包即可 —— **打包器不编译 TypeScript**,它只收 `main.js`。
+- **只 import 类型,不要 import 应用的运行时代码**:`@shared/*` 里能给你的是类型(如 `ImkApi`、`PluginField`),它们全是 `import type`,编译后会被完全擦除。写成一个值导入(不带 `type`)时,编译器会原样留下 `require('@shared/…')` —— 那个模块名在用户机器上不存在,插件会在加载时报 `MODULE_NOT_FOUND`。需要的能力从下面的 API 表里找;表里没有的,是这套插件模型目前确实做不到的事。
+- 清单里的 `main` 必须是包内真实存在的 `.js`;忘了编译会得到一句明确的中文报错,而不是装上一堆没用的文件。
+
+#### 清单字段
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `id` | ✔ | `^[a-z0-9][a-z0-9._-]{1,63}$`,**禁止 `:`**(见 §四 的密钥命名空间);保留字 `imk`/`market`/`system`/`core`/`node`/`electron` |
+| `name` / `description` | ✔ | 界面上的名字与一句话说明 |
+| `version` | ✔ | `1.2.3`,可带 `-beta.1` 这类预发布后缀;已发布的版本不可覆盖,只能升号 |
+| `kind` | ✔ | `script` 或 `declarative` |
+| `main` | script ✔ | 入口文件,必须是包内的 `.js` |
+| `capability` | declarative ✔ | 绑定的内置能力 id(目前只有 `webhook`) |
+| `permissions` | | 权限数组,见下表 |
+| `author` / `homepage` | | 署名与主页(https) |
+| `icon` | | 包内图标文件名(建议 svg/png,≤64 KiB);**渲染层不直接发网络请求**,图标由主进程下载后以 `data:` URL 下发 |
+| `engines.imark` | | 需要的 iMark 版本,如 `">=0.1.0"`(支持 `>=` / `>` / `^`)。不满足时**在确认框之前就拒绝**并说清要哪个版本;解析不了的范围一律视为满足 —— 宁可让你自己判断,也不要因为解析不了就把插件全判为不兼容 |
+| `fields` | ✔ | 配置字段表(`PluginField[]`),设置面板据此通用渲染表单 |
+| `actions` | | 插件级动作:设置页里的按钮(不写就是没有按钮) |
+| `targetActions` / `targetFieldKey` | | 目标级动作(对「目标列表」的某一行执行)。声明了它就必须有一个 `kind: "targets"` 的字段 |
+
+权限(`permissions`)里,**只有 `git` 与 `secrets` 是注入强制的**:没声明就拿不到 `imk.git` / `imk.secrets`。其余(`vault:read`、`vault:write`、`network`、`shell`、`settings`)是**声明性说明** —— 脚本插件本来就有完整 Node 能力,fs / net / shell 挡不住它们,列出来是为了让安装的人知道自己正在同意什么。所以**别把权限列表当成限制来设计自己的插件**,它是一份对用户的告知。
+
+包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤3、扩展名白名单(`js/mjs/cjs/json/md/txt/svg/png/css`)、单文件 ≤2 MiB、`main.js` ≤1 MiB、README ≤256 KiB、整包 ≤8 MiB、文件数 ≤64。
+
+#### 插件能拿到的 API
+
+`imk` 就是生命周期回调里的 `ctx`,一个对象、没有别名(所以 `ctx.setState()` 这类写法一个字都不用改):
+
+| 命名空间 | 内容 |
 |---|---|
-| 访问令牌 | 默认。GitHub / GitLab 的 personal access token,按 `oauth2:<令牌>` 认证;私有仓库必填(界面提示会写明) |
-| 账号密码 | 填账号 + 密码(如 Gitee 用账号名 + 私人令牌) |
-| SSH | 用本机 SSH 密钥,不需要填写密钥;地址写成 `git@host:用户名/仓库.git` |
+| `imk.plugin` | `id` / `name` / `version` / `dir`(安装目录,读自带静态资源用) |
+| `imk.vault` | `path()` 当前仓库根目录(未打开仓库时为 `null`)、`exists(p?)` 路径是否存在 —— **两个都是 async** |
+| `imk.git` | **需 `git` 权限**。`available()` / `run(args, opts)` / `credentialArgs(token)` / `credentialEnv(user, token)` / `redact(text)` / `summarize(text)` —— 凭据 helper 与环境变量注入的封装,不要自己拼命令行 |
+| `imk.secrets` | **需 `secrets` 权限**。`get(fieldKey, targetId?)` / `has(...)`,只读,只能读自己名下的密钥 |
+| `imk.getConfig<T>()` / `imk.setState(patch)` | 读配置(已归一化)、更新状态并广播到界面 |
+| `imk.flushDocument()` | 让渲染层先把脏文档落盘(带超时兜底) |
+| `imk.isEnabled()` / `imk.isDisabledByHost()` | 是否在运行 / 是否已被熔断 |
+| `imk.log(level, ...args)` | 进主进程控制台,同时留在该插件的日志缓冲里供设置界面查看 |
 
-密钥经 safeStorage 加密保存,界面上只显示**掩码**(`ab****23`,由主进程算好下发,明文不出主进程),旁边是「更换 / 清除」;点「更换」才展开输入框。地址是 `file://` 这类本地路径时不需要凭据。
+**接口只有这些**:插件跑在主进程,不能往界面里加东西,也不能调用应用的内部模块(只能 import `@shared/*` 的类型)。要读仓库文件直接用 `node:fs` + `imk.vault.path()` —— 这正是 `vault:read/write` 是声明性权限的原因。
 
-**首次同步会做的事**(都可在插件设置里关闭):不是 git 仓库时 `git init -b <分支>`;写入推荐 `.gitignore`(`.obsidian/`、`node_modules/`、`.imark-tmp` 等,**已存在则不覆盖**);仓库没有任何 remote 时补一个不带凭据的 `origin`,方便你在命令行 `git pull`。作者身份仅在仓库与全局都没配 `user.name/user.email` 时用插件配置兜底,否则尊重你的 git 配置。
+**错误处理**:动作返回 `{ ok, message, detail? }`,失败就如实返回,不要吞掉;宿主会把它显示在插件详情里。抛异常也行 —— 宿主会捕获、记进状态并累加失败计数(**连续 3 次自动停用**,用户得手动重新启用)。有任何耗时操作都要自己设超时:宿主给每次调用的上限是 10 秒。
 
-**这个插件只做上传**：它不替你处理仓库层面的疑难(远端已有无关历史、两边都改过同一文件、需要合并或变基等)。遇到这类情况插件会**如实报错**(状态变红、详情里给出 git 的原始信息),请你在仓库目录自己用 git 处理完再点「立即上传」—— 插件保持简单,行为可预期。
+#### 写一个声明式插件
 
-**配置改完会自动试跑一次**(3 秒后):否则容易出现「先启用插件(还没填远端)→「启动后同步一次」当场失败并被消耗 → 要干等一个完整间隔才再试」的错觉。
+不用写一行代码:一份清单 + 一句说明就能发布。绑 `webhook` 能力的最小例子:
 
-**边界**:定时器跑在主进程,而应用是「窗口全关即退出」(无托盘),所以**关掉应用期间不会上传**——用「启动后同步一次」弥补;仓库切换后始终同步 `settings.vaultPath` 指向的当前仓库。远端与本地的历史冲突(非快进被拒)不在插件内处理,按报错提示在仓库目录自己解决。
+```json
+{
+  "id": "notify-my-service",
+  "name": "推送通知",
+  "description": "把「上传成功/失败」推送到我自己的服务。",
+  "version": "1.0.0",
+  "kind": "declarative",
+  "capability": "webhook",
+  "permissions": ["network", "secrets"],
+  "fields": [
+    { "key": "targets", "kind": "targets", "label": "推送地址", "default": [],
+      "targetSecret": { "label": "签名令牌（可选）" } },
+    { "key": "method", "kind": "select", "label": "请求方法", "default": "POST",
+      "options": [{ "value": "POST", "label": "POST" }, { "value": "GET", "label": "GET" }] },
+    { "key": "timeoutMs", "kind": "number", "label": "超时（毫秒）", "default": 10000 }
+  ],
+  "actions": [{ "id": "test", "label": "发送测试请求" }],
+  "targetActions": [{ "id": "test-target", "label": "测试这一条" }],
+  "targetFieldKey": "targets"
+}
+```
 
-### 五、其他子系统
+**令牌注入看的是你的清单,不是能力**:能力声明的是它「需要哪些字段与动作」,而 `imk.secrets` 注不注入只看清单里的 `permissions`。少写了 `secrets`,用户照样能在「推送地址」那一行填签名令牌(那是能力要求的字段),但插件读不到它 —— 请求不会带上 `Authorization`。要用就自己写进去。
+
+清单必须配齐能力要求的字段与动作,缺什么会在安装时被**逐条点名**(「缺少能力「Webhook 推送」需要的字段:targets」),而不是装上一个点不动的插件。**新增一种能力**就是实现 `Capability` 接口(声明需要哪些字段/动作/权限 + `create()` 出运行时)后 `registerCapability()`:`main/plugins/capabilities/webhook.ts` 是唯一的样板,拿它照抄。
+
+#### 发布
+
+1. 起一个市场:`npm run market`(或指向别人部署的地址);
+2. 应用里 `设置 → 插件 → 浏览市场 → 发布插件`,填地址 → 注册/登录(密码 ≥8 位);
+3. 「选择插件目录…」→ 看一遍打包预览(文件清单、权限、体积、整包 sha256)→ 发布;
+4. 之后每次发新版只要升 `version` 再发;装了这个插件的人会看到「可更新」角标。
+
+**同一个版本号不能覆盖重发**(服务端 409):已发布版本的哈希是被用户拿去核对过的,得改就升版本。要撤回一个版本用「下架」——它从搜索结果与 `latest` 里消失,但已经锁定了这个版本的人仍然装得上。
+
+### 七、其他子系统
 
 - **仓库(Vault)工作流**:主进程 `vault.ts` 用 `fs.promises.readdir` 递归列目录(跳过隐藏目录与 `node_modules`/`.obsidian` 等),渲染层 `vaultService.ts` 负责状态与流程编排;删除走 `shell.trashItem`(系统回收站),新建/重命名走专用 IPC——渲染层不直接触碰文件系统。
 - **进程边界与安全**:系统能力全部经 `contextBridge` 暴露的 `window.api`(类型定义在 `shared/api.ts`);渲染层开启 `sandbox`、无 Node 集成;外链在打开前于主进程校验 `^https?://`,本地图片走自定义 `imark://` 特权协议(编码绝对路径,由主进程读取后返回,规避 `file://` 的编码与安全限制)。
-- **主题**:三档主题(亮/暗/纯黑)全部由 CSS 变量驱动(`assets/styles/vars.css`),CodeMirror 侧通过 `EditorView.theme` 引用 `var(--…)`。注意:base theme 已定义过的 `.cm-*` 属性必须写在主题扩展里,外部 CSS 会因特异度不足被静默忽略。
+- **主题**:三档主题(亮/暗/纯黑)全部由 CSS 变量驱动(变量定义在 `styles/tokens.css`,见 §三),CodeMirror 侧通过 `EditorView.theme` 引用 `var(--…)`。注意:base theme 已定义过的 `.cm-*` 属性必须写在主题扩展里,外部 CSS 会因特异度不足被静默忽略。
 - **导出 HTML**:markdown-it(代码高亮用 highlight.js)+ 内联样式模板,输出单文件。

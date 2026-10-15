@@ -227,3 +227,15 @@
   --sw-bar: #121212;
   --sw-line: #333333;
 }
+
+/* 左栏条目上的角标(目前只有「浏览市场」的可用更新数) */
+.settings-nav-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+}

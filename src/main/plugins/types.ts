@@ -1,31 +1,28 @@
-import type { PluginActionResult, PluginDescriptor, PluginState } from '@shared/plugins'
-
-/** 宿主交给插件的运行时能力 */
-export interface PluginContext {
-  readonly pluginId: string
-  /** 当前生效配置(已归一化,含字段默认值) */
-  getConfig<T = Record<string, unknown>>(): T
-  /** 更新状态并广播给渲染层 */
-  setState(patch: Partial<PluginState>): void
-  /** 让渲染层先把脏文档落盘(带超时兜底,无窗口时立即返回) */
-  flushDocument(): Promise<void>
-  isEnabled(): boolean
-}
-
 /**
- * 内置核心插件接口。
+ * 宿主侧的插件契约。
  *
- * 生命周期:onEnable(启用/应用启动时已启用)→ 可选 onConfigChange(改配置)→
- * onDisable(用户停用,或应用退出时)。定时器、子进程等资源必须在 onDisable 里释放。
- *
- * 将来要支持外部插件时,只需让外部模块实现同一接口再注册进 registry。
+ * 改造前 `MainPlugin` 直接带着 onEnable/onDisable/... 四个方法;引入外部插件后,
+ * 「插件是什么」与「插件怎么被加载」被拆开了:
+ *   - `PluginRuntime`  —— 插件能做什么(四个生命周期方法),定义在 shared/pluginApi.ts
+ *   - `MainPlugin`     —— 宿主眼里一个可注册的插件(标识 + 描述符 + 运行时 + 来源)
+ * 脚本插件(script.ts)与声明式插件(declarative.ts)各自是薄适配器,产出同一个
+ * `PluginRuntime`,宿主从此只认运行时,不再关心它从哪来。
  */
+
+import type { PluginRuntime } from '@shared/pluginApi'
+import type { PluginDescriptor, PluginInstallInfo } from '@shared/plugins'
+
+// PluginContext 已移到 shared/pluginApi.ts(插件源码要 import 它)。
+// 这里做一次类型中转,免得 main 侧各处都要改 import 路径。
+export type { PluginContext, PluginRuntime } from '@shared/pluginApi'
+
 export interface MainPlugin {
   readonly id: string
   readonly descriptor: PluginDescriptor
-  onEnable?(ctx: PluginContext): void | Promise<void>
-  onDisable?(ctx: PluginContext): void | Promise<void>
-  onConfigChange?(config: unknown, ctx: PluginContext): void | Promise<void>
-  /** targetId 只在 descriptor.targetActions 里的动作上出现(对目标列表的某一行执行) */
-  runAction?(actionId: string, ctx: PluginContext, targetId?: string): Promise<PluginActionResult>
+  /** 生命周期实现 */
+  readonly runtime: PluginRuntime
+  /** 外部安装的插件才有;内置核心插件为 undefined */
+  readonly meta?: PluginInstallInfo
+  /** 包所在的安装目录(外部插件才有) */
+  readonly dir?: string
 }

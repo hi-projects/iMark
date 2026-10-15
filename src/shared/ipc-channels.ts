@@ -29,7 +29,48 @@ export const IPC = {
   /** 主→渲染:请先保存脏文档 */
   PluginFlushDoc: 'plugin:flush-doc',
   /** 渲染→主:保存完成回执 */
-  PluginFlushDone: 'plugin:flush-done'
+  PluginFlushDone: 'plugin:flush-done',
+
+  // ---------- 插件市场 ----------
+  /** 挑一个本地 .imkpkg.json 包 → 预览(不安装) */
+  MarketPickPackage: 'market:pick-package',
+  /** 挑一个插件目录 → 打包 → 预览(不安装) */
+  MarketPackDir: 'market:pack-dir',
+  /** 丢弃一个待确认的安装(用户点了取消) */
+  MarketDropPending: 'market:drop-pending',
+  /** 确认安装一个待确认项(只回传令牌,不回传字节) */
+  MarketInstallPending: 'market:install-pending',
+  MarketUninstall: 'market:uninstall',
+  /** 已安装插件 + 来源/更新信息的整体视图 */
+  MarketInstalled: 'market:installed',
+  /** 把应用自带的兜底插件重新装回来(离线可用) */
+  MarketRestoreBundled: 'market:restore-bundled',
+  /** 主→渲染:安装/下载进度 */
+  MarketProgress: 'market:progress',
+  /** 设置市场地址;返回规范化后的地址(空串 = 不使用市场) */
+  MarketSetRegistry: 'market:set-registry',
+  /** 测一下这个地址上是不是我们的服务(is-online 判定,不写设置) */
+  MarketTestRegistry: 'market:test-registry',
+  MarketSearch: 'market:search',
+  MarketDetail: 'market:detail',
+  /** 取插件图标,转成 data: URL(CSP 不让渲染层直接加载 http 图片) */
+  MarketIcon: 'market:icon',
+  /** 从市场下载一个版本 → 预览(不安装) */
+  MarketInstall: 'market:install',
+  MarketAuthStatus: 'market:auth-status',
+  MarketLogin: 'market:auth-login',
+  MarketRegister: 'market:auth-register',
+  MarketLogout: 'market:auth-logout',
+  /** 用户看过了「你在用明文 http」的提示,不再提 */
+  MarketAckPlainHttp: 'market:ack-plain-http',
+  /** 挑目录 → 打包 → 预览(不上传) */
+  MarketPublishPreview: 'market:publish-preview',
+  /** 上传一个目录的当前内容 */
+  MarketPublish: 'market:publish',
+  /** 检查已安装插件有没有新版本 */
+  MarketCheckUpdates: 'market:check-updates',
+  /** 读某个版本包里的文本文件(装之前先看源码) */
+  MarketSource: 'market:source'
 } as const
 
 /** 原生菜单点击后转发给渲染层的命令 ID */
@@ -64,3 +105,4 @@ export type MenuCommandId =
   | 'view:toggle-outline'
   | 'view:toggle-explorer'
   | 'view:settings'
+  | 'view:market'

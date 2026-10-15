@@ -11,6 +11,7 @@ import {
 import { readFileContent, writeFileAtomic } from './files'
 import { getSettings, saveSettings } from './settings'
 import { getPluginHost, type PluginHost } from './plugins/host'
+import { registerMarketIpc } from './market/ipc'
 import {
   createVaultDir,
   createVaultFile,
@@ -140,4 +141,8 @@ export function registerIpc(): void {
   ipcMain.on(IPC.PluginFlushDone, () => {
     getPluginHost()?.handleFlushDone()
   })
+
+  // ---------- 插件市场 ----------
+
+  registerMarketIpc()
 }

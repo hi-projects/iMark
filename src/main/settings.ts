@@ -11,7 +11,11 @@ const DEFAULTS: Settings = {
   lastFile: null,
   vaults: [],
   skipVaultPicker: false,
-  plugins: {}
+  plugins: {},
+  // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
+  marketUrl: 'http://127.0.0.1:8787',
+  marketAutoCheck: true,
+  marketWarnedPlainHttp: []
 }
 
 let cache: Settings | null = null
@@ -47,6 +51,15 @@ export async function loadSettings(): Promise<Settings> {
 
 export async function getSettings(): Promise<Settings> {
   return loadSettings()
+}
+
+/**
+ * 同步读取已载入的设置缓存。**只给那些无法等待的路径用**(插件宿主在加载脚本插件时
+ * 必须立即拿到配置,没法把 createRequire 变成异步)。
+ * 返回 null 表示还没载入过 —— 应用启动流程保证 `loadSettings()` 早就跑过了。
+ */
+export function getSettingsSync(): Settings | null {
+  return cache
 }
 
 export async function saveSettings(partial: Partial<Settings>): Promise<Settings> {

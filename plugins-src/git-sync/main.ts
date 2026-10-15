@@ -1,19 +1,22 @@
+/**
+ * 「定时上传（Git）」—— 市场官方插件,也是「外部插件」这套机制的第一个真实用户。
+ *
+ * 它原本是编译进应用的内置插件,现在改成装在 userData/plugins/git-sync/ 下的普通插件。
+ * 插件 id 与字段 key 一个都没动,所以老用户的启用态、配置、密钥**零迁移**。
+ *
+ * 与内置时期相比只少了三件事:拿配置、存状态、跑 git —— 它们分别变成了
+ * imk.getConfig / imk.setState / imk.git。其余逻辑逐行照搬。
+ *
+ * 只 import 类型、不 import 应用的任何运行时代码:插件是独立打包的,除了 Node 内置模块
+ * 与注入进来的 `imk` 之外什么都 require 不到。这正是为什么要在这里自己写一份
+ * `secretSlot`(应用的 @shared/plugins 里有同名函数,但那是应用内部的)。
+ */
+
 import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import {
-  secretKey,
-  targetSecretSlot,
-  type PluginActionResult,
-  type PluginDescriptor,
-  type PluginTarget
-} from '@shared/plugins'
-import { getSettings } from '../settings'
-import { getSecret } from '../secrets'
-import { credentialArgs, credentialEnv, isGitAvailable, runGit, summarize, type GitResult } from '../git'
-import type { MainPlugin, PluginContext } from './types'
-
-const ID = 'git-sync'
+import type { ImkApi, ImkGitApi, ImkSecretsApi, PluginRuntime } from '@shared/pluginApi'
+import type { PluginActionResult, PluginTarget } from '@shared/plugins'
 
 /** 新建仓库时写入的忽略项;已有仓库绝不改动用户的 .gitignore */
 const DEFAULT_GITIGNORE = `# iMark 定时上传默认忽略
@@ -26,7 +29,7 @@ Thumbs.db
 desktop.ini
 `
 
-export interface GitSyncConfig {
+interface GitSyncConfig {
   targets: PluginTarget[]
   intervalMinutes: number
   syncOnStart: boolean
@@ -41,107 +44,6 @@ export interface GitSyncConfig {
   writeReadme: boolean
 }
 
-const descriptor: PluginDescriptor = {
-  id: ID,
-  name: '定时上传（Git）',
-  description: '按固定间隔把当前仓库提交并推送到 GitLab / Gitee 等 Git 远端，支持多个远端。',
-  version: '0.1.0',
-  fields: [
-    {
-      key: 'targets',
-      kind: 'targets',
-      label: '远端仓库',
-      default: [],
-      description:
-        '每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub / GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，插件也不改动你仓库的 remote 设置。',
-      targetSecret: { label: '访问令牌', placeholder: '必填（私有仓库需要访问令牌）' }
-    },
-    {
-      key: 'intervalMinutes',
-      section: '同步设置',
-      kind: 'number',
-      label: '自动同步间隔（分钟）',
-      default: 10,
-      min: 0,
-      max: 1440,
-      description: '0 表示关闭自动同步，只保留手动「立即上传」。'
-    },
-    {
-      key: 'syncOnStart',
-      section: '同步设置',
-      kind: 'boolean',
-      label: '启动后同步一次',
-      default: true,
-      description: '应用关闭期间定时器不会运行，开启它可在下次启动时补上。'
-    },
-    {
-      key: 'commitMessage',
-      section: '同步信息设置',
-      kind: 'text',
-      label: '提交信息模板',
-      default: 'sync: {time}',
-      placeholder: 'sync: {time}',
-      description: '可用占位符:{time}（本地时间）。'
-    },
-    {
-      key: 'authorName',
-      section: '同步信息设置',
-      kind: 'text',
-      label: '提交作者名',
-      default: 'iMark',
-      description: '仅当仓库未配置 git user.name 时使用。'
-    },
-    {
-      key: 'authorEmail',
-      section: '同步信息设置',
-      kind: 'text',
-      label: '提交作者邮箱',
-      default: 'imark@local',
-      description: '仅当仓库未配置 git user.email 时使用。'
-    },
-    {
-      key: 'autoInitRepo',
-      section: '本地仓库自动初始化',
-      kind: 'boolean',
-      label: '自动初始化仓库',
-      default: true,
-      description: '仓库还不是 git 仓库时自动执行 git init。'
-    },
-    {
-      key: 'initBranch',
-      section: '本地仓库自动初始化',
-      showWhen: { key: 'autoInitRepo', value: true },
-      kind: 'text',
-      label: '自动创建的分支名',
-      default: 'main',
-      description: '初始化仓库时创建的分支名（git init -b）。建议与上面各远端的「本地分支」保持一致，否则推送时会找不到分支。'
-    },
-    {
-      key: 'writeGitignore',
-      section: '本地仓库自动初始化',
-      showWhen: { key: 'autoInitRepo', value: true },
-      kind: 'boolean',
-      label: '初始化时创建 .gitignore',
-      default: true,
-      description: '仅新建仓库时写入推荐忽略项；已有仓库、或已存在 .gitignore 时都不会改动。'
-    },
-    {
-      key: 'writeReadme',
-      section: '本地仓库自动初始化',
-      showWhen: { key: 'autoInitRepo', value: true },
-      kind: 'boolean',
-      label: '初始化时创建 README.md',
-      default: false,
-      description: '仅新建仓库时创建一个 README.md（标题取仓库文件夹名）；已存在则不覆盖。'
-    }
-  ],
-  actions: [
-    { id: 'sync-now', label: '立即上传' }
-  ],
-  targetActions: [{ id: 'test-connection', label: '测试连接' }],
-  targetFieldKey: 'targets'
-}
-
 /** 状态与失败信息里用的短标签:取地址最后一段(如 rl);取不到就用整条地址 */
 function repoLabel(url: string): string {
   const cleaned = url.trim().replace(/\/+$/, '').replace(/\.git$/i, '')
@@ -153,6 +55,16 @@ function stamp(): string {
   const d = new Date()
   const p = (n: number): string => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/**
+ * 远端密钥的「槽位」:访问令牌与密码分开存。
+ * 与宿主 @shared/plugins 的 targetSecretSlot 必须保持一致 —— 密钥 key 是
+ * `<插件id>:targets:<槽位>`,槽位算错就读不到用户已经存好的密钥。
+ * (token 用目标 id 本身,是为了兼容改造前就存在的数据。)
+ */
+function secretSlot(target: Pick<PluginTarget, 'id' | 'auth'>): string {
+  return target.auth === 'password' ? `${target.id}#password` : target.id
 }
 
 /** 把 git 的报错翻译成有指导意义的中文 */
@@ -173,9 +85,9 @@ function classifyPushError(stderr: string): string {
   return ''
 }
 
-class GitSyncPlugin implements MainPlugin {
-  readonly id = ID
-  readonly descriptor = descriptor
+class GitSyncPlugin {
+  private readonly git: ImkGitApi
+  private readonly secrets: ImkSecretsApi
 
   private timer: ReturnType<typeof setInterval> | null = null
   private configSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -186,20 +98,29 @@ class GitSyncPlugin implements MainPlugin {
   /** 「启动后同步一次」每次进程只做一次,反复启停插件不再触发 */
   private startSyncScheduled = false
 
-  onEnable(ctx: PluginContext): void {
-    this.schedule(ctx)
-    if (!this.startSyncScheduled && ctx.getConfig<GitSyncConfig>().syncOnStart) {
+  constructor(private readonly imk: ImkApi) {
+    // 少了权限就在这里当场报错,而不是运行到一半才 undefined —— 加载期的错误
+    // 宿主会显示在插件卡片上,作者一眼能看出是清单忘了声明
+    if (!imk.git) throw new Error('插件清单缺少 "git" 权限')
+    if (!imk.secrets) throw new Error('插件清单缺少 "secrets" 权限')
+    this.git = imk.git
+    this.secrets = imk.secrets
+  }
+
+  onEnable(): void {
+    this.schedule()
+    if (!this.startSyncScheduled && this.imk.getConfig<GitSyncConfig>().syncOnStart) {
       this.startSyncScheduled = true
       // 稍等窗口与文档就绪再跑
       setTimeout(() => {
-        if (ctx.isEnabled()) void this.sync(ctx, 'start')
+        if (this.imk.isEnabled()) void this.sync('start')
       }, 3000)
     }
   }
 
-  onConfigChange(_config: unknown, ctx: PluginContext): void {
-    this.schedule(ctx)
-    this.scheduleConfigSync(ctx)
+  onConfigChange(): void {
+    this.schedule()
+    this.scheduleConfigSync()
   }
 
   onDisable(): void {
@@ -212,24 +133,20 @@ class GitSyncPlugin implements MainPlugin {
     this.queuedRerun = false
   }
 
-  async runAction(
-    actionId: string,
-    ctx: PluginContext,
-    targetId?: string
-  ): Promise<PluginActionResult> {
-    if (actionId === 'sync-now') return this.sync(ctx, 'manual')
-    if (actionId === 'test-connection') return this.testConnection(ctx, targetId)
+  async runAction(actionId: string, _ctx: unknown, targetId?: string): Promise<PluginActionResult> {
+    if (actionId === 'sync-now') return this.sync('manual')
+    if (actionId === 'test-connection') return this.testConnection(targetId)
     return { ok: false, message: `未知动作:${actionId}` }
   }
 
   // ---------- 定时 ----------
 
-  private schedule(ctx: PluginContext): void {
+  private schedule(): void {
     this.stopTimer()
-    const { intervalMinutes } = ctx.getConfig<GitSyncConfig>()
+    const { intervalMinutes } = this.imk.getConfig<GitSyncConfig>()
     if (!intervalMinutes || intervalMinutes <= 0) return
     this.timer = setInterval(() => {
-      if (ctx.isEnabled()) void this.sync(ctx, 'timer')
+      if (this.imk.isEnabled()) void this.sync('timer')
     }, intervalMinutes * 60_000)
   }
 
@@ -243,23 +160,22 @@ class GitSyncPlugin implements MainPlugin {
    * 没有它的话:用户先启用插件(此时还没填远端)、「启动后同步一次」当场失败并被消耗掉,
    * 之后要干等一个完整间隔(默认 10 分钟)才会再试,看起来就像"配好了但不会同步"。
    */
-  private scheduleConfigSync(ctx: PluginContext): void {
+  private scheduleConfigSync(): void {
     if (this.configSyncTimer) clearTimeout(this.configSyncTimer)
     this.configSyncTimer = setTimeout(() => {
       this.configSyncTimer = null
-      if (!ctx.isEnabled()) return
-      const targets = (ctx.getConfig<GitSyncConfig>().targets ?? []).filter(t => t.url.trim().length > 0)
+      if (!this.imk.isEnabled()) return
+      const targets = (this.imk.getConfig<GitSyncConfig>().targets ?? []).filter(
+        t => t.url.trim().length > 0
+      )
       if (targets.length === 0) return
-      void this.sync(ctx, 'config')
+      void this.sync('config')
     }, 3000)
   }
 
   // ---------- 同步 ----------
 
-  private async sync(
-    ctx: PluginContext,
-    trigger: 'timer' | 'manual' | 'start' | 'config'
-  ): Promise<PluginActionResult> {
+  private async sync(trigger: 'timer' | 'manual' | 'start' | 'config'): Promise<PluginActionResult> {
     if (this.running) {
       // 手动点击不该被静默丢掉:排一次队,当前这轮结束后补跑
       if (trigger === 'manual') {
@@ -274,20 +190,25 @@ class GitSyncPlugin implements MainPlugin {
     this.abort = new AbortController()
     const signal = this.abort.signal
 
-    const cfg = ctx.getConfig<GitSyncConfig>()
+    const cfg = this.imk.getConfig<GitSyncConfig>()
     const targets = (cfg.targets ?? []).filter(t => t.url.trim().length > 0)
 
     const fail = (message: string, detail?: string): PluginActionResult => {
-      ctx.setState({ status: 'error', lastRunAt: Date.now(), lastMessage: message, lastDetail: detail })
+      this.imk.setState({
+        status: 'error',
+        lastRunAt: Date.now(),
+        lastMessage: message,
+        lastDetail: detail
+      })
       return { ok: false, message, detail }
     }
 
     try {
       if (targets.length === 0) return fail('尚未配置远端仓库')
-      const { vaultPath } = await getSettings()
+      const vaultPath = await this.imk.vault.path()
       if (!vaultPath) return fail('未打开仓库，无法上传')
       if (!existsSync(vaultPath)) return fail('仓库目录不存在')
-      if (!(await isGitAvailable())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
+      if (!(await this.git.available())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
       const noLocalBranch = targets.find(t => !t.localBranch.trim())
       if (noLocalBranch) {
         return fail(
@@ -306,7 +227,7 @@ class GitSyncPlugin implements MainPlugin {
             '把账号填上后重试。'
           )
         }
-        if (!(await getSecret(secretKey(ID, 'targets', targetSecretSlot(t))))) {
+        if (!(await this.secrets.get('targets', secretSlot(t)))) {
           return fail(
             `远端「${repoLabel(t.url)}」选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
             '在对应远端那一行填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
@@ -315,14 +236,14 @@ class GitSyncPlugin implements MainPlugin {
       }
 
       // 开跑时把上一次的详情清掉,否则新任务的消息下面还挂着旧的报错文本
-      ctx.setState({
+      this.imk.setState({
         status: 'running',
         lastMessage: trigger === 'manual' ? '正在上传…' : '正在同步…',
         lastDetail: undefined
       })
 
       // 先把编辑器里的脏文档落盘,否则刚敲的内容不会进这次提交
-      await ctx.flushDocument()
+      await this.imk.flushDocument()
 
       await this.ensureRepo(vaultPath, cfg, signal)
 
@@ -339,7 +260,12 @@ class GitSyncPlugin implements MainPlugin {
       const message = committed
         ? `已提交并推送到 ${pushed.length} 个远端${head ? `（提交 ${head}）` : ''}`
         : `无改动:远端已是 ${head || '最新'}`
-      ctx.setState({ status: 'ok', lastRunAt: Date.now(), lastMessage: message, lastDetail: undefined })
+      this.imk.setState({
+        status: 'ok',
+        lastRunAt: Date.now(),
+        lastMessage: message,
+        lastDetail: undefined
+      })
       return { ok: true, message }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
@@ -349,7 +275,7 @@ class GitSyncPlugin implements MainPlugin {
       this.abort = null
       if (this.queuedRerun) {
         this.queuedRerun = false
-        if (ctx.isEnabled()) void this.sync(ctx, 'manual')
+        if (this.imk.isEnabled()) void this.sync('manual')
       }
     }
   }
@@ -360,16 +286,21 @@ class GitSyncPlugin implements MainPlugin {
     cfg: GitSyncConfig,
     signal: AbortSignal
   ): Promise<boolean> {
-    const add = await runGit(['add', '-A'], { cwd: vaultPath, signal })
-    if (!add.ok) throw new Error(`git add 失败:${summarize(add.stderr || add.stdout, 3)}`)
+    const add = await this.git.run(['add', '-A'], { cwd: vaultPath, signal })
+    if (!add.ok) throw new Error(`git add 失败:${this.git.summarize(add.stderr || add.stdout, 3)}`)
 
-    const status = await runGit(['status', '--porcelain'], { cwd: vaultPath, signal })
+    const status = await this.git.run(['status', '--porcelain'], { cwd: vaultPath, signal })
     if (status.stdout.trim().length === 0) return false
 
     const identity = await this.identityArgs(vaultPath, cfg, signal)
     const message = (cfg.commitMessage || 'sync: {time}').replace(/\{time\}/g, stamp())
-    const commit = await runGit([...identity, 'commit', '-m', message], { cwd: vaultPath, signal })
-    if (!commit.ok) throw new Error(`提交失败:${summarize(commit.stderr || commit.stdout, 3)}`)
+    const commit = await this.git.run([...identity, 'commit', '-m', message], {
+      cwd: vaultPath,
+      signal
+    })
+    if (!commit.ok) {
+      throw new Error(`提交失败:${this.git.summarize(commit.stderr || commit.stdout, 3)}`)
+    }
     return true
   }
 
@@ -400,19 +331,26 @@ class GitSyncPlugin implements MainPlugin {
     signal: AbortSignal
   ): Promise<void> {
     if (!existsSync(join(vaultPath, '.git'))) {
-      if (!cfg.autoInitRepo) throw new Error('当前仓库还不是 git 仓库（可在插件设置中开启自动初始化）')
+      if (!cfg.autoInitRepo) {
+        throw new Error('当前仓库还不是 git 仓库（可在插件设置中开启自动初始化）')
+      }
       // 初始化时创建的分支名来自配置(默认 main),与推送用的「本地分支」是两回事
       const wantBranch = cfg.initBranch?.trim() || 'main'
-      let init = await runGit(['init', '-b', wantBranch], { cwd: vaultPath, signal })
+      let init = await this.git.run(['init', '-b', wantBranch], { cwd: vaultPath, signal })
       if (!init.ok) {
         // 老版本 git 不支持 -b
-        init = await runGit(['init'], { cwd: vaultPath, signal })
-        if (!init.ok) throw new Error(`初始化仓库失败:${summarize(init.stderr, 3)}`)
-        await runGit(['symbolic-ref', 'HEAD', `refs/heads/${wantBranch}`], { cwd: vaultPath, signal })
+        init = await this.git.run(['init'], { cwd: vaultPath, signal })
+        if (!init.ok) throw new Error(`初始化仓库失败:${this.git.summarize(init.stderr, 3)}`)
+        await this.git.run(['symbolic-ref', 'HEAD', `refs/heads/${wantBranch}`], {
+          cwd: vaultPath,
+          signal
+        })
       }
       if (cfg.writeGitignore) {
         // wx: 已存在则不动(理论上刚初始化不会有)
-        await writeFile(join(vaultPath, '.gitignore'), DEFAULT_GITIGNORE, { flag: 'wx' }).catch(() => {})
+        await writeFile(join(vaultPath, '.gitignore'), DEFAULT_GITIGNORE, { flag: 'wx' }).catch(
+          () => {}
+        )
       }
       if (cfg.writeReadme) {
         // 同样 wx:绝不覆盖已有的 README
@@ -424,12 +362,11 @@ class GitSyncPlugin implements MainPlugin {
         ).catch(() => {})
       }
     }
-
   }
 
   /** 当前提交的短 SHA,用于把「到底同步到哪个版本」说清楚 */
   private async headShort(vaultPath: string, signal: AbortSignal): Promise<string> {
-    const r = await runGit(['rev-parse', '--short', 'HEAD'], { cwd: vaultPath, signal })
+    const r = await this.git.run(['rev-parse', '--short', 'HEAD'], { cwd: vaultPath, signal })
     return r.ok ? r.stdout.trim() : ''
   }
 
@@ -439,8 +376,12 @@ class GitSyncPlugin implements MainPlugin {
     cfg: GitSyncConfig,
     signal: AbortSignal
   ): Promise<string[]> {
-    const name = (await runGit(['config', 'user.name'], { cwd: vaultPath, signal })).stdout.trim()
-    const email = (await runGit(['config', 'user.email'], { cwd: vaultPath, signal })).stdout.trim()
+    const name = (
+      await this.git.run(['config', 'user.name'], { cwd: vaultPath, signal })
+    ).stdout.trim()
+    const email = (
+      await this.git.run(['config', 'user.email'], { cwd: vaultPath, signal })
+    ).stdout.trim()
     const args: string[] = []
     if (!name) args.push('-c', `user.name=${cfg.authorName || 'iMark'}`)
     if (!email) args.push('-c', `user.email=${cfg.authorEmail || 'imark@local'}`)
@@ -462,7 +403,7 @@ class GitSyncPlugin implements MainPlugin {
    */
   private async credentialFor(target: PluginTarget): Promise<{ user: string; pass: string } | null> {
     if (target.auth === 'ssh') return null
-    const secret = (await getSecret(secretKey(ID, 'targets', targetSecretSlot(target)))) ?? ''
+    const secret = (await this.secrets.get('targets', secretSlot(target))) ?? ''
     if (!secret) return null
     const user = target.auth === 'password' ? target.username.trim() : 'oauth2'
     return { user, pass: secret }
@@ -476,32 +417,42 @@ class GitSyncPlugin implements MainPlugin {
     const cred = await this.credentialFor(target)
     const { local, remote } = this.branchNames(target)
     // 直接给 URL:插件不改动仓库的 remote 配置;凭据由一次性 helper 注入(ssh 模式则不注入)
-    const push = await runGit(
-      [...credentialArgs(cred?.pass ?? ''), 'push', target.url.trim(), `refs/heads/${local}:refs/heads/${remote}`],
-      { cwd: vaultPath, signal, env: credentialEnv(cred?.user ?? '', cred?.pass ?? '') }
+    const push = await this.git.run(
+      [
+        ...this.git.credentialArgs(cred?.pass ?? ''),
+        'push',
+        target.url.trim(),
+        `refs/heads/${local}:refs/heads/${remote}`
+      ],
+      {
+        cwd: vaultPath,
+        signal,
+        env: this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? '')
+      }
     )
     if (push.ok) return { ok: true, detail: '' }
     const hint = classifyPushError(push.stderr)
-    const raw = summarize(push.stderr || push.stdout, 4)
+    const raw = this.git.summarize(push.stderr || push.stdout, 4)
     return { ok: false, detail: hint || raw || `退出码 ${push.code}` }
   }
 
   /** 测试连接:带 targetId 时只测那一个远端(界面上每个远端后面有自己的「测试连接」) */
-  private async testConnection(ctx: PluginContext, targetId?: string): Promise<PluginActionResult> {
-    const cfg = ctx.getConfig<GitSyncConfig>()
+  private async testConnection(targetId?: string): Promise<PluginActionResult> {
+    const cfg = this.imk.getConfig<GitSyncConfig>()
     const configured = (cfg.targets ?? []).filter(t => t.url.trim().length > 0)
     const targets = targetId ? configured.filter(t => t.id === targetId) : configured
     if (targets.length === 0) {
       return { ok: false, message: targetId ? '该远端已不存在（可能刚被删除）' : '尚未配置远端仓库' }
     }
-    if (!(await isGitAvailable())) return { ok: false, message: '未找到 git，请先安装 Git' }
-    const { vaultPath } = await getSettings()
+    if (!(await this.git.available())) return { ok: false, message: '未找到 git，请先安装 Git' }
+    const vaultPath = await this.imk.vault.path()
     const cwd = vaultPath && existsSync(vaultPath) ? vaultPath : process.cwd()
 
     // 先清掉上一次的详情,让状态卡只反映本次测试
-    ctx.setState({
+    this.imk.setState({
       status: 'running',
-      lastMessage: targets.length === 1 ? `${repoLabel(targets[0].url)}:正在测试连接…` : '正在测试连接…',
+      lastMessage:
+        targets.length === 1 ? `${repoLabel(targets[0].url)}:正在测试连接…` : '正在测试连接…',
       lastDetail: undefined
     })
 
@@ -510,9 +461,15 @@ class GitSyncPlugin implements MainPlugin {
     for (const target of targets) {
       const cred = await this.credentialFor(target)
       const branch = target.remoteBranch.trim() || target.localBranch.trim()
-      const r: GitResult = await runGit(
-        [...credentialArgs(cred?.pass ?? ''), 'ls-remote', '--heads', target.url.trim(), branch],
-        { cwd, timeoutMs: 30_000, env: credentialEnv(cred?.user ?? '', cred?.pass ?? '') }
+      const r = await this.git.run(
+        [
+          ...this.git.credentialArgs(cred?.pass ?? ''),
+          'ls-remote',
+          '--heads',
+          target.url.trim(),
+          branch
+        ],
+        { cwd, timeoutMs: 30_000, env: this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? '') }
       )
       const name = repoLabel(target.url)
       if (r.ok) {
@@ -520,11 +477,13 @@ class GitSyncPlugin implements MainPlugin {
         lines.push(`${name}:连接成功${found ? '' : `（远端还没有 ${branch} 分支，首次推送时创建）`}`)
       } else {
         allOk = false
-        lines.push(`${name}:${classifyPushError(r.stderr) || summarize(r.stderr || r.stdout, 3) || '连接失败'}`)
+        lines.push(
+          `${name}:${classifyPushError(r.stderr) || this.git.summarize(r.stderr || r.stdout, 3) || '连接失败'}`
+        )
       }
     }
     const message = allOk ? '连接测试通过' : '连接测试失败'
-    ctx.setState({
+    this.imk.setState({
       status: allOk ? 'ok' : 'error',
       lastRunAt: Date.now(),
       lastMessage: targets.length === 1 ? `${repoLabel(targets[0].url)}:${message}` : message,
@@ -534,4 +493,6 @@ class GitSyncPlugin implements MainPlugin {
   }
 }
 
-export const gitSyncPlugin = new GitSyncPlugin()
+// 返回类型显式写成 PluginRuntime:这样「生命周期方法签名写错了」在插件自己的
+// typecheck 里就会报错,而不是等装到应用里才发现回调根本没被调用。
+export = (imk: ImkApi): PluginRuntime => new GitSyncPlugin(imk)

@@ -6,12 +6,17 @@
   "private": true,
   "author": "Chuxiao Xiang <13439022108@163.com>",
   "scripts": {
+    "predev": "npm run plugins:build",
     "dev": "electron-vite dev",
+    "prebuild": "npm run plugins:build",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "plugins:build": "node scripts/build-plugins.mjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:plugins": "tsc --noEmit -p plugins-src/tsconfig.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:plugins",
+    "market": "node server/index.mjs",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win nsis",
     "dist:linux": "electron-vite build && electron-builder --linux"

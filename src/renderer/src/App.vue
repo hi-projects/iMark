@@ -39,6 +39,7 @@ import {
   requestVaultSwitch,
   toggleSwitcher
 } from './services/vaultService'
+import { openMarketSettings } from './services/pluginService'
 import { isInside } from './utils/paths'
 
 let offMenu: (() => void) | null = null
@@ -52,6 +53,10 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
     }
     if (id === 'view:settings') {
       openSettings()
+      return
+    }
+    if (id === 'view:market') {
+      openMarketSettings()
       return
     }
     if (id === 'file:open-vault') {
@@ -93,6 +98,9 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
       return
     case 'view:settings':
       openSettings()
+      return
+    case 'view:market':
+      openMarketSettings()
       return
     default: {
       const view = editorHolder.view

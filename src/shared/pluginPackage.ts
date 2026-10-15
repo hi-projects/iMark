@@ -1,0 +1,493 @@
+/**
+ * 插件包格式(单文件 JSON 信封)与清单校验。
+ *
+ * 为什么不用 zip:打包端与解包端都由我们掌握、包内没有大二进制资产、体积上限 8 MiB,
+ * zip 在这里买不到任何东西,却要引入依赖并重新引入 slip/symlink/权限位一整类攻击面。
+ *
+ * 信封把「元信息」与「内容」分开:
+ *   files: 路径 → { size, sha256 }        ← 被 integrity 覆盖
+ *   data:  路径 → base64 内容              ← 不被 integrity 直接覆盖
+ * 这看着像漏了一层,其实是刻意的:data 的完整性由 files 里逐文件的 sha256 保证,
+ * 而 files 又被 integrity 覆盖,所以 data 是被**传递覆盖**的。好处是 integrity 的
+ * 输入形状显式且极小,列表页/确认框只读元信息就能算校验值。
+ *
+ * 注意:integrity 是**包内防篡改**(挡住传输损坏与中间人改包),不是真实性证明 ——
+ * 真实性由市场发布的 sha256 与 HTTPS 承担。
+ *
+ * 本文件零运行时依赖(不引 node:crypto),因为渲染层也要 import 它做展示与校验提示;
+ * 真正算 sha256 的地方在主进程(market/verify.ts)。
+ */
+
+import type { PluginDescriptor, PluginField } from './plugins'
+
+export const PACKAGE_FORMAT = 'imk-plugin'
+export const PACKAGE_FORMAT_VERSION = 1
+
+/** 插件形态:script = 包内有 main.js 在主进程执行;declarative = 无代码,绑定内置能力 */
+export type PluginKind = 'script' | 'declarative'
+
+/**
+ * 权限词表。
+ *
+ * 只有 git / secrets 是**注入强制**的(没声明就拿不到 imk.git / imk.secrets);
+ * 其余是**声明性说明** —— 脚本插件本来就有完整 Node 能力,fs / net / shell 挡不住,
+ * 列出来是为了让安装者知道自己在同意什么。README 与安装对话框都要如实这么说。
+ */
+export type PluginPermission =
+  | 'git'
+  | 'secrets'
+  | 'vault:read'
+  | 'vault:write'
+  | 'network'
+  | 'shell'
+  | 'settings'
+
+export const PLUGIN_PERMISSIONS: PluginPermission[] = [
+  'git',
+  'secrets',
+  'vault:read',
+  'vault:write',
+  'network',
+  'shell',
+  'settings'
+]
+
+/** 权限的中文说明(安装确认框逐条展示,渲染层与主进程共用) */
+export const PERMISSION_INFO: Record<PluginPermission, { label: string; description: string }> = {
+  git: {
+    label: '调用 Git',
+    description: '通过宿主提供的接口执行 git 命令(推送、拉取、查看远端等)。'
+  },
+  secrets: {
+    label: '读取已保存的密钥',
+    description: '读取本插件自己名下的访问令牌 / 密码(只读,不能改写其他插件的密钥)。'
+  },
+  'vault:read': { label: '读取仓库文件', description: '读取当前仓库里的笔记与目录结构。' },
+  'vault:write': { label: '修改仓库文件', description: '在当前仓库里新建、修改或删除文件。' },
+  network: { label: '访问网络', description: '连接互联网,把数据发送到你配置的服务器。' },
+  shell: { label: '执行系统命令', description: '在你电脑上启动其他程序或命令。' },
+  settings: { label: '读取编辑器设置', description: '读取主题、仓库路径等编辑器设置。' }
+}
+
+export interface PluginManifestAction {
+  id: string
+  label: string
+}
+
+export interface PluginManifest {
+  id: string
+  name: string
+  description: string
+  version: string
+  author?: string
+  /** 只能是 https 地址(界面里经 shell.openExternal 打开) */
+  homepage?: string
+  kind: PluginKind
+  /** 仅 declarative:内置能力 id(见 main/plugins/capabilities.ts) */
+  capability?: string
+  /** 仅 script:入口文件名,必须是包内存在的 .js */
+  main?: string
+  permissions?: PluginPermission[]
+  /** 包内图标文件名(建议 svg/png,≤64 KiB) */
+  icon?: string
+  /** 兼容性声明,如 { imark: ">=0.1.0" } */
+  engines?: { imark?: string }
+  /**
+   * 配置字段表 —— 与内置插件**完全同构**(@shared/plugins 的 PluginField),
+   * 所以 normalizeConfig / secretKeysOf / 通用表单渲染全部零改动复用。
+   */
+  fields: PluginField[]
+  actions: PluginManifestAction[]
+  targetActions?: PluginManifestAction[]
+  targetFieldKey?: string
+}
+
+export interface PackageFileEntry {
+  encoding: 'base64'
+  size: number
+  sha256: string
+}
+
+/** 单文件插件包(磁盘上的 .imkpkg / 市场接口传的 JSON,都是这一坨) */
+export interface PluginPackageEnvelope {
+  format: typeof PACKAGE_FORMAT
+  formatVersion: typeof PACKAGE_FORMAT_VERSION
+  manifest: PluginManifest
+  /** 路径 → 元信息(被 integrity 覆盖) */
+  files: Record<string, PackageFileEntry>
+  /** 路径 → base64 内容(由 files 的 sha256 保证) */
+  data: Record<string, string>
+  /** sha256(integrityInput(manifest, files)) */
+  integrity: string
+}
+
+// ---------- 体积与格式上限 ----------
+
+export const LIMITS = {
+  /** 整包上限 */
+  envelopeBytes: 8 * 1024 * 1024,
+  /** 单个文件上限 */
+  fileBytes: 2 * 1024 * 1024,
+  mainBytes: 1024 * 1024,
+  readmeBytes: 256 * 1024,
+  iconBytes: 64 * 1024,
+  fileCount: 64,
+  pathLength: 128,
+  pathDepth: 3,
+  /**
+   * 源码查看器里单个文件最多显示多少字节。
+   * main.js 的上限是 1 MiB,一整个塞进 `<pre>` 会让界面卡住;超出的部分截断并明确标注。
+   */
+  sourceTextBytes: 200 * 1024
+} as const
+
+const ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+const FIELD_KEY_RE = /^[A-Za-z0-9_]{1,40}$/
+const ACTION_ID_RE = /^[a-z0-9-]{1,40}$/
+const SHA256_RE = /^[0-9a-f]{64}$/
+const FIELD_KINDS = ['text', 'password', 'number', 'boolean', 'select', 'targets']
+
+/** id 里出现 ':' 会让 secretKey() 的拼接跨插件串台,所以是**安全规则**而非格式洁癖 */
+const RESERVED_IDS = ['imk', 'market', 'system', 'core', 'node', 'electron']
+
+/** 允许出现在包里的文件扩展名 */
+const ALLOWED_EXT = ['js', 'mjs', 'cjs', 'json', 'md', 'txt', 'svg', 'png', 'css']
+
+/** 其中能当文本直接显示的(其余是二进制,源码查看器不往界面上送) */
+const TEXT_EXT = ['js', 'mjs', 'cjs', 'json', 'md', 'txt', 'css']
+
+/**
+ * 这个文件能不能当文本看。
+ * svg 虽然是文本,但它出现在源码查看器里只会是一坨标记,且图标有专门的显示位置,故不算。
+ */
+export function isTextFile(name: string): boolean {
+  const ext = (name.split('.').pop() ?? '').toLowerCase()
+  return TEXT_EXT.includes(ext)
+}
+
+export interface Validation<T> {
+  ok: boolean
+  errors: string[]
+  value?: T
+}
+
+function fail<T>(...errors: string[]): Validation<T> {
+  return { ok: false, errors }
+}
+
+export function isSafeRelPath(p: string): boolean {
+  if (typeof p !== 'string' || p.length === 0 || p.length > LIMITS.pathLength) return false
+  if (p.startsWith('/') || p.includes('\\') || p.includes('\0')) return false
+  const parts = p.split('/')
+  if (parts.length > LIMITS.pathDepth) return false
+  for (const seg of parts) {
+    if (seg === '' || seg === '.' || seg === '..') return false
+  }
+  const ext = (parts[parts.length - 1]!.split('.').pop() ?? '').toLowerCase()
+  return ALLOWED_EXT.includes(ext)
+}
+
+/** 版本比较:纯数字三段 + 可选预发布(预发布**低于**正式版),返回 -1 / 0 / 1 */
+export function compareVersions(a: string, b: string): number {
+  const parse = (v: string): { nums: number[]; pre: string | null } => {
+    const [core = '', pre = null] = v.split('-', 2) as [string, string | null]
+    const nums = core.split('.').map(n => Number.parseInt(n, 10) || 0)
+    return { nums, pre }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < 3; i++) {
+    const d = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0)
+    if (d !== 0) return d > 0 ? 1 : -1
+  }
+  if (pa.pre === pb.pre) return 0
+  if (pa.pre === null) return 1
+  if (pb.pre === null) return -1
+  return pa.pre > pb.pre ? 1 : -1
+}
+
+/** b 是否比 a 新(更新检查用) */
+export function isNewerVersion(b: string, a: string): boolean {
+  return compareVersions(b, a) > 0
+}
+
+/**
+ * 简易范围匹配:只支持 >=x.y.z / >x.y.z / ^x.y.z / x.y.z(够用即可,不引入 semver 依赖)。
+ * 无法解析时视为满足 —— 宁可让用户自己判断,也不要因为解析不了就把插件全判为不兼容。
+ */
+export function satisfiesRange(version: string, range: string | undefined): boolean {
+  if (!range) return true
+  const r = range.trim()
+  const m = /^(>=|>|\^)?\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(r)
+  if (!m) return true
+  const op = m[1] ?? '^'
+  const target = m[2]!
+  const cmp = compareVersions(version, target)
+  if (op === '>=') return cmp >= 0
+  if (op === '>') return cmp > 0
+  // ^:同一主版本号且不低于目标
+  const major = (v: string): number => Number.parseInt(v.split('.')[0] ?? '0', 10) || 0
+  return cmp >= 0 && major(version) === major(target)
+}
+
+/** integrity 的**唯一**输入形状。打包端与校验端都必须用这个函数,否则键序会不一致 */
+export function integrityInput(
+  manifest: PluginManifest,
+  files: Record<string, PackageFileEntry>
+): string {
+  const map: Record<string, string> = {}
+  for (const name of Object.keys(files).sort()) map[name] = files[name]!.sha256
+  return JSON.stringify({ manifest, files: map })
+}
+
+function validateFields(fields: unknown, errors: string[]): void {
+  if (!Array.isArray(fields)) {
+    errors.push('fields 必须是数组')
+    return
+  }
+  const seen = new Set<string>()
+  for (const [i, raw] of fields.entries()) {
+    if (!raw || typeof raw !== 'object') {
+      errors.push(`fields[${i}] 不是对象`)
+      continue
+    }
+    const f = raw as Partial<PluginField>
+    const where = `fields[${i}]`
+    if (typeof f.key !== 'string' || !FIELD_KEY_RE.test(f.key)) {
+      errors.push(`${where}.key 非法(只能是字母/数字/下划线,1-40 字符)`)
+    } else if (seen.has(f.key)) {
+      errors.push(`${where}.key 重复:${f.key}`)
+    } else {
+      seen.add(f.key)
+    }
+    if (typeof f.kind !== 'string' || !FIELD_KINDS.includes(f.kind)) {
+      errors.push(`${where}.kind 非法:${String(f.kind)}`)
+    }
+    if (typeof f.label !== 'string' || f.label.trim().length === 0) {
+      errors.push(`${where}.label 不能为空`)
+    }
+    if (f.kind === 'select' && (!Array.isArray(f.options) || f.options.length === 0)) {
+      errors.push(`${where} 是 select 但没有 options`)
+    }
+    if (f.showWhen && typeof f.showWhen.key !== 'string') {
+      errors.push(`${where}.showWhen.key 非法`)
+    }
+  }
+}
+
+export function validateActions(list: unknown, where: string, errors: string[]): void {
+  if (list === undefined) return
+  if (!Array.isArray(list)) {
+    errors.push(`${where} 必须是数组`)
+    return
+  }
+  const seen = new Set<string>()
+  for (const [i, raw] of list.entries()) {
+    const a = raw as { id?: unknown; label?: unknown }
+    if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !ACTION_ID_RE.test(a.id)) {
+      errors.push(`${where}[${i}].id 非法(小写字母/数字/连字符,1-40 字符)`)
+    } else if (seen.has(a.id)) {
+      errors.push(`${where}[${i}].id 重复:${a.id}`)
+    } else {
+      seen.add(a.id)
+    }
+    if (typeof a.label !== 'string' || a.label.trim().length === 0) {
+      errors.push(`${where}[${i}].label 不能为空`)
+    }
+  }
+}
+
+/** 校验清单(不含文件). 返回归一化后的清单 */
+export function validateManifest(raw: unknown): Validation<PluginManifest> {
+  const errors: string[] = []
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('manifest 必须是对象')
+  const m = raw as Partial<PluginManifest>
+
+  if (typeof m.id !== 'string' || !ID_RE.test(m.id)) {
+    errors.push("id 非法(小写字母开头,可含数字/./_/-,2-64 字符;**不能含 ':'**)")
+  } else if (RESERVED_IDS.includes(m.id)) {
+    errors.push(`id「${m.id}」是保留字`)
+  }
+  if (typeof m.name !== 'string' || m.name.trim().length === 0) errors.push('name 不能为空')
+  if (typeof m.description !== 'string') errors.push('description 必须是字符串')
+  if (typeof m.version !== 'string' || !VERSION_RE.test(m.version)) {
+    errors.push('version 非法(需形如 1.2.3 或 1.2.3-beta.1)')
+  }
+  if (m.kind !== 'script' && m.kind !== 'declarative') {
+    errors.push("kind 必须是 'script' 或 'declarative'")
+  }
+
+  const files = Array.isArray(m.fields) ? m.fields : []
+  const isTargetsField = files.some(
+    (f) => f && typeof f === 'object' && (f as PluginField).kind === 'targets'
+  )
+
+  if (m.kind === 'script') {
+    if (typeof m.main !== 'string' || !isSafeRelPath(m.main) || !/\.(c?js)$/.test(m.main)) {
+      errors.push('script 插件必须给出合法的 main(包内的 .js 文件)')
+    }
+    if (m.capability !== undefined) errors.push('script 插件不应声明 capability')
+  } else if (m.kind === 'declarative') {
+    if (m.main !== undefined) errors.push('declarative 插件不应有 main(声明式插件不含代码)')
+    if (typeof m.capability !== 'string' || m.capability.trim().length === 0) {
+      errors.push('declarative 插件必须声明 capability')
+    }
+  }
+
+  if (m.homepage !== undefined && !/^https:\/\//i.test(String(m.homepage))) {
+    errors.push('homepage 必须是 https 地址')
+  }
+  if (m.icon !== undefined && (typeof m.icon !== 'string' || !isSafeRelPath(m.icon))) {
+    errors.push('icon 必须是包内的合法相对路径')
+  }
+  if (m.permissions !== undefined) {
+    if (!Array.isArray(m.permissions)) {
+      errors.push('permissions 必须是数组')
+    } else {
+      for (const p of m.permissions) {
+        if (!PLUGIN_PERMISSIONS.includes(p as PluginPermission)) {
+          errors.push(`未知权限:${String(p)}`)
+        }
+      }
+    }
+  }
+  if (m.engines !== undefined && (typeof m.engines !== 'object' || Array.isArray(m.engines))) {
+    errors.push('engines 必须是对象')
+  }
+
+  validateFields(m.fields, errors)
+  validateActions(m.actions, 'actions', errors)
+  validateActions(m.targetActions, 'targetActions', errors)
+
+  if (m.targetActions !== undefined && m.targetActions.length > 0 && !isTargetsField) {
+    errors.push('声明了 targetActions 但没有任何 targets 字段')
+  }
+  if (m.targetFieldKey !== undefined && typeof m.targetFieldKey !== 'string') {
+    errors.push('targetFieldKey 必须是字符串')
+  }
+
+  if (errors.length > 0) return fail(...errors)
+  const value: PluginManifest = {
+    id: m.id as string,
+    name: m.name as string,
+    description: m.description as string,
+    version: m.version as string,
+    kind: m.kind as PluginKind,
+    fields: m.fields as PluginField[],
+    actions: (m.actions ?? []) as PluginManifestAction[],
+    ...(m.author !== undefined ? { author: m.author } : {}),
+    ...(m.homepage !== undefined ? { homepage: m.homepage } : {}),
+    ...(m.capability !== undefined ? { capability: m.capability } : {}),
+    ...(m.main !== undefined ? { main: m.main } : {}),
+    ...(m.permissions !== undefined ? { permissions: m.permissions } : {}),
+    ...(m.icon !== undefined ? { icon: m.icon } : {}),
+    ...(m.engines !== undefined ? { engines: m.engines } : {}),
+    ...(m.targetActions !== undefined ? { targetActions: m.targetActions } : {}),
+    ...(m.targetFieldKey !== undefined ? { targetFieldKey: m.targetFieldKey } : {})
+  }
+  return { ok: true, errors: [], value }
+}
+
+/**
+ * 校验信封**结构**(不校验内容哈希 —— 那需要 crypto,在主进程做)。
+ * 返回归一化后的信封。
+ */
+export function validateEnvelope(raw: unknown): Validation<PluginPackageEnvelope> {
+  const errors: string[] = []
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('插件包必须是 JSON 对象')
+  const e = raw as Partial<PluginPackageEnvelope>
+
+  if (e.format !== PACKAGE_FORMAT) errors.push(`format 必须是 "${PACKAGE_FORMAT}"`)
+  if (e.formatVersion !== PACKAGE_FORMAT_VERSION) {
+    errors.push(`formatVersion 必须是 ${PACKAGE_FORMAT_VERSION}`)
+  }
+
+  const manifestResult = validateManifest(e.manifest)
+  if (!manifestResult.ok || !manifestResult.value) {
+    errors.push(...manifestResult.errors.map((x) => `manifest:${x}`))
+  }
+
+  if (!e.files || typeof e.files !== 'object' || Array.isArray(e.files)) {
+    errors.push('files 必须是对象')
+  } else if (!e.data || typeof e.data !== 'object' || Array.isArray(e.data)) {
+    errors.push('data 必须是对象')
+  } else {
+    const names = Object.keys(e.files)
+    if (names.length === 0) errors.push('包内没有任何文件')
+    if (names.length > LIMITS.fileCount) errors.push(`文件数超过上限(${LIMITS.fileCount})`)
+    if (Object.keys(e.data).length !== names.length) {
+      errors.push('files 与 data 的文件数不一致')
+    }
+    for (const name of names) {
+      if (!isSafeRelPath(name)) {
+        errors.push(`非法文件路径:${name}`)
+        continue
+      }
+      const meta = e.files[name] as Partial<PackageFileEntry> | undefined
+      if (!meta || meta.encoding !== 'base64') {
+        errors.push(`${name}:encoding 必须是 base64`)
+        continue
+      }
+      if (typeof meta.size !== 'number' || meta.size <= 0) {
+        errors.push(`${name}:size 非法`)
+        continue
+      }
+      const limit = name === 'README.md' ? LIMITS.readmeBytes : LIMITS.fileBytes
+      if (meta.size > limit) errors.push(`${name}:文件过大(> ${limit} 字节)`)
+      if (typeof meta.sha256 !== 'string' || !SHA256_RE.test(meta.sha256)) {
+        errors.push(`${name}:sha256 非法`)
+      }
+      const content = e.data[name]
+      if (typeof content !== 'string' || content.length === 0) {
+        errors.push(`${name}:缺少内容`)
+      } else {
+        // base64 长度与 size 的换算:按 4 字符 3 字节,含 padding
+        const approx = Math.floor((content.replace(/=+$/, '').length * 3) / 4)
+        if (Math.abs(approx - meta.size) > 2) {
+          errors.push(`${name}:内容长度与声明的 size 不符`)
+        }
+      }
+    }
+
+    const manifest = manifestResult.value
+    if (manifest) {
+      if (manifest.kind === 'script') {
+        const main = manifest.main!
+        if (!names.includes(main)) errors.push(`main「${main}」不在包内`)
+        const mainMeta = e.files[main]
+        if (mainMeta && mainMeta.size > LIMITS.mainBytes) {
+          errors.push(`main 超过 ${LIMITS.mainBytes} 字节上限`)
+        }
+      }
+      if (manifest.icon && !names.includes(manifest.icon)) {
+        errors.push(`icon「${manifest.icon}」不在包内`)
+      }
+      for (const field of manifest.fields) {
+        // 字段表里的默认值必须是 JSON 可表达的,否则过 IPC 会炸
+        if (field.default === undefined) errors.push(`字段 ${field.key} 缺少 default`)
+      }
+    }
+  }
+
+  if (typeof e.integrity !== 'string' || !SHA256_RE.test(e.integrity)) {
+    errors.push('integrity 非法')
+  }
+
+  if (errors.length > 0) return fail(...errors)
+  return { ok: true, errors: [], value: raw as PluginPackageEnvelope }
+}
+
+/** 从清单装配宿主/渲染层用的 descriptor —— 插件代码**永远不参与**决定自己长什么样 */
+export function descriptorFromManifest(manifest: PluginManifest): PluginDescriptor {
+  return {
+    id: manifest.id,
+    name: manifest.name,
+    description: manifest.description,
+    version: manifest.version,
+    fields: manifest.fields,
+    actions: manifest.actions,
+    ...(manifest.targetActions ? { targetActions: manifest.targetActions } : {}),
+    ...(manifest.targetFieldKey ? { targetFieldKey: manifest.targetFieldKey } : {})
+  }
+}

@@ -12,7 +12,7 @@ import {
   toggleTheme
 } from '../stores/app'
 import { requestVaultSwitch } from '../services/vaultService'
-import { openPluginSettings, primaryPlugin, syncNow } from '../services/pluginService'
+import { gitSyncPlugin, openPluginSettings, syncNow } from '../services/pluginService'
 
 function openVaultSwitcher(): void {
   void requestVaultSwitch()
@@ -36,8 +36,12 @@ const themeTitle = computed(
 )
 const fileLabel = computed(() => `${appStore.fileName}${appStore.dirty ? ' ●' : ''}`)
 
-/** 定时上传插件的状态图标(未配置插件时不显示) */
-const syncPlugin = computed(() => primaryPlugin())
+/**
+ * 定时上传插件的状态图标。
+ * 按 id 找、而不是取列表里的第一个:插件现在可以任意装卸,列表首位是谁并不确定。
+ * 没装/已卸载时整颗按钮不显示 —— 这正是用户卸载了它之后应该看到的。
+ */
+const syncPlugin = computed(() => gitSyncPlugin())
 const syncTitle = computed(() => {
   const p = syncPlugin.value
   if (!p) return ''

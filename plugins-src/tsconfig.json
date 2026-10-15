@@ -1,0 +1,36 @@
+{
+  // 插件源码的独立 TS 工程。
+  //
+  // 刻意**不挂到根 tsconfig 的 references**:插件的产物是 userData 下的独立包,
+  // 不是应用 bundle 的一部分;而且插件会 emit(要 main.js),应用那两个工程是 noEmit,
+  // 混在一起会让 emit 落进源码树。
+  //
+  // rootDir 固定为仓库根,是为了让输出路径可预测:
+  //   plugins-src/git-sync/main.ts  →  plugins-src/dist/plugins-src/git-sync/main.js
+  // 同时把被依赖的 ../src/shared/*.ts 也一起编译(它们的产物我们直接忽略)。
+  // 之所以必须把 shared 纳进来,是因为插件 import 了 ImkApi / PluginTarget 这些类型;
+  // 它们全是 `import type`,编译后会被完全擦除,产物里不会有任何 require('@shared/…')。
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": "..",
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": false,
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../src/shared/*"]
+    }
+  },
+  "include": ["git-sync/**/*.ts"]
+}

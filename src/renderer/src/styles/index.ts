@@ -27,5 +27,6 @@ import './components/switcher.css'
 import './components/picker.css'
 import './components/settings.css'
 import './components/plugins.css'
+import './components/market.css'
 
 export { registerStyle, unregisterStyle, hasStyle, listStyles } from './registry'

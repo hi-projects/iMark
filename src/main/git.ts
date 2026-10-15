@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import type { ImkGitOptions, ImkGitResult } from '@shared/pluginApi'
 
 /**
  * 轻量 git 封装:只在主进程使用(渲染层 sandbox 拿不到 child_process)。
@@ -7,24 +8,17 @@ import { execFile } from 'node:child_process'
  * 1. 子进程一律 `GIT_TERMINAL_PROMPT=0` + `GCM_INTERACTIVE=never` —— 否则缺凭据时
  *    git 会弹凭据管理器/等输入,在 GUI 里表现为「同步卡死」;
  * 2. 任何要展示、记录或落盘的 git 输出,先过 `redactUrl()`,避免把带 token 的 URL 漏出去。
+ *
+ * 这个文件曾经只有一个 importer(内置的 git-sync 插件),现在它改成了外部插件、
+ * 只能通过 `imk.git.*` 来用 —— **别把它当成死代码删掉**:它正是那个 API 的实现
+ * (见 src/main/plugins/api.ts)。
  */
 
-export interface GitResult {
-  ok: boolean
-  code: number
-  stdout: string
-  stderr: string
-  /** 超时/中止 */
-  aborted: boolean
-}
+/** 结果形状的唯一权威定义在 shared/pluginApi.ts(插件也要看得到) */
+export type GitResult = ImkGitResult
 
-export interface GitOptions {
-  cwd: string
-  timeoutMs?: number
-  signal?: AbortSignal
-  /** 追加到子进程环境变量(凭据用,见 credentialArgs) */
-  env?: Record<string, string>
-}
+/** 选项形状的唯一权威定义在 shared/pluginApi.ts */
+export type GitOptions = ImkGitOptions
 
 const DEFAULT_TIMEOUT = 120_000
 const MAX_BUFFER = 4 * 1024 * 1024

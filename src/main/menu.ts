@@ -80,6 +80,7 @@ export function buildAppMenu(): void {
         fmt('大纲', 'view:toggle-outline', 'CmdOrCtrl+Shift+O'),
         fmt('循环切换主题', 'view:toggle-theme', 'CmdOrCtrl+J'),
         fmt('设置...', 'view:settings', 'CmdOrCtrl+,'),
+        fmt('插件市场', 'view:market', 'CmdOrCtrl+Shift+P'),
         { type: 'separator' },
         { label: '放大', role: 'zoomIn' },
         { label: '缩小', role: 'zoomOut' },

@@ -8,6 +8,12 @@
 
 export type PluginFieldKind = 'text' | 'password' | 'number' | 'boolean' | 'select' | 'targets'
 
+// 插件形态与权限词表定义在 pluginPackage.ts(它们本来就是清单的概念)。
+// 这里只做类型中转,方便渲染层从一处 import。
+import type { PluginKind, PluginPermission } from './pluginPackage'
+
+export type { PluginKind, PluginPermission }
+
 export interface PluginFieldOption {
   value: string
   label: string
@@ -82,6 +88,20 @@ export interface PluginDescriptor {
   targetFieldKey?: string
 }
 
+/** 插件来源:内置核心插件 / 市场安装 / 应用自带的兜底包 / 手动放进插件目录 */
+export type PluginSource = 'builtin' | 'market' | 'bundled' | 'local'
+
+/** 已安装插件的来源信息(持久化在 userData/plugins/installed.json) */
+export interface PluginInstallInfo {
+  version: string
+  installedAt: number
+  /** 整包 integrity(sha256),也是安装确认框里让用户比对的那个值 */
+  integrity: string
+  /** 发布者用户名(本机手动安装为 null) */
+  publisher: string | null
+  source: PluginSource
+}
+
 /** 主进程返回给渲染层的插件视图:含配置与状态,但**永远不含密钥明文** */
 export interface PluginView {
   descriptor: PluginDescriptor
@@ -92,6 +112,23 @@ export interface PluginView {
    */
   secrets: Record<string, string>
   state: PluginState
+  // ---------- 以下均为可选:内置核心插件不填,外部安装的插件才有 ----------
+  /** 'script' 会在主进程执行代码,'declarative' 不含代码 */
+  kind?: PluginKind
+  source?: PluginSource
+  permissions?: PluginPermission[]
+  installed?: PluginInstallInfo
+  /** 连续失败次数(宿主熔断计数,见 host.ts 的 safeCall) */
+  failures?: number
+  /** 已被宿主熔断:连续失败过多,需要用户在设置里显式重新启停才会再跑 */
+  disabledByHost?: boolean
+  /** 插件自己 log() 的最近若干行,设置界面用来排查第三方插件 */
+  logs?: string[]
+  /**
+   * **加载期**失败(如 main.js 抛异常)—— 这种插件连 descriptor 都不可信,
+   * 由宿主合成一个最小描述符并置此项,让它在设置界面里可见、可卸载。
+   */
+  loadError?: string
 }
 
 export interface PluginActionResult {

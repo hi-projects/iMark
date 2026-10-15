@@ -22,6 +22,18 @@ export interface Settings {
    * 密钥(token 等)不在这里,单独加密存于 userData/secrets.json。
    */
   plugins: Record<string, PluginConfigEntry>
+  /**
+   * 插件市场的服务地址。默认指向本机的自托管服务(仓库里的 server/)。
+   * 留空表示不使用市场 —— 浏览页会提示去设置里填地址,其余功能照常。
+   */
+  marketUrl: string
+  /** 启动后自动检查插件更新(只在窗口就绪后跑一次,失败静默) */
+  marketAutoCheck: boolean
+  /**
+   * 已经警告过「非回环地址用明文 http」的市场地址。
+   * 只警告一次是因为它是个一次性的知情提示,不是每次操作都该弹的确认框。
+   */
+  marketWarnedPlainHttp: string[]
 }
 
 export interface ReadResult {

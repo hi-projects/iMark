@@ -5,6 +5,26 @@ import { registerImarkProtocol } from './protocol'
 import { buildAppMenu } from './menu'
 import { loadSettings } from './settings'
 import { getPluginHost, initPluginHost } from './plugins/host'
+import { ensureBundledProvisioned } from './market/bundled'
+import { checkUpdates } from './market/updates'
+
+/**
+ * 启动后查一次插件更新。
+ *
+ * 三条自我约束,都是为了让这件事**不打扰人**:
+ *   - 延迟 8 秒:窗口刚出来时正在加载仓库、渲染首屏,别在这会儿抢网络与磁盘;
+ *   - 只跑**一次**:没有任何重试、没有定时器。更新检查失败是正常状态
+ *     (离线、市场没起、地址没配),下次开应用再说;
+ *   - 结果只存进内存供界面读取,不弹任何东西 —— 角标是唯一的提示方式。
+ */
+function scheduleUpdateCheck(enabled: boolean): void {
+  if (!enabled) return
+  const timer = setTimeout(() => {
+    void checkUpdates().catch(() => undefined)
+  }, 8000)
+  // 别让这个定时器把进程吊在退出前
+  timer.unref()
+}
 
 // 必须在 app.ready 之前注册特权协议
 // standard: true 保证 Windows 大小写敏感路径不被当作 host 小写化
@@ -32,10 +52,13 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc()
     registerImarkProtocol()
     const settings = await loadSettings()
-    // 插件宿主依赖 settings 与 safeStorage,必须在建窗之前就绪
-    await initPluginHost()
+    // 插件宿主依赖 settings 与 safeStorage,必须在建窗之前就绪。
+    // 第二个参数负责补装应用自带的兜底插件包(如「定时上传（Git）」)——
+    // 老用户升级上来时,它的配置与密钥都原封不动,只是从内置变成了一个正常安装的插件。
+    await initPluginHost(ensureBundledProvisioned)
     buildAppMenu()
     createMainWindow(settings)
+    scheduleUpdateCheck(settings.marketAutoCheck)
     if (!app.isPackaged) console.log('[iMark] 应用就绪,窗口已创建')
   })
 

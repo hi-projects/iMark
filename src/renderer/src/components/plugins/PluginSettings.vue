@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 // 类型名与组件名 PluginField 冲突,这里给类型起别名
 import {
   secretKey,
@@ -8,14 +8,45 @@ import {
   type PluginStatus,
   type PluginTarget
 } from '@shared/plugins'
+// 权限词表与中文说明定义在 pluginPackage(清单的概念),这里只取来展示
+import { PERMISSION_INFO } from '@shared/pluginPackage'
 import {
+  openMarketSettings,
   pluginStore,
   runPluginAction,
   savePlugin,
   setPluginSecret,
   settingsNav
 } from '../../services/pluginService'
+import { copyText, marketStore, sourceLabel } from '../../services/marketService'
 import PluginField from './PluginField.vue'
+
+
+/** 复制过 integrity 的插件 id(短暂显示「已复制」) */
+const copiedId = ref<string | null>(null)
+
+/** 只有外部安装的插件才有来源/权限/校验值;内置核心插件这几行整个不显示 */
+const hasMeta = computed(
+  () => Boolean(selected.value?.installed) || Boolean(selected.value?.permissions?.length)
+)
+
+async function copyIntegrity(): Promise<void> {
+  const p = selected.value
+  if (!p?.installed) return
+  if (!(await copyText(p.installed.integrity))) return
+  copiedId.value = p.descriptor.id
+  window.setTimeout(() => {
+    if (copiedId.value === p.descriptor.id) copiedId.value = null
+  }, 1500)
+}
+
+/**
+ * 插件自己 log() 出来的行。第三方插件出问题时这是唯一的现场,
+ * 所以默认展开最近 20 行、可折叠 —— 但**不**放进那个「运行状态」卡片里,
+ * 免得把一次运行的结果和一串历史日志混成一团。
+ */
+const logsOpen = ref(false)
+const recentLogs = computed(() => (selected.value?.logs ?? []).slice(-50))
 
 
 /** 选中哪个插件由左侧导航决定(settingsNav) */
@@ -122,6 +153,53 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
 
     <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
 
+    <!-- 外部安装的插件:来源、权限与校验值(内置插件不显示这一块) -->
+    <div v-if="hasMeta" class="plugin-meta">
+      <div class="plugin-meta-line">
+        <span class="plugin-chip">
+          {{ selected.kind === 'script' ? '含可执行代码' : '无代码(声明式)' }}
+        </span>
+        <span class="plugin-chip">{{ sourceLabel(selected.source, marketStore.bundled.includes(selected.descriptor.id)) }}</span>
+        <span v-if="selected.installed?.publisher" class="plugin-chip">
+          发布者 {{ selected.installed.publisher }}
+        </span>
+        <span v-if="selected.kind === 'script'" class="plugin-meta-warn">
+          此插件以完整权限运行,可读写你电脑上的任意文件
+        </span>
+      </div>
+      <div v-if="selected.installed" class="plugin-meta-line">
+        <span class="market-dim">安装于 {{ formatTime(selected.installed.installedAt) }}</span>
+        <button
+          class="plugin-chip plugin-chip-btn"
+          :title="selected.installed.integrity"
+          @click="copyIntegrity()"
+        >
+          {{ copiedId === selected.descriptor.id ? '已复制' : `sha256 ${selected.installed.integrity.slice(0, 12)}…` }}
+        </button>
+        <button class="plugin-link" @click="openMarketSettings('installed')">在市场里管理</button>
+      </div>
+      <div v-if="selected.permissions?.length" class="plugin-perm-bar">
+        <span class="market-dim">权限</span>
+        <!-- 只给一行小字做提示,完整的解释在安装确认框里 —— 那里才是要用户真正读进去的地方 -->
+        <span
+          v-for="perm in selected.permissions"
+          :key="perm"
+          class="plugin-chip"
+          :title="PERMISSION_INFO[perm]?.description ?? ''"
+        >
+          {{ PERMISSION_INFO[perm]?.label ?? perm }}
+        </span>
+      </div>
+    </div>
+
+    <!-- 被宿主熔断:这不是「偶发失败」,是插件已经被停下来了,必须说清楚怎么恢复 -->
+    <div v-if="selected.disabledByHost" class="plugin-status-card plugin-status-card-error">
+      <div class="plugin-status-line">
+        <b>已自动停用</b>
+        <span>这个插件连续失败多次,宿主已停止调用它。修好配置或重装后再手动开启。</span>
+      </div>
+    </div>
+
     <div class="plugin-status-card" :class="`plugin-status-card-${selected.state.status}`">
       <div class="plugin-status-line">
         <b>{{ STATUS_LABEL[selected.state.status] }}</b>
@@ -163,6 +241,14 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
           @clear-target-secret="targetId => saveSecret(field, targetId, null)"
         />
       </section>
+    </div>
+
+    <!-- 插件自己的日志(第三方插件出问题时唯一的现场) -->
+    <div v-if="recentLogs.length > 0" class="plugin-logs">
+      <button class="plugin-link" @click="logsOpen = !logsOpen">
+        {{ logsOpen ? '▾' : '▸' }} 插件日志(最近 {{ recentLogs.length }} 行)
+      </button>
+      <pre v-if="logsOpen" class="plugin-logs-body">{{ recentLogs.join('\n') }}</pre>
     </div>
   </div>
 </template>

@@ -7,3 +7,7 @@ dist/
 
 # 本地验证用的临时 profile
 .verify-ud/
+
+# 市场服务端的本地数据(npm run market 的默认目录):
+# 里面有账号口令哈希、令牌哈希与已发布的插件包 —— 永远是本机数据,不进仓库
+server/data/

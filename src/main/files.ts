@@ -11,8 +11,8 @@ export async function readFileContent(path: string): Promise<ReadResult> {
   return { content: raw.replace(/\r\n/g, '\n'), eol }
 }
 
-/** 原子写:先写临时文件再 rename,失败时清理临时文件 */
-export async function writeFileAtomic(path: string, content: string): Promise<void> {
+/** 原子写:先写临时文件再 rename,失败时清理临时文件(二进制内容直接传 Uint8Array) */
+export async function writeFileAtomic(path: string, content: string | Uint8Array): Promise<void> {
   const tmp = `${path}.imark-tmp`
   try {
     await fsWrite(tmp, content, 'utf8')

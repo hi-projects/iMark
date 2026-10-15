@@ -1,0 +1,102 @@
+{
+  "id": "git-sync",
+  "name": "定时上传（Git）",
+  "description": "按固定间隔把当前仓库提交并推送到 GitLab / Gitee 等 Git 远端，支持多个远端。",
+  "version": "0.2.0",
+  "author": "iMark 官方",
+  "kind": "script",
+  "main": "main.js",
+  "permissions": ["git", "secrets", "vault:read", "vault:write"],
+  "engines": { "imark": ">=0.1.0" },
+  "fields": [
+    {
+      "key": "targets",
+      "kind": "targets",
+      "label": "远端仓库",
+      "default": [],
+      "description": "每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub / GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，插件也不改动你仓库的 remote 设置。",
+      "targetSecret": { "label": "访问令牌", "placeholder": "必填（私有仓库需要访问令牌）" }
+    },
+    {
+      "key": "intervalMinutes",
+      "section": "同步设置",
+      "kind": "number",
+      "label": "自动同步间隔（分钟）",
+      "default": 10,
+      "min": 0,
+      "max": 1440,
+      "description": "0 表示关闭自动同步，只保留手动「立即上传」。"
+    },
+    {
+      "key": "syncOnStart",
+      "section": "同步设置",
+      "kind": "boolean",
+      "label": "启动后同步一次",
+      "default": true,
+      "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补上。"
+    },
+    {
+      "key": "commitMessage",
+      "section": "同步信息设置",
+      "kind": "text",
+      "label": "提交信息模板",
+      "default": "sync: {time}",
+      "placeholder": "sync: {time}",
+      "description": "可用占位符:{time}（本地时间）。"
+    },
+    {
+      "key": "authorName",
+      "section": "同步信息设置",
+      "kind": "text",
+      "label": "提交作者名",
+      "default": "iMark",
+      "description": "仅当仓库未配置 git user.name 时使用。"
+    },
+    {
+      "key": "authorEmail",
+      "section": "同步信息设置",
+      "kind": "text",
+      "label": "提交作者邮箱",
+      "default": "imark@local",
+      "description": "仅当仓库未配置 git user.email 时使用。"
+    },
+    {
+      "key": "autoInitRepo",
+      "section": "本地仓库自动初始化",
+      "kind": "boolean",
+      "label": "自动初始化仓库",
+      "default": true,
+      "description": "仓库还不是 git 仓库时自动执行 git init。"
+    },
+    {
+      "key": "initBranch",
+      "section": "本地仓库自动初始化",
+      "showWhen": { "key": "autoInitRepo", "value": true },
+      "kind": "text",
+      "label": "自动创建的分支名",
+      "default": "main",
+      "description": "初始化仓库时创建的分支名（git init -b）。建议与上面各远端的「本地分支」保持一致，否则推送时会找不到分支。"
+    },
+    {
+      "key": "writeGitignore",
+      "section": "本地仓库自动初始化",
+      "showWhen": { "key": "autoInitRepo", "value": true },
+      "kind": "boolean",
+      "label": "初始化时创建 .gitignore",
+      "default": true,
+      "description": "仅新建仓库时写入推荐忽略项；已有仓库、或已存在 .gitignore 时都不会改动。"
+    },
+    {
+      "key": "writeReadme",
+      "section": "本地仓库自动初始化",
+      "showWhen": { "key": "autoInitRepo", "value": true },
+      "kind": "boolean",
+      "label": "初始化时创建 README.md",
+      "default": false,
+      "description": "仅新建仓库时创建一个 README.md（标题取仓库文件夹名）；已存在则不覆盖。"
+    }
+  ],
+  "actions": [{ "id": "sync-now", "label": "立即上传" }],
+  "targetActions": [{ "id": "test-connection", "label": "测试连接" }],
+  "targetFieldKey": "targets"
+}

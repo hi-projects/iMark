@@ -126,6 +126,29 @@ export async function setSecret(key: string, value: string | null): Promise<void
   hintCache.delete(key)
 }
 
+/**
+ * 删除某个插件名下的全部密钥(卸载时用)。
+ *
+ * 用前缀删除而不是逐个 key:插件可能改过认证方式,留下 `<id>:<field>:<target>#password`
+ * 这类当前配置里已不存在的槽位,按配置推算的 key 列表会漏掉它们。
+ *
+ * 必须逐个 `hintCache.delete()`:这个缓存是「掩码」的缓存,不清的话下一次状态广播
+ * 会把已经删掉的密钥的旧掩码又显示出来。
+ */
+export async function deleteSecretsByPrefix(prefix: string): Promise<number> {
+  const file = await load()
+  const entries = { ...file.entries }
+  let removed = 0
+  for (const key of Object.keys(entries)) {
+    if (!key.startsWith(prefix)) continue
+    delete entries[key]
+    hintCache.delete(key)
+    removed += 1
+  }
+  if (removed > 0) await persist({ version: 1, entries })
+  return removed
+}
+
 /** 批量查询「是否已配置」,供 PluginView.secrets 使用 */
 export async function hasSecrets(keys: string[]): Promise<Record<string, boolean>> {
   const file = await load()
