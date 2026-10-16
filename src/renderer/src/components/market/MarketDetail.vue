@@ -226,7 +226,7 @@ onMounted(() => {
         </p>
       </section>
 
-      <p v-if="detail.kind === 'script'" class="market-alert market-alert-danger">
+      <div v-if="detail.kind === 'script'" class="market-alert market-alert-danger">
         <AlertTriangle :size="14" />
         <div>
           <b>这是一个会在主进程里执行的插件。</b>
@@ -236,8 +236,8 @@ onMounted(() => {
             sha256 是用来帮你做判断的,它们<b>不构成沙箱</b>。
           </p>
         </div>
-      </p>
-      <p v-else class="market-alert market-alert-safe">
+      </div>
+      <div v-else class="market-alert market-alert-safe">
         <FileCode2 :size="14" />
         <div>
           <b>这个插件不含代码。</b>
@@ -253,7 +253,7 @@ onMounted(() => {
             }}</span>),当前版本装不上它 —— 安装时会明确报错。
           </p>
         </div>
-      </p>
+      </div>
     </template>
   </div>
 </template>

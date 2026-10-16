@@ -18,6 +18,13 @@ export interface Settings {
   /** 启动时跳过仓库选择界面,直接打开上次仓库 */
   skipVaultPicker: boolean
   /**
+   * 当前生效的自定义样式文件名(`~/.imark/css` 下的某一个);null = 不使用自定义样式。
+   *
+   * 只存名字,不存内容 —— 内容永远以磁盘上的那份为准。文件被删掉时这里不会自动清空,
+   * 而是「什么都不生效」;把同名文件放回来,它就又生效了。
+   */
+  userStyle: string | null
+  /**
    * 插件配置:插件 id → { 是否启用, 非密配置 }。
    * 密钥(token 等)不在这里,单独加密存于 userData/secrets.json。
    */

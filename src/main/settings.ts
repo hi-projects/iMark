@@ -11,6 +11,8 @@ const DEFAULTS: Settings = {
   lastFile: null,
   vaults: [],
   skipVaultPicker: false,
+  // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
+  userStyle: null,
   plugins: {},
   // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
   marketUrl: 'http://127.0.0.1:8787',

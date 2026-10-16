@@ -393,6 +393,9 @@
 .market-alert {
   display: flex;
   gap: 9px;
+  /* 外层标签用 div 而不是 p(<p> 里塞 <div> 是非法嵌套,Vue 编译器会报),
+     所以原先 <p> 的 UA 默认 margin 得在这里补回来,否则告警条会紧贴上下邻居 */
+  margin: 12px 0;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;

@@ -35,6 +35,13 @@ export function basename(p: string): string {
   return p.replace(/^.*[\\/]/, '')
 }
 
+/** 文件大小的人类可读写法(市场包、自定义样式文件都用它) */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
+  return `${(n / 1024 / 1024).toFixed(2)} MiB`
+}
+
 export function stripMarkdownExt(name: string): string {
   return name.replace(/\.(md|markdown|mdown|txt)$/i, '')
 }

@@ -2,9 +2,13 @@ import { app, BrowserWindow, dialog, shell } from 'electron'
 import { join } from 'node:path'
 import { IPC } from '@shared/ipc-channels'
 import type { Settings, Theme } from '@shared/types'
+import iconPath from '../../build/icon.png?asset'
 
 /** 各主题的窗口底色,用于首帧(渲染完成前)避免白闪 */
 const WINDOW_BG: Record<Theme, string> = { light: '#ffffff', dark: '#0d1117', black: '#000000' }
+
+/** 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸 */
+const PICKER_SIZE = { width: 820, height: 550 }
 
 let mainWindow: BrowserWindow | null = null
 let dirty = false
@@ -19,13 +23,19 @@ export function getMainWindow(): BrowserWindow | null {
 }
 
 export function createMainWindow(settings: Settings): BrowserWindow {
+  // 勾了「启动时直接打开上次仓库」就直接最大化开窗,免得先小后大地闪一下
+  // (渲染层的视图切换发生在建窗之后)
+  const startAtPicker = !(settings.skipVaultPicker && settings.vaultPath)
   mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 720,
+    width: PICKER_SIZE.width,
+    height: PICKER_SIZE.height,
     minWidth: 620,
     minHeight: 400,
     show: false,
     title: 'iMark',
+    // 窗口与任务栏图标。不设的话 Windows 会退回 exe 自带的图标,
+    // 而 dev 下 exe 是 node_modules 里的 electron,于是显示 Electron 默认的原子图标。
+    icon: iconPath,
     // 按主题预设背景色,避免启动白闪
     backgroundColor: WINDOW_BG[settings.theme] ?? WINDOW_BG.light,
     webPreferences: {
@@ -41,6 +51,9 @@ export function createMainWindow(settings: Settings): BrowserWindow {
   // 只是不占窗口高度;非 auto-hide 模式,按 Alt 也不会再把它唤回来。
   // 注意别改成 Menu.setApplicationMenu(null) —— 那样菜单加速键会一并失效。
   mainWindow.setMenuBarVisibility(false)
+
+  // show 之前就最大化,避免窗口先以小尺寸露一下
+  if (!startAtPicker) mainWindow.maximize()
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -102,9 +115,34 @@ export function setDocDirty(value: boolean): void {
   dirty = value
 }
 
-export function setWindowTitle(name: string, isDirty: boolean, vaultName?: string | null): void {
-  currentFileName = name
+/**
+ * 跟随视图切换窗口状态:仓库选择页是启动尺寸,打开仓库后最大化。
+ *
+ * 取消最大化时 Windows 会还原到最大化之前的尺寸,也就是建窗时的 PICKER_SIZE,
+ * 所以不需要在这里显式设回尺寸。
+ */
+export function setWindowView(view: 'picker' | 'editor'): void {
+  if (!mainWindow) return
+  if (view === 'editor') {
+    if (!mainWindow.isMaximized()) mainWindow.maximize()
+  } else if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize()
+  }
+}
+
+/**
+ * name 传 null 表示当前没有文档上下文(仓库选择页),标题只留应用名。
+ *
+ * 注意别用「vaultName 为空」来代替这个判断 —— 从编辑器退回选择页时
+ * (requestVaultSwitch)仓库名仍然是设着的,那样会漏掉。
+ */
+export function setWindowTitle(name: string | null, isDirty: boolean, vaultName?: string | null): void {
   currentVaultName = vaultName ?? null
+  if (name === null) {
+    mainWindow?.setTitle('iMark')
+    return
+  }
+  currentFileName = name
   const parts = [`${isDirty ? '● ' : ''}${name}`]
   if (currentVaultName) parts.push(currentVaultName)
   parts.push('iMark')

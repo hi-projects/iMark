@@ -14,6 +14,7 @@ import type {
 } from './market'
 import type { PluginActionResult, PluginView } from './plugins'
 import type { ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
+import type { UserStyleImportResult, UserStyleState } from './userStyles'
 
 /** preload 通过 contextBridge 暴露到 window.api 的接口 */
 export interface WindowApi {
@@ -25,7 +26,10 @@ export interface WindowApi {
   getSettings(): Promise<Settings>
   saveSettings(s: Partial<Settings>): Promise<Settings>
   openExternal(url: string): Promise<void>
-  setWindowTitle(name: string, dirty: boolean, vaultName?: string | null): void
+  /** name 传 null 表示没有文档上下文(仓库选择页),标题只显示应用名 */
+  setWindowTitle(name: string | null, dirty: boolean, vaultName?: string | null): void
+  /** 让主进程跟着视图调窗口状态:选择页是启动尺寸,编辑器最大化 */
+  setWindowView(view: 'picker' | 'editor'): void
   setDocDirty(dirty: boolean): void
   notifySaveDone(ok: boolean): void
   /** 必须在 preload 同步调用 webUtils.getPathForFile,主世界无法直接访问 */
@@ -111,4 +115,21 @@ export interface WindowApi {
    * version 为 null 表示最新非下架版本;包里的二进制文件不会出现在结果里。
    */
   marketSource(id: string, version: string | null): Promise<MarketSource>
+
+  // ---------- 自定义样式(~/.imark/css) ----------
+  /** 读样式目录里的全部 .css(含内容)。**永不 reject**:坏文件在返回值里逐条标出 */
+  listUserStyles(): Promise<UserStyleState>
+  /**
+   * 在文件管理器里打开样式目录(不存在则先创建)。
+   * 「当前生效的是哪个」不在这里 —— 它是设置项,走 `saveSettings({ userStyle })`。
+   */
+  openUserStylesDir(): Promise<void>
+  /** 挑一个 .css 复制进样式目录;用户取消返回 null。内容重复的不复制,只在 outcome 里报出来 */
+  importUserStyle(): Promise<UserStyleImportResult | null>
+  /** 挑一个文件夹,把它顶层的 .css 全部复制进来;用户取消返回 null */
+  importUserStylesFromDir(): Promise<UserStyleImportResult | null>
+  /** 把一个样式文件移到回收站;返回最新清单 */
+  removeUserStyle(name: string): Promise<UserStyleState>
+  /** 目录内容变化时主进程推来的整份清单(渲染层自己与已注入的做 diff) */
+  onUserStylesChanged(cb: (state: UserStyleState) => void): () => void
 }

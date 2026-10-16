@@ -20,6 +20,27 @@ export async function showSaveFileDialog(win: BrowserWindow, o: SaveDialogOption
   return r.canceled || !r.filePath ? null : r.filePath
 }
 
+/**
+ * 挑一个样式文件导入。过滤器里保留「所有文件」:有些用户把 CSS 存成 .txt,
+ * 让他自己判断比拦在门外强 —— 反正内容读进来是什么就是什么。
+ */
+export async function showOpenCssDialog(win: BrowserWindow): Promise<string | null> {
+  const r = await dialog.showOpenDialog(win, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'CSS', extensions: ['css'] },
+      { name: '所有文件', extensions: ['*'] }
+    ]
+  })
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+}
+
+/** 挑一个文件夹,把里面顶层的 .css 全部导进来 */
+export async function showOpenCssDirDialog(win: BrowserWindow): Promise<string | null> {
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+}
+
 export function showConfirmDiscard(win: BrowserWindow, fileName: string): 'save' | 'discard' | 'cancel' {
   const choice = dialog.showMessageBoxSync(win, {
     type: 'warning',

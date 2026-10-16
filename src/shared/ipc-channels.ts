@@ -9,6 +9,7 @@ export const IPC = {
   SettingsSet: 'settings:set',
   OpenExternal: 'shell:open-external',
   SetTitle: 'window:set-title',
+  SetView: 'window:set-view',
   DocDirty: 'doc:dirty',
   MenuCommand: 'menu:command',
   SaveBeforeClose: 'app:save-before-close',
@@ -70,7 +71,21 @@ export const IPC = {
   /** 检查已安装插件有没有新版本 */
   MarketCheckUpdates: 'market:check-updates',
   /** 读某个版本包里的文本文件(装之前先看源码) */
-  MarketSource: 'market:source'
+  MarketSource: 'market:source',
+
+  // ---------- 自定义样式(~/.imark/css) ----------
+  /** 读样式目录里的全部 .css(含内容) */
+  UserStylesList: 'userstyle:list',
+  /** 在文件管理器里打开样式目录(不存在则先创建) */
+  UserStylesOpenDir: 'userstyle:open-dir',
+  /** 挑一个 .css 复制进样式目录 → 返回做了什么 + 最新清单(用户取消返回 null) */
+  UserStylesImport: 'userstyle:import',
+  /** 挑一个文件夹,把它顶层的 .css 全部复制进来 → 同上 */
+  UserStylesImportDir: 'userstyle:import-dir',
+  /** 把一个样式文件移到回收站 → 返回最新清单 */
+  UserStylesRemove: 'userstyle:remove',
+  /** 主→渲染:目录内容变化时广播整份清单(渲染层自己 diff) */
+  UserStylesChanged: 'userstyle:changed'
 } as const
 
 /** 原生菜单点击后转发给渲染层的命令 ID */

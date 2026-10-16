@@ -1,0 +1,187 @@
+/* ---------- 自定义样式(设置 → 外观) ----------
+ *
+ * 按钮借用 plugins.css 的 .plugin-btn / .plugin-icon-btn(那套早已是全应用通用的),
+ * 这里只放样式文件列表与说明折叠区自己的部分。 */
+
+/* 按钮行:两个按钮 + 重新读取图标 + 右对齐的目录路径 */
+.userstyle-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+/* 目录路径本身就是「打开文件夹」的入口,所以它是个按钮 —— 但长得像一行路径 */
+.userstyle-dir {
+  margin-left: auto;
+  overflow: hidden;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.userstyle-dir:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-secondary);
+}
+
+/* 「重新读取」是中性操作,不该跟着 .plugin-icon-btn 的 hover 变红(红是删东西的颜色) */
+.userstyle-refresh:hover {
+  color: var(--accent);
+}
+
+/* 一次性提示与错误横幅(单个文件的问题在列表行上,不占这里)。
+   默认是中性样式:不是错误的东西不该长得像错误 —— 「导入了一份重复的样式」
+   不值得一条红框,但也不能一声不吭 */
+.userstyle-notice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.userstyle-notice-bad {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.userstyle-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.userstyle-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.userstyle-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+/* 正在生效的那一行。圆点才是主要指示,这里只是让它在一列里更容易被扫到 */
+.userstyle-item-active {
+  color: var(--text-primary);
+  background: var(--bg-toolbar-btn-hover);
+}
+
+/* 读不动的行不能选,也就别给出「能点」的手型 */
+.userstyle-item:has(.userstyle-radio:disabled) {
+  cursor: default;
+}
+
+.userstyle-radio {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+
+/* 「不使用自定义样式」那一行没有图标,颜色也压一档,免得和真文件混在一起 */
+.userstyle-item-dim {
+  color: var(--text-tertiary);
+}
+
+/* 读失败的行左侧一道红边。用 inset 阴影而不是 border-left,免得整行往右挪 2px */
+.userstyle-item-bad {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+
+.userstyle-item-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.userstyle-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userstyle-item-error {
+  flex: 0 0 auto;
+  color: var(--danger);
+}
+
+/* 大小与删除按钮一起推到右边 */
+.userstyle-item-size {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+/* ---------- 「可以改哪些东西?」折叠区 ---------- */
+
+.userstyle-help {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-app);
+}
+
+.userstyle-help > summary {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.userstyle-help-body {
+  padding-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.userstyle-help-body p {
+  margin: 0 0 8px;
+}
+
+.userstyle-help-body p:last-child {
+  margin-bottom: 0;
+}
+
+.userstyle-help-list {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.userstyle-help-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-code);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  white-space: nowrap;
+}
+
+/* 注意事项单独一段:上面是「能写什么」,这里是「为什么没生效」 */
+.userstyle-help-warn {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+}

@@ -109,11 +109,26 @@ export function initStoreWatchers(): void {
     }
   )
   watch(
-    () => [appStore.fileName, appStore.dirty, appStore.vaultName] as const,
+    () => [appStore.view, appStore.fileName, appStore.dirty, appStore.vaultName] as const,
     () => {
-      window.api.setWindowTitle(appStore.fileName, appStore.dirty, appStore.vaultName)
+      // 仓库选择页没有文档上下文,标题只留应用名(传 null 而不是「未命名」)
+      const atPicker = appStore.view === 'picker'
+      window.api.setWindowTitle(
+        atPicker ? null : appStore.fileName,
+        appStore.dirty,
+        appStore.vaultName
+      )
     },
     { immediate: true }
+  )
+  // 窗口状态跟着视图走:选择页是启动尺寸,打开仓库后最大化。
+  // 不要 immediate —— 主进程建窗时已按启动时的视图定好状态,这里只管之后的切换;
+  // 否则「启动即恢复上次仓库」时视图会先以 picker 触发一次,把最大化的窗口还原掉。
+  watch(
+    () => appStore.view,
+    view => {
+      window.api.setWindowView(view)
+    }
   )
 }
 

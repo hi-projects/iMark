@@ -1,0 +1,59 @@
+/* iMark 自定义样式
+ * ============================================================
+ * 这个文件夹里的 .css 会列在「设置 → 外观 → 自定义样式」里,**同一时刻只有一个生效**,
+ * 在那里点一行切换。选中的那份改完保存即刻生效,不用重启。
+ * 想让两套样式一起用,把它们写进同一个文件 —— 叠加不靠多文件。
+ *
+ * 配色请用下面的主题变量,亮色 / 暗色 / 纯黑三档会自动跟随,不必每个主题写一份:
+ *   --accent       强调色(链接、光标、选中)
+ *   --text-primary   --text-secondary   --text-tertiary
+ *   --border         --bg-editor        --bg-selection
+ *   --bg-code        --bg-codeblock     --shadow
+ *   --font-editor    --font-mono
+ *
+ * 可用的类名(对应编辑器里的 Markdown 节点):
+ *   .cm-md-h1 ~ .cm-md-h6   标题 1-6
+ *   .cm-md-strong  .cm-md-em  .cm-md-strike
+ *   .cm-md-inlinecode  .cm-md-code  .cm-md-codeinfo
+ *   .cm-md-link  .cm-md-url   链接文字 / 链接地址
+ *   .cm-md-quote  .cm-md-listmark  .cm-md-headermark
+ *   .cm-md-table   表格(整张表对齐写 text-align)
+ *   .cm-md-math  .cm-md-math-display   公式
+ *   .cm-md-checkbox  .cm-md-hr  .cm-md-image img
+ *
+ * 几条要知道的:
+ *   - 样式作用于**整个界面**,不只是编辑器。只想改编辑器,就带上 .cm-md-* 这类
+ *     编辑器专属的选择器,或者从 .cm-editor 往下写。
+ *   - 写错的规则会被浏览器直接丢掉(不报错)。改完没变化,多半是选择器写错了,
+ *     或者文件没保存。
+ *   - .cm-cursor / .cm-scroller / .cm-content / .cm-line 的某些属性由 CodeMirror
+ *     的基础主题写死,普通写法盖不住,得加 !important。
+ *   - 只影响编辑器里的显示,导出的 HTML 不受影响。
+ *   - 图片只能用三种地址:data: / https: / imark://(本地文件)。相对路径不工作,
+ *     下面有一行可以照抄的写法。
+ *   - 表格默认用等宽字体来对齐列,换成比例字体会让列不再齐。
+ *
+ * 下面每一条都注释掉了,去掉注释即可生效。
+ */
+
+/* 整张表居中(想靠左就把 center 改回 left) */
+/* .cm-md-table { text-align: center; } */
+
+/* 加粗用强调色 */
+/* .cm-md-strong { color: var(--accent); } */
+
+/* 一级标题加一条下划线 */
+/* .cm-md-h1 { border-bottom: 1px solid var(--border); padding-bottom: 4px; } */
+
+/* 行内代码不要底色,只留等宽字体 */
+/* .cm-md-inlinecode { background: transparent; padding: 0; } */
+
+/* 引用块换成更粗的竖线 */
+/* .cm-md-quote { border-left: 4px solid var(--accent); } */
+
+/* 用本地图片当编辑器背景。路径要转义:反斜杠写成 %5C,冒号写成 %3A
+   (C:\Users\me\bg.png → C%3A%5CUsers%5Cme%5Cbg.png) —— 相对路径是不工作的 */
+/* .cm-editor { background-image: url("imark://img/C%3A%5CUsers%5Cme%5Cbg.png"); } */
+
+/* 改基础主题写死的属性必须加 !important(比如光标颜色) */
+/* .cm-cursor { border-left-color: var(--danger) !important; } */

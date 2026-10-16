@@ -3,6 +3,7 @@ import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
 import type { PluginView } from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
+import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_e: unknown, payload: T): void => cb(payload)
@@ -20,8 +21,9 @@ const api = {
   getSettings: (): Promise<Settings> => ipcRenderer.invoke(IPC.SettingsGet),
   saveSettings: (s: Partial<Settings>): Promise<Settings> => ipcRenderer.invoke(IPC.SettingsSet, s),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.OpenExternal, url),
-  setWindowTitle: (name: string, dirty: boolean, vaultName?: string | null): void =>
+  setWindowTitle: (name: string | null, dirty: boolean, vaultName?: string | null): void =>
     ipcRenderer.send(IPC.SetTitle, { name, dirty, vaultName }),
+  setWindowView: (view: 'picker' | 'editor'): void => ipcRenderer.send(IPC.SetView, view),
   setDocDirty: (dirty: boolean): void => ipcRenderer.send(IPC.DocDirty, dirty),
   notifySaveDone: (ok: boolean): void => ipcRenderer.send(IPC.SaveDone, { ok }),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
@@ -82,7 +84,18 @@ const api = {
   publishToMarket: (dir: string) => ipcRenderer.invoke(IPC.MarketPublish, dir),
   checkMarketUpdates: (force?: boolean) => ipcRenderer.invoke(IPC.MarketCheckUpdates, force),
   marketSource: (id: string, version: string | null): Promise<MarketSource> =>
-    ipcRenderer.invoke(IPC.MarketSource, id, version)
+    ipcRenderer.invoke(IPC.MarketSource, id, version),
+  // ---------- 自定义样式 ----------
+  listUserStyles: (): Promise<UserStyleState> => ipcRenderer.invoke(IPC.UserStylesList),
+  openUserStylesDir: (): Promise<void> => ipcRenderer.invoke(IPC.UserStylesOpenDir),
+  importUserStyle: (): Promise<UserStyleImportResult | null> =>
+    ipcRenderer.invoke(IPC.UserStylesImport),
+  importUserStylesFromDir: (): Promise<UserStyleImportResult | null> =>
+    ipcRenderer.invoke(IPC.UserStylesImportDir),
+  removeUserStyle: (name: string): Promise<UserStyleState> =>
+    ipcRenderer.invoke(IPC.UserStylesRemove, name),
+  onUserStylesChanged: (cb: (state: UserStyleState) => void): (() => void) =>
+    subscribe<UserStyleState>(IPC.UserStylesChanged, cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

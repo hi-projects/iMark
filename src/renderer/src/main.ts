@@ -4,6 +4,7 @@ import App from './App.vue'
 import './styles'
 import { initPluginService } from './services/pluginService'
 import { initMarketService } from './services/marketService'
+import { initUserStyleService } from './services/userStyleService'
 
 createApp(App).mount('#app')
 
@@ -11,3 +12,5 @@ createApp(App).mount('#app')
 initPluginService()
 // 市场进度播报(安装/下载);没有在安装时它只是挂着,不产生任何流量
 initMarketService()
+// 自定义样式(~/.imark/css):目录一变就重新注入,与设置面板开没开无关
+initUserStyleService()

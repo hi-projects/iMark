@@ -492,12 +492,6 @@ export function sourceLabel(source: string | undefined, bundled: boolean): strin
   }
 }
 
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
-  return `${(n / 1024 / 1024).toFixed(2)} MiB`
-}
-
 export function formatTime(ts: number | undefined): string {
   if (!ts) return '—'
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })

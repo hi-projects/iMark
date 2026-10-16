@@ -7,6 +7,7 @@ import { loadSettings } from './settings'
 import { getPluginHost, initPluginHost } from './plugins/host'
 import { ensureBundledProvisioned } from './market/bundled'
 import { checkUpdates } from './market/updates'
+import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
 
 /**
  * 启动后查一次插件更新。
@@ -51,6 +52,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     registerIpc()
     registerImarkProtocol()
+    // 样式目录要在渲染层首次读取之前备好(不存在则创建并播种示例)
+    await ensureUserStylesDir()
     const settings = await loadSettings()
     // 插件宿主依赖 settings 与 safeStorage,必须在建窗之前就绪。
     // 第二个参数负责补装应用自带的兜底插件包(如「定时上传（Git）」)——
@@ -58,6 +61,8 @@ if (!app.requestSingleInstanceLock()) {
     await initPluginHost(ensureBundledProvisioned)
     buildAppMenu()
     createMainWindow(settings)
+    // 看门狗要等窗口出来才挂:目录一变就要广播给渲染层,没有窗口时广播是空转
+    startUserStylesWatch()
     scheduleUpdateCheck(settings.marketAutoCheck)
     if (!app.isPackaged) console.log('[iMark] 应用就绪,窗口已创建')
   })
@@ -67,8 +72,9 @@ if (!app.requestSingleInstanceLock()) {
     app.quit()
   })
 
-  // 退出前释放插件资源(定时器、在跑的 git 子进程)
+  // 退出前释放插件资源(定时器、在跑的 git 子进程)与样式目录的看门狗
   app.on('will-quit', () => {
+    stopUserStylesWatch()
     void getPluginHost()?.shutdown()
   })
 }

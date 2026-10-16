@@ -1,10 +1,12 @@
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
 import type { SaveDialogOptions, Settings } from '@shared/types'
-import { getMainWindow, handleSaveDone, setDocDirty, setWindowTitle } from './window'
+import { getMainWindow, handleSaveDone, setDocDirty, setWindowTitle, setWindowView } from './window'
 import {
   showConfirmDelete,
   showConfirmDiscard,
+  showOpenCssDialog,
+  showOpenCssDirDialog,
   showOpenFileDialog,
   showSaveFileDialog
 } from './dialogs'
@@ -19,6 +21,14 @@ import {
   renameVaultPath,
   trashVaultPath
 } from './vault'
+import {
+  ensureUserStylesDir,
+  importUserStyle,
+  importUserStylesFromDir,
+  readUserStyles,
+  removeUserStyle,
+  userStylesDir
+} from './userStyles'
 
 /** 校验只允许 http(s) 外链,防 file:/自定义协议注入 */
 function safeOpenExternal(url: string): void {
@@ -68,8 +78,12 @@ export function registerIpc(): void {
     safeOpenExternal(url)
   })
 
-  ipcMain.on(IPC.SetTitle, (_e, o: { name: string; dirty: boolean; vaultName?: string | null }) => {
+  ipcMain.on(IPC.SetTitle, (_e, o: { name: string | null; dirty: boolean; vaultName?: string | null }) => {
     setWindowTitle(o.name, o.dirty, o.vaultName)
+  })
+
+  ipcMain.on(IPC.SetView, (_e, view: 'picker' | 'editor') => {
+    setWindowView(view)
   })
 
   ipcMain.on(IPC.DocDirty, (_e, value: boolean) => {
@@ -145,4 +159,39 @@ export function registerIpc(): void {
   // ---------- 插件市场 ----------
 
   registerMarketIpc()
+
+  // ---------- 自定义样式 ----------
+
+  ipcMain.handle(IPC.UserStylesList, () => readUserStyles())
+
+  ipcMain.handle(IPC.UserStylesOpenDir, async () => {
+    await ensureUserStylesDir()
+    // openPath 不 reject:打不开时返回一句错误字符串,原样带给用户比静默强
+    const problem = await shell.openPath(userStylesDir())
+    if (problem) throw new Error(`打开样式文件夹失败:${problem}`)
+  })
+
+  ipcMain.handle(IPC.UserStylesImport, async () => {
+    const win = getMainWindow()
+    if (!win) return null
+    const picked = await showOpenCssDialog(win)
+    // 用户取消不是错误(同市场挑包的约定),渲染层据此什么都不做
+    if (!picked) return null
+    const outcome = await importUserStyle(picked)
+    return { state: await readUserStyles(), outcome }
+  })
+
+  ipcMain.handle(IPC.UserStylesImportDir, async () => {
+    const win = getMainWindow()
+    if (!win) return null
+    const picked = await showOpenCssDirDialog(win)
+    if (!picked) return null
+    const outcome = await importUserStylesFromDir(picked)
+    return { state: await readUserStyles(), outcome }
+  })
+
+  ipcMain.handle(IPC.UserStylesRemove, async (_e, name: string) => {
+    await removeUserStyle(name)
+    return readUserStyles()
+  })
 }

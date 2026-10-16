@@ -12,7 +12,8 @@
 
 import { computed, ref, watch } from 'vue'
 import { AlertTriangle, FileCode2, X } from 'lucide-vue-next'
-import { closeSource, formatBytes, openSource, remoteStore } from '../../services/marketService'
+import { formatBytes } from '../../utils/text'
+import { closeSource, openSource, remoteStore } from '../../services/marketService'
 
 const source = computed(() => remoteStore.source)
 const current = ref(0)
@@ -65,7 +66,7 @@ const mainName = computed(() => (files.value.some(f => f.name === 'main.js') ? '
 
         <div class="market-source-view">
           <template v-if="active">
-            <p v-if="active.truncated" class="market-alert market-alert-danger">
+            <div v-if="active.truncated" class="market-alert market-alert-danger">
               <AlertTriangle :size="14" />
               <div>
                 <b>这个文件太大,只显示了一部分。</b>
@@ -74,7 +75,7 @@ const mainName = computed(() => (files.value.some(f => f.name === 'main.js') ? '
                   在看不全的情况下做判断是不安全的。
                 </p>
               </div>
-            </p>
+            </div>
             <pre class="market-source-code">{{ active.text }}</pre>
           </template>
           <p v-else class="market-hint">左边选一个文件。</p>

@@ -23,6 +23,7 @@
 - **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;安装前有安全基线确认框(逐条中文权限解释、体积、可跨渠道核对的 sha256、来源与发布者,脚本插件须勾选「我已了解风险」),并可**先查看源码**。详见下文「五、插件市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 暗色 / 纯黑三档,状态栏一键循环切换,或在 **设置面板**(状态栏齿轮 / `Ctrl+,`)的「外观」中挑选;持久化到 `userData/settings.json`
+- **自定义样式**:把 `.css` 文件放进家目录的 `~/.imark/css/`(首次启动自动创建,并附一份带注释的示例)就能改编辑器里的显示 —— 比如整张表格居中 `.cm-md-table { text-align: center }`。改完保存**即刻生效、不用重启**;设置面板「外观」里是**单选**,点一行切换生效的那一份,可导入单个文件或整个文件夹、删除、点路径打开目录。样式作用于整个界面,**只影响编辑器内显示,不影响导出的 HTML**;详见下文「三、样式模块」
 - 状态栏字数统计(中文按字、拉丁按词)、导出 HTML(markdown-it + highlight.js 内联样式)
 
 ## 开发
@@ -41,7 +42,7 @@ npm run dist       # 构建 + electron-builder 打 NSIS 安装包
 ## 环境要求
 
 - **Node ≥ 22.12**(本机使用 `D:\software\nodejs\v24.21.0`)。Electron 40 起的安装链(`@electron/get` 5 / `@electron-internal/extract-zip`)与 electron-builder 26 的部分依赖均为 ESM-only,Node < 22.12 时需降级 electron ≤ 39 / electron-builder 25。
-- `.npmrc` 已配置国内镜像(registry / electron / electron-builder-binaries)。
+- **国内镜像分两处**:npm registry 在 `.npmrc` 里;electron 与 electron-builder 的二进制镜像用**裸环境变量** `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR`(Windows 下 `setx` 设为用户级)。别把它们写回 `.npmrc`——npm 11 会按「Unknown project config」告警,且下个大版本不再支持;也不要指望 `package.json` 的 `config` 字段,它传不到依赖的 install 脚本(实测依赖的 `install` 脚本里 `npm_package_config_*` 是空的),electron 的 postinstall 拿不到。两个变量是 `@electron/get` 与 `app-builder-lib` 直接读 `process.env` 的兜底项,不经过 npm,因此不会产生任何告警。
 - 在 `ELECTRON_RUN_AS_NODE=1` 的 shell 中运行 `npm run dev` 会以纯 Node 模式拉起应用而报错,需 `env -u ELECTRON_RUN_AS_NODE npm run dev`。
 - shell 的 `TEMP` 指向 `C:\WINDOWS\TEMP` 时,NSIS 打包会报 `!include: could not find ...nstXXX.tmp`,构建前把 `TMP`/`TEMP` 覆盖为用户临时目录(`%LOCALAPPDATA%\Temp`)。
 - `electron-builder.yml` 中 `signAndEditExecutable: false` 是为绕过 winCodeSign 解压需要符号链接权限的问题;启用 Windows 开发者模式(或管理员终端)后可移除该项,以获得自定义图标与 exe 元数据。
@@ -163,17 +164,19 @@ $$                    ← 尾行:同内容行
 
 ```
 styles/
-├── index.ts        # 模块入口:聚合导入(顺序即层叠顺序)+ 导出插件注册表
-├── registry.ts     # 插件样式注册表(运行时注入/卸载)
+├── index.ts        # 模块入口:聚合导入(顺序即层叠顺序)+ 导出运行时注入的注册表
+├── registry.ts     # 样式注册表(运行时注入/卸载/排序)
 ├── tokens.css      # 设计令牌:CSS 变量,三档主题(亮/暗/纯黑)都在这
 ├── base.css        # 全局 reset 与基础排版
 ├── shell.css       # 应用外壳:三栏布局、侧栏(文件列表/大纲)、状态栏
 ├── editor.css      # CodeMirror 外观与所见即所得样式(标题/强调/代码/公式/widget)
-└── components/     # 独立组件:快速切换器、仓库选择界面、设置面板
+└── components/     # 独立组件:快速切换器、仓库选择界面、设置面板、自定义样式列表
 ```
 
 - **手动导入(核心)**:`main.ts` → `import './styles'`;组件与服务不再各自引用 CSS 文件,层叠顺序集中维护。
-- **运行时注入(注册表,预留)**:`styles/registry.ts` 提供 `registerStyle(name, css)` / `unregisterStyle(name)`,把一段 CSS 作为 `<style>` 注入与卸载,不需要任何文件路径约定:
+- **运行时注入(注册表)**:`styles/registry.ts` 提供 `registerStyle(id, css)` / `unregisterStyle(id)`,
+  把一段 CSS 作为 `<style>` 注入与卸载,不需要任何文件路径约定。
+  注入落在 head 末尾,所以**同特异性下必然赢过内置样式**:
 
   ```ts
   import css from './my-plugin.css?inline'            // Vite ?inline:读成字符串,不自动注入
@@ -183,8 +186,24 @@ styles/
   export function deactivate() { unregisterStyle('my-plugin') }
   ```
 
-- **这个注册表目前没有调用方**。它是为「插件能改界面」预留的扩展点,而现在市场的插件跑在主进程里(见 §四),**没有 UI 扩展点** —— 既拿不到渲染层的模块,也无从调用它。留在原处是因为它自身的实现与主题无关、成本为零;等真有界面扩展需求时,要补的是「插件 → 渲染层」这条通道,而不是这个注册表。
-- **样式约定**:插件若要注入 CSS,类名加 `imk-` 前缀(内置样式用语义化类名,不加前缀);颜色/边框一律用 `tokens.css` 的变量(亮/暗/纯黑三档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
+- **第一个调用方是用户自定义样式**,不是插件:家目录 `~/.imark/css/*.css` 由主进程读出来
+  (`main/userStyles.ts`),渲染层把**选中的那一个**注入成 `user:<文件名>`
+  (见 `services/userStyleService.ts`)。同时只有一个生效,所以没有「谁盖过谁」这回事 ——
+  注册表的插入顺序在这里不影响任何东西。
+- **插件仍然够不到这里**(它跑在主进程,没有「插件 → 渲染层」的通道,见 §四)。等真有界面扩展
+  需求时要补的是那条通道,不是这个注册表。
+- **样式约定**:若要注入 CSS,类名加 `imk-` 前缀(内置样式用语义化类名,不加前缀);颜色/边框一律用 `tokens.css` 的变量(亮/暗/纯黑三档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
+
+#### 用户自定义样式(`~/.imark/css`)
+
+- 目录在**家目录**下(不是 `userData`):开发版与安装版是同一个目录,用户也用得上自己熟悉的编辑器与备份工具。首次启动创建,并播种一份**全文注释**的 `example.css`(有一条真规则生效就等于替用户改了默认外观);用户删掉它不会再被塞回来,删掉整个目录才重建 + 重播种。
+- **同时只有一个文件生效**。「选中哪个」是设置项(`settings.userStyle`,只存文件名不存内容),在设置面板「外观」里点一行切换;默认不选。多文件同时生效意味着「谁赢」要靠文件名顺序去推,用户看到的是一份说不清的叠加结果 —— 想要两套样式一起用,把它们写进同一个文件。
+- **选中的文件不在了就什么都不生效**,不自动改选别人(那会莫名其妙地换掉你的外观);把同名文件放回来它立刻又生效。界面上会直说「「x.css」已经不在了」,否则「没有任何一行被选中」看着像坏了。
+- **导入**:「导入 CSS 文件」收单个文件,「从文件夹导入」收一个文件夹**顶层**的全部 `.css`(不递归 —— 递归会把 `node_modules` 里成百上千个 `.css` 一起拖进来)。两者都是**复制**进目录,不引用原路径。**内容相同的直接不导,并列出与哪几份相同** —— 同一个文件点两次「导入」是最容易发生的事,让它悄悄什么都不发生只会让人以为按钮坏了。同名但内容不同则改叫 `foo-2.css`,绝不覆盖(目录里那份可能已经被你改过)。
+- 主进程负责全部文件系统访问:只收 `.css`、跳过点文件与子目录、单个文件 ≤512 KiB、剥掉 BOM(记事本存的 UTF-8 带 BOM 会让第一个选择器静默失效)。**读清单永不抛** —— 一个坏文件只让它自己标红,其余照常生效。
+- 变更靠 `fs.watch` + 250 ms 防抖,改完保存即刻生效。**Windows 上删掉正在监听的目录是静默事件**(既不派发事件也不派发 `'error'`),所以另有一个每 4 秒一次的存在性检查兜底 —— 目录没了就重建、重挂、把「样式已全部撤下」播出去。
+- CSS 里的 `var(--accent)` 这类变量在计算值阶段解析,所以**切主题时不需要重新注入**,自定义样式自动跟随三档主题。
+- 边界(如实写在设置面板与示例文件里):样式作用于**整个界面**;语法错误被浏览器静默丢弃;`.cm-cursor` / `.cm-scroller` / `.cm-content` 这类 base theme 写死的属性要加 `!important`;图片只能用 `data:` / `https:` / `imark://`(`@import` 远程样式表与 `file://` 图片会被 CSP 拦掉,相对路径也不工作)。**不影响导出的 HTML** —— 导出是另一套模板。
 
 ### 四、插件系统
 

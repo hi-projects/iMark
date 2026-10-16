@@ -12,6 +12,7 @@ import {
   type MarketNav
 } from '../services/pluginService'
 import PluginSettings from './plugins/PluginSettings.vue'
+import UserStyleSettings from './UserStyleSettings.vue'
 import MarketPage from './market/MarketPage.vue'
 import InstallConfirmDialog from './market/InstallConfirmDialog.vue'
 import MarketSource from './market/MarketSource.vue'
@@ -136,6 +137,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
               </button>
             </div>
           </div>
+
+          <UserStyleSettings />
         </div>
       </section>
     </div>

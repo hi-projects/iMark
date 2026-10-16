@@ -13,3 +13,15 @@ declare module '*?raw' {
   const content: string
   export default content
 }
+
+/**
+ * electron-vite 的 `?asset` 导入:文件被复制进产物目录,导入得到运行时可用的绝对路径。
+ *
+ * 与上面的 `?raw` 同样绕开 asar 与 `files: [out/**]` 的限制(产物落进 out/,会被一并打包),
+ * 差别在它是给**二进制**用的 —— PNG 走 `?raw` 会被当 utf-8 文本读坏,内容是乱的。
+ * 用途见 window.ts:窗口图标。
+ */
+declare module '*?asset' {
+  const src: string
+  export default src
+}

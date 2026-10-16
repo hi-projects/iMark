@@ -14,10 +14,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, FileCode2, Info, Package } from 'lucide-vue-next'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
+import { formatBytes } from '../../utils/text'
 import {
   acknowledgePlainHttp,
   copyText,
-  formatBytes,
   loadAuth,
   loginMarket,
   logoutMarket,
@@ -130,7 +130,7 @@ onMounted(async () => {
         <code class="market-mono">npm run market</code> 就能起一个。
       </p>
 
-      <p v-if="auth?.plainHttp" class="market-alert market-alert-danger">
+      <div v-if="auth?.plainHttp" class="market-alert market-alert-danger">
         <AlertTriangle :size="14" />
         <div>
           <b>这个地址用的是明文 HTTP,而且不在本机。</b>
@@ -141,15 +141,15 @@ onMounted(async () => {
           </p>
           <button class="plugin-btn" @click="acknowledgePlainHttp()">我知道了,不再提示</button>
         </div>
-      </p>
+      </div>
 
-      <p v-if="auth && !auth.secureStorage" class="market-alert">
+      <div v-if="auth && !auth.secureStorage" class="market-alert">
         <Info :size="14" />
         <div>
           <b>系统的密钥库不可用,登录令牌会以明文存放在本机。</b>
           <p>在 Linux 上通常意味着没有可用的 keyring 服务。令牌本身不会离开这台机器,但同机的其他程序可以读到它。</p>
         </div>
-      </p>
+      </div>
     </section>
 
     <!-- ---------- 2. 账号 ---------- -->
@@ -259,7 +259,7 @@ onMounted(async () => {
         </ul>
 
         <!-- 服务端那边的状态:这两件事上传之后必然会被拒,所以在这里先说 -->
-        <p v-if="preview.versionExists" class="market-alert market-alert-danger">
+        <div v-if="preview.versionExists" class="market-alert market-alert-danger">
           <AlertTriangle :size="14" />
           <div>
             <b>版本 {{ preview.version }} 已经发布过了。</b>
@@ -270,21 +270,21 @@ onMounted(async () => {
               <template v-if="preview.identical">当前的包与已发布的那个内容完全相同,这次发布没有意义。</template>
             </p>
           </div>
-        </p>
-        <p v-else-if="preview.existingOwner && preview.existingOwner !== auth?.user" class="market-alert market-alert-danger">
+        </div>
+        <div v-else-if="preview.existingOwner && preview.existingOwner !== auth?.user" class="market-alert market-alert-danger">
           <AlertTriangle :size="14" />
           <div>
             <b>插件 id「{{ preview.id }}」属于 {{ preview.existingOwner }}。</b>
             <p>换一个 id,或者请服务端管理员把这个插件的所有权转移给你。</p>
           </div>
-        </p>
-        <p v-else-if="preview.existingOwner" class="market-alert">
+        </div>
+        <div v-else-if="preview.existingOwner" class="market-alert">
           <Info :size="14" />
           <div>
             <b>{{ preview.id }} 当前最高版本是 {{ preview.existingVersion }}。</b>
             <p>这次发布的 {{ preview.version }} 会成为新的最高版本。</p>
           </div>
-        </p>
+        </div>
 
         <div class="market-toolbar">
           <button
@@ -300,7 +300,7 @@ onMounted(async () => {
         </div>
       </template>
 
-      <p v-if="remoteStore.lastPublished" class="market-alert market-alert-safe">
+      <div v-if="remoteStore.lastPublished" class="market-alert market-alert-safe">
         <Check :size="14" />
         <div>
           <b>已发布 {{ remoteStore.lastPublished.id }}@{{ remoteStore.lastPublished.version }}</b>
@@ -308,7 +308,7 @@ onMounted(async () => {
             sha256 <code class="market-mono">{{ remoteStore.lastPublished.integrity }}</code>
           </p>
         </div>
-      </p>
+      </div>
 
       <p class="market-hint">
         目录里要有 <code class="market-mono">manifest.json</code>;脚本插件还要有已编译好的入口文件
