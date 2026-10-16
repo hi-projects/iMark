@@ -173,7 +173,8 @@ async function refreshAll(): Promise<void> {
             <div class="market-row-name">
               <b>{{ p.descriptor.name }}</b>
               <span class="market-mono market-dim">v{{ p.descriptor.version }}</span>
-              <span class="market-badge">{{ sourceLabel(p.source, marketStore.bundled.includes(p.descriptor.id)) }}</span>
+              <span v-if="p.dev" class="market-badge market-badge-bad">开发模式</span>
+              <span v-else class="market-badge">{{ sourceLabel(p.source, marketStore.bundled.includes(p.descriptor.id)) }}</span>
               <span v-if="p.kind === 'script'" class="market-badge market-badge-code">含代码</span>
               <span v-else-if="p.kind === 'declarative'" class="market-badge market-badge-safe">
                 不含代码
@@ -186,8 +187,9 @@ async function refreshAll(): Promise<void> {
               </span>
             </div>
             <div class="market-row-sub">
+              <span v-if="p.dev">代码来自 --plugin-dev 指定的目录,重启应用后不再加载</span>
               <span v-if="p.installed?.publisher">发布者 {{ p.installed.publisher }}</span>
-              <span>安装于 {{ formatTime(p.installed?.installedAt) }}</span>
+              <span v-if="p.installed">安装于 {{ formatTime(p.installed.installedAt) }}</span>
               <button
                 v-if="p.installed?.integrity"
                 class="market-hash-chip"
@@ -201,6 +203,7 @@ async function refreshAll(): Promise<void> {
           <div class="market-row-actions">
             <button class="plugin-btn" @click="selectPluginSettings(p.descriptor.id)">设置</button>
             <button
+              v-if="!p.dev"
               class="plugin-icon-btn"
               title="卸载"
               :disabled="marketStore.busy"

@@ -228,6 +228,196 @@
   --sw-line: #333333;
 }
 
+/* ---------- 设置项(「编辑器」页:一行一项,开关/滑杆在右) ---------- */
+
+/* 同一组的几项装在一张卡里,行间用细线分隔 */
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-app);
+  overflow: hidden;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--border);
+}
+
+/* 控件占地方(档位按钮、滑杆)时改成一上一下,别把说明文字挤成两行 */
+.settings-row-stack {
+  display: block;
+}
+
+.settings-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-row-title {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.settings-row-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 开关:与插件设置页同一套观感。类名不复用那边的是因为 `.plugin-switch` 长在插件域,
+   插件页改版时不该把设置页一起带走 */
+.settings-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 19px;
+  cursor: pointer;
+}
+
+.settings-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.settings-switch-track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  background: var(--bg-toolbar-btn-hover);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.settings-switch-track::after {
+  content: '';
+  display: block;
+  width: 13px;
+  height: 13px;
+  margin: 2px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.settings-switch input:checked + .settings-switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-switch input:checked + .settings-switch-track::after {
+  background: var(--bg-editor);
+  transform: translateX(15px);
+}
+
+/* 间隔档位 */
+
+.settings-presets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-preset {
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-preset:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.settings-preset-active,
+.settings-preset-active:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-selection);
+}
+
+.settings-number-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.settings-number {
+  width: 68px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-number:focus {
+  border-color: var(--accent);
+}
+
+/* 字号滑杆 */
+
+.settings-range {
+  flex: 1;
+  max-width: 260px;
+  accent-color: var(--accent);
+}
+
+.settings-readout {
+  min-width: 48px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 恢复默认 */
+
+.settings-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* 左栏条目上的角标(目前只有「浏览市场」的可用更新数) */
 .settings-nav-badge {
   margin-left: auto;

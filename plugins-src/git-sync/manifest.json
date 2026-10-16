@@ -2,7 +2,7 @@
   "id": "git-sync",
   "name": "定时上传（Git）",
   "description": "按固定间隔把当前仓库提交并推送到 GitLab / Gitee 等 Git 远端，支持多个远端。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "iMark 官方",
   "kind": "script",
   "main": "main.js",
@@ -97,6 +97,24 @@
     }
   ],
   "actions": [{ "id": "sync-now", "label": "立即上传" }],
+  "commands": [
+    {
+      "id": "sync-now-command",
+      "label": "立即上传到 Git 远端",
+      "detail": "把当前仓库的改动提交并推送到所有远端",
+      "when": "vault",
+      "action": "sync-now"
+    }
+  ],
+  "statusBar": [
+    {
+      "id": "sync-now-status",
+      "label": "同步",
+      "icon": "cloud-upload",
+      "tooltip": "定时上传（Git）· 点击立即上传",
+      "action": "sync-now"
+    }
+  ],
   "targetActions": [{ "id": "test-connection", "label": "测试连接" }],
   "targetFieldKey": "targets"
 }

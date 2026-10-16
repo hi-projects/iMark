@@ -1,0 +1,125 @@
+/*
+ * 右下角通知。
+ *
+ * 层级取 140:比设置面板(110)与市场里的对话框(130)都高 —— 插件在用户翻设置时
+ * 报的错,正是最需要被看见的那一类,不该被面板盖住。
+ */
+
+.toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 40px;
+  z-index: 140;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  /* 容器自己不吃事件:它是一整块矩形,吃下去等于在右下角放了一块看不见的挡板。
+     每条气泡再把 pointer-events 打开 */
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 32px));
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-toolbar);
+  box-shadow: 0 6px 18px var(--shadow);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.5;
+  /* 从右侧滑入。它出现的位置在视线边缘,不动一下很容易整条错过 */
+  animation: toast-in 0.16s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.toast-icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.toast-success .toast-icon {
+  color: var(--success);
+}
+
+.toast-warn {
+  border-left-color: var(--warn);
+}
+
+.toast-warn .toast-icon {
+  color: var(--warn);
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+.toast-error .toast-icon {
+  color: var(--danger);
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.toast-message {
+  /* 长路径、长错误消息要能断行:插件报错经常带一整条路径 */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 8.5em;
+  overflow: hidden;
+}
+
+.toast-count {
+  flex: none;
+  align-self: center;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--bg-code);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.toast-close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}

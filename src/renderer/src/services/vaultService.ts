@@ -1,19 +1,55 @@
 import { nextTick } from 'vue'
 import type { VaultNode } from '@shared/types'
-import { appStore, type VaultFileRef } from '../stores/app'
+import { appStore, type SwitcherMode, type VaultFileRef } from '../stores/app'
 import { basename } from '../utils/text'
 import { openFileByPath, resetToEmpty, saveCurrentFile } from './fileService'
-import { isInside, relativeTo } from '../utils/paths'
+import { isInside, joinPath, relativeTo, replaceName } from '../utils/paths'
+import { notifyError, pushNotice } from './notice'
 
 /** Windows 名称非法字符 */
 const INVALID_NAME = /[\\/:*?"<>|]/
 
+/**
+ * Windows 保留设备名。`CON`、`NUL`、`COM1` 这些**带不带扩展名都一样不能用**
+ * (`con.md` 同样建不出来),Linux 上却是合法名字 —— 一律拒掉,免得同一个仓库
+ * 在两个系统上表现不一致。
+ */
+const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i
+
 function fail(err: unknown, action: string): void {
-  alert(`${action}失败:${err instanceof Error ? err.message : String(err)}`)
+  notifyError(action, err)
+}
+
+/** 名字无效的原因;有效返回空串。分开写是因为"不合法"这三个字说不清到底哪儿不合适 */
+function invalidReason(name: string): string {
+  if (!name) return '名字不能为空'
+  // 控制字符 Linux 允许、Windows 不允许,一律拒掉
+  if (/[\u0000-\u001f\u007f]/.test(name)) return '名字里不能有控制字符'
+  if (INVALID_NAME.test(name)) return '不能包含 \\ / : * ? " < > | 等字符'
+  if (name.endsWith(' ')) return '结尾不能是空格'
+  if (name.endsWith('.')) return '结尾不能是点'
+  if (RESERVED_NAME.test(name)) return 'CON、PRN、AUX、NUL、COM1-9、LPT1-9 是 Windows 保留名'
+  return ''
 }
 
 export function validName(name: string): boolean {
-  return name.length > 0 && !INVALID_NAME.test(name) && !name.endsWith(' ') && !name.endsWith('.')
+  return invalidReason(name) === ''
+}
+
+/** 仓库树能显示、编辑器能打开的类型(与主进程 src/main/vault.ts 的 FILE_EXTS 一致) */
+const EDITABLE_EXTS = new Set(['md', 'markdown', 'mdown', 'txt'])
+
+/**
+ * 补全扩展名:名字没带扩展名、或带了个仓库树不认的扩展名,一律按 .md 处理。
+ *
+ * 判据是**扩展名**而不是"有没有点":把「笔记.md」改成「笔记 v1.2」时,那个点
+ * 属于名字不属于扩展名,按"有没有点"判会让文件直接消失在文件树里。
+ */
+export function withExtension(name: string): string {
+  if (!name) return name
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+  return EDITABLE_EXTS.has(ext) ? name : `${name}.md`
 }
 
 function flatten(node: VaultNode, vaultPath: string, out: VaultFileRef[]): void {
@@ -150,10 +186,10 @@ export async function openVaultViaDialog(): Promise<boolean> {
 /** 新建仓库:在父目录下创建同名文件夹并打开 */
 export async function createVaultAt(parentDir: string, name: string): Promise<boolean> {
   if (!validName(name)) {
-    alert('仓库名称不合法(不能包含 \\ / : * ? " < > | 等字符)')
+    pushNotice(`仓库名称不合法:${invalidReason(name)}`, { title: '仓库', level: 'warn' })
     return false
   }
-  const target = `${parentDir}\\${name}`
+  const target = joinPath(parentDir, name)
   try {
     await window.api.createDir(target)
   } catch (err) {
@@ -181,11 +217,12 @@ export async function openVaultDialog(): Promise<void> {
 }
 
 export async function createFile(parentPath: string, name: string): Promise<VaultNode | null> {
-  if (!validName(name)) {
-    alert('文件名不合法(不能包含 \\ / : * ? " < > | 等字符)')
+  const fileName = withExtension(name.trim())
+  if (!validName(fileName)) {
+    pushNotice(`文件名不合法:${invalidReason(fileName)}`, { title: '文件', level: 'warn' })
     return null
   }
-  const p = `${parentPath}\\${name}`
+  const p = joinPath(parentPath, fileName)
   try {
     await window.api.createFile(p)
   } catch (err) {
@@ -198,11 +235,11 @@ export async function createFile(parentPath: string, name: string): Promise<Vaul
 
 export async function createDir(parentPath: string, name: string): Promise<boolean> {
   if (!validName(name)) {
-    alert('文件夹名不合法(不能包含 \\ / : * ? " < > | 等字符)')
+    pushNotice(`文件夹名不合法:${invalidReason(name)}`, { title: '文件', level: 'warn' })
     return false
   }
   try {
-    await window.api.createDir(`${parentPath}\\${name}`)
+    await window.api.createDir(joinPath(parentPath, name))
   } catch (err) {
     fail(err, '新建文件夹')
     return false
@@ -213,12 +250,13 @@ export async function createDir(parentPath: string, name: string): Promise<boole
 
 /** 重命名;若涉及当前打开文件(或其所在目录),同步修正状态与 lastFile 记忆 */
 export async function renamePath(node: VaultNode, newName: string): Promise<boolean> {
-  if (!validName(newName)) {
-    alert('名称不合法(不能包含 \\ / : * ? " < > | 等字符)')
+  // 文件改名同样补扩展名:把「笔记.md」改成「笔记」会让它从树里消失
+  const name = node.type === 'file' ? withExtension(newName) : newName
+  if (!validName(name)) {
+    pushNotice(`名称不合法:${invalidReason(name)}`, { title: '文件', level: 'warn' })
     return false
   }
-  const parent = node.path.slice(0, node.path.length - node.name.length - 1)
-  const to = `${parent}\\${newName}`
+  const to = replaceName(node.path, name)
   if (to === node.path) return true
   try {
     await window.api.renamePath(node.path, to)
@@ -285,15 +323,30 @@ export async function openVaultFile(path: string, opts?: { silent?: boolean }): 
 // ---------- 快速切换器 ----------
 
 export function toggleSwitcher(): void {
-  appStore.switcherOpen = !appStore.switcherOpen
+  if (appStore.switcherOpen) {
+    appStore.switcherOpen = false
+    return
+  }
+  openSwitcher('file')
+}
+
+/** 打开切换器并指定初始模式(命令面板走这条;Ctrl+P 走上面的搜文件) */
+export function openSwitcher(mode: SwitcherMode): void {
+  appStore.switcherMode = mode
+  appStore.switcherOpen = true
 }
 
 export function closeSwitcher(): void {
   appStore.switcherOpen = false
 }
 
-/** 简易模糊匹配:子序列命中,连续/词首加权;返回 -1 表示不匹配 */
-function fuzzyScore(query: string, target: string): number {
+/**
+ * 简易模糊匹配:子序列命中,连续/词首加权;返回 -1 表示不匹配。
+ *
+ * 导出给命令面板共用 —— 同一个面板里,搜文件和搜命令的匹配手感必须是同一套
+ * (同一串字符在两种模式下给出不同的命中顺序,会让人怀疑自己打错了)。
+ */
+export function fuzzyScore(query: string, target: string): number {
   const q = query.toLowerCase()
   const t = target.toLowerCase()
   if (!q) return 0

@@ -24,7 +24,15 @@ export interface Capability {
   id: string
   name: string
   description: string
-  /** 该能力会用到的权限(供安装确认框如实展示) */
+  /**
+   * 该能力会用到的权限。**清单必须声明它们,否则加载期直接报错** ——
+   * 这类权限是给安装确认框看的:能力用了 `network` 而清单没写,用户按下「安装」时
+   * 看到的那份清单就是残缺的,而那是他唯一的知情机会。
+   *
+   * 之所以是「报错」而不是「宿主偷偷补上」:确认框展示的是清单里的权限,补上就得
+   * 让这份数据穿过主进程→渲染层再到落盘的 grantedPermissions 一路,而报表却只有一行字。
+   * 作者少写一项是明确的、可修的失误,不是需要运行时兜底的正常状态。
+   */
   permissions: PluginPermission[]
   /** 清单字段表里必须出现的字段 key */
   requiredFields: string[]
@@ -61,6 +69,12 @@ export function checkAgainstCapability(manifest: PluginManifest): string[] {
   const capability = manifest.capability ? getCapability(manifest.capability) : null
   if (!capability) {
     return [`声明式插件引用了本应用不认识的能力:${manifest.capability ?? '(未声明)'}`]
+  }
+  const declared = new Set(manifest.permissions ?? [])
+  for (const permission of capability.permissions) {
+    if (!declared.has(permission)) {
+      problems.push(`能力「${capability.name}」需要权限 ${permission},但清单的 permissions 里没有`)
+    }
   }
   // 用 ?? [] 而不是直接 .map:这个函数也会被装到磁盘上的清单调一次,而磁盘上的
   // 东西是可以被手改的 —— 缺字段表的插件应当得到一句「缺少字段」,而不是 TypeError

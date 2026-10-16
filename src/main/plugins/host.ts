@@ -23,21 +23,34 @@ import {
   type PluginPermission
 } from '@shared/pluginPackage'
 import {
+  commandAvailable,
   secretKey,
   targetSecretSlot,
+  type PluginActionPayload,
+  type PluginActionResult,
   type PluginConfigEntry,
+  type PluginContrib,
+  type PluginContribInvoke,
+  type PluginContribsSnapshot,
   type PluginDescriptor,
+  type PluginEditorInsert,
+  type PluginEvent,
+  type PluginEventMap,
   type PluginField,
   type PluginInstallInfo,
+  type PluginNotice,
+  type PluginNoticeLevel,
   type PluginSource,
   type PluginState,
   type PluginTarget,
   type PluginView
 } from '@shared/plugins'
-import { getSettings, getSettingsSync, saveSettings } from '../settings'
+import { setKeybindingDropReporter, setPluginCommands } from '../menu'
+import { getSettings, getSettingsSync, onSettingsChanged, saveSettings } from '../settings'
 import { deleteSecretsByPrefix, secretHints, setSecret } from '../secrets'
-import { getMainWindow } from '../window'
+import { getMainWindow, hasEditor } from '../window'
 import { createImkApi } from './api'
+import { ContribRegistry, type ContribKind } from './contrib'
 import { checkAgainstCapability, createCapabilityRuntime } from './capabilities'
 import {
   activateStaged,
@@ -52,6 +65,7 @@ import {
   setRecord,
   type InstalledRecord
 } from './installed'
+import { readDevSource, watchDevSource } from './dev'
 import { builtinPlugins } from './registry'
 import { forgetScriptRuntime, loadScriptRuntime } from './script'
 
@@ -65,6 +79,19 @@ const MAX_FAILURES = 3
 const MAX_LOGS = 50
 /** 错误详情截断长度(一次堆栈可能有几十 KB,不能原样进 IPC 与界面) */
 const MAX_DETAIL = 4096
+/**
+ * 状态广播的合并窗口。
+ *
+ * 插件在 onEnable 里连着 setState 三次、或者在一个循环里推进度,每一次都推整份
+ * PluginView[] 是纯浪费 —— 渲染层一帧也只画一次。攒齐一个窗口再发。
+ * 50ms 是"人感觉不到"与"别攒太久"之间的取值:再长,状态栏的进度就会看出滞后。
+ */
+const BROADCAST_COALESCE_MS = 50
+/** 通知限流:每个插件每 60 秒最多几条 */
+const NOTICE_WINDOW_MS = 60_000
+const NOTICE_PER_WINDOW = 10
+/** 单条通知的文字上限(它是画在右下角的气泡,不是日志) */
+const NOTICE_TEXT_MAX = 200
 
 export interface InstallMeta {
   version: string
@@ -83,6 +110,8 @@ interface Entry {
   /** 外部插件才有清单;内置核心插件为 null */
   manifest: PluginManifest | null
   dir: string | null
+  /** 来自 `--plugin-dev=<目录>`:代码取自作者指定的目录,不落进 userData */
+  dev: boolean
   meta: PluginInstallInfo | null
   /** 先占位、加载成功后再填 —— 脚本插件的工厂需要拿到 api,而 api 又需要 entry 本身 */
   runtime: PluginRuntime
@@ -97,6 +126,28 @@ interface Entry {
   suspended: boolean
   logs: string[]
   loadError?: string
+  /**
+   * 插件通过 API 注册的界面贡献点(命令/状态栏/右键菜单)。
+   * 清单里声明的那部分不在这里 —— 它随 manifest 走,合并成快照时才读(见 contrib.ts)。
+   */
+  contrib: ContribRegistry
+  /**
+   * 插件通过 `imark.on()` 订阅的宿主事件。
+   * 与 contrib 同理:带在 entry 上,重载即清空 —— 旧代码的闭包绝不能再被调用。
+   */
+  listeners: Map<PluginEvent, Set<(payload: unknown) => void>>
+  /** 通知限流用的时间窗口(近 1 分钟内发出的时间戳) */
+  noticeTimes: number[]
+  /**
+   * 这一轮「启用」的生命周期跑过没有(`disable()` 清零)。
+   *
+   * 有它才能让 enable() 幂等 —— 而幂等是必需的,不是洁癖:同一个 entry 上
+   * onEnable 跑两遍的路径真实存在(补装内置包时 `save()` 启用一次、启动循环
+   * 再启用一次;升级安装时 `install()` 恢复启用态一次、启动循环又一次)。
+   * 一个在 onEnable 里 `setInterval` 的插件会因此**双份定时器**,现象是
+   * 「每隔一段时间重复推送两次」这种要从头查起才能定位的问题。
+   */
+  enabledRun: boolean
 }
 
 let host: PluginHost | null = null
@@ -104,6 +155,14 @@ let host: PluginHost | null = null
 export class PluginHost {
   private entries = new Map<string, Entry>()
   private pendingFlush: (() => void) | null = null
+  /** 开发模式下每个插件目录的 fs.watch 停止函数(id → 停止),退出时要关掉 */
+  private devWatchers = new Map<string, () => void>()
+  /** 合并广播的待发定时器(见 scheduleBroadcast) */
+  private broadcastTimer: ReturnType<typeof setTimeout> | null = null
+  /** 上一次同步给原生菜单的贡献点快照(见 syncMenu) */
+  private menuSig = ''
+  /** init() 跑完了吗 —— 在那之前收不到任何事件,也不该往外广播 */
+  private initialized = false
 
   /**
    * 应用启动时调用(settings 已载入)。
@@ -113,9 +172,25 @@ export class PluginHost {
    * 定时器已经挂上,第二次加载会把第一份 entry 顶掉并留下一个没人管的定时器(表现为同步跑两次)。
    * 补装只挑「宿主里还没有这个 id」的装,所以放在扫描后面天然只会补上缺的那几个。
    */
-  async init(provision?: (host: PluginHost) => Promise<void>): Promise<void> {
+  async init(
+    provision?: (host: PluginHost) => Promise<void>,
+    devDirs: readonly string[] = []
+  ): Promise<void> {
     const settings = await getSettings()
     await cleanupOldDirs()
+
+    // 换了仓库/主题要告诉插件。挂在 saveSettings 上而不是某一条 IPC 上:
+    // 改设置的路径不止一条,挂在其中一条会让另外几条静默漏掉。
+    onSettingsChanged((next, prev) => {
+      if (next.vaultPath !== prev.vaultPath) {
+        void this.emit('vault:change', { vaultPath: next.vaultPath })
+        // 仓库开没开也是命令可用性的一部分(when: 'vault'),emit 不管这件事
+        this.contextChanged()
+      }
+      if (next.theme !== prev.theme) {
+        void this.emit('theme:change', { theme: next.theme })
+      }
+    })
 
     // ---- 外部插件:以磁盘为准 ----
     for (const id of await listInstalledIds()) {
@@ -141,6 +216,7 @@ export class PluginHost {
         descriptor: plugin.descriptor,
         manifest: null,
         dir: null,
+        dev: false,
         meta: null,
         runtime: plugin.runtime,
         api: null,
@@ -154,7 +230,11 @@ export class PluginHost {
         failures: 0,
         disabledByHost: false,
         suspended: false,
-        logs: []
+        logs: [],
+        contrib: new ContribRegistry(),
+        listeners: new Map(),
+        enabledRun: false,
+        noticeTimes: []
       })
     }
 
@@ -168,9 +248,126 @@ export class PluginHost {
       }
     }
 
+    // ---- 开发模式(--plugin-dev=<目录>)----
+    // 放在补装**之后**:补装会跳过「宿主里已经有这个 id」的插件,所以一个正在被
+    // 开发的插件不会在开发机上被兜底包顶掉;反过来,兜底包不会被开发目录挤掉,
+    // 也就不会出现"关掉开发参数后插件整个不见了"。
+    await this.enableDevSources(devDirs)
+
     for (const entry of this.entries.values()) {
       if (entry.state.enabled && !entry.loadError) await this.enable(entry.id, 'startup')
     }
+    this.initialized = true
+    // 被摘掉的快捷键要写进插件日志:作者只会看到"我的快捷键没反应",而这句日志
+    // 能直接告诉他被谁占着。上报口注册在这儿(而不是在 syncMenu 里自己记),
+    // 是因为摘除动作发生在 buildAppMenu() 里 —— 启动那一次(宿主还没机会接上)
+    // 同样得能说出来,否则开局就撞车的插件永远等不到这句话。
+    setKeybindingDropReporter(d => {
+      this.entries
+        .get(d.pluginId)
+        ?.logs.push(
+          `[warn] 快捷键 ${d.keybinding} 已被「${d.takenBy}」占用,命令「${d.commandId}」不再绑定快捷键(仍可从命令面板执行)`
+        )
+    })
+    await this.broadcast()
+  }
+
+  // ---------- 开发模式 ----------
+
+  /**
+   * 加载 `--plugin-dev=<目录>` 指定的插件目录,并盯住它们做热重载。
+   *
+   * **不绕过任何校验**:清单照样过 validateManifest,加载失败照样登记成坏插件
+   * (在设置页里可见、可读错误),权限照样注入强制。唯一的区别是代码取自作者
+   * 指定的目录而不是 userData,且应用从不"安装"它。
+   */
+  private async enableDevSources(dirs: readonly string[]): Promise<void> {
+    for (const dir of dirs) {
+      const source = await readDevSource(dir)
+      if (!source.ok) {
+        console.error(`[iMark] 开发插件加载失败(${dir}):${source.error}`)
+        continue
+      }
+      const id = source.manifest.id
+      this.mountDev(id, dir, source.manifest)
+      const entry = this.entries.get(id)
+      if (entry?.loadError) {
+        console.error(`[iMark] 开发插件 ${id} 加载失败(改好文件会自动重试):${entry.loadError}`)
+      } else {
+        console.log(`[iMark] 开发模式:${id} ← ${dir}`)
+      }
+
+      const stop = watchDevSource(dir, () => {
+        void this.reloadDev(id, dir)
+      })
+      this.devWatchers.set(id, stop)
+    }
+  }
+
+  /**
+   * 挂载一个开发目录。已存在同 id 的 entry 先摘掉,所以改代码不会叠出第二个实例。
+   *
+   * 加载失败不抛给调用方:调用方是「启动」或「文件刚变」,两者都不该被一个
+   * 半成品插件打断。失败登记成坏插件 —— 在设置页里能看到具体错误,而作者
+   * 改好文件后下一次重载会自动接上。
+   */
+  private async mountDev(id: string, dir: string, manifest: PluginManifest): Promise<void> {
+    const previous = this.entries.get(id)
+    if (previous && !previous.dev) {
+      // 同一个 id 既装着又从开发目录加载:开发目录赢,但必须说出来 ——
+      // 否则"我改的代码没生效"会变成一场对着 userData 里那份旧代码的徒劳排查
+      console.warn(
+        `[iMark] 开发插件 ${id} 覆盖了已安装的那一份(代码取自 ${dir},不是 userData)`
+      )
+    }
+    // 启用态要在摘除**之前**取,而且要一直记着。
+    //
+    // 开发插件的「启用」表达的是作者的意图,不是「上一次加载成功」的副产品。
+    // registerBroken 会把 enabled 写成 false,如果下一次重载照读它,那么作者改掉一个
+    // 拼写错误之后,插件会以一句「已重载」的姿态**永远不再启用** —— 而反复地改-存-看
+    // 正是开发模式存在的全部理由。所以这个意图要跨过一次失败保留下来。
+    // 第一次加载(没有上一份 entry)时才回落到默认值:开发插件本来就该一启动就跑起来;
+    // 用户之后在设置页关掉它,settings 里就有了记录,那时不再自动打开。
+    const previousEnabled = previous?.state.enabled
+    const wantEnabled = previousEnabled ?? this.storedFor(id) === undefined
+
+    await this.unregister(id)
+    try {
+      this.loadExternal(id, manifest, null, dir)
+    } catch (err) {
+      this.registerBroken(id, manifest, null, err, dir)
+      // 坏插件也得记住这个意图,否则下一次重载又读回 false,意图就丢了
+      const broken = this.entries.get(id)
+      if (broken) broken.state.enabled = wantEnabled
+      return
+    }
+    const entry = this.entries.get(id)
+    if (entry) entry.state.enabled = wantEnabled
+  }
+
+  /**
+   * 重新加载一个开发目录。
+   *
+   * 先摘后挂:摘的时候会跑 onDisable 并清掉 require 缓存,所以插件自己挂的定时器
+   * 会停、新加载拿到的一定是新代码。加载失败就登记成坏插件并**继续盯着** ——
+   * 作者此刻正在编辑器里敲一个还没写完的半成品,报错是要看的,重试是要自动的。
+   */
+  private async reloadDev(id: string, dir: string): Promise<void> {
+    const source = await readDevSource(dir)
+    if (!source.ok) {
+      console.error(`[iMark] 开发插件重新加载失败(${dir}):${source.error}`)
+      return
+    }
+    // 启用态要在摘除**之前**取:unregister 里的 disable() 会把同一个对象改掉
+    const wasEnabled = this.entries.get(id)?.state.enabled ?? true
+    await this.mountDev(id, dir, source.manifest)
+    const entry = this.entries.get(id)
+    if (entry?.loadError) {
+      console.error(`[iMark] 开发插件 ${id} 重载失败(改好文件会自动重试):${entry.loadError}`)
+    } else {
+      console.log(`[iMark] 开发插件 ${id} 已重载`)
+    }
+    if (entry && wasEnabled && !entry.loadError) await this.enable(id, 'dev-reload')
     await this.broadcast()
   }
 
@@ -186,6 +383,7 @@ export class PluginHost {
         ...(entry.manifest ? { kind: entry.manifest.kind } : {}),
         ...(entry.meta ? { source: entry.meta.source, installed: entry.meta } : {}),
         ...(entry.manifest?.permissions ? { permissions: entry.manifest.permissions } : {}),
+        ...(entry.dev ? { dev: true } : {}),
         ...(entry.failures > 0 ? { failures: entry.failures } : {}),
         ...(entry.disabledByHost ? { disabledByHost: true } : {}),
         ...(entry.logs.length > 0 ? { logs: [...entry.logs] } : {}),
@@ -223,6 +421,11 @@ export class PluginHost {
       await this.safeCall(entry, 'onConfigChange', () =>
         entry.runtime.onConfigChange?.(config, this.contextFor(entry))
       )
+      // config:change 是**只发给这个插件自己**的:告诉 A 插件「B 刚被改了配置」
+      // 既没用又泄露用户装了谁。所以这里不走 emit(那个是广播),直接投给 entry。
+      // 用 imark.on 订阅的插件与写 onConfigChange 的插件拿到的是同一件事,
+      // 只是前者是阶段二才有的新写法。
+      await this.emitTo(entry, 'config:change', { config })
     }
     await this.broadcast()
   }
@@ -246,7 +449,12 @@ export class PluginHost {
     await this.broadcast()
   }
 
-  async runAction(id: string, actionId: string, targetId?: string): Promise<{ ok: boolean; message: string; detail?: string }> {
+  async runAction(
+    id: string,
+    actionId: string,
+    targetId?: string,
+    payload?: PluginActionPayload
+  ): Promise<{ ok: boolean; message: string; detail?: string; editor?: PluginEditorInsert }> {
     const entry = this.require(id)
     if (entry.loadError) return { ok: false, message: `插件加载失败:${entry.loadError}` }
     if (entry.suspended) return { ok: false, message: '插件正在安装/升级,请稍候' }
@@ -254,28 +462,34 @@ export class PluginHost {
     if (entry.disabledByHost) {
       return { ok: false, message: '插件已被停用(连续运行失败),请在插件设置里关闭后重新启用' }
     }
-    const { actions, targetActions } = entry.descriptor
+    const { actions, targetActions, lineMenu } = entry.descriptor
+    // 行首菜单的动作只声明在 lineMenu 里(它不进设置页),所以这里要把两处都算上
     const known = targetId
       ? (targetActions ?? []).some(a => a.id === actionId)
-      : actions.some(a => a.id === actionId)
+      : actions.some(a => a.id === actionId) || (lineMenu ?? []).some(i => i.action === actionId)
     if (!known) return { ok: false, message: `未知动作:${actionId}` }
 
     // 界面上只有「状态卡」一处显示结果,所以动作跑完必须把结果写进状态;
     // 插件自己没写(没调用 setState)的话,这里兜底写一次,避免结果无处可见。
     const beforeRunAt = entry.state.lastRunAt
     const ctx = this.contextFor(entry)
-    let result: { ok: boolean; message: string; detail?: string } = {
+    let result: PluginActionResult = {
       ok: false,
       message: '插件没有响应'
     }
     const succeeded = await this.safeCall(entry, `动作 ${actionId}`, async () => {
-      result = (await entry.runtime.runAction?.(actionId, ctx, targetId)) ?? {
+      result = (await entry.runtime.runAction?.(actionId, ctx, targetId, payload)) ?? {
         ok: false,
         message: `插件未实现动作:${actionId}`
       }
     })
     if (!succeeded) {
-      result = { ok: false, message: entry.state.lastMessage, ...(entry.state.lastDetail ? { detail: entry.state.lastDetail } : {}) }
+      // 失败与熔断的兜底**刻意不带 editor**:渲染层拿不到插入指令,文档就一个字符都不会变
+      result = {
+        ok: false,
+        message: entry.state.lastMessage,
+        ...(entry.state.lastDetail ? { detail: entry.state.lastDetail } : {})
+      }
     }
     if (entry.state.lastRunAt === beforeRunAt && (result.message || result.detail)) {
       entry.state = {
@@ -366,6 +580,12 @@ export class PluginHost {
    * 就必须跟着走,宁可让用户重填一次。
    */
   async uninstall(id: string, options: { removeConfig: boolean }): Promise<void> {
+    // 开发模式的插件不占 userData 里的任何位置,「卸载」它没有意义;而它**可能**
+    // 顶着与某个已安装插件相同的 id —— 那种情况下照常执行会把 userData 里那份
+    // 真正装着的插件删掉,而界面上还在跑的是开发目录那一份,没人会想到发生了这件事。
+    if (this.entries.get(id)?.dev) {
+      throw new Error('这是以开发模式(--plugin-dev)加载的插件,不在已安装列表里,无需卸载')
+    }
     await this.unregister(id)
     await removePluginDir(id)
     await removeRecord(id)
@@ -432,6 +652,10 @@ export class PluginHost {
   }
 
   async shutdown(): Promise<void> {
+    // 先停监听:否则退出过程中正在跑的一次重载会把插件又拉起来,
+    // 而 shutdown 已经走过了它的名字
+    for (const stop of this.devWatchers.values()) stop()
+    this.devWatchers.clear()
     for (const entry of this.entries.values()) {
       if (entry.state.enabled) await this.disable(entry.id, 'quit')
     }
@@ -441,6 +665,12 @@ export class PluginHost {
     const entry = this.entries.get(id)
     if (!entry || entry.loadError || entry.suspended) return
     if (!entry.state.enabled) entry.state.enabled = true
+    // 幂等:同一轮启用里 onEnable 只跑一次(见 Entry.enabledRun 的说明)。
+    // 注意这一句在置位 state.enabled **之后**、在 safeCall **之前** ——
+    // 前者保证"已经是启用态"这件事先落实,后者保证 onEnable 抛异常时也不会
+    // 因为「没跑成功」而被下一条路径再跑一遍(重试是 disable→enable 的事)
+    if (entry.enabledRun) return
+    entry.enabledRun = true
     void reason
     await this.safeCall(entry, 'onEnable', () => entry.runtime.onEnable?.(this.contextFor(entry)))
   }
@@ -449,8 +679,22 @@ export class PluginHost {
     const entry = this.entries.get(id)
     if (!entry) return
     entry.state.enabled = false
+    entry.enabledRun = false
     void reason
     await this.safeCall(entry, 'onDisable', () => entry.runtime.onDisable?.(this.contextFor(entry)))
+    // 停用 = 这次运行注册的一切都作废。
+    //
+    // 不清的话有一个很难查的后果:插件在 onEnable 里 `imk.on('document:save', fn)`,
+    // 用户关掉再打开,onEnable 又跑一遍 —— 这一次注册的 fn 与上一次那个是**两个不同的
+    // 闭包**,Set 会同时留着,于是每次保存事件都被投递两遍。作者只会看到"我的
+    // 钩子被调了两次",而代码里明明只写了一遍。
+    //
+    // 清空而不是要求作者自己注销,是因为宿主给的注册函数大多被丢在一边(返回值很少
+    // 有人接),要求注销等于要求每个作者写对同一件容易忘的事。契约改成一句话:
+    // **onEnable 里注册,onDisable 之后一律不在**。清单里声明的那部分不受影响 ——
+    // 它每次都是从 manifest 重新算出来的,与运行时无关。
+    entry.listeners.clear()
+    entry.contrib.resetApi()
   }
 
   // ---------- 内部 ----------
@@ -459,7 +703,12 @@ export class PluginHost {
    * 加载一个外部插件并登记为可用的 entry(不启用)。
    * 抛出的异常由调用方决定是「回滚」还是「登记为坏插件」。
    */
-  private loadExternal(id: string, manifest: PluginManifest, record: InstalledRecord | null): void {
+  private loadExternal(
+    id: string,
+    manifest: PluginManifest,
+    record: InstalledRecord | null,
+    dirOverride?: string
+  ): void {
     // 保留用户已有的启用态与配置 —— 这就是「零迁移」的全部秘密:字段 key 没变,
     // normalizeConfig 用新字段表重读旧配置即可,连升级后新增/删除字段都是自洽的。
     const stored = this.storedFor(id)
@@ -467,7 +716,8 @@ export class PluginHost {
       id,
       descriptor: descriptorFromManifest(manifest),
       manifest,
-      dir: pluginDir(id),
+      dir: dirOverride ?? pluginDir(id),
+      dev: dirOverride !== undefined,
       meta: metaOf(record),
       runtime: {},
       api: null,
@@ -481,7 +731,11 @@ export class PluginHost {
       failures: 0,
       disabledByHost: false,
       suspended: false,
-      logs: []
+      logs: [],
+      contrib: new ContribRegistry(),
+      listeners: new Map(),
+      noticeTimes: [],
+      enabledRun: false
     }
 
     this.entries.set(id, entry)
@@ -503,14 +757,16 @@ export class PluginHost {
     id: string,
     manifest: PluginManifest,
     record: InstalledRecord | null,
-    err: unknown
+    err: unknown,
+    dirOverride?: string
   ): void {
     const message = err instanceof Error ? err.message : String(err)
     this.entries.set(id, {
       id,
       descriptor: descriptorFromManifest(manifest),
       manifest,
-      dir: pluginDir(id),
+      dir: dirOverride ?? pluginDir(id),
+      dev: dirOverride !== undefined,
       meta: metaOf(record),
       runtime: {},
       api: null,
@@ -526,6 +782,10 @@ export class PluginHost {
       disabledByHost: false,
       suspended: false,
       logs: [],
+      contrib: new ContribRegistry(),
+      listeners: new Map(),
+      noticeTimes: [],
+      enabledRun: false,
       loadError: message
     })
   }
@@ -620,7 +880,14 @@ export class PluginHost {
         entry.logs.push(line)
         if (entry.logs.length > MAX_LOGS) entry.logs.splice(0, entry.logs.length - MAX_LOGS)
         console.log(`[plugin:${entry.id}] ${line}`)
-      }
+      },
+      contrib: entry.contrib,
+      listeners: entry.listeners,
+      notify: (message, level) => this.notify(entry, message, level),
+      // 贡献点变了要立刻让界面看到 —— 命令刚注册完就该出现在面板里。
+      // 走 schedule 而不是 broadcast:插件常在 onEnable 里连着注册十几条,
+      // 每一条都推一次整份快照是没有意义的。
+      contribChanged: () => this.scheduleBroadcast()
     })
   }
 
@@ -677,6 +944,10 @@ export class PluginHost {
       console.error(`[iMark] 插件 ${entry.id} ${label} 失败:`, err)
       if (entry.failures >= MAX_FAILURES) {
         entry.disabledByHost = true
+        // 这里走的是「直接改状态」而不是 disable():所以也要把启用标记一起清掉,
+        // 否则用户在设置里重新启用时 enable() 会以为「早就跑过了」而直接返回 ——
+        // 界面显示已启用,插件其实一次都没跑起来
+        entry.enabledRun = false
         entry.state = {
           ...entry.state,
           enabled: false,
@@ -698,10 +969,233 @@ export class PluginHost {
   }
 
   private async broadcast(): Promise<void> {
+    // 立即广播会顺带取消待发的那一次:同一份快照没理由推两遍
+    if (this.broadcastTimer) {
+      clearTimeout(this.broadcastTimer)
+      this.broadcastTimer = null
+    }
+    const snapshot = this.contribSnapshot()
+    this.syncMenu(snapshot)
     const win = getMainWindow()
     if (!win || win.webContents.isDestroyed()) return
+    // 贡献点是纯内存拼装、立刻就好;list() 要读密钥掩码,是这里唯一的重活。
+    // 先发轻的那条,渲染层的按钮就不会等在一次磁盘读取后面才出现。
+    win.webContents.send(IPC.PluginContrib, {
+      contribs: snapshot,
+      context: this.commandContext()
+    } satisfies PluginContribsSnapshot)
     win.webContents.send(IPC.PluginStatus, await this.list())
   }
+
+  /**
+   * 把贡献点里的命令同步进原生菜单 —— 那里是快捷键唯一能生效的地方。
+   *
+   * 只在快照**真的变了**时重建:菜单重建要动整个应用菜单,而这函数挂在广播路径上,
+   * 广播会被插件的每次 setState 触发。不快照比较的话,一个每 100ms 报进度的插件
+   * 就会每 100ms 重建一次菜单。
+   */
+  private syncMenu(snapshot: PluginContrib[]): void {
+    const ctx = this.commandContext()
+    // 签名里**必须带上上下文**:菜单项的灰/亮是按它算的,而「有没有文档 / 有没有仓库」
+    // 变了并不会让贡献点快照变一个字。只比快照的话,打开文档之后那条 when:'editor'
+    // 的命令会一直灰着 —— 直到用户碰巧启用/停用了某个插件才"自己好了"。
+    const sig = JSON.stringify({ snapshot, ctx })
+    if (sig === this.menuSig) return
+    this.menuSig = sig
+    setPluginCommands(
+      snapshot.map(c => ({
+        pluginId: c.pluginId,
+        pluginName: c.pluginName,
+        commands: c.commands.map(cmd => ({
+          id: cmd.id,
+          label: cmd.label,
+          keybinding: cmd.keybinding,
+          available: commandAvailable(cmd.when, ctx)
+        }))
+      }))
+    )
+  }
+
+  /**
+   * 高频路径(插件 setState)专用的合并广播。
+   *
+   * 与 broadcast() 分开,是因为两者的语义不同:上面那个是"这次变更必须让界面看到"
+   * (启停、安装、动作结束),调用方在 await 它;这个是"插件在刷状态",
+   * 攒起来发一次就够。混成一个的话,要么处处滞后,要么白白高频。
+   */
+  private scheduleBroadcast(): void {
+    if (this.broadcastTimer) return
+    this.broadcastTimer = setTimeout(() => {
+      this.broadcastTimer = null
+      void this.broadcast()
+    }, BROADCAST_COALESCE_MS)
+  }
+
+  /**
+   * 当前**启用中**插件的全部界面贡献点。
+   *
+   * 只收启用的:关掉的插件不该在界面上留东西(与行首「+」菜单现在的行为一致)。
+   * 这条快照很小、变化也少(启停/重载时才变),所以整份替换而不是增量 ——
+   * 增量就得处理"渲染层漏收一条"怎么恢复,不值当。
+   */
+  private contribSnapshot(): PluginContrib[] {
+    const out: PluginContrib[] = []
+    for (const entry of this.entries.values()) {
+      if (!entry.state.enabled || entry.loadError) continue
+      out.push({
+        pluginId: entry.id,
+        pluginName: entry.descriptor.name,
+        ...entry.contrib.merge(entry.manifest)
+      })
+    }
+    return out
+  }
+
+  /** 渲染层挂着时主动要一次(首次挂载不必等下一次变更) */
+  async contributions(): Promise<PluginContrib[]> {
+    return this.contribSnapshot()
+  }
+
+  /**
+   * 「有没有文档 / 有没有仓库」变了 —— 命令的可用性跟着变,要重新说一遍。
+   *
+   * 这两件事没有对应的插件事件可蹭(document:change 是内容变了,不是"开没开"),
+   * 而不只是命令面板 —— 原生菜单里那条命令的灰/亮也是按这个算的。
+   * 重发的原因:下发给渲染层的是 `{贡献点, 上下文}` 两份,可用性由渲染层用后者算 ——
+   * 上下文不更新,命令面板里就会一直停在上一次的灰亮状态。
+   */
+  contextChanged(): void {
+    if (!this.initialized) return
+    void this.broadcast()
+  }
+
+  /** 有文档开着吗 / 开着仓库吗 —— 命令可用性判定的输入 */
+  commandContext(): { hasEditor: boolean; hasVault: boolean } {
+    return {
+      hasEditor: hasEditor(),
+      hasVault: Boolean(getSettingsSync()?.vaultPath)
+    }
+  }
+
+  /**
+   * 执行一次界面贡献点(命令面板 / 状态栏 / 右键菜单都走这里)。
+   *
+   * 三条路共用这一个入口,是因为它们要做的事完全一样:找到那条条目 → 检查它现在
+   * 还该不该可用 → 转成一次 runAction。分开写三遍的话,"命令被停用的插件点到了"
+   * 这类边界会在其中两条上漏掉。
+   */
+  async invokeContrib(invoke: PluginContribInvoke): Promise<PluginActionResult> {
+    const entry = this.entries.get(invoke.pluginId)
+    if (!entry) return { ok: false, message: '插件已不在' }
+    if (!entry.state.enabled) return { ok: false, message: `${entry.descriptor.name} 未启用` }
+
+    const merged = entry.contrib.merge(entry.manifest)
+    const pool =
+      invoke.from === 'status'
+        ? merged.statusItem && merged.statusItem.id === invoke.itemId
+          ? [merged.statusItem]
+          : []
+        : invoke.from === 'command'
+          ? merged.commands
+          : merged.menus
+    const item = pool.find(i => i.id === invoke.itemId)
+    if (!item) return { ok: false, message: `未找到条目「${invoke.itemId}」` }
+
+    // 执行前再判一次可用性:渲染层画灰只是提示,这里才是真的闸门
+    if ('when' in item && !commandAvailable(item.when, this.commandContext())) {
+      return { ok: false, message: `「${item.label}」在当前状态下不可用` }
+    }
+    if (!item.action) {
+      // API 注册的条目可以只带一个回调、不指向 action —— 那种情况下由 register 时
+      // 存下的 handler 直接跑(见 api.ts 的 commands.register / ui.statusItem)。
+      // 种类必须是**这条条目自己的那一种**:三张表的 id 各管各的(见 ContribKind)
+      const kind: ContribKind = invoke.from === 'command' ? 'command' : invoke.from === 'status' ? 'status' : 'menu'
+      const handler = entry.contrib.handlerFor(kind, invoke.itemId)
+      if (!handler) return { ok: false, message: `「${item.label}」没有可执行的动作` }
+      const done = await this.safeCall(entry, `contrib:${invoke.itemId}`, () =>
+        handler({
+          filePath: invoke.filePath ?? null,
+          line: invoke.line ?? null,
+          hasVault: this.commandContext().hasVault
+        })
+      )
+      await this.broadcast()
+      return done
+        ? { ok: true, message: `${item.label} 已执行` }
+        : { ok: false, message: `${item.label} 执行失败,详情见插件日志` }
+    }
+
+    return this.runAction(entry.id, item.action, undefined, {
+      editor: invoke.filePath
+        ? { line: invoke.line ?? 1, lineText: '', filePath: invoke.filePath }
+        : undefined
+    })
+  }
+
+  /**
+   * 把一件宿主里发生的事告诉所有订阅了它的插件。
+   *
+   * 逐个插件 safeCall,所以一个坏插件卡住不会连累其它插件;超时与熔断复用同一套。
+   * 事件是**单向通知**,没有返回值 —— 插件改不了宿主的行为,这也是"没有取消保存
+   * 这种能力"的实现方式(不是靠文档里写一句"请不要").
+   */
+  async emit<E extends PluginEvent>(event: E, payload: PluginEventMap[E]): Promise<void> {
+    for (const entry of this.entries.values()) {
+      await this.emitTo(entry, event, payload)
+    }
+  }
+
+  /** 只投给一个插件(用于 config:change 这类"与别人无关"的事件) */
+  private async emitTo<E extends PluginEvent>(
+    entry: Entry,
+    event: E,
+    payload: PluginEventMap[E]
+  ): Promise<void> {
+    const handlers = entry.listeners.get(event)
+    if (!handlers || handlers.size === 0) return
+    if (!entry.state.enabled || entry.loadError) return
+    for (const handler of handlers) {
+      await this.safeCall(entry, `on:${event}`, () => handler(payload))
+    }
+  }
+
+  /**
+   * 插件往右下角发一条通知(限流)。
+   *
+   * 限流不是防坏插件(它本来就能画自己的界面),是防**好心办坏事**:
+   * 一个"文件变动就提醒"的插件在批量操作时会刷出几百条气泡,把界面糊住。
+   * 超限时返回 false 并写进插件日志 —— 作者能从日志里看到"我发太多了",
+   * 而不是对着一个不出现的通知猜。
+   */
+  private notify(entry: Entry, message: string, level: PluginNoticeLevel): boolean {
+    const now = Date.now()
+    entry.noticeTimes = entry.noticeTimes.filter(t => now - t < NOTICE_WINDOW_MS)
+    if (entry.noticeTimes.length >= NOTICE_PER_WINDOW) {
+      entry.logs.push(
+        `[warn] 一分钟内通知超过 ${NOTICE_PER_WINDOW} 条,这一条被丢弃(通知是给用户看的,不是日志)`
+      )
+      return false
+    }
+    entry.noticeTimes.push(now)
+
+    const win = getMainWindow()
+    if (!win || win.webContents.isDestroyed()) {
+      // 没有窗口时通知没地方可画。最常见的是插件在 onEnable 里就发了一条 ——
+      // 那时应用可能还没建窗。留一句日志,免得作者对着一个不出现的通知反复猜
+      entry.logs.push('[warn] 界面还没就绪,这条通知被丢掉了')
+      return false
+    }
+    const notice: PluginNotice = {
+      pluginId: entry.id,
+      pluginName: entry.descriptor.name,
+      message: String(message).slice(0, NOTICE_TEXT_MAX),
+      level,
+      at: now
+    }
+    win.webContents.send(IPC.PluginNotice, notice)
+    return true
+  }
+
 }
 
 /** 登记表记录 → 下发给渲染层的来源信息(只暴露展示需要的字段) */
@@ -793,10 +1287,11 @@ export function normalizeConfig(
 }
 
 export async function initPluginHost(
-  provision?: (host: PluginHost) => Promise<void>
+  provision?: (host: PluginHost) => Promise<void>,
+  devDirs: readonly string[] = []
 ): Promise<PluginHost> {
   host = new PluginHost()
-  await host.init(provision)
+  await host.init(provision, devDirs)
   return host
 }
 

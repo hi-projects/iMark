@@ -1,0 +1,43 @@
+{
+  "id": "quick-edit",
+  "name": "Quick Edit",
+  "description": "在光标所在行的左侧放一个「+」按钮，点开即可插入表格等常用内容。",
+  "version": "1.0.0",
+  "author": "iMark 官方",
+  "kind": "script",
+  "main": "main.js",
+  "permissions": [],
+  "engines": { "imark": ">=0.1.0" },
+  "fields": [],
+  "actions": [],
+  "lineMenu": [
+    {
+      "id": "table",
+      "label": "表格",
+      "action": "insert-table",
+      "dialog": {
+        "title": "插入表格",
+        "confirmLabel": "确定",
+        "fields": [
+          {
+            "key": "rows",
+            "kind": "number",
+            "label": "行数",
+            "default": 3,
+            "min": 1,
+            "max": 50,
+            "description": "含表头：第一行是表头，第二行是 Markdown 表格必需的分隔行，之后才是内容行。填 3 得到 1 行表头 + 2 行内容。"
+          },
+          {
+            "key": "cols",
+            "kind": "number",
+            "label": "列数",
+            "default": 3,
+            "min": 1,
+            "max": 20
+          }
+        ]
+      }
+    }
+  ]
+}

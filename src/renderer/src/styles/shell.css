@@ -165,6 +165,71 @@
   outline: none;
 }
 
+/* ---------- 文件树右键菜单 ---------- */
+
+/* 只负责接住"点别处"与"再右键一次",本身不可见 */
+.explorer-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.explorer-menu {
+  position: fixed;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.explorer-menu-item {
+  /* 插件条目右边要挂来源名,所以是 flex 而不是 block */
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.explorer-menu-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.explorer-menu-danger {
+  color: var(--danger);
+}
+
+.explorer-menu-label {
+  flex: 1;
+}
+
+/* 来源名:字号更小、更淡。它的作用是"划清界限",不是抢注意力 */
+.explorer-menu-source {
+  flex: none;
+  max-width: 110px;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+}
+
+.explorer-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
 /* ---------- 大纲侧栏 ---------- */
 
 /* 大纲固定在窗口右侧 */
@@ -263,6 +328,28 @@
 
 .status-bar .status-spacer {
   flex: 1;
+}
+
+/* 定时保存的即时反馈:亮几秒自己消失(存活时间由 services/autoSave 控制),
+   常驻一个「已保存」会在没有改动时也显得刚保存过,反而不可信 */
+.status-bar .status-autosave {
+  font-size: 11.5px;
+  color: var(--success);
+  white-space: nowrap;
+  animation: status-autosave-in 0.18s ease;
+}
+
+.status-bar .status-autosave-error {
+  color: var(--danger);
+}
+
+@keyframes status-autosave-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .status-bar .status-file {

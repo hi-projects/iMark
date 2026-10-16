@@ -14,7 +14,8 @@
  *   3. base   —— 全局 reset 与基础排版
  *   4. shell  —— 应用外壳:三栏布局、侧栏(文件列表/大纲)、状态栏
  *   5. editor —— CodeMirror 外观与所见即所得样式(标题/强调/代码/公式/widget)
- *   6. components —— 独立组件:快速切换器、仓库选择界面、设置面板、自定义样式
+ *   6. components —— 独立组件:快速切换器、仓库选择界面、设置面板、行首「+」菜单、
+ *                    自定义样式
  *
  * 用户自己的样式走 `registry.ts` 运行时注入(见 `userStyleService.ts`),
  * 落在 head 末尾,同特异性下赢过这里的所有层 —— 那是刻意的,它们是用户的意思。
@@ -31,6 +32,8 @@ import './components/picker.css'
 import './components/settings.css'
 import './components/plugins.css'
 import './components/market.css'
+import './components/lineMenu.css'
+import './components/toast.css'
 // 放最后:它要盖掉 .plugin-icon-btn:hover 的红色(hover 变红是给「删除」用的,
 // 「重新读取」是中性操作)
 import './components/userstyle.css'

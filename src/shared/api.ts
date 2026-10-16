@@ -12,7 +12,14 @@ import type {
   PublishPreview,
   PublishResult
 } from './market'
-import type { PluginActionResult, PluginView } from './plugins'
+import type {
+  PluginActionPayload,
+  PluginActionResult,
+  PluginContribInvoke,
+  PluginContribsSnapshot,
+  PluginNotice,
+  PluginView
+} from './plugins'
 import type { ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
 
@@ -31,6 +38,8 @@ export interface WindowApi {
   /** 让主进程跟着视图调窗口状态:选择页是启动尺寸,编辑器最大化 */
   setWindowView(view: 'picker' | 'editor'): void
   setDocDirty(dirty: boolean): void
+  /** 当前文档的绝对路径(没打开文件时 null)—— 主进程据此划定 imark:// 能读的范围 */
+  setDocPath(path: string | null): void
   notifySaveDone(ok: boolean): void
   /** 必须在 preload 同步调用 webUtils.getPathForFile,主世界无法直接访问 */
   getPathForFile(file: File): string
@@ -53,12 +62,38 @@ export interface WindowApi {
     targetId: string | null,
     value: string | null
   ): Promise<PluginView[]>
-  /** targetId 只在 descriptor.targetActions 的动作上出现(对目标列表的某一行执行) */
-  runPluginAction(id: string, action: string, targetId?: string): Promise<PluginActionResult>
+  /**
+   * targetId 只在 descriptor.targetActions 的动作上出现(对目标列表的某一行执行);
+   * payload 只在行首菜单的动作上出现(对话框里填的值 + 触发那一行的快照)。
+   */
+  runPluginAction(
+    id: string,
+    action: string,
+    targetId?: string,
+    payload?: PluginActionPayload
+  ): Promise<PluginActionResult>
   /** 主进程要求保存脏文档时的回执 */
   notifyPluginFlushed(): void
   onPluginFlushDoc(cb: () => void): () => void
   onPluginStatus(cb: (plugins: PluginView[]) => void): () => void
+  /** 首次挂载时主动要一次贡献点快照(不必等下一次变更) */
+  getPluginContribs(): Promise<PluginContribsSnapshot>
+  /** 执行一次界面贡献点(命令面板/状态栏/右键菜单共用一条通道) */
+  runPluginContrib(invoke: PluginContribInvoke): Promise<PluginActionResult>
+  onPluginContribs(cb: (snapshot: PluginContribsSnapshot) => void): () => void
+  onPluginNotice(cb: (notice: PluginNotice) => void): () => void
+  /** 「插件」菜单(含快捷键)点了某条命令 */
+  onPluginCommand(cb: (o: { pluginId: string; itemId: string }) => void): () => void
+  /** 文档内容变了。**调用方负责节流** —— 每次按键都过一次 IPC 是不可接受的 */
+  notifyDocChanged(o: { dirty: boolean; words: number; chars: number }): void
+  setEditorPresence(present: boolean): void
+  /**
+   * 一份文档成功写进了磁盘(插件的 document:save 钩子靠它触发)。
+   *
+   * 传**刚写的那份文档的路径**:写盘期间用户可能已经切走了,
+   * 让主进程拿"当前文档"去猜会张冠李戴。
+   */
+  notifyDocSaved(filePath: string): void
 
   // ---------- 插件市场 ----------
   /**

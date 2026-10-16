@@ -5,6 +5,7 @@ import { registerImarkProtocol } from './protocol'
 import { buildAppMenu } from './menu'
 import { loadSettings } from './settings'
 import { getPluginHost, initPluginHost } from './plugins/host'
+import { devDirsFromArgv } from './plugins/dev'
 import { ensureBundledProvisioned } from './market/bundled'
 import { checkUpdates } from './market/updates'
 import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
@@ -58,7 +59,11 @@ if (!app.requestSingleInstanceLock()) {
     // 插件宿主依赖 settings 与 safeStorage,必须在建窗之前就绪。
     // 第二个参数负责补装应用自带的兜底插件包(如「定时上传（Git）」)——
     // 老用户升级上来时,它的配置与密钥都原封不动,只是从内置变成了一个正常安装的插件。
-    await initPluginHost(ensureBundledProvisioned)
+    // 第三个是 `--plugin-dev=<目录>`:插件作者的开发模式(见 plugins/dev.ts)。
+    // 它是**这一次运行**的事,不写进任何设置,所以从命令行读而不是从 settings 读。
+    const devDirs = devDirsFromArgv(process.argv)
+    if (devDirs.length > 0) console.log(`[iMark] 开发模式插件目录:${devDirs.join(', ')}`)
+    await initPluginHost(ensureBundledProvisioned, devDirs)
     buildAppMenu()
     createMainWindow(settings)
     // 看门狗要等窗口出来才挂:目录一变就要广播给渲染层,没有窗口时广播是空转

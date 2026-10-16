@@ -1,8 +1,23 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
-import { Palette, Store, X } from 'lucide-vue-next'
+import { Palette, RotateCcw, Store, TextCursorInput, X } from 'lucide-vue-next'
 import { computed } from 'vue'
+import {
+  AUTO_SAVE_INTERVAL_MAX,
+  AUTO_SAVE_INTERVAL_MIN,
+  EDITOR_FONT_SIZE_MAX,
+  EDITOR_FONT_SIZE_MIN,
+  intervalLabel
+} from '@shared/editorSettings'
 import { appStore, closeSettings, setTheme, THEME_LABELS, THEME_ORDER } from '../stores/app'
+import {
+  previewFontSize,
+  resetEditorSettings,
+  setAutoSave,
+  setAutoSaveInterval,
+  setEditorFontSize,
+  setLineWrapping
+} from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
 import {
   openMarketSettings,
@@ -24,6 +39,7 @@ const title = computed(() => {
     if (tab === 'browse') return settingsNav.market.detailId ? '插件详情' : '浏览市场'
     return tab === 'publish' ? '发布插件' : '已安装插件'
   }
+  if (settingsNav.page === 'editor') return '编辑器'
   if (settingsNav.page === 'plugin') {
     return (
       pluginStore.list.find(p => p.descriptor.id === settingsNav.pluginId)?.descriptor.name ?? '插件'
@@ -31,6 +47,34 @@ const title = computed(() => {
   }
   return '外观'
 })
+
+/** 间隔的常用档位。多数人只想在「别太频繁」和「别丢太多」之间挑一个,不想算秒数 */
+const INTERVAL_PRESETS = [
+  { label: '10 秒', sec: 10 },
+  { label: '30 秒', sec: 30 },
+  { label: '1 分钟', sec: 60 },
+  { label: '5 分钟', sec: 300 },
+  { label: '10 分钟', sec: 600 }
+]
+
+/**
+ * 手打间隔:越界由 clampInterval 夹到上下限,输入框会跟着回弹。
+ * 清空时按「没输入」而不是 0 处理 —— 否则一顿删除反而落到最短的 5 秒,
+ * 成了最激进的档位,显然不是清空的人想要的。
+ */
+function onIntervalChange(e: Event): void {
+  const raw = (e.target as HTMLInputElement).value.trim()
+  void setAutoSaveInterval(raw === '' ? Number.NaN : Number(raw))
+}
+
+/** 拖滑块时即时预览字号(只改画面),松手才写盘 */
+function onFontSizeInput(e: Event): void {
+  previewFontSize(Number((e.target as HTMLInputElement).value))
+}
+
+function onFontSizeCommit(e: Event): void {
+  void setEditorFontSize(Number((e.target as HTMLInputElement).value))
+}
 
 /** 市场入口在左栏「插件」分组里排第一项(与 Obsidian 的心智一致) */
 function openMarket(): void {
@@ -62,6 +106,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
         >
           <Palette :size="15" />
           <span>外观</span>
+        </button>
+        <button
+          class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'editor' }"
+          @click="settingsNav.page = 'editor'"
+        >
+          <TextCursorInput :size="15" />
+          <span>编辑器</span>
         </button>
         <!-- 插件单独一行分组:市场排第一项,下面直接列出每个已安装插件 -->
         <div class="settings-nav-group">插件</div>
@@ -111,6 +163,127 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 
         <div v-else-if="settingsNav.page === 'plugin'" class="settings-body">
           <PluginSettings />
+        </div>
+
+        <div v-else-if="settingsNav.page === 'editor'" class="settings-body">
+          <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">定时保存</div>
+              <div class="settings-section-desc">
+                按固定间隔把改动写回文件,不用一直惦记着按 Ctrl+S。
+                只对已经保存过的文件生效:还没落过盘的新文档不会被自动保存,
+                免得在输入到一半时弹出「另存为」。
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">启用定时保存</div>
+                  <div class="settings-row-desc">
+                    {{
+                      appStore.autoSave
+                        ? `已开启 · ${intervalLabel(appStore.autoSaveInterval)}保存一次`
+                        : '当前关闭,只能手动保存 (Ctrl+S)'
+                    }}
+                  </div>
+                </div>
+                <label
+                  class="settings-switch"
+                  :title="appStore.autoSave ? '关闭定时保存' : '开启定时保存'"
+                >
+                  <input type="checkbox" :checked="appStore.autoSave" @change="setAutoSave(!appStore.autoSave)" />
+                  <span class="settings-switch-track" />
+                </label>
+              </div>
+
+              <div class="settings-row settings-row-stack">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">保存间隔</div>
+                  <div class="settings-row-desc">
+                    最短 {{ AUTO_SAVE_INTERVAL_MIN }} 秒,最长 1 小时。
+                    没有改动的间隔不写盘,文件不会被无谓地刷新时间戳。
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <span class="settings-presets">
+                    <button
+                      v-for="p in INTERVAL_PRESETS"
+                      :key="p.sec"
+                      class="settings-preset"
+                      :class="{ 'settings-preset-active': appStore.autoSaveInterval === p.sec }"
+                      @click="setAutoSaveInterval(p.sec)"
+                    >
+                      {{ p.label }}
+                    </button>
+                  </span>
+                  <label class="settings-number-wrap">
+                    <input
+                      class="settings-number"
+                      type="number"
+                      :min="AUTO_SAVE_INTERVAL_MIN"
+                      :max="AUTO_SAVE_INTERVAL_MAX"
+                      step="5"
+                      :value="appStore.autoSaveInterval"
+                      @change="onIntervalChange"
+                    />
+                    <span class="settings-unit">秒</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">显示</div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">自动换行</div>
+                  <div class="settings-row-desc">
+                    关闭后长段落不折行,靠横向滚动看完整行;表格、公式这类宽内容更适合关闭。
+                  </div>
+                </div>
+                <label
+                  class="settings-switch"
+                  :title="appStore.lineWrapping ? '关闭自动换行' : '开启自动换行'"
+                >
+                  <input type="checkbox" :checked="appStore.lineWrapping" @change="setLineWrapping(!appStore.lineWrapping)" />
+                  <span class="settings-switch-track" />
+                </label>
+              </div>
+
+              <div class="settings-row settings-row-stack">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">正文字号</div>
+                  <div class="settings-row-desc">标题、代码块会按比例一起缩放,只影响编辑器,不影响导出。</div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    :min="EDITOR_FONT_SIZE_MIN"
+                    :max="EDITOR_FONT_SIZE_MAX"
+                    step="1"
+                    :value="appStore.editorFontSize"
+                    @input="onFontSizeInput"
+                    @change="onFontSizeCommit"
+                  />
+                  <span class="settings-readout">{{ appStore.editorFontSize }} px</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <button class="settings-reset" @click="resetEditorSettings()">
+              <RotateCcw :size="13" />
+              <span>恢复默认设置</span>
+            </button>
+          </div>
         </div>
 
         <div v-else class="settings-body">

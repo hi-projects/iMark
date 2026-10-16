@@ -1,0 +1,92 @@
+{
+  "_comment": [
+    "插件包格式里那些**必须在多处保持一致**的数据。单独抽成一份纯 JSON,是因为消费它的",
+    "三处运行环境互不相通:应用(TS,打包后跑在 Electron)、scripts/build-plugins.mjs",
+    "(裸 Node ESM)、server/src/validate.mjs(裸 Node ESM,独立进程)。",
+    "放在 TS 模块里,后两者就 import 不了;让它们各抄一份,就是等着漂移。",
+    "",
+    "改这个文件之前先读一遍 src/shared/pluginPackage.ts 顶部的说明。"
+  ],
+
+  "_manifestKeyOrder": [
+    "integrity = sha256(JSON.stringify({manifest, files})),而 JSON.stringify 保留键的插入顺序。",
+    "所以「清单对象按什么顺序重建」直接决定 integrity 的值:打包端与校验端顺序对不上,",
+    "算出来的 integrity 就对不上,包会被自己的校验拒掉。",
+    "validateManifest() 按这个顺序重建清单,打包器也必须按这个顺序。",
+    "**在末尾追加新键是安全的**(既有包算出的 integrity 不变);插在中间会改掉所有既有包的 integrity。"
+  ],
+  "manifestKeyOrder": [
+    "id",
+    "name",
+    "description",
+    "version",
+    "kind",
+    "fields",
+    "actions",
+    "author",
+    "homepage",
+    "capability",
+    "main",
+    "permissions",
+    "icon",
+    "engines",
+    "targetActions",
+    "targetFieldKey",
+    "lineMenu",
+    "commands",
+    "statusBar",
+    "menus"
+  ],
+
+  "_arrayKeys": [
+    "重建清单时,这些键在缺失时补空数组而不是省略 —— 宿主代码读 manifest.fields /",
+    "manifest.actions 时不必到处写 ?? [],键在不在两种情况下形状一致。",
+    "",
+    "**只有「宿主无条件读」的键才能进这个表。**commands / statusBar / menus 都是可选的,",
+    "放进来的后果是:所有既有包重算一次会凭空多出三个空数组,integrity 全变 ——",
+    "而那些包早就发布出去了,客户端会一致认为它们「被篡改过」。"
+  ],
+  "arrayKeys": ["fields", "actions"],
+
+  "_allowedExtensions": [
+    "允许出现在插件包里的文件扩展名。**服务端、客户端、打包器共用这一份**:",
+    "服务端比客户端严 → 作者发不出本来能装的包(发布直接失败);",
+    "服务端比客户端松 → 包收下了但谁也装不上(更糟,问题拖到用户那里才暴露)。",
+    "两者必须同时改。",
+    "html/htm 是沙箱插件(见 pluginPackage.ts 的 kind)的界面入口,必须能进包。"
+  ],
+  "allowedExtensions": [
+    "js",
+    "mjs",
+    "cjs",
+    "json",
+    "md",
+    "txt",
+    "css",
+    "html",
+    "htm",
+    "svg",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "woff",
+    "woff2"
+  ],
+
+  "_textExtensions": [
+    "上面这些里,能当纯文本直接显示给用户看的(「查看源码」用)。",
+    "含代码的文本一律要在这里 —— 确认框承诺「显示的就是将要运行的字节」,",
+    "沙箱插件的界面代码若看不了,这个承诺就落空了。",
+    "其余是二进制,渲染层不往界面上送。"
+  ],
+  "textExtensions": ["js", "mjs", "cjs", "json", "md", "txt", "css", "html", "htm"],
+
+  "_reservedSegment": [
+    "包内路径里禁止出现的路径段。宿主将来要往插件目录里放自己的保留资源",
+    "(主题令牌、执行器页面等),如果包内能有同名文件,就能把它影子掉。",
+    "现在只是拒绝,不用等真的有这些资源再补。"
+  ],
+  "reservedSegment": "__imark"
+}

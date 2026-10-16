@@ -1,7 +1,18 @@
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
+import type { PluginActionPayload, PluginContribInvoke } from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
-import { getMainWindow, handleSaveDone, setDocDirty, setWindowTitle, setWindowView } from './window'
+import {
+  currentDocPath,
+  getMainWindow,
+  handleSaveDone,
+  hasEditor,
+  setCurrentDocPath,
+  setDocDirty,
+  setEditorPresent,
+  setWindowTitle,
+  setWindowView
+} from './window'
 import {
   showConfirmDelete,
   showConfirmDiscard,
@@ -90,8 +101,46 @@ export function registerIpc(): void {
     setDocDirty(value)
   })
 
+  ipcMain.on(IPC.DocPath, (_e, p: unknown) => {
+    const path = typeof p === 'string' ? p : null
+    // 换了文件要告诉插件。放在这里而不是窗口那一层:插件事件的触发点应当集中在
+    // 一处,不然「哪些事插件能知道」就要满仓找 ipcMain.on 才说得清。
+    const changed = currentDocPath() !== path
+    setCurrentDocPath(path)
+    if (changed) {
+      void getPluginHost()?.emit('file:open', { filePath: path })
+      // 有了路径就意味着编辑器里有东西 —— 命令的可用性变了(见 contextChanged)
+      getPluginHost()?.contextChanged()
+    }
+  })
+
+  ipcMain.on(IPC.EditorPresence, (_e, value: unknown) => {
+    // 比的是**结论**而不是这个布尔值本身:路径也在参与判断,文档没变时
+    // 这个字段怎么翻都不会改变结论,那就没必要重算一遍菜单
+    const before = hasEditor()
+    setEditorPresent(Boolean(value))
+    if (hasEditor() !== before) getPluginHost()?.contextChanged()
+  })
+
+  ipcMain.on(IPC.DocChanged, (_e, o: { dirty?: boolean; words?: number; chars?: number }) => {
+    void getPluginHost()?.emit('document:change', {
+      filePath: currentDocPath(),
+      dirty: Boolean(o?.dirty),
+      words: Number(o?.words) || 0,
+      chars: Number(o?.chars) || 0
+    })
+  })
+
   ipcMain.on(IPC.SaveDone, (_e, o: { ok: boolean }) => {
     handleSaveDone(o.ok)
+  })
+
+  // 一次真的写盘完成了(手动保存、定时保存、另存为都走这儿)。
+  // 关闭前那次保存走的是上面的 SaveDone —— 那条路上渲染层调用 saveCurrentFile,
+  // 于是这里照样会收到一条,不必在那边重复发。
+  ipcMain.on(IPC.DocSaved, (_e, path: unknown) => {
+    const saved = typeof path === 'string' && path ? path : currentDocPath()
+    void getPluginHost()?.emit('document:save', { filePath: saved, ok: true })
   })
 
   // ---------- 仓库 ----------
@@ -148,12 +197,29 @@ export function registerIpc(): void {
     }
   )
 
-  ipcMain.handle(IPC.PluginRun, (_e, o: { id: string; action: string; targetId?: string }) =>
-    requirePluginHost().runAction(o.id, o.action, o.targetId)
+  ipcMain.handle(
+    IPC.PluginRun,
+    (_e, o: { id: string; action: string; targetId?: string; payload?: PluginActionPayload }) =>
+      requirePluginHost().runAction(o.id, o.action, o.targetId, o.payload)
   )
 
   ipcMain.on(IPC.PluginFlushDone, () => {
     getPluginHost()?.handleFlushDone()
+  })
+
+  // ---------- 插件界面贡献点 ----------
+
+  ipcMain.handle(IPC.PluginContribGet, async () => {
+    const host = getPluginHost()
+    if (!host) return { contribs: [], context: { hasEditor: false, hasVault: false } }
+    // 可用性判定要在主进程算:渲染层拿到的每条命令已经带上了「现在能不能用」,
+    // 这样两边看到的结论天生一致(渲染层无法只靠自己的状态算出同一个答案 ——
+    // 它不知道主进程视角的仓库状态)
+    return { contribs: await host.contributions(), context: host.commandContext() }
+  })
+
+  ipcMain.handle(IPC.PluginContribRun, (_e, o: PluginContribInvoke) => {
+    return requirePluginHost().invokeContrib(o)
   })
 
   // ---------- 插件市场 ----------

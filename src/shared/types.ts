@@ -13,6 +13,17 @@ export interface Settings {
   vaultPath: string | null
   /** 上次打开的仓库内文件 */
   lastFile: string | null
+  /** 定时保存:按固定间隔把改动写回文件(设置面板「编辑器」页) */
+  autoSave: boolean
+  /**
+   * 定时保存间隔(秒)。只对**已经落过盘**的文件生效 ——
+   * 未命名文档不会自动弹「另存为」,那会打断正在打字的人。
+   */
+  autoSaveInterval: number
+  /** 编辑器软换行(长行折行显示) */
+  lineWrapping: boolean
+  /** 编辑器正文字号(px) */
+  editorFontSize: number
   /** 最近打开的仓库列表(最新的在前) */
   vaults: string[]
   /** 启动时跳过仓库选择界面,直接打开上次仓库 */

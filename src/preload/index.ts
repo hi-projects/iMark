@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
-import type { PluginView } from '@shared/plugins'
+import type {
+  PluginActionPayload,
+  PluginActionResult,
+  PluginContribInvoke,
+  PluginContribsSnapshot,
+  PluginNotice,
+  PluginView
+} from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
 
@@ -25,6 +32,8 @@ const api = {
     ipcRenderer.send(IPC.SetTitle, { name, dirty, vaultName }),
   setWindowView: (view: 'picker' | 'editor'): void => ipcRenderer.send(IPC.SetView, view),
   setDocDirty: (dirty: boolean): void => ipcRenderer.send(IPC.DocDirty, dirty),
+  /** 告诉主进程当前开着哪个文件 —— 它据此决定 imark:// 能读哪些图片 */
+  setDocPath: (path: string | null): void => ipcRenderer.send(IPC.DocPath, path),
   notifySaveDone: (ok: boolean): void => ipcRenderer.send(IPC.SaveDone, { ok }),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   onMenuCommand: (cb: (id: MenuCommandId) => void): (() => void) =>
@@ -47,12 +56,31 @@ const api = {
     ipcRenderer.invoke(IPC.PluginSave, { id, ...patch }),
   setPluginSecret: (id: string, fieldKey: string, targetId: string | null, value: string | null) =>
     ipcRenderer.invoke(IPC.PluginSetSecret, { id, fieldKey, targetId, value }),
-  runPluginAction: (id: string, action: string, targetId?: string) =>
-    ipcRenderer.invoke(IPC.PluginRun, { id, action, targetId }),
+  runPluginAction: (id: string, action: string, targetId?: string, payload?: PluginActionPayload) =>
+    ipcRenderer.invoke(IPC.PluginRun, { id, action, targetId, payload }),
   notifyPluginFlushed: (): void => ipcRenderer.send(IPC.PluginFlushDone),
   onPluginFlushDoc: (cb: () => void): (() => void) => subscribe<void>(IPC.PluginFlushDoc, cb),
   onPluginStatus: (cb: (plugins: PluginView[]) => void): (() => void) =>
     subscribe<PluginView[]>(IPC.PluginStatus, cb),
+  // ---------- 插件界面贡献点 ----------
+  getPluginContribs: (): Promise<PluginContribsSnapshot> =>
+    ipcRenderer.invoke(IPC.PluginContribGet),
+  runPluginContrib: (invoke: PluginContribInvoke): Promise<PluginActionResult> =>
+    ipcRenderer.invoke(IPC.PluginContribRun, invoke),
+  onPluginContribs: (cb: (snapshot: PluginContribsSnapshot) => void): (() => void) =>
+    subscribe<PluginContribsSnapshot>(IPC.PluginContrib, cb),
+  onPluginNotice: (cb: (notice: PluginNotice) => void): (() => void) =>
+    subscribe<PluginNotice>(IPC.PluginNotice, cb),
+  /** 「插件」菜单或它的快捷键点了某条命令 —— 回到渲染层来执行(它才知道光标在哪) */
+  onPluginCommand: (cb: (o: { pluginId: string; itemId: string }) => void): (() => void) =>
+    subscribe<{ pluginId: string; itemId: string }>(IPC.PluginCommand, cb),
+  /** 文档内容变了(渲染层已节流,最快约 400ms 一次) */
+  notifyDocChanged: (o: { dirty: boolean; words: number; chars: number }): void =>
+    ipcRenderer.send(IPC.DocChanged, o),
+  /** 编辑器里有没有文档 —— 与「有没有文件路径」是两件事,未命名文档没有路径 */
+  setEditorPresence: (present: boolean): void => ipcRenderer.send(IPC.EditorPresence, present),
+  /** 一份文档成功写进了磁盘(插件的 document:save 钩子靠它触发) */
+  notifyDocSaved: (filePath: string): void => ipcRenderer.send(IPC.DocSaved, filePath),
   // ---------- 插件市场 ----------
   pickMarketPackage: () => ipcRenderer.invoke(IPC.MarketPickPackage),
   packMarketDir: () => ipcRenderer.invoke(IPC.MarketPackDir),

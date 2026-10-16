@@ -124,6 +124,8 @@ const EXPORT_CSS = `
   blockquote { margin: 0; padding: 0 1em; border-left: 3px solid #d0d7de; color: #57606a; }
   table { border-collapse: collapse; margin: 1em 0; }
   th, td { border: 1px solid #d0d7de; padding: 6px 13px; }
+  /* 空格子没有行盒,会塌成一条 —— 用零宽空格把行盒立起来,和编辑器里一个道理 */
+  th:empty::after, td:empty::after { content: '\\200b'; }
   th { background: #f6f8fa; }
   img { max-width: 100%; }
   hr { border: none; border-top: 2px solid #d8dee4; margin: 2em 0; }

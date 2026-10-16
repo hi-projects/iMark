@@ -153,6 +153,15 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
 
     <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
 
+    <!--
+      开发模式(--plugin-dev=<目录>)加载的插件。它和装进来的插件在列表里长得一样,
+      所以必须显眼地说清楚:代码不在 userData 里、改文件即时生效、重启应用就不见了。
+    -->
+    <div v-if="selected.dev" class="plugin-dev-banner">
+      <span class="plugin-dev-dot" />
+      <span>开发模式:代码来自你指定的目录,改文件即时生效;它不是安装进来的,重启应用就不在了</span>
+    </div>
+
     <!-- 外部安装的插件:来源、权限与校验值(内置插件不显示这一块) -->
     <div v-if="hasMeta" class="plugin-meta">
       <div class="plugin-meta-line">

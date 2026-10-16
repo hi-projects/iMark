@@ -11,6 +11,18 @@ export const IPC = {
   SetTitle: 'window:set-title',
   SetView: 'window:set-view',
   DocDirty: 'doc:dirty',
+  /**
+   * 渲染→主:当前打开文档的**绝对路径**(没有打开任何文件时传 null)。
+   *
+   * 主进程本来完全不知道用户开着哪个文件 —— 它只知道标题里的文件名。但有两件事
+   * 必须要它知道:① imark:// 协议只允许读「当前文档所在目录 + 仓库根」里的图片
+   * (见 main/protocol.ts);② 插件往文档里写字时要先让编辑器落盘、写完再让编辑器重载。
+   * 两者都以「当前文档是谁」为基准。
+   *
+   * 单独开一个通道而不是塞进 SetTitle:标题的 watcher 盯的是文件名,而两个不同
+   * 目录下的同名文件切换时文件名不变 —— 那种情况下文档路径照样得更新。
+   */
+  DocPath: 'doc:path',
   MenuCommand: 'menu:command',
   SaveBeforeClose: 'app:save-before-close',
   SaveDone: 'app:save-done',
@@ -31,6 +43,55 @@ export const IPC = {
   PluginFlushDoc: 'plugin:flush-doc',
   /** 渲染→主:保存完成回执 */
   PluginFlushDone: 'plugin:flush-done',
+  /**
+   * 主→渲染:当前启用插件的**界面贡献点**快照(命令 / 状态栏 / 右键菜单)。
+   *
+   * 单独一条通道,不塞进 PluginStatus:那条是高频的(插件每 setState 一次就广播),
+   * 而贡献点只在插件启停/重载时变。混在一起的话,一次状态栏进度更新也要把
+   * 几十条命令的描述搬过 IPC。
+   */
+  PluginContrib: 'plugin:contrib',
+  /** 渲染→主:执行一次贡献点(命令面板 / 状态栏 / 右键菜单共用) */
+  PluginContribRun: 'plugin:contrib-run',
+  /** 渲染→主:渲染层主动要一次贡献点快照(首次挂载时) */
+  PluginContribGet: 'plugin:contrib-get',
+  /** 主→渲染:插件发来的一条通知(右下角气泡) */
+  PluginNotice: 'plugin:notice',
+  /**
+   * 主→渲染:「插件」菜单(或它的快捷键)点了某条命令。
+   *
+   * 命令的快捷键必须挂成原生菜单项,于是这条命令的入口就在主进程那边 ——
+   * 但真正干活的是渲染层(它才知道光标在哪、哪一行),所以原生菜单点完
+   * 还是回到这里,与命令面板走同一条 `PluginContribRun`。
+   */
+  PluginCommand: 'plugin:command',
+  /**
+   * 渲染→主:文档内容变了。
+   *
+   * 渲染层**已节流**才发出来 —— 每次按键都过一次 IPC 是不可接受的,
+   * 而插件要的「文档变了」本来就是粗粒度的(自动保存、字数统计这类用途)。
+   */
+  DocChanged: 'doc:changed',
+  /**
+   * 渲染→主:编辑器里**有没有文档**。
+   *
+   * 不能用 DocPath 是否为 null 来代替:一份还没保存过的新文档同样是在编辑文档,
+   * 而它的路径就是 null。命令的可用性判定要的是「有没有东西可编辑」,
+   * 这两件事在"未命名文档"上恰好相反。
+   */
+  EditorPresence: 'editor:presence',
+  /**
+   * 渲染→主:一份文档**成功写进了磁盘**。
+   *
+   * 与 SaveDone 是两件事,别合并:那条是"关闭窗口前那次保存做完了"的**回执**,
+   * 主进程在等它(handleSaveDone 会兑现一个挂起的 flush);这条是**通知**,
+   * 谁都没在等 —— 手动保存、定时保存各来一条,插件的 document:save 钩子靠它触发。
+   * 合并的话,一次用户随手按的 Ctrl+S 会去兑现一个与它无关的 flush 等待。
+   *
+   * 为什么由渲染层发而不是主进程自己看:只有渲染层知道"这次写盘是哪份文档"——
+   * 写盘那一小会儿用户可能已经切走了(定时保存尤其如此)。
+   */
+  DocSaved: 'doc:saved',
 
   // ---------- 插件市场 ----------
   /** 挑一个本地 .imkpkg.json 包 → 预览(不安装) */
@@ -121,3 +182,4 @@ export type MenuCommandId =
   | 'view:toggle-explorer'
   | 'view:settings'
   | 'view:market'
+  | 'view:command-palette'

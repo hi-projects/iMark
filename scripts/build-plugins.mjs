@@ -14,7 +14,14 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { dirname, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,47 +32,34 @@ const OUT = join(ROOT, 'src/main/market/builtin')
 const DIST = join(SRC, 'dist/plugins-src')
 
 const LIMITS = { envelopeBytes: 8 * 1024 * 1024, fileBytes: 2 * 1024 * 1024, mainBytes: 1024 * 1024 }
-const ALLOWED_EXT = ['js', 'mjs', 'cjs', 'json', 'md', 'txt', 'svg', 'png', 'css']
 /** 插件源码目录里不参与打包的目录 */
 const EXCLUDE = new Set(['node_modules', 'dist', '.git'])
 /** 也不参与打包的文件:源码与构建中间产物。清单单独处理(它进 envelope.manifest,不进 files) */
 const EXCLUDE_FILE = /(^|\/)(manifest\.json|.*\.(ts|tsx|mts|cts|map))$/
 
+/**
+ * 与 src/shared/pluginPackage.ts 共用的格式数据(清单键序、扩展名白名单、保留段)。
+ *
+ * 直接读 JSON 而不是各抄一份:这个脚本跑在裸 Node 上,import 不了 TS 模块,
+ * 而键序与白名单**必须**与应用逐字一致 —— 见 pluginFormat.json 里的说明。
+ */
+const FORMAT = JSON.parse(readFileSync(join(ROOT, 'src/shared/pluginFormat.json'), 'utf8'))
+const ALLOWED_EXT = FORMAT.allowedExtensions
+const RESERVED_SEGMENT = FORMAT.reservedSegment
+const ARRAY_KEYS = new Set(FORMAT.arrayKeys)
+
 const sha256 = buf => createHash('sha256').update(buf).digest('hex')
 
 /**
- * 按 validateManifest() 构造返回值的顺序重排清单键。
- *
- * **这个顺序必须与 src/shared/pluginPackage.ts 里的 validateManifest 完全一致** ——
- * integrity 是对 `JSON.stringify({manifest, files})` 求的 sha256,而 JSON.stringify
- * 保留对象的键插入顺序。顺序对不上,应用下载后算出来的 integrity 就对不上,
- * 内置包会被自己的校验拒掉。
- * (fields 数组本身不重排:validateManifest 原样透传 JSON 里的那个数组。)
+ * 与 shared/pluginPackage.ts 的 canonicalManifest() 同构 —— 同一个键序、同一套兜底。
+ * integrity 是对 `JSON.stringify({manifest, files})` 求的 sha256,JSON.stringify 保留键的
+ * 插入顺序,所以这个顺序是格式的一部分:两边对不上,包会被应用自己的校验拒掉。
  */
 function canonicalManifest(raw) {
-  const keys = [
-    'id',
-    'name',
-    'description',
-    'version',
-    'kind',
-    'fields',
-    'actions',
-    'author',
-    'homepage',
-    'capability',
-    'main',
-    'permissions',
-    'icon',
-    'engines',
-    'targetActions',
-    'targetFieldKey'
-  ]
   const out = {}
-  for (const key of keys) {
-    if (raw[key] === undefined) continue
-    if (key === 'actions') out[key] = raw.actions ?? []
-    else out[key] = raw[key]
+  for (const key of FORMAT.manifestKeyOrder) {
+    if (ARRAY_KEYS.has(key)) out[key] = raw[key] ?? []
+    else if (raw[key] !== undefined) out[key] = raw[key]
   }
   return out
 }
@@ -82,6 +76,7 @@ function isSafeRelPath(p) {
   const parts = p.split('/')
   if (parts.length > 3) return false
   if (parts.some(s => s === '' || s === '.' || s === '..')) return false
+  if (parts.some(s => s.toLowerCase() === RESERVED_SEGMENT)) return false
   const ext = (parts[parts.length - 1].split('.').pop() ?? '').toLowerCase()
   return ALLOWED_EXT.includes(ext)
 }
@@ -171,6 +166,12 @@ if (plugins.length === 0) {
 
 mkdirSync(OUT, { recursive: true })
 for (const name of plugins) {
+  // 把清单拷进编译产物目录,让它成为一个**可以直接跑开发模式的插件目录**
+  // (目录 = manifest.json + 清单声明的入口文件,与应用装好的插件目录同构)。
+  // 于是作者的循环是:`npm run plugins:watch` + `npm run dev -- --plugin-dev=…`
+  // 改一行 .ts → tsc 写 main.js → 宿主热重载,中间不需要打包、安装、确认。
+  copyFileSync(join(SRC, name, 'manifest.json'), join(DIST, name, 'manifest.json'))
+
   const { envelope, files } = buildOne(name)
   const target = join(OUT, `${envelope.manifest.id}.imkpkg.json`)
   writeFileSync(target, JSON.stringify(envelope, null, 2) + '\n', 'utf8')

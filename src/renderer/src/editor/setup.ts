@@ -1,4 +1,4 @@
-import { EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { EditorView, drawSelection, keymap } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { syntaxHighlighting } from '@codemirror/language'
@@ -6,6 +6,7 @@ import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-mar
 import { languages } from '@codemirror/language-data'
 import { classHighlighter } from '@lezer/highlight'
 import { wysiwyg } from './wysiwyg'
+import { lineMenu } from './lineMenu'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { updateActiveOutline } from './outline'
@@ -27,15 +28,44 @@ import { updateActiveOutline } from './outline'
 const editorTheme = EditorView.theme({
   '.cm-cursor': { borderLeft: '2px solid var(--accent)', marginLeft: '-1px' },
   '.cm-dropCursor': { borderLeft: '2px solid var(--accent)', marginLeft: '-1px' },
-  '.cm-scroller': { fontFamily: 'var(--font-editor)', lineHeight: '1.7' },
+  // 字号走 CSS 变量(设置面板「编辑器」页里可调):标题、代码块都按 em 跟着缩
+  '.cm-scroller': {
+    fontFamily: 'var(--font-editor)',
+    fontSize: 'var(--editor-font-size)',
+    lineHeight: '1.7'
+  },
   '.cm-content': { padding: '20px 0 40vh' },
-  '.cm-line': { padding: '0 28px' }
+  // position: relative 是行首「+」按钮的落点:它挂在行内(Decoration.widget),
+  // 只有相对本行定位才能用绝对定位藏进左侧这段 padding 里 ——
+  // 行内元素是占位的,不脱流就会把整行文字往右推
+  '.cm-line': { padding: '0 28px', position: 'relative' }
 })
+
+/**
+ * 软换行是唯一一个要能**运行时**改的扩展(设置面板里就一个开关,不该为它重建 state、
+ * 丢光标和撤销栈),所以单独装进 compartment。其余扩展都随 state 重建。
+ */
+const wrapCompartment = new Compartment()
+let wrapping = true
+
+/** 切开关时立即改当前文档 */
+export function applyWrapping(view: EditorView, on: boolean): void {
+  wrapping = on
+  view.dispatch({ effects: wrapCompartment.reconfigure(on ? EditorView.lineWrapping : []) })
+}
+
+/**
+ * 记住换行偏好:打开/新建文件会重建整个 state,新 state 得跟当前开关一致,
+ * 否则切一次文件就悄悄弹回默认值。
+ */
+export function setWrappingPreference(on: boolean): void {
+  wrapping = on
+}
 
 /** 扩展组装:换行 / 历史 / markdown(GFM+嵌套语言) / WYSIWYG / 键位 */
 export function buildExtensions(onDocChange: (view: EditorView) => void): Extension[] {
   return [
-    EditorView.lineWrapping,
+    wrapCompartment.of(wrapping ? EditorView.lineWrapping : []),
     drawSelection(),
     editorTheme,
     history(),
@@ -44,6 +74,7 @@ export function buildExtensions(onDocChange: (view: EditorView) => void): Extens
     markdown({ base: markdownLanguage, codeLanguages: languages, extensions: mathExtension }),
     syntaxHighlighting(classHighlighter),
     wysiwyg(),
+    lineMenu(),
     keymap.of([
       ...editorKeymap,
       ...markdownKeymap,

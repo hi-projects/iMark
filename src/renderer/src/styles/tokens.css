@@ -1,6 +1,9 @@
 :root {
   --font-editor: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
   --font-mono: 'Cascadia Code', Consolas, 'JetBrains Mono', 'Courier New', monospace;
+  /* 编辑器正文字号:设置面板「编辑器」页写这个变量,标题/代码块按 em 跟着缩。
+     它不属于任何一档主题 —— 换主题不该把字号也换掉 */
+  --editor-font-size: 16px;
 }
 
 :root,
@@ -19,6 +22,7 @@
   --bg-selection: rgba(9, 105, 218, 0.18);
   --shadow: rgba(31, 35, 40, 0.08);
   --success: #1a7f37;
+  --warn: #9a6700;
   --danger: #cf222e;
 }
 
@@ -37,6 +41,7 @@
   --bg-selection: rgba(68, 147, 248, 0.28);
   --shadow: rgba(1, 4, 9, 0.4);
   --success: #3fb950;
+  --warn: #d29922;
   --danger: #f85149;
 }
 
@@ -56,5 +61,6 @@
   --bg-selection: rgba(77, 159, 255, 0.26);
   --shadow: rgba(0, 0, 0, 0.75);
   --success: #4ec46a;
+  --warn: #e3b341;
   --danger: #ff5f56;
 }

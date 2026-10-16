@@ -40,6 +40,19 @@ const isScript = computed(() => preview.value?.kind === 'script')
 /** 权限扩大:非空时界面必须把它当成一个独立的、更重的提示 */
 const added = computed(() => preview.value?.newPermissions ?? [])
 
+/**
+ * 界面贡献点(目前只有行首菜单)。
+ *
+ * 与权限是两件不同的事:权限说的是「它能碰你的东西」,贡献点说的是「它会往你眼前
+ * 加东西」。后者是个**静默能力** —— 不说的话,用户装完只会发现编辑器里凭空多出一个
+ * 按钮,而不知道该去哪儿关。
+ */
+const editorItems = computed(() => preview.value?.descriptor.lineMenu ?? [])
+const editorLabels = computed(() => {
+  const labels = editorItems.value.map(i => i.label)
+  return labels.length > 4 ? `${labels.slice(0, 4).join('、')} 等` : labels.join('、')
+})
+
 const heading = computed(() => {
   const p = preview.value
   if (!p) return ''
@@ -117,6 +130,12 @@ async function copyIntegrity(): Promise<void> {
           <div>
             <dt>体积</dt>
             <dd>{{ preview.fileCount }} 个文件,共 {{ formatBytes(preview.totalBytes) }}</dd>
+          </div>
+          <div v-if="editorItems.length">
+            <dt>编辑器</dt>
+            <dd>
+              往光标行左侧的「+」菜单添加 {{ editorItems.length }} 项({{ editorLabels }})
+            </dd>
           </div>
         </dl>
 

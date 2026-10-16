@@ -88,6 +88,7 @@ function classifyPushError(stderr: string): string {
 class GitSyncPlugin {
   private readonly git: ImkGitApi
   private readonly secrets: ImkSecretsApi
+  private readonly vault: NonNullable<ImkApi['vault']>
 
   private timer: ReturnType<typeof setInterval> | null = null
   private configSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -103,8 +104,10 @@ class GitSyncPlugin {
     // 宿主会显示在插件卡片上,作者一眼能看出是清单忘了声明
     if (!imk.git) throw new Error('插件清单缺少 "git" 权限')
     if (!imk.secrets) throw new Error('插件清单缺少 "secrets" 权限')
+    if (!imk.vault) throw new Error('插件清单缺少 "vault:read" 权限')
     this.git = imk.git
     this.secrets = imk.secrets
+    this.vault = imk.vault
   }
 
   onEnable(): void {
@@ -205,7 +208,7 @@ class GitSyncPlugin {
 
     try {
       if (targets.length === 0) return fail('尚未配置远端仓库')
-      const vaultPath = await this.imk.vault.path()
+      const vaultPath = await this.vault.path()
       if (!vaultPath) return fail('未打开仓库，无法上传')
       if (!existsSync(vaultPath)) return fail('仓库目录不存在')
       if (!(await this.git.available())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
@@ -445,7 +448,7 @@ class GitSyncPlugin {
       return { ok: false, message: targetId ? '该远端已不存在（可能刚被删除）' : '尚未配置远端仓库' }
     }
     if (!(await this.git.available())) return { ok: false, message: '未找到 git，请先安装 Git' }
-    const vaultPath = await this.imk.vault.path()
+    const vaultPath = await this.vault.path()
     const cwd = vaultPath && existsSync(vaultPath) ? vaultPath : process.cwd()
 
     // 先清掉上一次的详情,让状态卡只反映本次测试

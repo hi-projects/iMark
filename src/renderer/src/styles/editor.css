@@ -119,7 +119,9 @@
 
 .cm-md-listmark-bullet::after {
   content: '•';
-  font-size: 0.95rem;
+  /* 用 rem 是因为父元素 font-size 被压成 0,em 会跟着变 0;
+     但要跟着正文字号缩放,所以直接算 —— 写死 0.95rem 的话调大字号后圆点会明显偏小 */
+  font-size: calc(var(--editor-font-size) * 0.95);
   line-height: 1;
   color: var(--accent);
 }
@@ -128,10 +130,63 @@
   color: var(--text-tertiary);
 }
 
+/* 光标在表内时的源码态 */
 .cm-md-table {
   font-family: var(--font-mono);
   font-size: 0.92em;
   color: var(--text-secondary);
+}
+
+/* 表格渲染态:整张表挂在表头那一行上,其余行由 cm-md-table-void 折叠 */
+.cm-md-table-widget {
+  display: block;
+  overflow-x: auto;
+  /* 单元格里的链接不能抢走点击 —— 点表格任何位置都该把光标送进表格。
+     CM 按坐标定位(不看 elementFromPoint),所以穿透不影响落点;
+     顺带也堵死了 widget 内的 <a> 触发页面跳转这条路 */
+  pointer-events: none;
+}
+
+.cm-md-table-widget table {
+  border-collapse: collapse;
+  margin: 4px 0;
+  /* 表格不该继承编辑器的等宽降级样式,回到正文字体 */
+  font-family: var(--font-editor);
+  font-size: 0.95em;
+}
+
+.cm-md-table-widget th,
+.cm-md-table-widget td {
+  border: 1px solid var(--border);
+  padding: 6px 13px;
+  vertical-align: top;
+}
+
+/*
+ * 空格子撑不起行高:里面一个行盒都没有,高度只剩上下 padding + 边框,
+ * 整张表看上去是被压扁的 —— 而「+」菜单插出来的表本来就是全空的。
+ * 塞一个零宽空格进去,只为把行盒立起来:它不占宽度、不出现在 textContent 里
+ * (`::after` 是伪元素,不在 DOM 树上),所以对渲染和取值都没有副作用。
+ * 不写死 height 或 min-height:两者都得把 padding 和盒模型算进来才能对上,
+ * 而这里量出来的正好就是「有字的那一格有多高」,字体、字号、内边距怎么改都对得上。
+ * 只认 :empty —— 单元格文本先 trim 过再渲染,所以空白格子也是真的空。
+ * 已填充的格子绝不能加,零宽空格是合法断行点,会凭空多出一个空行。
+ */
+.cm-md-table-widget th:empty::after,
+.cm-md-table-widget td:empty::after {
+  content: '\200b';
+}
+
+.cm-md-table-widget th {
+  background: var(--bg-codeblock);
+  font-weight: 600;
+}
+
+/* 多行表格的后续行为空并折叠高度 */
+.cm-md-table-void {
+  line-height: 0;
+  font-size: 0;
+  min-height: 0;
 }
 
 /* ---------- LaTeX 公式 ---------- */
