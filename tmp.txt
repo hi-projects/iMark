@@ -33,8 +33,27 @@
 |---|---|---|
 | 一 地基 | ✅ 2026-10-16 完成 | `phase1-harness.ts` 56 项 |
 | 二 槽位 + 能力 API + 事件钩子 | ✅ 2026-10-16 完成 | `phase2-harness.ts` 113 项 + `bundled-upgrade-harness.ts` 18 项 |
-| 三 插件窗口 + 沙箱 + 权限门禁 | ⏳ **待做(最大的一块)** | 见 §3 |
-| 四 收尾(README / 作者指南 / 样板插件) | ⏳ 待做 | 见 §4 |
+| 三 插件窗口 + 沙箱 + 权限门禁 | ✅ 2026-10-16 完成(另一台机器) | `phase3-harness.ts` 47 项 + `phase3-smoke-harness.ts` 16 项 + `phase3-throttle-harness.ts`(12 分钟实测) |
+| 四 收尾(README / 作者指南 / 样板插件) | ✅ 2026-10-16 完成 | README §四/五/六 + `plugins-src/note-embed/` |
+
+> **阶段三/四已由另一台机器上的会话完成**(2026-10-16)。上面那张「§3 待做」的细目
+> 保留着当设计记录看:**实际落地与它的差异**记在下面这一段。
+>
+> - 落地位置:`main/plugins/ops.ts`(能力表)、`gate.ts`(闸门)、`windows.ts`(协议/会话/窗口)、
+>   `sandbox.ts`(通道与身份)、`preload/plugin.ts`(作者的 `window.imark`)。
+> - **`net.fetch` 用的是 Node 的 fetch(undici)**,不是另开一个内存 session:它本来就没有
+>   cookie 罐子,比"记得把 session 设对"更彻底。
+> - **`schedule` 只对沙箱插件开放**(trusted 插件本来就有 setInterval,给它这层只会让人以为
+>   宿主在替它保活)。
+> - **写当前打开的文件**默认为"先让编辑器落盘再写",作者传 `{force:true}` 才跳过那一步。
+> - **`git.run` 做的参数校验(白名单子命令 + 拒 `-c`/`--upload-pack`/`ext::`)** 对 trusted
+>   插件同样生效 —— 走的是同一张能力表。
+> - **`credentialArgs` / `credentialEnv` 不给沙箱插件**(令牌不该出现在插件的字符串里),
+>   trusted 插件保持原样。
+> - 验收实测抓到三个真 bug,都已修:preload 收到宿主事件后**只缓存、不分发**;宿主重建后
+>   webContents 的身份绑定失效;窗口每秒重绑导致 `destroyed` 监听器泄漏。
+> - 另外把 `scripts/build-plugins.mjs` 的**换行归一**做了(文本文件一律以 LF 进包),
+>   它解决了「Windows 上重建 → 内置包 integrity 变了 → 合并冲突」这个反复出现的坑。
 
 最近一次全量验收:**7 套 harness 共 335 项断言全绿 + 三份 typecheck 全过**。
 数字:phase1 56、phase2 113、bundled-upgrade 18、quick-edit 77、table-render 36、git-sync 14、editor-enter 21。

@@ -56,6 +56,11 @@ const api = {
     ipcRenderer.invoke(IPC.PluginSave, { id, ...patch }),
   setPluginSecret: (id: string, fieldKey: string, targetId: string | null, value: string | null) =>
     ipcRenderer.invoke(IPC.PluginSetSecret, { id, fieldKey, targetId, value }),
+  /** 沙箱插件:是否为它放开「允许访问本机地址」 */
+  setPluginNetAccess: (id: string, allow: boolean) =>
+    ipcRenderer.invoke(IPC.PluginSetNetAccess, { id, allow }),
+  /** 沙箱插件:唤出它自己的窗口 */
+  openPluginWindow: (id: string) => ipcRenderer.invoke(IPC.PluginOpenWindow, id),
   runPluginAction: (id: string, action: string, targetId?: string, payload?: PluginActionPayload) =>
     ipcRenderer.invoke(IPC.PluginRun, { id, action, targetId, payload }),
   notifyPluginFlushed: (): void => ipcRenderer.send(IPC.PluginFlushDone),
@@ -81,6 +86,12 @@ const api = {
   setEditorPresence: (present: boolean): void => ipcRenderer.send(IPC.EditorPresence, present),
   /** 一份文档成功写进了磁盘(插件的 document:save 钩子靠它触发) */
   notifyDocSaved: (filePath: string): void => ipcRenderer.send(IPC.DocSaved, filePath),
+  /** 主→渲染:插件要往当前文档里插入内容(由宿主执行,插件只出文本) */
+  onPluginEditorInsert: (cb: (o: { text: string; cursorOffset?: number }) => void): (() => void) =>
+    subscribe<{ text: string; cursorOffset?: number }>(IPC.PluginEditorInsert, cb),
+  /** 主→渲染:这个文件被插件改了(是正开着的就重新加载) */
+  onFileExternalChange: (cb: (filePath: string) => void): (() => void) =>
+    subscribe<string>(IPC.FileExternalChange, cb),
   // ---------- 插件市场 ----------
   pickMarketPackage: () => ipcRenderer.invoke(IPC.MarketPickPackage),
   packMarketDir: () => ipcRenderer.invoke(IPC.MarketPackDir),

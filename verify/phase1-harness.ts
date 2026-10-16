@@ -12,7 +12,7 @@
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import {
   canonicalManifest,
   integrityInput,
@@ -102,14 +102,13 @@ function pureChecks(): void {
   check('缺失的 actions 补空数组', Array.isArray(rebuilt.actions))
 
   console.log('\n[A] --plugin-dev 参数解析')
-  check('等号写法', devDirsFromArgv(['--plugin-dev=/a'])[0]?.endsWith('/a') === true)
-  check('空格写法', devDirsFromArgv(['--plugin-dev', '/b'])[0]?.endsWith('/b') === true)
+  // 断言要与平台无关:比 `resolve()` 的结果,不比字符串前后缀 ——
+  // Windows 上 resolve('/a') 是 `D:\a`,既不 startsWith('/') 也不 endsWith('/a')
+  check('等号写法', devDirsFromArgv(['--plugin-dev=/a'])[0] === resolve('/a'))
+  check('空格写法', devDirsFromArgv(['--plugin-dev', '/b'])[0] === resolve('/b'))
   check('后面跟着另一个开关时不当目录', devDirsFromArgv(['--plugin-dev', '--foo']).length === 0)
   check('重复目录去重', devDirsFromArgv(['--plugin-dev=/c', '--plugin-dev=/c']).length === 1)
-  check(
-    '相对路径被解析成绝对路径',
-    devDirsFromArgv(['--plugin-dev=rel'])[0]?.startsWith('/') === true
-  )
+  check('相对路径被解析成绝对路径', isAbsolute(devDirsFromArgv(['--plugin-dev=rel'])[0] ?? ''))
 
   console.log('\n[A] 能力声明的权限必须写进清单')
   const withPerm = validateManifest({
@@ -409,9 +408,11 @@ async function main(): Promise<void> {
   // 后半句才是关键:键序是 integrity 的输入,一旦 manifestKeyOrder 被动过,
   // 既有包的 integrity 就会变。这条挂了 = 所有已发布包在客户端眼里都成了「被篡改」。
   console.log('\n[B] 既有内置包仍然可用(键序 / 白名单没有动坏)')
-  for (const id of ['quick-edit', 'git-sync']) {
+  for (const id of ['quick-edit', 'git-sync', 'note-embed']) {
+    // 按 __dirname 找(打包后落在 out/main/,上两级就是仓库根),
+    // **不能写成相对 cwd 的 '../src/...'** —— cwd 是仓库根,那样会指到仓库的上一级去
     const raw = await readFile(
-      `../src/main/market/builtin/${id}.imkpkg.json`,
+      join(__dirname, `../../src/main/market/builtin/${id}.imkpkg.json`),
       'utf8'
     )
     const env = validateEnvelope(JSON.parse(raw))

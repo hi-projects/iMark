@@ -169,12 +169,16 @@ $$                    ← 尾行:同内容行
 styles/
 ├── index.ts        # 模块入口:聚合导入(顺序即层叠顺序)+ 导出运行时注入的注册表
 ├── registry.ts     # 样式注册表(运行时注入/卸载/排序)
-├── tokens.css      # 设计令牌:CSS 变量,三档主题(亮/暗/纯黑)都在这
 ├── base.css        # 全局 reset 与基础排版
 ├── shell.css       # 应用外壳:三栏布局、侧栏(文件列表/大纲)、状态栏
 ├── editor.css      # CodeMirror 外观与所见即所得样式(标题/强调/代码/公式/widget)
 └── components/     # 独立组件:快速切换器、仓库选择界面、设置面板、自定义样式列表
+
+src/shared/theme/
+└── tokens.css      # 设计令牌:CSS 变量,三档主题(亮/暗/纯黑)都在这
 ```
+
+令牌文件放在 `shared/theme/` 是因为它现在有**三个**消费方:渲染层正常 import、主进程用 `?raw` 内联(给插件窗口下发 CSP 下可用的样式)、插件 preload 用 `webFrame.insertCSS` 注入。同一份文件三处消费,插件窗口的配色才可能与应用逐字一致 —— 各存一份迟早漂移。
 
 - **手动导入(核心)**:`main.ts` → `import './styles'`;组件与服务不再各自引用 CSS 文件,层叠顺序集中维护。
 - **运行时注入(注册表)**:`styles/registry.ts` 提供 `registerStyle(id, css)` / `unregisterStyle(id)`,
@@ -214,11 +218,17 @@ styles/
 | 文件 | 职责 |
 |---|---|
 | `shared/pluginPackage.ts` | 包格式、清单校验、版本比较、路径/体积/图标规则 —— 主进程、服务端、渲染层共用同一份 |
-| `shared/pluginApi.ts` | 插件拿到的 `ImkApi` 接口:主进程的实现与插件源码 import 的是同一份,接口漂移 = 类型报错 |
+| `shared/pluginApi.ts` | trusted 插件拿到的 `ImkApi` 接口:主进程的实现与插件源码 import 的是同一份,接口漂移 = 类型报错 |
+| `shared/pluginRpc.ts` | 沙箱插件与宿主之间的线上契约(通道名、错误码、事件类型)—— preload 与主进程共用 |
 | `main/plugins/host.ts` | 宿主:登记、加载、生命周期、动作调度、安装/升级/回滚/卸载、失败熔断、状态广播 |
 | `main/plugins/script.ts` | 脚本插件加载:`createRequire` + 清 `require.cache` |
 | `main/plugins/capabilities.ts` | 内置能力注册表 —— 声明式插件绑定的实现都在这里 |
-| `main/plugins/api.ts` | `ImkApi` 实现:按权限注入命名空间,密钥作用域校验 |
+| `main/plugins/ops.ts` | **唯一权威的能力表** —— 每项声明权限/超时/限额与实现,两条传输(trusted 直调、沙箱走 IPC)共用 |
+| `main/plugins/gate.ts` | 能力闸门:所有能力调用的唯一入口(表 → 权限 → 参数 → 频率 → 超时) |
+| `main/plugins/api.ts` | trusted 插件的 `ImkApi` 实现:把方法名映射到能力表,形状与 `shared/pluginApi.ts` 一致 |
+| `main/plugins/windows.ts` | 沙箱插件的窗口、独立会话与 `imk-plugin://` 协议(路径三重校验、下发 CSP、主题令牌) |
+| `main/plugins/sandbox.ts` | 沙箱通道:身份反查(webContents → 插件)、能力调用、宿主 → 页面的反向调用与事件 |
+| `preload/plugin.ts` | 插件页面的 preload —— 作者看到的 `window.imark` 就是它造出来的 |
 | `main/plugins/installed.ts` | 安装登记表 `userData/plugins/installed.json`(只存来源信息,磁盘目录才是权威) |
 | `main/market/*` | 市场客户端(见 §五) |
 | `main/git.ts` | git 子进程封装:超时/中止、防交互挂起、URL 脱敏、一次性凭据 helper |
@@ -227,10 +237,21 @@ styles/
 
 **内置核心插件清单现在是空的** —— `main/plugins/registry.ts` 的 `builtinPlugins` 数组里一个都没有:「定时上传(Git)」原本在那儿,现在它是市场里的普通插件。数组留着,是因为「必须随应用启动、不该由用户卸载」的能力将来仍可能出现;但走那条路的插件**不过包校验、没有安装确认环节**,加之前要清楚这一点。
 
-**两种形态**
+**三种形态**
 
 - **脚本插件**(`kind: "script"`):包里带 `main.js`,在主进程里以 CommonJS 加载,**拿到与 iMark 相同的 Node 权限**。入口必须是工厂函数 `module.exports = (imk) => ({ onEnable, onDisable, onConfigChange, runAction })` —— 工厂式只有一个绑定点、不污染全局,宿主也才能在跑任何生命周期之前先拒绝非法导出。
 - **声明式插件**(`kind: "declarative"`):包里**没有代码**,只声明绑定的内置能力(`capability`,目前实现了 `webhook`)。它把「配置一下就能用」的需求(推送到某个地址、导出到某处)从「必须信任一段任意代码」里摘出来 —— 这类插件的行为完全由 iMark 自己实现,安全性等同内置功能。
+- **沙箱插件**(`kind: "sandboxed"`):代码跑在**它自己的 renderer** 里 —— 没有 Node、没有 `fs`、没有 `require`,一切能力都从 `window.imark` 经宿主转发。接口见 §六「写一个沙箱插件」。
+
+**沙箱插件是什么、不是什么**
+
+一个沙箱插件 = 恰好一个 renderer 进程。带界面的(`ui.entry`)加载作者写的 HTML;**纯后台的**加载宿主生成的 `__imark/exec.html`(隐藏窗口、不进任务栏),作者不必为「有时有窗口」写两套代码。
+
+- **它是真门禁**:能力以**清单权限**为闸门 —— 没声明的能力在页面里压根不存在(`imark.git === undefined`),而每一次调用还要在主进程再判一次;`permissions` 里写 `vault:write` 才有 `imark.vault.write`,写 `network` 才有 `imark.net.fetch`。用户装的时候同意过哪些权限,和清单当前声明的一起取交集,**升级偷偷加了权限、在用户重新确认之前不生效**。
+- **每插件一个独立会话**:`protocol.handle` 按 session 注册,所以每个插件有自己的 localStorage / IndexedDB / cookie 罐子,互相看不见;窗口/摄像头/定位这类 Web 权限一律关掉(工厂默认拒绝)。
+- **界面里的 CSP 由宿主下发**:`script-src 'self'`、`connect-src 'self'` —— 页面里 `fetch('https://…')` 会被浏览器直接拦掉,**联网必须走 `imark.net.fetch`**,宿主才看得见它连了哪儿、也才能拒。`registerSchemesAsPrivileged` 里**绝不给 `bypassCSP`**,否则插件页能用自己的 CSP 把这一层覆盖掉。
+- **它不是万能的**:沙箱插件仍然是一个完整的网页,可以画任何界面(所以我们把「开自己的窗口」列成一项要用户同意的权限 —— 钓鱼窗口是真实风险);它能读的仓库文件受路径关卡限制(只能相对路径、拒绝 `.git`、拒绝符号链接逃逸、单文件 ≤1 MiB),联网默认拒绝本机与内网地址。
+- **诚实的边界**:沙箱只对 `kind: "sandboxed"` 成立。老式脚本插件依然拥有完整 Node 能力。所以准确的说法是 —— **装了沙箱插件才是真门禁,装了脚本插件仍然是告知**。
 
 **加载为什么用 `createRequire`** 而不是 `vm` 或动态 `import()`:`vm` 在「已经授予完整 Node 权限」的信任模型下给不了任何隔离,却要自己重写一遍 CJS 解析;ESM 的模块缓存是永久的,插件升级后没法热重载。加载前先清掉该插件目录下所有 `require.cache` 条目,于是升级可以是**原子的**:新目录先就位并加载,**成功了**才删旧目录;加载失败就把旧目录 rename 回来并恢复旧运行时 —— 用户手上那个插件不会因为一次失败的升级而消失。代价是入口必须是 CJS(用 TS 写的插件由 `plugins-src/tsconfig.json` 编译成 CJS,作者无感;给了 ESM 入口会得到一句中文错误)。
 
@@ -288,7 +309,7 @@ IMK_MARKET_PORT=8787 HOST=127.0.0.1 DATA=./server/data ADMIN_TOKEN=… node serv
 - 默认市场地址 `http://127.0.0.1:8787` 是**明文**的(且只监听回环)。填非回环的 `http://` 地址时界面会给一次性警告;正式部署必须自己前置 TLS 终止 —— 否则「下载的包没被篡改」这件事就只靠一次明文 HTTP 撑着。
 - 发布是「**已认证但不审计**」:任何能注册的人都能认领一个还没被占用的 id。共享的注册表上,官方 id 应当先占掉。
 - 服务端按 IP 的内存限流(10 次失败 / 5 分钟)只够自托管;公开部署需要真正的限流组件与审计。
-- 插件跑在主进程,**在界面上的存在感只有一处**:清单里的 `lineMenu` 会让宿主在光标所在行的左边画一个「+」,点开是插件声明的菜单条目。按钮、菜单、对话框、以及**改动文档**全部由宿主执行,插件只交出「菜单里有什么」和「确认后要插入什么文本」—— 它依然碰不到 CodeMirror。除此之外没有别的 UI 扩展点:加面板、加侧栏、改主题都还做不到。
+- **插件能往界面里放什么,取决于形态。** 脚本插件与声明式插件的界面**全部由宿主来画**:清单里的 `lineMenu` 让宿主在光标行左边画一个「+」,`commands` / `statusBar` / `menus` 分别进命令面板、状态栏、文件列表右键菜单 —— 按钮、菜单、对话框以及**改动文档**都由宿主执行,插件只交出「菜单里有什么」和「要插入什么文本」,它碰不到 CodeMirror。**沙箱插件还能有自己的一整个窗口**(见 §四 与 §六):那是一张真正的网页,画什么由作者决定 —— 代价是它必须声明 `ui` 权限,而且用户会在安装时看到这一条。
 
 **官方插件:定时上传(Git)**
 
@@ -353,9 +374,10 @@ export = (imk: ImkApi) => new MyPlugin(imk)
 | `id` | ✔ | `^[a-z0-9][a-z0-9._-]{1,63}$`,**禁止 `:`**(见 §四 的密钥命名空间);保留字 `imk`/`market`/`system`/`core`/`node`/`electron` |
 | `name` / `description` | ✔ | 界面上的名字与一句话说明 |
 | `version` | ✔ | `1.2.3`,可带 `-beta.1` 这类预发布后缀;已发布的版本不可覆盖,只能升号 |
-| `kind` | ✔ | `script` 或 `declarative` |
-| `main` | script ✔ | 入口文件,必须是包内的 `.js` |
+| `kind` | ✔ | `script` / `declarative` / `sandboxed`。**新形态一律换新的 kind 值**,不加可选字段 —— 清单是「白名单重建、未知键静默丢弃」的,旁路字段会被旧客户端悄悄丢掉,于是沙箱插件被当普通脚本插件以完整 Node 跑起来 |
+| `main` | script / sandboxed ✔ | 入口文件,必须是包内的 `.js`(script 在主进程跑,sandboxed 在插件自己的页面里跑) |
 | `capability` | declarative ✔ | 绑定的内置能力 id(目前只有 `webhook`) |
+| `ui` | sandboxed | `{entry, width?, height?, minWidth?, minHeight?}`:开一个自己的窗口,加载包内的 HTML。**不写就是纯后台插件**(宿主给一个隐藏的执行器页面);写了它就必须同时申请 `ui` 权限 |
 | `permissions` | | 权限数组,见下表 |
 | `author` / `homepage` | | 署名与主页(https) |
 | `icon` | | 包内图标文件名(建议 svg/png,≤64 KiB);**渲染层不直接发网络请求**,图标由主进程下载后以 `data:` URL 下发 |
@@ -365,9 +387,13 @@ export = (imk: ImkApi) => new MyPlugin(imk)
 | `targetActions` / `targetFieldKey` | | 目标级动作(对「目标列表」的某一行执行)。声明了它就必须有一个 `kind: "targets"` 的字段 |
 | `lineMenu` | | 光标行左侧「+」菜单里的条目(`PluginLineMenuItem[]`,≤12 条)。每条要么给 `template`(固定文本,宿主直接插入,不惊动插件),要么给 `action`(+ 可选 `dialog` 参数表单)。**行首菜单的动作只声明在这里** —— 再写进 `actions` 会让设置页多出一个「插入表格」按钮,而它是个行内动作,放那儿说不通 |
 
-权限(`permissions`)里,**只有 `git` 与 `secrets` 是注入强制的**:没声明就拿不到 `imk.git` / `imk.secrets`。其余(`vault:read`、`vault:write`、`network`、`shell`、`settings`)是**声明性说明** —— 脚本插件本来就有完整 Node 能力,fs / net / shell 挡不住它们,列出来是为了让安装的人知道自己正在同意什么。所以**别把权限列表当成限制来设计自己的插件**,它是一份对用户的告知。
+权限(`permissions`)的含义**取决于 `kind`,这一点在界面上也是分开写的**:
 
-包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤3、扩展名白名单(`js/mjs/cjs/json/md/txt/svg/png/css`)、单文件 ≤2 MiB、`main.js` ≤1 MiB、README ≤256 KiB、整包 ≤8 MiB、文件数 ≤64。
+- **脚本插件**:只有 `git` 与 `secrets` 是注入强制的(没声明就拿不到 `imk.git` / `imk.secrets`);其余(`vault:read`、`vault:write`、`network`、`shell`、`settings`)是**声明性说明** —— 脚本插件本来就有完整 Node 能力,fs / net / shell 挡不住它们,列出来是为了让安装的人知道自己正在同意什么。所以对脚本插件,**别把权限列表当成限制来设计**,它是一份对用户的告知。
+- **沙箱插件**:**每一项都是真门禁**。没声明的能力连命名空间都不存在,每一次调用还要在主进程再查一次;判定的口径是「用户在安装确认框里同意的」∩「清单现在声明的」。
+- 两个词是**沙箱专属**的:`ui`(开自己的窗口 —— 钓鱼窗口是真实风险,值得如实告知)与 `editor:write`(往当前文档插内容)。写在 `script` / `declarative` 清单里会直接报错,不留"我声明了却什么也没发生"的余地。
+
+包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤3、扩展名白名单(`js/mjs/cjs/json/md/txt/css/html/htm/svg/png/jpg/jpeg/gif/webp/woff/woff2`)、单文件 ≤2 MiB、`main.js` ≤1 MiB、README ≤256 KiB、整包 ≤8 MiB、文件数 ≤64。路径里任何一段都**不能是 `__imark`** —— 那是宿主的保留段(执行器页面、主题样式都放在那儿),否则包内文件能把宿主资源影子掉。
 
 #### 插件能拿到的 API
 
@@ -463,6 +489,79 @@ async runAction(actionId, _ctx, _targetId, payload?: PluginActionPayload) {
 
 清单必须配齐能力要求的字段与动作,缺什么会在安装时被**逐条点名**(「缺少能力「Webhook 推送」需要的字段:targets」),而不是装上一个点不动的插件。**新增一种能力**就是实现 `Capability` 接口(声明需要哪些字段/动作/权限 + `create()` 出运行时)后 `registerCapability()`:`main/plugins/capabilities/webhook.ts` 是唯一的样板,拿它照抄。
 
+#### 写一个沙箱插件
+
+样板是 `plugins-src/note-embed/`(**带界面**的那种,可以直接 `--plugin-dev` 跑起来改),下面这份是它砍到最小的样子:
+
+```
+my-plugin/
+├── manifest.json     # kind: "sandboxed" + ui.entry + permissions
+├── main.js           # 页面入口(清单里的 main)
+├── ui/
+│   ├── index.html    # 窗口加载的页面
+│   ├── app.js        # 界面逻辑(必须自己 <script> 进来)
+│   └── style.css
+└── README.md
+```
+
+```js
+// main.js —— 跑在插件**自己的页面**里,不是主进程
+window.imark.plugin.handle({
+  onEnable() {
+    // 官方推荐的计时方式:由宿主的主进程定时器驱动,不受后台节流影响
+    window.imark.schedule.every(60_000, 'refresh')
+  },
+  runAction(actionId) {
+    if (actionId !== 'toggle') return { ok: false, message: `未知动作:${actionId}` }
+    window.imark.window.show()
+    return { ok: true, message: '已打开' }
+  }
+})
+
+window.imark.on('tick', ({ name, lateMs }) => {
+  if (name === 'refresh') console.log('该刷新了,迟了', lateMs, '毫秒')
+})
+```
+
+```json
+// manifest.json 的关键几行
+{
+  "kind": "sandboxed",
+  "main": "main.js",
+  "ui": { "entry": "ui/index.html", "width": 720, "height": 520 },
+  "permissions": ["ui", "vault:read", "editor:write"]
+}
+```
+
+**页面里能拿到什么**(没声明对应权限的命名空间**不存在**,不是"存在但会报错"):
+
+| 命名空间 | 需要的权限 | 说明 |
+|---|---|---|
+| `imark.plugin` | – | `id` / `info` / `handle(生命周期)`;`info` 里有名称、版本、主题、仓库路径、已生效权限 |
+| `imark.getConfig()` / `setState()` / `log()` | – | 配置(同步读,已按字段表归一化)、状态栏那一行状态、日志(进插件页的日志区) |
+| `imark.ui.notify()` / `ui.statusItem()` | – | 右下角通知(每插件 10 条/分钟)、状态栏占一格 |
+| `imark.commands` / `imark.menus` | – | 注册命令面板条目 / 右键菜单条目,可带点击回调 |
+| `imark.on(事件, fn)` | – | `hello` / `config` / `theme` / `vault` / `doc-saved` / `tick`;**晚订阅也会立刻拿到最后一份** |
+| `imark.schedule` | – | `every(ms, name)` / `clear(name)`:宿主在主进程计时,到点发 `tick` |
+| `imark.document.flush()` | – | 让编辑器把脏文档落盘 |
+| `imark.window` | `ui` | `open/close/show/hide/setTitle`;没有它就没有窗口(纯后台插件) |
+| `imark.vault` | `vault:read` | `path()` / `exists()` / `read()` / `list()`;加 `vault:write` 才有 `write()` / `remove()` |
+| `imark.editor.insert()` | `editor:write` | 往**当前文档**插入文本(插在哪儿由宿主决定) |
+| `imark.net.fetch()` | `network` | 由宿主代发:手动跟跳重定向、默认拒本机与内网地址、响应 ≤8 MiB、cookie 不进不出 |
+| `imark.git` | `git` | `available()` / `run()` / `redact()` / `summarize()`;子命令与参数有白名单(`-c` / `--upload-pack` 这类等价于任意命令执行的参数会被拒) |
+| `imark.secrets` | `secrets` | 只读自己名下的密钥(作用域校验与脚本插件一致) |
+
+**写沙箱插件必须知道的六件事**
+
+1. **没有 Node**:`require`、`process`、`fs` 都不存在。`fetch('https://…')` 会被 CSP 拦掉 —— 联网走 `imark.net.fetch`。这是刻意的:宿主得看得见插件连了哪儿。
+2. **界面是你的,但要自己引进脚本**:`ui.entry` 指向的 HTML 由宿主直接加载,里面的 `<script src="/main.js">`(以及你拆出来的其他模块)要**你自己写**。用 `<script type="module">` 或普通脚本都行,宿主不做注入 —— 看得见的 HTML 才是可以自己推理的 HTML。
+3. **计时不要用 `setInterval`**:页面隐藏后 Chromium 会先把它降到 1 秒一次,大约 5 分钟后降到**每 60 秒一次**。宿主调度器 `imark.schedule.every` 走的是主进程定时器,不受这套节流影响(实测:隐藏 12 分钟,宿主 tick 命中 99%+)。`tick` 的载荷里带 `lateMs`,能看出它有没有迟到。
+4. **颜色用 `var(--…)`**:主题令牌由宿主注入(preload 的 `webFrame.insertCSS`,同源保留路径 `/__imark/ui.css` 也给了显式 `<link>` 的写法),三档主题自动跟随,不需要任何判断。
+5. **打包时注意目录名**:打包器会**跳过 `dist/` 与 `node_modules/`**(`main/market/pack.ts` 的 `SKIP_DIRS`),所以界面产物请放在 `ui/` 这类目录里,别叫 `dist/`。清单声明的 `main` 与 `ui.entry` 必须在包里真实存在。
+6. **可以直接写 JS,也可以写 TS**:沙箱插件的入口是页面里的 ES 模块 —— 想用 TypeScript,自己配一份 `module: ESNext` 的 tsconfig 编译出 `.js`(仓库里的 `plugins-src/tsconfig.json` 是给脚本插件的 CommonJS,不适用于这一种)。
+
+**调试**:`--plugin-dev=plugins-src/note-embed` 直接以目录为源跑(改文件即热重载,不必打包安装);插件页面的 `console.log` 会转发到主进程的控制台;插件自己 `imark.log('warn', …)` 的行会留在设置页的插件日志区。
+
 #### 发布
 
 1. 起一个市场:`npm run market`(或指向别人部署的地址);
@@ -476,5 +575,5 @@ async runAction(actionId, _ctx, _targetId, payload?: PluginActionPayload) {
 
 - **仓库(Vault)工作流**:主进程 `vault.ts` 用 `fs.promises.readdir` 递归列目录(跳过隐藏目录与 `node_modules`/`.obsidian` 等),渲染层 `vaultService.ts` 负责状态与流程编排;删除走 `shell.trashItem`(系统回收站),新建/重命名走专用 IPC——渲染层不直接触碰文件系统。
 - **进程边界与安全**:系统能力全部经 `contextBridge` 暴露的 `window.api`(类型定义在 `shared/api.ts`);渲染层开启 `sandbox`、无 Node 集成;外链在打开前于主进程校验 `^https?://`,本地图片走自定义 `imark://` 特权协议(编码绝对路径,由主进程读取后返回,规避 `file://` 的编码与安全限制)。
-- **主题**:三档主题(亮/暗/纯黑)全部由 CSS 变量驱动(变量定义在 `styles/tokens.css`,见 §三),CodeMirror 侧通过 `EditorView.theme` 引用 `var(--…)`。注意:base theme 已定义过的 `.cm-*` 属性必须写在主题扩展里,外部 CSS 会因特异度不足被静默忽略。
+- **主题**:三档主题(亮/暗/纯黑)全部由 CSS 变量驱动(变量定义在 `shared/theme/tokens.css`,见 §三),CodeMirror 侧通过 `EditorView.theme` 引用 `var(--…)`。注意:base theme 已定义过的 `.cm-*` 属性必须写在主题扩展里,外部 CSS 会因特异度不足被静默忽略。
 - **导出 HTML**:markdown-it(代码高亮用 highlight.js)+ 内联样式模板,输出单文件。

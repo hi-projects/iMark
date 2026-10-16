@@ -1,5 +1,5 @@
 import { app, protocol } from 'electron'
-import { createMainWindow, getMainWindow } from './window'
+import { createMainWindow, getMainWindow, setMainWindowClosedHandler } from './window'
 import { registerIpc } from './ipc'
 import { registerImarkProtocol } from './protocol'
 import { buildAppMenu } from './menu'
@@ -9,6 +9,8 @@ import { devDirsFromArgv } from './plugins/dev'
 import { ensureBundledProvisioned } from './market/bundled'
 import { checkUpdates } from './market/updates'
 import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
+import { registerPluginScheme } from './plugins/windows'
+import { closeAllPluginWindows } from './plugins/windows'
 
 /**
  * 启动后查一次插件更新。
@@ -36,6 +38,10 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
   }
 ])
+// 沙箱插件页面的协议(imk-plugin://)。同样必须在 ready 之前 —— Electron 只认
+// 这一次注册,晚了就永远拿不到那些特权(standard / secure / 可 fetch),
+// 而症状是插件界面一片空白
+registerPluginScheme()
 
 if (!app.requestSingleInstanceLock()) {
   // 开发期诊断:另一实例持有单实例锁时这里会静默退出(exit 0),容易被误判为"崩了"
@@ -72,14 +78,30 @@ if (!app.requestSingleInstanceLock()) {
     if (!app.isPackaged) console.log('[iMark] 应用就绪,窗口已创建')
   })
 
+  /**
+   * 退出路径:**主窗口关了才退**,不是"所有窗口都关了才退"。
+   *
+   * 有了沙箱插件之后,"所有窗口"里包含插件的隐藏执行器页面 —— 纯后台插件
+   * (没有 ui 的那个)会一直挂着一个 `show:false` 的窗口。照旧写 `window-all-closed`
+   * 的话,用户关掉主窗口,应用**不会退出**:进程留在后台,插件还在跑,
+   * 而任务栏里什么都没有。这种"看着已经关了其实没关"的 bug 极难被发现,
+   * 所以这里改成盯主窗口自己的 closed 事件。
+   */
   app.on('window-all-closed', () => {
-    if (!app.isPackaged) console.log('[iMark] 所有窗口已关闭 → 退出')
+    // 这里不再退出,只留一句日志。真正的退出由主窗口的 closed 触发(见下)
+    if (!app.isPackaged) console.log('[iMark] 所有窗口已关闭(等待主窗口的关闭流程)')
+  })
+
+  setMainWindowClosedHandler(() => {
+    if (!app.isPackaged) console.log('[iMark] 主窗口已关闭 → 退出')
     app.quit()
   })
 
-  // 退出前释放插件资源(定时器、在跑的 git 子进程)与样式目录的看门狗
+  // 退出前释放插件资源(定时器、在跑的 git 子进程、插件窗口)与样式目录的看门狗
   app.on('will-quit', () => {
     stopUserStylesWatch()
-    void getPluginHost()?.shutdown()
+    // 插件窗口要在 host 之前关:它们的页面还在跑插件代码,
+    // 而 shutdown() 会让插件停用(再调一次 onDisable)
+    void closeAllPluginWindows().then(() => getPluginHost()?.shutdown())
   })
 }

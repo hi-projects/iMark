@@ -37,15 +37,43 @@ import type {
 export const PACKAGE_FORMAT = 'imk-plugin'
 export const PACKAGE_FORMAT_VERSION = 1
 
-/** 插件形态:script = 包内有 main.js 在主进程执行;declarative = 无代码,绑定内置能力 */
-export type PluginKind = 'script' | 'declarative'
+/**
+ * 插件形态。
+ *
+ * - `script`   —— 包内有 main.js,在**主进程**以完整 Node 能力执行(旧形态,权限只是告知)
+ * - `declarative` —— 无代码,绑定宿主内置能力
+ * - `sandboxed` —— 代码跑在**自己的渲染器**里(无 Node、无 fs),能力全部经宿主审查后转发
+ *
+ * **沙箱形态必须是一个新的 kind 值,不能是 `runtime: 'sandboxed'` 这样的可选字段。**
+ * 原因在本文末尾的说明里:清单是被「白名单重建、未知键静默丢弃」的,旧客户端会把
+ * 旁路字段悄悄丢掉,然后把沙箱插件当成普通 script 插件在主进程里以完整 Node 跑起来 ——
+ * 整个安全模型无声蒸发。用新 kind 值,旧客户端会明确拒绝安装。
+ * 推广成规则:**将来任何"更安全的形态"都换 kind 值,不加旁路字段。**
+ */
+export type PluginKind = 'script' | 'declarative' | 'sandboxed'
+
+/**
+ * 这个形态的插件带代码入口(main)吗。
+ *
+ * script 的 main 在主进程跑,sandboxed 的 main 在插件自己的页面里跑 ——
+ * 对「打包时入口文件必须在包里」「登记 mainSha256」「算加载错误」这些事而言,
+ * 两者的判断完全一样,只有「谁来执行它」不同。抽出来是为了不再到处写
+ * `kind === 'script'`,那种写法在加入第二种带代码的形态时必然会漏掉几处。
+ */
+export function hasMainEntry(kind: PluginKind): boolean {
+  return kind === 'script' || kind === 'sandboxed'
+}
 
 /**
  * 权限词表。
  *
- * 只有 git / secrets 是**注入强制**的(没声明就拿不到 imk.git / imk.secrets);
- * 其余是**声明性说明** —— 脚本插件本来就有完整 Node 能力,fs / net / shell 挡不住,
- * 列出来是为了让安装者知道自己在同意什么。README 与安装对话框都要如实这么说。
+ * 语义**取决于 kind**,这一点在界面上必须说清楚:
+ * - 对 `script`(完整 Node):除 git / secrets 外都是**声明性说明** —— fs / net / shell
+ *   本来挡不住,列出来是为了让安装者知道自己在同意什么。
+ * - 对 `sandboxed`:**每一项都是真门禁**。没声明的能力连 API 对象都不存在,
+ *   每一次调用还要在主进程再查一遍。
+ *
+ * 所以 README 与安装对话框的准确说法是:**装了沙箱插件才是真门禁,装了脚本插件仍是告知。**
  */
 export type PluginPermission =
   | 'git'
@@ -55,6 +83,8 @@ export type PluginPermission =
   | 'network'
   | 'shell'
   | 'settings'
+  | 'ui'
+  | 'editor:write'
 
 export const PLUGIN_PERMISSIONS: PluginPermission[] = [
   'git',
@@ -63,8 +93,19 @@ export const PLUGIN_PERMISSIONS: PluginPermission[] = [
   'vault:write',
   'network',
   'shell',
-  'settings'
+  'settings',
+  'ui',
+  'editor:write'
 ]
+
+/**
+ * 只有沙箱插件用得上、也必须用得到的权限词。
+ *
+ * 出现在 script / declarative 清单里直接报错:那两个形态要么本来就不受门禁
+ * (`ui` 对它们毫无约束力),要么根本没有界面与编辑器(`declarative`)。
+ * 静默接受会变成"我声明了 ui 却什么也没发生"。
+ */
+export const SANDBOX_ONLY_PERMISSIONS: PluginPermission[] = ['ui', 'editor:write']
 
 /** 权限的中文说明(安装确认框逐条展示,渲染层与主进程共用) */
 export const PERMISSION_INFO: Record<PluginPermission, { label: string; description: string }> = {
@@ -80,7 +121,32 @@ export const PERMISSION_INFO: Record<PluginPermission, { label: string; descript
   'vault:write': { label: '修改仓库文件', description: '在当前仓库里新建、修改或删除文件。' },
   network: { label: '访问网络', description: '连接互联网,把数据发送到你配置的服务器。' },
   shell: { label: '执行系统命令', description: '在你电脑上启动其他程序或命令。' },
-  settings: { label: '读取编辑器设置', description: '读取主题、仓库路径等编辑器设置。' }
+  settings: { label: '读取编辑器设置', description: '读取主题、仓库路径等编辑器设置。' },
+  ui: {
+    label: '打开自己的窗口',
+    description:
+      '在自己的窗口里显示任意内容。窗口标题栏会标出插件名;它长得像 iMark 的界面,所以请只在这个窗口里输入你信任的插件要的东西。'
+  },
+  'editor:write': {
+    label: '修改当前文档',
+    description: '往你正在编辑的那篇文档里插入内容(不是改任意文件,那是「修改仓库文件」)。'
+  }
+}
+
+/**
+ * 沙箱插件的界面声明。**没有 ui 就是纯后台插件**(宿主给它一个隐藏的执行器页面)。
+ *
+ * 这个对象存在本身就意味着「要开窗口」,所以清单里写了它却没声明 `ui` 权限
+ * 会直接报错 —— 那正是钓鱼窗口风险的告知位置。
+ */
+export interface PluginUiSpec {
+  /** 窗口加载的包内 HTML 入口 */
+  entry: string
+  /** 初始尺寸(不填用宿主的默认值;恢复上次大小优先于它) */
+  width?: number
+  height?: number
+  minWidth?: number
+  minHeight?: number
 }
 
 export interface PluginManifestAction {
@@ -99,8 +165,10 @@ export interface PluginManifest {
   kind: PluginKind
   /** 仅 declarative:内置能力 id(见 main/plugins/capabilities.ts) */
   capability?: string
-  /** 仅 script:入口文件名,必须是包内存在的 .js */
+  /** 仅 script / sandboxed:入口文件名,必须是包内存在的 .js */
   main?: string
+  /** 仅 sandboxed:开自己的窗口(不写 = 纯后台插件,宿主给一个隐藏的执行器页面) */
+  ui?: PluginUiSpec
   permissions?: PluginPermission[]
   /** 包内图标文件名(建议 svg/png,≤64 KiB) */
   icon?: string
@@ -470,6 +538,46 @@ const MENU_WHERES = ['files']
 const SLOT_ID_RE = ACTION_ID_RE
 
 /**
+ * 插件窗口尺寸的边界。
+ *
+ * 校验在这里、夹取在主进程建窗时各做一次:前者让作者在**打包时**就知道自己写错了,
+ * 后者保证手改 manifest.json 也越不过去(磁盘上的东西可以是手改的)。
+ */
+export const UI_SIZE = { min: 240, max: 4000, defaultWidth: 900, defaultHeight: 640 }
+
+/** 校验沙箱插件的界面声明(仅 kind:'sandboxed' 会走到这里) */
+function validateUiSpec(ui: unknown, errors: string[]): void {
+  if (ui === undefined) return
+  if (!ui || typeof ui !== 'object' || Array.isArray(ui)) {
+    errors.push('ui 必须是对象')
+    return
+  }
+  const u = ui as Partial<PluginUiSpec>
+  const allowed = ['entry', 'width', 'height', 'minWidth', 'minHeight']
+  for (const key of Object.keys(u)) {
+    if (!allowed.includes(key)) errors.push(`ui 里不认识的键:${key}`)
+  }
+  if (typeof u.entry !== 'string' || !isSafeRelPath(u.entry)) {
+    errors.push('ui.entry 必须是包内的合法相对路径')
+  } else if (!/\.html?$/i.test(u.entry)) {
+    errors.push('ui.entry 必须是 .html 文件')
+  }
+  for (const key of ['width', 'height', 'minWidth', 'minHeight'] as const) {
+    const v = u[key]
+    if (v === undefined) continue
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < UI_SIZE.min || v > UI_SIZE.max) {
+      errors.push(`ui.${key} 必须是 ${UI_SIZE.min}-${UI_SIZE.max} 之间的数字`)
+    }
+  }
+  if (u.minWidth !== undefined && u.width !== undefined && u.minWidth > u.width) {
+    errors.push('ui.minWidth 不能大于 ui.width(窗口一建出来就是矛盾的)')
+  }
+  if (u.minHeight !== undefined && u.height !== undefined && u.minHeight > u.height) {
+    errors.push('ui.minHeight 不能大于 ui.height')
+  }
+}
+
+/**
  * 命令 / 状态栏 / 右键菜单的通用校验。
  *
  * 三者形状几乎一样(一个 id、一个 label、一个指向 action 的指针),所以共用一份实现 ——
@@ -646,8 +754,8 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   if (typeof m.version !== 'string' || !VERSION_RE.test(m.version)) {
     errors.push('version 非法(需形如 1.2.3 或 1.2.3-beta.1)')
   }
-  if (m.kind !== 'script' && m.kind !== 'declarative') {
-    errors.push("kind 必须是 'script' 或 'declarative'")
+  if (m.kind !== 'script' && m.kind !== 'declarative' && m.kind !== 'sandboxed') {
+    errors.push("kind 必须是 'script' / 'declarative' / 'sandboxed' 之一")
   }
 
   const files = Array.isArray(m.fields) ? m.fields : []
@@ -665,6 +773,17 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
     if (typeof m.capability !== 'string' || m.capability.trim().length === 0) {
       errors.push('declarative 插件必须声明 capability')
     }
+  } else if (m.kind === 'sandboxed') {
+    if (typeof m.main !== 'string' || !isSafeRelPath(m.main) || !/\.(c?js)$/.test(m.main)) {
+      errors.push('sandboxed 插件必须给出合法的 main(包内的 .js 文件,在插件自己的页面里执行)')
+    }
+    if (m.capability !== undefined) errors.push('sandboxed 插件不应声明 capability')
+    validateUiSpec(m.ui, errors)
+  }
+  if (m.kind !== 'sandboxed') {
+    if (m.ui !== undefined) {
+      errors.push("只有 kind:'sandboxed' 的插件才能声明 ui(脚本插件跑在主进程,没有属于它的窗口)")
+    }
   }
 
   if (m.homepage !== undefined && !/^https:\/\//i.test(String(m.homepage))) {
@@ -679,13 +798,27 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
     } else {
       for (const p of m.permissions) {
         if (!PLUGIN_PERMISSIONS.includes(p as PluginPermission)) {
+          // 未知权限硬报错而不是静默放行:静默放行的后果是作者以为「我申请了网络」,
+          // 而运行时因为词表里没这个词什么也没给 —— 他会去别处找原因,找不到
           errors.push(`未知权限:${String(p)}`)
+        } else if (SANDBOX_ONLY_PERMISSIONS.includes(p as PluginPermission) && m.kind !== 'sandboxed') {
+          errors.push(`权限「${p}」只对沙箱插件(kind: 'sandboxed')有意义,脚本插件不该声明它`)
         }
       }
     }
   }
   if (m.engines !== undefined && (typeof m.engines !== 'object' || Array.isArray(m.engines))) {
     errors.push('engines 必须是对象')
+  }
+  // 「要开窗口」和「申请了开窗口的权限」必须同时成立。允许只写 ui 不申请权限的话,
+  // 安装确认框就少了一行 —— 而钓鱼窗口正是这一行在告知的东西。
+  //
+  // 注意 `permissions` 整个没写的情况:那等于"什么都没申请",同样要拦住。
+  // 只在 `Array.isArray(...)` 成立时才判的话,一个连 permissions 键都没有的清单
+  // 会从这条校验下面溜过去。
+  const declaredPerms = Array.isArray(m.permissions) ? m.permissions : []
+  if (m.kind === 'sandboxed' && m.ui !== undefined && !declaredPerms.includes('ui')) {
+    errors.push("声明了 ui(自己的窗口)却没有申请「ui」权限")
   }
 
   validateFields(m.fields, errors)

@@ -16,8 +16,16 @@
 //      harness 会往那里写桩 settings.json、还会 rm -rf 那里的 vault 和 plugins,
 //      绝不能让它落到真实配置 ~/.config/imarkdown 上;
 //   4. 每次都从这个干净目录重来(上次跑剩的插件登记会让断言结果不一样)。
+//
+// ⚠️ **它只重新打包 harness,不会重新构建应用。** harness 是从源码 bundle 的,但
+// preload 与渲染层页面是按 `__dirname` 去 out/ 里找**构建产物**的 —— 改了
+// `src/preload/` 或 `src/renderer/` 之后不跑一次 `npx electron-vite build`,
+// harness 里跑的就是旧代码,而症状是"我明明改了,断言却按老行为走"。
+// (改 `src/main/**` 也一样:harness 会重新 bundle 主进程代码,但它 import 的那些
+// 模块也可能被别处引用到旧产物上 —— 拿不准就 build 一次,它只要几秒。)
 import { spawn } from 'node:child_process'
 import { existsSync, rmSync, mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,7 +35,18 @@ const [name, ...rest] = process.argv.slice(2)
 if (!name) {
   console.error('用法:node verify/run.mjs <名字>   (名字 = verify/<名字>-harness.ts 的前半段)')
   const files = existsSync(path.join(ROOT, 'verify'))
-    ? ['phase1', 'phase2', 'bundled-upgrade', 'quick-edit', 'table-render', 'git-sync', 'editor-enter']
+    ? [
+        'phase1',
+        'phase2',
+        'bundled-upgrade',
+        'quick-edit',
+        'table-render',
+        'git-sync',
+        'editor-enter',
+        'phase3',
+        'phase3-smoke',
+        'phase3-throttle'
+      ]
     : []
   if (files.length) console.error(`现有:${files.join(' / ')}`)
   process.exit(2)
@@ -66,7 +85,10 @@ if (await run(process.execPath, [path.join(ROOT, 'verify', 'build-harness.mjs'),
   process.exit(1)
 }
 
-const electron = path.join(ROOT, 'node_modules', '.bin', 'electron')
+// electron 这个 npm 包在 Node 里 `require` 出来的就是可执行文件的**绝对路径**
+// (Windows 上是 electron.exe)。别用 node_modules/.bin/electron —— 那是给 POSIX shell
+// 用的无扩展名脚本,Windows 上 existsSync 能过但 spawn 会 ENOENT。
+const electron = createRequire(`${ROOT}/package.json`)('electron')
 if (!existsSync(electron)) {
   console.error('找不到 electron,先 npm install')
   process.exit(2)

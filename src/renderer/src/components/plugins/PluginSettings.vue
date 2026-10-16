@@ -12,9 +12,11 @@ import {
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import {
   openMarketSettings,
+  openPluginWindow,
   pluginStore,
   runPluginAction,
   savePlugin,
+  setPluginNetAccess,
   setPluginSecret,
   settingsNav
 } from '../../services/pluginService'
@@ -166,7 +168,13 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
     <div v-if="hasMeta" class="plugin-meta">
       <div class="plugin-meta-line">
         <span class="plugin-chip">
-          {{ selected.kind === 'script' ? '含可执行代码' : '无代码(声明式)' }}
+          {{
+            selected.kind === 'script'
+              ? '含可执行代码'
+              : selected.kind === 'sandboxed'
+                ? '沙箱插件(独立页面)'
+                : '无代码(声明式)'
+          }}
         </span>
         <span class="plugin-chip">{{ sourceLabel(selected.source, marketStore.bundled.includes(selected.descriptor.id)) }}</span>
         <span v-if="selected.installed?.publisher" class="plugin-chip">
@@ -187,6 +195,36 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
         </button>
         <button class="plugin-link" @click="openMarketSettings('installed')">在市场里管理</button>
       </div>
+      <!--
+        沙箱插件专属的两行:
+          - 「打开窗口」:插件自己的窗口由它自己决定什么时候显示,这里给一个明确的入口
+            —— 否则用户启用完了看不见任何东西,只会以为插件坏了
+          - 「允许访问本机地址」:默认拒绝(见 main/plugins/ops.ts 的 net.fetch),
+            需要连本机服务的插件由**用户**在这里放开
+      -->
+      <div v-if="selected.kind === 'sandboxed'" class="plugin-meta-line">
+        <button
+          v-if="selected.permissions?.includes('ui')"
+          class="plugin-chip plugin-chip-btn"
+          title="插件有自己的窗口,点这里打开"
+          @click="openPluginWindow(selected.descriptor.id)"
+        >
+          打开窗口
+        </button>
+        <label
+          v-if="selected.permissions?.includes('network')"
+          class="plugin-net-toggle"
+          title="默认拒绝插件访问 127.0.0.1 与内网地址。需要连你本机跑的服务时才打开。"
+        >
+          <input
+            type="checkbox"
+            :checked="selected.allowLocalNet === true"
+            @change="setPluginNetAccess(selected.descriptor.id, !selected.allowLocalNet)"
+          />
+          <span>允许访问本机地址</span>
+        </label>
+      </div>
+
       <div v-if="selected.permissions?.length" class="plugin-perm-bar">
         <span class="market-dim">权限</span>
         <!-- 只给一行小字做提示,完整的解释在安装确认框里 —— 那里才是要用户真正读进去的地方 -->

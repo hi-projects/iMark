@@ -351,6 +351,13 @@
   color: var(--accent);
 }
 
+/* 沙箱插件既不是"完整权限的脚本"(红),也不是"没有代码"(灰绿),
+   所以给一个自己的颜色:一眼能看出是第三种东西 */
+.market-kind-sandboxed {
+  color: var(--accent);
+  opacity: 0.75;
+}
+
 .market-confirm-title h1 {
   margin: 0;
   font-size: 14px;

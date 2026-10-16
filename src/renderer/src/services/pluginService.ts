@@ -115,6 +115,28 @@ export async function refreshPlugins(): Promise<void> {
   }
 }
 
+/**
+ * 沙箱插件:放开/收回「允许访问本机地址」。
+ *
+ * 与插件自己的配置分开走:那是**用户对插件的授权**,不是插件要说的事。
+ */
+export async function setPluginNetAccess(id: string, allow: boolean): Promise<void> {
+  try {
+    pluginStore.list = await window.api.setPluginNetAccess(id, allow)
+  } catch (err) {
+    fail(err, '保存网络访问设置')
+  }
+}
+
+/** 沙箱插件:唤出它自己的窗口 */
+export async function openPluginWindow(id: string): Promise<void> {
+  try {
+    await window.api.openPluginWindow(id)
+  } catch (err) {
+    fail(err, '打开插件窗口')
+  }
+}
+
 export async function savePlugin(
   id: string,
   patch: { enabled?: boolean; config?: Record<string, unknown> }

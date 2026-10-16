@@ -211,8 +211,20 @@ export function validateManifest(manifest) {
   if (typeof manifest.version !== 'string' || !VERSION_RE.test(manifest.version)) {
     errors.push('version 必须是 x.y.z 形式')
   }
-  if (manifest.kind !== 'script' && manifest.kind !== 'declarative') {
-    errors.push("kind 必须是 'script' 或 'declarative'")
+  if (manifest.kind !== 'script' && manifest.kind !== 'declarative' && manifest.kind !== 'sandboxed') {
+    errors.push("kind 必须是 'script' / 'declarative' / 'sandboxed' 之一")
+  }
+  // 客户端那边同名的判断见 src/shared/pluginPackage.ts 的 hasMainEntry:
+  // script 的 main 在主进程跑,sandboxed 的 main 在插件自己的页面里跑,
+  // 对「入口必须在包里」这件事两者一模一样
+  if (manifest.kind === 'sandboxed') {
+    if (typeof manifest.main !== 'string' || !manifest.main || !/\.(c?js)$/.test(manifest.main)) {
+      errors.push('沙箱插件必须给出 main(包内的 .js 文件)')
+    }
+    if (manifest.capability !== undefined) errors.push('沙箱插件不能声明 capability')
+  }
+  if (manifest.ui !== undefined && manifest.kind !== 'sandboxed') {
+    errors.push("只有沙箱插件能声明 ui")
   }
   const fields = Array.isArray(manifest.fields) ? manifest.fields : []
   if (!Array.isArray(manifest.fields)) errors.push('fields 必须是数组')
@@ -315,7 +327,7 @@ export function validateEnvelope(raw) {
   }
   if (errors.length > 0) return bad()
 
-  if (manifest.kind === 'script') {
+  if (manifest.kind === 'script' || manifest.kind === 'sandboxed') {
     const main = manifest.main ?? 'main.js'
     if (!names.includes(main)) errors.push(`入口文件 ${main} 不在包里`)
     else if (files[main].size > LIMITS.mainBytes) errors.push('入口文件超过大小上限')
@@ -337,7 +349,10 @@ export function validateEnvelope(raw) {
       files,
       data,
       integrity: computed,
-      mainSha256: manifest.kind === 'script' ? (files[manifest.main ?? 'main.js']?.sha256 ?? null) : null,
+      mainSha256:
+        manifest.kind === 'script' || manifest.kind === 'sandboxed'
+          ? (files[manifest.main ?? 'main.js']?.sha256 ?? null)
+          : null,
       size
     }
   }

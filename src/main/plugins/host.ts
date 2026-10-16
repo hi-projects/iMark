@@ -68,6 +68,19 @@ import {
 import { readDevSource, watchDevSource } from './dev'
 import { builtinPlugins } from './registry'
 import { forgetScriptRuntime, loadScriptRuntime } from './script'
+import { forgetLimits } from './gate'
+import type { OpContext } from './ops'
+import type { PluginHello } from '@shared/pluginRpc'
+import {
+  createSandboxRuntime,
+  disposeSandboxRuntime,
+  hasSandboxRuntime,
+  installSandboxIpc,
+  sandboxPluginRuntime,
+  unregisterSandboxRuntime,
+  type SandboxRuntime
+} from './sandbox'
+import { clearPluginStorage, closePluginWindow, setPluginRoot } from './windows'
 
 /** 让渲染层保存脏文档的等待上限:超时就按磁盘现状继续,不阻塞同步 */
 const FLUSH_TIMEOUT = 2000
@@ -139,6 +152,22 @@ interface Entry {
   /** 通知限流用的时间窗口(近 1 分钟内发出的时间戳) */
   noticeTimes: number[]
   /**
+   * **已生效**的权限 = 用户装的时候同意的 ∩ 清单现在声明的。
+   *
+   * 这个交集是沙箱的前提:`InstalledRecord.grantedPermissions` 记的是用户实际同意过的,
+   * 而清单是**插件自己说了算、且可以随升级变化**的。只看清单,一个升级版就能凭空拿到
+   * 新权限(用户从没确认过);只看记录,插件把权限从清单里删掉之后旧授权还在。
+   * 两者取交集才是"用户同意过、且插件现在仍然要的"。
+   *
+   * `source:'local'`(手动拷进插件目录)没有确认流程,视为 granted = declared,
+   * 界面上明确标注「手动安装,未经确认」—— 那是用户在为自己的选择负责。
+   */
+  grants: PluginPermission[]
+  /** 沙箱插件的运行时(trusted 插件为 null) */
+  sandbox: SandboxRuntime | null
+  /** 用户是否为这个插件放开了「允许访问本机地址」 */
+  allowLocalNet: boolean
+  /**
    * 这一轮「启用」的生命周期跑过没有(`disable()` 清零)。
    *
    * 有它才能让 enable() 幂等 —— 而幂等是必需的,不是洁癖:同一个 entry 上
@@ -178,6 +207,22 @@ export class PluginHost {
   ): Promise<void> {
     const settings = await getSettings()
     await cleanupOldDirs()
+
+    // 沙箱的通道先装上:插件窗口一建起来就可能开口说话,晚一步那次调用就是
+    // "没有处理器"的静默失败(页面那边表现为一个永远不返回的 Promise)
+    installSandboxIpc({
+      opContext: pluginId => {
+        const entry = this.entries.get(pluginId)
+        // 只给启用中的插件受理 —— 页面的生命周期与启用态是一回事,
+        // 没启用还有页面在跑说明它已经不该存在了
+        if (!entry || !entry.state.enabled) return null
+        return this.opContextFor(entry)
+      },
+      onGone: (pluginId, reason) => {
+        const entry = this.entries.get(pluginId)
+        entry?.logs.push(`[warn] 插件页面结束了:${reason}(下次调用会尝试重建)`)
+      }
+    })
 
     // 换了仓库/主题要告诉插件。挂在 saveSettings 上而不是某一条 IPC 上:
     // 改设置的路径不止一条,挂在其中一条会让另外几条静默漏掉。
@@ -234,7 +279,10 @@ export class PluginHost {
         contrib: new ContribRegistry(),
         listeners: new Map(),
         enabledRun: false,
-        noticeTimes: []
+        noticeTimes: [],
+        grants: [],
+        sandbox: null,
+        allowLocalNet: false
       })
     }
 
@@ -382,8 +430,13 @@ export class PluginHost {
         state: { ...entry.state },
         ...(entry.manifest ? { kind: entry.manifest.kind } : {}),
         ...(entry.meta ? { source: entry.meta.source, installed: entry.meta } : {}),
-        ...(entry.manifest?.permissions ? { permissions: entry.manifest.permissions } : {}),
+        // 沙箱插件显示**已生效**的权限(用户同意的 ∩ 清单声明的)—— 那才是它真正拿得到的。
+        // 脚本插件显示的仍是清单声明:对它而言权限是"告知",界面上该如实呈现作者说了什么。
+        ...(entry.manifest?.permissions
+          ? { permissions: entry.sandbox ? entry.grants : entry.manifest.permissions }
+          : {}),
         ...(entry.dev ? { dev: true } : {}),
+        ...(entry.sandbox ? { allowLocalNet: entry.allowLocalNet } : {}),
         ...(entry.failures > 0 ? { failures: entry.failures } : {}),
         ...(entry.disabledByHost ? { disabledByHost: true } : {}),
         ...(entry.logs.length > 0 ? { logs: [...entry.logs] } : {}),
@@ -428,6 +481,28 @@ export class PluginHost {
       await this.emitTo(entry, 'config:change', { config })
     }
     await this.broadcast()
+  }
+
+  /**
+   * 用户是否为这个插件放开「允许访问本机地址」。
+   *
+   * 落进 settings 的 plugins[id].allowLocalNet(不是插件自己的 config —— 那是插件
+   * 说了算的地方,而这是一个**用户对插件的授权**),下一次网络请求立刻按新值判定。
+   */
+  async setNetAccess(id: string, allow: boolean): Promise<void> {
+    const entry = this.require(id)
+    entry.allowLocalNet = allow === true
+    const settings = await getSettings()
+    const current = settings.plugins[id] ?? { enabled: entry.state.enabled, config: entry.config }
+    await saveSettings({
+      plugins: { ...settings.plugins, [id]: { ...current, allowLocalNet: entry.allowLocalNet } }
+    })
+    await this.broadcast()
+  }
+
+  /** 设置界面里的「打开窗口」:沙箱插件自己开的窗口,由用户按需唤出 */
+  openWindow(id: string): void {
+    this.entries.get(id)?.sandbox?.windowOpen()
   }
 
   async setSecretValue(
@@ -591,6 +666,10 @@ export class PluginHost {
     await removeRecord(id)
     // 用前缀删除而不是逐个 secretKeysOf:认证方式切换留下的 #password 槽位也要一起清掉
     await deleteSecretsByPrefix(`${id}:`)
+    // 沙箱插件还会在磁盘上留下两样东西:它的**分区数据**(localStorage / IndexedDB /
+    // 缓存,落在 userData/Partitions/imk-plugin-<id>/)与窗口几何。卸载就该清干净 ——
+    // 留着的话,同一个 id 被别的作者重新发布时,新的插件能读到上一家的残留。
+    await clearPluginStorage(id)
 
     if (options.removeConfig) {
       const settings = await getSettings()
@@ -672,6 +751,13 @@ export class PluginHost {
     if (entry.enabledRun) return
     entry.enabledRun = true
     void reason
+    if (entry.sandbox) {
+      // 沙箱插件的生命周期跑在**它自己的页面**里,所以得先把页面拉起来。
+      // 页面起不来(入口不在包里、CSP 拦了…)算一次失败,与其它失败一起计数熔断。
+      const started = await this.safeCall(entry, '启动插件页面', () => entry.sandbox?.start())
+      if (!started) return
+      this.sendHello(entry)
+    }
     await this.safeCall(entry, 'onEnable', () => entry.runtime.onEnable?.(this.contextFor(entry)))
   }
 
@@ -682,6 +768,13 @@ export class PluginHost {
     entry.enabledRun = false
     void reason
     await this.safeCall(entry, 'onDisable', () => entry.runtime.onDisable?.(this.contextFor(entry)))
+    if (entry.sandbox) {
+      // 顺序:先让它说完再见(onDisable 已经跑完),再关窗。
+      // 定时器与挂起的调用在 dispose 里清干净 —— 停用之后不该还有任何回调进来
+      disposeSandboxRuntime(id)
+      forgetLimits(id)
+      await closePluginWindow(id, reason)
+    }
     // 停用 = 这次运行注册的一切都作废。
     //
     // 不清的话有一个很难查的后果:插件在 onEnable 里 `imk.on('document:save', fn)`,
@@ -735,16 +828,35 @@ export class PluginHost {
       contrib: new ContribRegistry(),
       listeners: new Map(),
       noticeTimes: [],
-      enabledRun: false
+      enabledRun: false,
+      grants: effectiveGrantsOf(manifest, record),
+      sandbox: null,
+      allowLocalNet: this.storedFor(id)?.allowLocalNet === true
     }
 
     this.entries.set(id, entry)
     entry.api = this.apiFor(entry)
     try {
-      entry.runtime =
-        manifest.kind === 'script'
-          ? loadScriptRuntime(entry.dir as string, manifest, entry.api)
-          : createCapabilityRuntime(manifest, entry.api)
+      if (manifest.kind === 'sandboxed') {
+        // 沙箱插件的"运行时"是它自己的页面:这里只造一个把四个生命周期方法
+        // 桥过去的适配器,页面还没起(enable 时才建窗)
+        const runtime = createSandboxRuntime({
+          pluginId: id,
+          name: manifest.name,
+          dir: entry.dir as string,
+          main: manifest.main ?? 'main.js',
+          ui: manifest.ui ?? null,
+          permissions: entry.grants
+        })
+        entry.sandbox = runtime
+        entry.runtime = sandboxPluginRuntime(runtime, CALL_TIMEOUT)
+        setPluginRoot(id, entry.dir as string, manifest.name)
+      } else {
+        entry.runtime =
+          manifest.kind === 'script'
+            ? loadScriptRuntime(entry.dir as string, manifest, entry.api)
+            : createCapabilityRuntime(manifest, entry.api)
+      }
     } catch (err) {
       this.entries.delete(id)
       throw err
@@ -786,6 +898,9 @@ export class PluginHost {
       listeners: new Map(),
       noticeTimes: [],
       enabledRun: false,
+      grants: effectiveGrantsOf(manifest, record),
+      sandbox: null,
+      allowLocalNet: this.storedFor(id)?.allowLocalNet === true,
       loadError: message
     })
   }
@@ -833,6 +948,12 @@ export class PluginHost {
     const entry = this.entries.get(id)
     if (!entry) return
     if (entry.state.enabled) await this.disable(id, 'unregister')
+    // 窗口必须在**目录被动过之前**关掉:升级会先把插件目录 rename 走,
+    // 页面还开着的话再点一下就是 404,半旧半新的状态最难查
+    if (entry.sandbox || hasSandboxRuntime(id)) {
+      await closePluginWindow(id, 'unregister')
+      unregisterSandboxRuntime(id)
+    }
     this.entries.delete(id)
     if (entry.dir) forgetScriptRuntime(entry.dir)
   }
@@ -867,23 +988,143 @@ export class PluginHost {
     }
   }
 
-  /** 造注入给插件的 API(含密钥作用域校验) */
+  /**
+   * 造一次能力调用的现场。
+   *
+   * trusted 与沙箱两条路用的是**同一个**构造:差别只在 `api.ts` 那边直接调用
+   * (`invokeOp` 出来的薄壳),沙箱这边经 IPC。能力的实现只有一份(ops.ts)。
+   */
+  private opContextFor(entry: Entry): OpContext {
+    const runtime = entry.sandbox
+    return {
+      pluginId: entry.id,
+      pluginName: entry.descriptor.name,
+      dir: entry.dir ?? '',
+      config: entry.config,
+      grants: entry.grants,
+      allowLocalNet: entry.allowLocalNet,
+      log: (level, message) => this.logLine(entry, level, message),
+      notify: (message, level) => this.notify(entry, message, level),
+      setState: patch => {
+        entry.state = { ...entry.state, ...patch }
+        void this.broadcast()
+      },
+      flushDocument: () => this.flushDocument(),
+      insertIntoEditor: (text, cursorOffset) => this.insertIntoEditor(entry, text, cursorOffset),
+      notifyFileChanged: filePath => {
+        const win = getMainWindow()
+        if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.FileExternalChange, filePath)
+      },
+      registerCommand: cmd => {
+        const result = entry.contrib.addCommand(cmd, () => this.invokeSandboxContrib(entry, cmd.id))
+        if (!result.ok) return result.errors
+        this.scheduleBroadcast()
+        return []
+      },
+      removeCommand: id => {
+        entry.contrib.removeCommand(id)
+        this.scheduleBroadcast()
+      },
+      setStatusItem: item => {
+        const { problems } = entry.contrib.setStatusItem(
+          item,
+          item ? () => this.invokeSandboxContrib(entry, item.id) : undefined
+        )
+        if (problems.length === 0) this.scheduleBroadcast()
+        return problems
+      },
+      addMenuItem: item => {
+        const { problems } = entry.contrib.addMenuItem(item, () =>
+          this.invokeSandboxContrib(entry, item.id)
+        )
+        if (problems.length === 0) this.scheduleBroadcast()
+        return problems
+      },
+      schedule: {
+        every: (ms, name) => {
+          if (!runtime) throw new Error('这个插件不是沙箱插件,请直接用自己的定时器')
+          runtime.scheduleEvery(ms, name)
+        },
+        clear: name => runtime?.scheduleClear(name)
+      },
+      window: {
+        open: () => {
+          if (!runtime) return
+          runtime.windowOpen()
+        },
+        close: () => runtime?.windowClose(),
+        show: () => runtime?.windowShow(),
+        hide: () => runtime?.windowHide(),
+        setTitle: title => runtime?.windowSetTitle(title)
+      },
+      validateSecretTarget: (fieldKey, targetId) => this.assertSecretTarget(entry, fieldKey, targetId)
+    }
+  }
+
+  /**
+   * 沙箱插件的条目被执行:桥回它的页面,由作者在那边的 `runAction` 或
+   * `commands.register(cmd, run)` 里处理(见 preload/plugin.ts)。
+   */
+  private async invokeSandboxContrib(entry: Entry, itemId: string): Promise<unknown> {
+    const runtime = entry.sandbox
+    if (!runtime) throw new Error('插件不在')
+    return runtime.call('runAction', [itemId, null, null], CALL_TIMEOUT)
+  }
+
+  /** 往当前文档里插入内容(由渲染层执行;插件只出文本) */
+  private insertIntoEditor(entry: Entry, text: string, cursorOffset?: number): Promise<boolean> {
+    const win = getMainWindow()
+    if (!win || win.webContents.isDestroyed()) {
+      entry.logs.push('[warn] 没有编辑器窗口,这次 editor.insert 没有落地')
+      return Promise.resolve(false)
+    }
+    if (!hasEditor()) {
+      entry.logs.push('[warn] 当前没有打开的文档,这次 editor.insert 没有落地')
+      return Promise.resolve(false)
+    }
+    win.webContents.send(IPC.PluginEditorInsert, { text, cursorOffset })
+    return Promise.resolve(true)
+  }
+
+  /** 页面起来后补一份"我是谁、现在什么样"(沙箱插件的一切都以它开场) */
+  private sendHello(entry: Entry): void {
+    const runtime = entry.sandbox
+    if (!runtime) return
+    const settings = getSettingsSync()
+    runtime.send('hello', {
+      pluginId: entry.id,
+      name: entry.descriptor.name,
+      version: entry.descriptor.version,
+      permissions: entry.grants,
+      theme: settings?.theme ?? 'dark',
+      vaultPath: settings?.vaultPath ?? null,
+      config: entry.config,
+      hasWindow: entry.manifest?.ui !== undefined
+    } satisfies PluginHello)
+  }
+
+  /** 写插件日志(两条路共用:trusted 的 api.log 与沙箱的 log op) */
+  private logLine(entry: Entry, level: string, message: string): void {
+    const line = `[${level}] ${message}`
+    entry.logs.push(line)
+    if (entry.logs.length > MAX_LOGS) entry.logs.splice(0, entry.logs.length - MAX_LOGS)
+    console.log(`[plugin:${entry.id}] ${line}`)
+  }
+
+  /** 造注入给 trusted 插件的 API(含密钥作用域校验) */
   private apiFor(entry: Entry): ImkApi {
     return createImkApi(this.contextFor(entry), {
       pluginId: entry.id,
       pluginName: entry.descriptor.name,
       pluginVersion: entry.descriptor.version,
       dir: entry.dir ?? '',
-      permissions: entry.manifest?.permissions ?? [],
+      // 注意传的是 **grants** 而不是清单里声明的:权限的判定口径只有一处
+      permissions: entry.grants,
+      opContext: this.opContextFor(entry),
       validateSecretTarget: (fieldKey, targetId) => this.assertSecretTarget(entry, fieldKey, targetId),
-      log: line => {
-        entry.logs.push(line)
-        if (entry.logs.length > MAX_LOGS) entry.logs.splice(0, entry.logs.length - MAX_LOGS)
-        console.log(`[plugin:${entry.id}] ${line}`)
-      },
+      log: line => this.logLine(entry, 'warn', line),
       contrib: entry.contrib,
       listeners: entry.listeners,
-      notify: (message, level) => this.notify(entry, message, level),
       // 贡献点变了要立刻让界面看到 —— 命令刚注册完就该出现在面板里。
       // 走 schedule 而不是 broadcast:插件常在 onEnable 里连着注册十几条,
       // 每一条都推一次整份快照是没有意义的。
@@ -948,6 +1189,12 @@ export class PluginHost {
         // 否则用户在设置里重新启用时 enable() 会以为「早就跑过了」而直接返回 ——
         // 界面显示已启用,插件其实一次都没跑起来
         entry.enabledRun = false
+        // 熔断也要关窗:一个已经"连续失败被停用"的插件,它的窗口还挂在屏幕上
+        // 是最说不通的状态(而且那个页面还在跑着没人管的代码)
+        if (entry.sandbox) {
+          disposeSandboxRuntime(entry.id)
+          void closePluginWindow(entry.id, 'circuit-breaker')
+        }
         entry.state = {
           ...entry.state,
           enabled: false,
@@ -1151,9 +1398,17 @@ export class PluginHost {
     event: E,
     payload: PluginEventMap[E]
   ): Promise<void> {
+    if (!entry.state.enabled || entry.loadError) return
+    // 沙箱插件用自己的事件通道(它是页面里的回调,不是主进程里的闭包)。
+    // 事件名的映射表是**显式**的:没有映射的事件就是"沙箱插件不支持它",
+    // 而不是"看着像支持、实际永远收不到"(preload 那边会对未知事件名报警告)。
+    if (entry.sandbox) {
+      const mapped = SANDBOX_EVENT_MAP[event]
+      if (mapped) entry.sandbox.send(mapped.type, mapped.payload(payload))
+      return
+    }
     const handlers = entry.listeners.get(event)
     if (!handlers || handlers.size === 0) return
-    if (!entry.state.enabled || entry.loadError) return
     for (const handler of handlers) {
       await this.safeCall(entry, `on:${event}`, () => handler(payload))
     }
@@ -1198,6 +1453,23 @@ export class PluginHost {
 
 }
 
+/**
+ * 宿主事件 → 沙箱插件页事件的映射。
+ *
+ * 只映射**页面上确实有对应通知的**那几个(见 @shared/pluginRpc 的 PluginHostEventType)。
+ * `document:change` 与 `file:open` 不在其中:它们是高频/上下文事件,沙箱插件要它们
+ * 得先想清楚"一个隐藏页面每 400 毫秒被叫醒一次"值不值 —— 那是下一轮的事,
+ * 现在宁可让 preload 明确报"不认识这个事件",也不要给一个悄悄不触发的订阅。
+ */
+const SANDBOX_EVENT_MAP: Partial<{
+  [E in PluginEvent]: { type: 'config' | 'theme' | 'vault' | 'doc-saved'; payload(p: PluginEventMap[E]): unknown }
+}> = {
+  'config:change': { type: 'config', payload: p => p },
+  'theme:change': { type: 'theme', payload: p => p },
+  'vault:change': { type: 'vault', payload: p => p },
+  'document:save': { type: 'doc-saved', payload: p => p }
+}
+
 /** 登记表记录 → 下发给渲染层的来源信息(只暴露展示需要的字段) */
 function metaOf(record: InstalledRecord | null): PluginInstallInfo | null {
   if (!record) return null
@@ -1208,6 +1480,24 @@ function metaOf(record: InstalledRecord | null): PluginInstallInfo | null {
     publisher: record.publisher,
     source: record.source
   }
+}
+
+/**
+ * 有效权限 = 用户同意的 ∩ 清单声明的(见 Entry.grants 的说明)。
+ *
+ * `source: 'local'` 没有安装确认流程(用户自己拷进插件目录的),视为全给 ——
+ * 但界面上会标注「手动安装,未经确认」,那是他本人做的选择。
+ */
+function effectiveGrantsOf(
+  manifest: PluginManifest | null,
+  record: InstalledRecord | null
+): PluginPermission[] {
+  const declared = manifest?.permissions ?? []
+  if (declared.length === 0) return []
+  if (!record) return []
+  if (record.source === 'local') return [...declared]
+  const granted = record.grantedPermissions ?? []
+  return declared.filter(p => granted.includes(p))
 }
 
 /** 该插件涉及的全部密钥 key(password 字段 + targets 字段的每个目标) */

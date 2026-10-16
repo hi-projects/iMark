@@ -23,7 +23,9 @@
 
 import 'katex/dist/katex.min.css'
 
-import './tokens.css'
+// 令牌从 @shared 来:同一份文件还要被主进程(?raw 内联)与插件 preload(insertCSS)消费,
+// 插件窗口的配色必须与应用逐字一致,各存一份迟早会漂移
+import '@shared/theme/tokens.css'
 import './base.css'
 import './shell.css'
 import './editor.css'

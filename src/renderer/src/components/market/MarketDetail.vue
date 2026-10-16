@@ -11,7 +11,16 @@
  */
 
 import { computed, onMounted, ref } from 'vue'
-import { AlertTriangle, ArrowLeft, Check, Download, ExternalLink, FileCode2, Package } from 'lucide-vue-next'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  Download,
+  ExternalLink,
+  FileCode2,
+  Package,
+  ShieldCheck
+} from 'lucide-vue-next'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import type { MarketVersionInfo } from '@shared/market'
 import {
@@ -110,6 +119,9 @@ onMounted(() => {
             {{ detail.name }}
             <span class="market-mono market-dim">v{{ detail.version }}</span>
             <span v-if="detail.kind === 'script'" class="market-badge market-badge-code">含代码</span>
+            <span v-else-if="detail.kind === 'sandboxed'" class="market-badge market-badge-code">
+              沙箱代码
+            </span>
             <span v-else class="market-badge market-badge-safe">不含代码</span>
           </h1>
           <p class="market-detail-sub">
@@ -123,7 +135,14 @@ onMounted(() => {
         <div class="market-row-actions">
           <!-- 明确传当前展示的版本,而不是让服务端再解析一次「最新」:
                下架状态下两者可能不是同一个版本,而界面上写的是这一个 -->
-          <button v-if="detail.kind === 'script'" class="plugin-btn" @click="openSource(detail.version)">
+          <!-- 沙箱插件也要能看源码:它是**真的会跑的代码**,只是跑在沙箱里。
+               「显示的就是将要运行的字节」这条承诺对它同样成立,而且更该兑现 ——
+               用户要判断的正是"这段代码值不值得我给它那些权限" -->
+          <button
+            v-if="detail.kind === 'script' || detail.kind === 'sandboxed'"
+            class="plugin-btn"
+            @click="openSource(detail.version)"
+          >
             <FileCode2 :size="13" />
             查看源码
           </button>
@@ -160,6 +179,9 @@ onMounted(() => {
           <template v-if="detail.kind === 'script'">
             注意:这不代表它做不到什么 —— 脚本插件在系统层面拥有与 iMark 相同的权限,
             这张列表说明的是它「声明要用到」的能力。
+          </template>
+          <template v-else-if="detail.kind === 'sandboxed'">
+            对这个插件来说这是字面意思:它跑在沙箱里,没申请的权限连调用入口都不存在。
           </template>
         </p>
         <ul v-else class="market-perms">
@@ -234,6 +256,16 @@ onMounted(() => {
             安装它等于让作者写的代码以与 iMark 相同的权限在你的电脑上运行:
             可以读写任意文件、发起网络请求、启动其他程序。下面的权限清单、发布者与
             sha256 是用来帮你做判断的,它们<b>不构成沙箱</b>。
+          </p>
+        </div>
+      </div>
+      <div v-else-if="detail.kind === 'sandboxed'" class="market-alert market-alert-safe">
+        <ShieldCheck :size="14" />
+        <div>
+          <b>这段代码跑在沙箱里,不是主进程。</b>
+          <p>
+            它没有 Node、没有文件系统:下面的每一条权限都要经 iMark 转发,没申请的连入口都不存在。
+            带窗口的插件会打开自己的一扇窗口(标题栏里标着插件名),那扇窗口里请只放你信得过它处理的内容。
           </p>
         </div>
       </div>

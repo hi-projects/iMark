@@ -62,6 +62,10 @@ export interface WindowApi {
     targetId: string | null,
     value: string | null
   ): Promise<PluginView[]>
+  /** 沙箱插件:放开/收回「允许访问本机地址」(默认拒) */
+  setPluginNetAccess(id: string, allow: boolean): Promise<PluginView[]>
+  /** 沙箱插件:唤出它自己的窗口 */
+  openPluginWindow(id: string): Promise<void>
   /**
    * targetId 只在 descriptor.targetActions 的动作上出现(对目标列表的某一行执行);
    * payload 只在行首菜单的动作上出现(对话框里填的值 + 触发那一行的快照)。
@@ -82,6 +86,13 @@ export interface WindowApi {
   runPluginContrib(invoke: PluginContribInvoke): Promise<PluginActionResult>
   onPluginContribs(cb: (snapshot: PluginContribsSnapshot) => void): () => void
   onPluginNotice(cb: (notice: PluginNotice) => void): () => void
+  /**
+   * 插件要求往当前文档里插入内容(沙箱插件的 `editor.insert`)。
+   * 位置由宿主决定(当前光标所在行的下面),插件只给文本。
+   */
+  onPluginEditorInsert(cb: (o: { text: string; cursorOffset?: number }) => void): () => void
+  /** 某个文件被插件改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
+  onFileExternalChange(cb: (filePath: string) => void): () => void
   /** 「插件」菜单(含快捷键)点了某条命令 */
   onPluginCommand(cb: (o: { pluginId: string; itemId: string }) => void): () => void
   /** 文档内容变了。**调用方负责节流** —— 每次按键都过一次 IPC 是不可接受的 */

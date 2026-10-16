@@ -1,35 +1,40 @@
 /**
- * `ImkApi` 的主进程实现 —— 宿主注入给脚本插件的那一个对象。
+ * `ImkApi` 的主进程实现 —— 宿主注入给 **trusted 插件**(kind:'script')的那一个对象。
  *
- * 两条纪律:
+ * 三条纪律:
  * 1. 每个命名空间都 Object.freeze,整个对象也 freeze。插件改不动 API 对象本身,
  *    否则一个插件能把 API 篡改掉影响后来加载的插件。
  * 2. 权限是**注入强制**的:没声明就拿不到对应的命名空间(是 undefined,不是空壳)。
- *    现在这条覆盖 vault / secrets / git 三个。
+ *    覆盖 vault / secrets / git 三个。
+ * 3. **能力实现不在这里** —— 它们在 `ops.ts` 的能力表里,与沙箱插件共用同一份。
+ *    这里只做三件事:把方法名映射到 op、把 `{ok:false}` 翻成异常(trusted 插件的
+ *    既有写法是 `await imk.vault.read(…)` 然后 catch)、以及把接口形状保持成
+ *    `@shared/pluginApi` 里声明的那样。
  *
- * `vault` 一度是无条件注入的,理由是「path() 与 exists() 泄漏不了什么」。这个理由
- * 站不住的地方在于它**不一致**:同一个插件,声明 `git` 才有 imk.git,而 vault 白拿。
- * 权限表一旦有例外,作者就得逐个去猜哪个是真的、哪个只是装饰,而「猜权限」这种
- * 经验会一路带到他下一个插件里。要么都是门禁,要么都不是。
+ * 逐次调用再过一遍 `invokeOp` 是**纵深防御 + 统一审计**:trusted 插件本来就有完整
+ * Node 能力,这层挡不住存心作恶的插件;它挡的是参数写错、路径跑出仓库这类误用,
+ * 并让"哪一步被拒"留在插件日志里。
  *
- * 剩下的词表(vault:write / network / shell / settings)仍是**声明性说明** ——
- * 脚本插件本来就有完整 Node 能力,挡不住 fs/net,列出来是为了让安装者知道自己在
- * 同意什么。详见 shared/pluginPackage.ts 的注释与 README 的「要如实说明的边界」。
+ * 一个刻意的例外:**界面贡献点**(命令/状态栏/右键菜单)不走 op。它们的第二个参数
+ * 是一个**本地闭包**(作者写的 onClick),过不了序列化边界;沙箱那条路上传的是
+ * 一个 id,由宿主桥回页面(见 host.ts 的 invokeSandboxContrib)。校验本身仍然是
+ * 共用的一份(contrib.ts),所以两条路不会漂移。
  */
 
-import { existsSync } from 'node:fs'
 import { inspect } from 'node:util'
 import type {
   ImkApi,
+  ImkCommandContext,
+  ImkCommandsApi,
   ImkGitApi,
-  ImkGitOptions,
   ImkLogLevel,
+  ImkNoticeLevel,
   ImkSecretsApi,
+  ImkUiApi,
   PluginContext
 } from '@shared/pluginApi'
 import {
   PLUGIN_EVENTS,
-  secretKey,
   type PluginCommand,
   type PluginEvent,
   type PluginEventMap,
@@ -37,15 +42,8 @@ import {
   type PluginPermission,
   type PluginStatusItem
 } from '@shared/plugins'
-import type {
-  ImkCommandContext,
-  ImkCommandsApi,
-  ImkNoticeLevel,
-  ImkUiApi
-} from '@shared/pluginApi'
-import { credentialArgs, credentialEnv, isGitAvailable, redactUrl, runGit, summarize } from '../git'
-import { getSecret, hasSecret } from '../secrets'
-import { getSettings } from '../settings'
+import { invokeOp } from './gate'
+import type { OpContext } from './ops'
 import type { ContribRegistry } from './contrib'
 
 export interface ApiDeps {
@@ -54,11 +52,13 @@ export interface ApiDeps {
   pluginVersion: string
   /** 插件的安装目录(内置核心插件为空串) */
   dir: string
+  /** **已生效**的权限(用户同意的 ∩ 清单声明的) */
   permissions: PluginPermission[]
+  /** 这次调用的现场(与沙箱插件共用同一份构造,见 host.ts 的 opContextFor) */
+  opContext: OpContext
   /**
    * 校验 (fieldKey, targetId) 确实是本插件声明过的密钥位置。
    * 由宿主实现 —— 只有它同时看得到描述符字段表与当前配置里的目标列表。
-   * 不合法时抛异常。
    */
   validateSecretTarget(fieldKey: string, targetId?: string): void
   /** 写进该插件的日志缓冲与主进程控制台 */
@@ -67,8 +67,6 @@ export interface ApiDeps {
   contrib: ContribRegistry
   /** 该插件的宿主事件订阅表 */
   listeners: Map<PluginEvent, Set<(payload: unknown) => void>>
-  /** 往右下角发一条通知(宿主负责限流);返回 false 表示被限流丢掉 */
-  notify(message: string, level: ImkNoticeLevel): boolean
   /** 贡献点变了:让宿主重算快照并下发 */
   contribChanged(): void
 }
@@ -80,47 +78,65 @@ function formatArgs(args: unknown[]): string {
 }
 
 export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
-  const has = (p: PluginPermission): boolean => deps.permissions.includes(p)
+  const opCtx = deps.opContext
+
+  /**
+   * 跑一个 op 并把结果翻成"返回值或异常"。
+   *
+   * 翻异常而不是返回 `{ok,error}`:trusted 插件今天写的是
+   * `try { await imk.vault.exists(p) } catch {}`,改形状等于把既有插件全部改一遍。
+   * 消息里带上错误码,作者至少能看懂是哪一类问题。
+   */
+  const call = async <T>(op: string, args?: unknown): Promise<T> => {
+    const result = await invokeOp(opCtx, op, args, {
+      source: 'trusted',
+      audit: line => deps.log(line)
+    })
+    if (result.ok) return result.value as T
+    throw new Error(`[${result.error.code}] ${result.error.message}`)
+  }
 
   const log = (level: ImkLogLevel, ...args: unknown[]): void => {
     deps.log(`[${level}] ${formatArgs(args)}`)
   }
 
-  const vault: ImkApi['vault'] = has('vault:read')
+  /**
+   * `vault` 的形状与 @shared/pluginApi 声明的一致:只有 path / exists。
+   * 读写文件是沙箱插件的能力(那个形态下才谈得上"必须经宿主"),
+   * trusted 插件直接读磁盘,宿主拦不住,给它加包装只会让人误以为有门禁。
+   */
+  const vault: ImkApi['vault'] = deps.permissions.includes('vault:read')
     ? Object.freeze({
-        path: async (): Promise<string | null> => {
-          const { vaultPath } = await getSettings()
-          return vaultPath ?? null
-        },
-        exists: async (p?: string): Promise<boolean> => {
-          if (p) return existsSync(p)
-          const { vaultPath } = await getSettings()
-          return Boolean(vaultPath) && existsSync(vaultPath as string)
-        }
+        path: (): Promise<string | null> => call<string | null>('vault.path'),
+        exists: (p?: string): Promise<boolean> => call<boolean>('vault.exists', { path: p })
       })
     : undefined
 
-  const secrets: ImkSecretsApi | undefined = has('secrets')
+  const secrets: ImkSecretsApi | undefined = deps.permissions.includes('secrets')
     ? Object.freeze({
-        get: async (fieldKey: string, targetId?: string): Promise<string | null> => {
-          deps.validateSecretTarget(fieldKey, targetId)
-          return getSecret(secretKey(deps.pluginId, fieldKey, targetId))
-        },
-        has: async (fieldKey: string, targetId?: string): Promise<boolean> => {
-          deps.validateSecretTarget(fieldKey, targetId)
-          return hasSecret(secretKey(deps.pluginId, fieldKey, targetId))
-        }
+        get: (fieldKey: string, targetId?: string): Promise<string | null> =>
+          call<string | null>('secrets.get', { fieldKey, targetId }),
+        has: (fieldKey: string, targetId?: string): Promise<boolean> =>
+          call<boolean>('secrets.has', { fieldKey, targetId })
       })
     : undefined
 
-  const git: ImkGitApi | undefined = has('git')
+  const git: ImkGitApi | undefined = deps.permissions.includes('git')
     ? Object.freeze({
-        available: () => isGitAvailable(),
-        run: (args: string[], opts: ImkGitOptions) => runGit(args, opts),
-        credentialArgs: (token: string) => credentialArgs(token),
-        credentialEnv: (user: string, token: string) => credentialEnv(user, token),
-        redact: (text: string) => redactUrl(text),
-        summarize: (text: string, maxLines?: number) => summarize(text, maxLines)
+        available: (): Promise<boolean> => call<boolean>('git.available'),
+        run: (args: string[], opts: { cwd: string; timeoutMs?: number }) =>
+          call<Awaited<ReturnType<ImkGitApi['run']>>>('git.run', {
+            args,
+            cwd: opts?.cwd,
+            timeoutMs: opts?.timeoutMs
+          }),
+        // 下面四个是**纯字符串处理**,不碰任何用户数据也没有权限含义,所以直接实现
+        // (它们不走 op 表):走一趟 RPC 只会让 `imk.git.redact(x)` 从同步变成异步,
+        // 而既有插件的调用点全是同步写法。
+        credentialArgs: (token: string) => credentialArgsOf(token),
+        credentialEnv: (user: string, token: string) => credentialEnvOf(user, token),
+        redact: (text: string) => redactUrl(String(text)),
+        summarize: (text: string, maxLines?: number) => summarize(String(text), maxLines)
       })
     : undefined
 
@@ -131,19 +147,19 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
    * 数据 —— 为一件事多要一项权限,只会训练用户闭眼点同意,把真正该读的权限提示
    * 一起稀释掉。权限留给「碰得到用户东西」的能力(文件、密钥、网络、git)。
    *
-   * 唯一的例外是插件自己的**窗口**(阶段三的 `ui` 权限):钓鱼窗口是真实风险,
+   * 唯一的例外是插件自己的**窗口**(沙箱的 `ui` 权限):钓鱼窗口是真实风险,
    * 值得如实告知。这里的三样东西都画在宿主自己的界面里,做不了那种事。
    */
   const ui: ImkUiApi = Object.freeze({
     notify: (message: string, level: ImkNoticeLevel = 'info'): void => {
-      deps.notify(String(message ?? ''), level)
+      void call('ui.notify', { message: String(message ?? ''), level }).catch(() => undefined)
     },
     statusItem: (item: PluginStatusItem | null, onClick?: () => unknown): void => {
       const { problems } = deps.contrib.setStatusItem(
         item ?? null,
         onClick ? () => onClick() : undefined
       )
-      if (problems.length > 0) log('warn', '状态栏条目被拒:', problems.join(';'))
+      if (problems.length > 0) log('warn', `状态栏条目被拒:${problems.join(';')}`)
       else deps.contribChanged()
     }
   })
@@ -246,3 +262,11 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
 
   return Object.freeze(api)
 }
+
+// 凭据 helper 与脱敏工具直接复用 git 模块的纯函数(它们不碰任何状态)
+import {
+  credentialArgs as credentialArgsOf,
+  credentialEnv as credentialEnvOf,
+  redactUrl,
+  summarize
+} from '../git'

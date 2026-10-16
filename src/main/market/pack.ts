@@ -13,6 +13,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import {
+  hasMainEntry,
   integrityInput,
   isSafeRelPath,
   LIMITS,
@@ -79,7 +80,7 @@ export async function packDirectory(dir: string): Promise<PackResult> {
   const names = (await collect(dir)).sort()
   if (names.length === 0) throw new Error('这个目录里没有任何可打包的文件')
 
-  if (manifest.kind === 'script') {
+  if (hasMainEntry(manifest.kind)) {
     const main = manifest.main ?? 'main.js'
     if (!names.includes(main)) {
       throw new Error(

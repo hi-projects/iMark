@@ -35,7 +35,8 @@
     "lineMenu",
     "commands",
     "statusBar",
-    "menus"
+    "menus",
+    "ui"
   ],
 
   "_arrayKeys": [

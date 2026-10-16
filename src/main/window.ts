@@ -46,6 +46,13 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow
 }
 
+/** 主窗口关闭后要做的事(目前是 app.quit);由 index.ts 设置 */
+let mainWindowClosedHandler: (() => void) | null = null
+
+export function setMainWindowClosedHandler(fn: () => void): void {
+  mainWindowClosedHandler = fn
+}
+
 export function createMainWindow(settings: Settings): BrowserWindow {
   // 勾了「启动时直接打开上次仓库」就直接最大化开窗,免得先小后大地闪一下
   // (渲染层的视图切换发生在建窗之后)
@@ -130,6 +137,9 @@ export function createMainWindow(settings: Settings): BrowserWindow {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    // 退出决策交给 index.ts(它才知道还有没有别的窗口该活下来)。
+    // 见那边的说明:有了隐藏的插件执行器页面之后,"所有窗口关闭"不再是"该退出了"。
+    mainWindowClosedHandler?.()
   })
 
   return mainWindow

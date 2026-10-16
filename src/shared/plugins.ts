@@ -374,8 +374,13 @@ export interface PluginView {
   secrets: Record<string, string>
   state: PluginState
   // ---------- 以下均为可选:内置核心插件不填,外部安装的插件才有 ----------
-  /** 'script' 会在主进程执行代码,'declarative' 不含代码 */
+  /** 'script' 会在主进程执行代码,'declarative' 不含代码,'sandboxed' 在独立页面里跑 */
   kind?: PluginKind
+  /**
+   * 沙箱插件:用户是否为它放开了「允许访问本机地址」。
+   * 界面上要显示成一个开关 —— 它是用户做过的决定,得能看见、能改回来。
+   */
+  allowLocalNet?: boolean
   source?: PluginSource
   permissions?: PluginPermission[]
   installed?: PluginInstallInfo
@@ -417,6 +422,15 @@ export interface PluginActionResult {
 export interface PluginConfigEntry {
   enabled: boolean
   config: Record<string, unknown>
+  /**
+   * 是否为这个插件放开「允许访问本机/内网地址」。
+   *
+   * 默认一律拒(见 main/plugins/ops.ts 的 net.fetch):插件的网络请求由宿主代发,
+   * 而"能连本机"等于能碰到这台机器上的其它服务(开发服务器、数据库、别的应用的管理端口)。
+   * 需要它的场景真实存在(连本地跑的服务),所以给一个**显式**的开关,
+   * 而不是让插件悄悄得逞。
+   */
+  allowLocalNet?: boolean
 }
 
 /** 密钥在主进程加密存储时使用的 key(与渲染层 secrets 映射一致) */

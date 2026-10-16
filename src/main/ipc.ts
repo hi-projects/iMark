@@ -203,6 +203,19 @@ export function registerIpc(): void {
       requirePluginHost().runAction(o.id, o.action, o.targetId, o.payload)
   )
 
+  ipcMain.handle(
+    IPC.PluginSetNetAccess,
+    async (_e, o: { id: string; allow: boolean }) => {
+      const host = requirePluginHost()
+      await host.setNetAccess(o.id, o.allow)
+      return host.list()
+    }
+  )
+
+  ipcMain.handle(IPC.PluginOpenWindow, (_e, id: string) => {
+    requirePluginHost().openWindow(id)
+  })
+
   ipcMain.on(IPC.PluginFlushDone, () => {
     getPluginHost()?.handleFlushDone()
   })

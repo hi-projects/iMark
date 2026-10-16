@@ -57,6 +57,10 @@ export const IPC = {
   PluginContribGet: 'plugin:contrib-get',
   /** 主→渲染:插件发来的一条通知(右下角气泡) */
   PluginNotice: 'plugin:notice',
+  /** 渲染→主:为某个沙箱插件放开/收回「允许访问本机地址」 */
+  PluginSetNetAccess: 'plugin:set-net-access',
+  /** 渲染→主:唤出某个沙箱插件自己的窗口 */
+  PluginOpenWindow: 'plugin:open-window',
   /**
    * 主→渲染:「插件」菜单(或它的快捷键)点了某条命令。
    *
@@ -92,6 +96,20 @@ export const IPC = {
    * 写盘那一小会儿用户可能已经切走了(定时保存尤其如此)。
    */
   DocSaved: 'doc:saved',
+  /**
+   * 主→渲染:插件请求往当前文档里插入内容(沙箱插件的 `editor.insert`)。
+   *
+   * 文档始终由宿主来改,插件只是出文本 —— 与 PluginActionResult.editor 同一套做法。
+   * 走 IPC 而不是回给某个调用方,是因为发起方是插件页面,不是渲染层。
+   */
+  PluginEditorInsert: 'plugin:editor-insert',
+  /**
+   * 主→渲染:某个文件被插件改了(插件有 vault:write)。
+   *
+   * 渲染层据此判断"是不是我正开着的那份",是就重新加载 —— 不重新加载的话,
+   * 编辑器里还是旧内容,用户下一次保存会把插件的改动原样覆盖掉。
+   */
+  FileExternalChange: 'file:external-change',
 
   // ---------- 插件市场 ----------
   /** 挑一个本地 .imkpkg.json 包 → 预览(不安装) */

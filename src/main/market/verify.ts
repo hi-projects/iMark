@@ -15,6 +15,7 @@
 
 import { createHash } from 'node:crypto'
 import {
+  hasMainEntry,
   integrityInput,
   validateEnvelope,
   type PackageFileEntry,
@@ -80,7 +81,7 @@ export function verifyEnvelope(
   }
   if (errors.length > 0) return { ok: false, errors }
 
-  const mainName = manifest.kind === 'script' ? (manifest.main ?? 'main.js') : null
+  const mainName = hasMainEntry(manifest.kind) ? (manifest.main ?? 'main.js') : null
   const mainSha256 = mainName ? (envelope.files[mainName]?.sha256 ?? null) : null
   return { ok: true, value: { envelope, manifest, mainSha256 } }
 }

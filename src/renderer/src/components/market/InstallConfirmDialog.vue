@@ -37,6 +37,7 @@ watch(preview, () => {
 })
 
 const isScript = computed(() => preview.value?.kind === 'script')
+const isSandboxed = computed(() => preview.value?.kind === 'sandboxed')
 /** 权限扩大:非空时界面必须把它当成一个独立的、更重的提示 */
 const added = computed(() => preview.value?.newPermissions ?? [])
 
@@ -77,6 +78,7 @@ async function copyIntegrity(): Promise<void> {
       <header class="market-confirm-head">
         <span class="market-kind-icon" :class="`market-kind-${preview.kind}`">
           <FileCode2 v-if="isScript" :size="16" />
+          <ShieldCheck v-else-if="isSandboxed" :size="16" />
           <Puzzle v-else :size="16" />
         </span>
         <div class="market-confirm-title">
@@ -106,6 +108,22 @@ async function copyIntegrity(): Promise<void> {
               <input v-model="acknowledged" type="checkbox" />
               <span>我已了解风险,并信任该插件的来源</span>
             </label>
+          </div>
+        </div>
+        <!--
+          沙箱插件:它有代码,而且有自己的页面。所以既不能沿用上面那条"完整权限"的
+          红字(那是假的恐吓),也**不能沿用下面那条"不含任何代码"**(那是假的安心)。
+          如实说清楚它有什么、没有什么,用户才能做判断。
+        -->
+        <div v-else-if="isSandboxed" class="market-alert market-alert-safe">
+          <ShieldCheck :size="15" />
+          <div>
+            <b>此插件包含代码,但运行在隔离的沙箱里。</b>
+            <p>
+              它没有直接读写文件或联网的能力:下面的每一条权限都要<b>经 iMark 转发</b>,
+              没申请的权限连调用入口都不存在。它仍然是一个完整的网页 ——
+              如果它带有自己的窗口,请只在这个窗口里输入你信得过它处理的内容。
+            </p>
           </div>
         </div>
         <div v-else class="market-alert market-alert-safe">
