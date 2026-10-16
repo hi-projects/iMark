@@ -1,7 +1,7 @@
 import { Decoration, type WidgetType } from '@codemirror/view'
 import type { EditorSelection, Range, Text } from '@codemirror/state'
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common'
-import { CheckboxWidget, HrWidget, ImageWidget, MathWidget } from './widgets'
+import { CheckboxWidget, HrWidget, ImageWidget, MathWidget, TableWidget, type TableAlign } from './widgets'
 import { touches, touchesLines } from './selection'
 import { resolveImageSrc } from '../../utils/text'
 
@@ -93,6 +93,72 @@ function addLineRange(ctx: RuleContext, from: number, to: number, cls: string): 
     if (line.to >= ctx.doc.length || line.to >= to) break
     pos = line.to + 1
   }
+}
+
+// ---------- 表格 ----------
+
+interface TableSpec {
+  source: string
+  head: string[]
+  body: string[][]
+  align: TableAlign[]
+}
+
+/** 一行里的所有单元格原文(不含两侧的 `|`) */
+function readCells(doc: Text, row: SyntaxNode): string[] {
+  const cells: string[] = []
+  for (const cell of row.getChildren('TableCell')) cells.push(doc.sliceString(cell.from, cell.to))
+  return cells
+}
+
+/**
+ * 从语法树读出 widget 需要的一切。
+ *
+ * 单元格边界一律取自解析器,不自己按 `|` 切 —— 转义竖线 `\|` 只有解析器认得出;
+ * 而行内代码里的裸 `|`(`` `x|y` ``)按 GFM 规范**本来就该拆成两格**
+ * (规范要求连代码跨度里的竖线也得转义),markdown-it 的拆法与此完全一致。
+ */
+function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
+  const header = table.getChild('TableHeader')
+  if (!header) return null
+  const head = readCells(doc, header)
+
+  // 对齐:只有 `Table` 的直接子节点里那个 TableDelimiter 才是整条分隔行
+  // (TableHeader / TableRow 内部的 TableDelimiter 是单元格之间的竖线)
+  const align: TableAlign[] = []
+  const delim = table.getChild('TableDelimiter')
+  if (delim) {
+    // 分隔行只由 | - : 和空格组成 —— 没有转义、没有代码跨度,所以这里可以直接按 | 切
+    for (const segment of doc.sliceString(delim.from, delim.to).split('|')) {
+      const s = segment.trim()
+      if (!s) continue
+      const left = s.startsWith(':')
+      const right = s.endsWith(':')
+      align.push(left && right ? 'center' : right ? 'right' : left ? 'left' : null)
+    }
+  }
+
+  /*
+   * 列数取两者中的较大者,不能只看表头 —— **空格子不产生 TableCell 节点**:
+   * lezer 对 `|     |     |` 只给出 TableDelimiter,一个 TableCell 都没有。
+   * 而「+」菜单插出来的新表格整张都是空格子,只看 head 会把最常见的那张表
+   * 判成"没有列",于是它永远渲染不出来。
+   */
+  const columns = Math.max(head.length, align.length)
+  if (columns === 0) return null
+  while (head.length < columns) head.push('')
+  while (align.length < columns) align.push(null)
+
+  // 列数向表头看齐:缺的补空、多的丢掉 —— 与 GFM 规范、与 markdown-it 的导出一致
+  const body: string[][] = []
+  for (const row of table.getChildren('TableRow')) {
+    const cells = readCells(doc, row)
+    const line: string[] = []
+    for (let i = 0; i < columns; i++) line.push(cells[i] ?? '')
+    body.push(line)
+  }
+
+  return { source: doc.sliceString(table.from, table.to), head, body, align }
 }
 
 // ---------- 节点 → 装饰规则分发表(唯一落点) ----------
@@ -331,9 +397,31 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       return false
     }
 
-    // ----- 表格(降级:等宽样式) -----
+    // ----- 表格(光标在表内:等宽源码;光标在表外:整块渲染成真表格) -----
     case 'Table': {
-      addLineRange(ctx, node.from, node.to, 'cm-md-table')
+      const spec = readTable(ctx.doc, node.node)
+      const firstLine = ctx.doc.lineAt(node.from)
+      /*
+       * 表首行必须完整落在视口里才能渲染 —— 这不是防御性编程,是这套做法本身的约束:
+       * widget 挂在首行上,而后续行的文本会被清空。首行若在视口外,CM 根本不会渲染它,
+       * 那块 widget 就无从谈起,清空过的后续行却照旧是空的 —— 屏幕上是一块**空白**。
+       * 表格比公式高得多,"表头滚出去了、数据行还在视野里"是很常见的状态。
+       */
+      const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
+      if (!spec || !firstLineVisible || touchesLines(ctx.sel, ctx.doc, node.from, node.to)) {
+        addLineRange(ctx, node.from, node.to, 'cm-md-table')
+        return false
+      }
+      // 首行换成 widget(它自带整张表),其余行清空并折叠高度
+      hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec.source, spec.head, spec.body, spec.align))
+      const lastLine = ctx.doc.lineAt(node.to)
+      for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
+        const line = ctx.doc.line(n)
+        hide(ctx, line.from, line.to)
+        addLine(ctx, line.from, 'cm-md-table-void')
+      }
+      // 不下钻:表格内的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
+      // 而且源码态下今天也没有任何单元格内高亮,分支之间保持一致
       return false
     }
 

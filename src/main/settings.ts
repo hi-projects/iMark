@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { Settings } from '@shared/types'
+import { clampFontSize, clampInterval, EDITOR_DEFAULTS } from '@shared/editorSettings'
 
 const DEFAULTS: Settings = {
   theme: 'light',
@@ -9,6 +10,7 @@ const DEFAULTS: Settings = {
   explorer: true,
   vaultPath: null,
   lastFile: null,
+  ...EDITOR_DEFAULTS,
   vaults: [],
   skipVaultPicker: false,
   plugins: {},
@@ -35,6 +37,12 @@ function normalize(raw: Partial<Settings>): Settings {
   if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
     merged.plugins = {}
   }
+  // 数值型的编辑器偏好逐个夹回区间:settings.json 是纯文本,手改成 0 秒会让渲染层的
+  // 定时器变成疯狂写盘,改成字符串则会让它一直空转。放在这里比在各处读时判要可靠
+  merged.autoSaveInterval = clampInterval(merged.autoSaveInterval)
+  merged.editorFontSize = clampFontSize(merged.editorFontSize)
+  merged.autoSave = merged.autoSave === true
+  merged.lineWrapping = merged.lineWrapping !== false
   return merged
 }
 
@@ -62,14 +70,44 @@ export function getSettingsSync(): Settings | null {
   return cache
 }
 
+/**
+ * 设置变更的订阅者。
+ *
+ * 为什么要在这里、而不是在 IPC 处理器里判:改设置的路径不止一条 ——
+ * 渲染层、市场配置、插件宿主自己都在写。把「换了仓库要通知插件」挂在其中一条上,
+ * 另外几条就静默漏掉了,而漏掉的表现是插件的行为对不上实际设置,极难查。
+ * saveSettings 是唯一的漏斗,挂在它上面天然覆盖全部路径。
+ *
+ * 用订阅而不是让这里直接调插件宿主:host.ts 已经 import 了本文件,
+ * 反过来 import 会绕成一个圈。
+ */
+type SettingsListener = (next: Settings, prev: Settings) => void
+const listeners = new Set<SettingsListener>()
+
+export function onSettingsChanged(fn: SettingsListener): () => void {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
+}
+
 export async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
-  const next: Settings = { ...(cache ?? (await loadSettings())), ...partial }
+  const prev = cache ?? (await loadSettings())
+  const next: Settings = { ...prev, ...partial }
   cache = next
   try {
     await mkdir(dirname(settingsPath()), { recursive: true })
     await writeFile(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
   } catch {
     /* 落盘失败不影响本次会话 */
+  }
+  // 订阅者的异常不能反过来把保存搞失败 —— 保存是用户按下的动作,必须成功
+  for (const fn of listeners) {
+    try {
+      fn(next, prev)
+    } catch (err) {
+      console.error('[iMark] 设置变更通知出错:', err)
+    }
   }
   return next
 }

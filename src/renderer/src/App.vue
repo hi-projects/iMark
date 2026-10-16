@@ -8,6 +8,9 @@ import VaultPicker from './components/VaultPicker.vue'
 import EditorPane from './components/EditorPane.vue'
 import StatusBar from './components/StatusBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import LineMenu from './components/LineMenu.vue'
+import LineActionDialog from './components/LineActionDialog.vue'
+import ToastHost from './components/ToastHost.vue'
 import {
   appStore,
   applyTheme,
@@ -35,11 +38,13 @@ import {
   enterEditorAndWait,
   initVaultList,
   loadVault,
+  openSwitcher,
   openVaultViaDialog,
   requestVaultSwitch,
   toggleSwitcher
 } from './services/vaultService'
 import { openMarketSettings } from './services/pluginService'
+import { initEditorSettings } from './services/editorSettings'
 import { isInside } from './utils/paths'
 
 let offMenu: (() => void) | null = null
@@ -102,6 +107,9 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
     case 'view:market':
       openMarketSettings()
       return
+    case 'view:command-palette':
+      openSwitcher('command')
+      return
     default: {
       const view = editorHolder.view
       if (view) runFormatCommand(view, id)
@@ -129,6 +137,8 @@ onMounted(async () => {
     initExplorerVisible(settings.explorer ?? true)
     initVaultList(settings.vaults ?? [])
     initSkipVaultPicker(settings.skipVaultPicker ?? false)
+    // 字号/换行要赶在第一个文档装载前定下来:loadDocument 重建 state 时会读换行偏好
+    initEditorSettings(settings)
 
     // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复
     const canResume =
@@ -165,6 +175,11 @@ onBeforeUnmount(() => {
     </div>
     <StatusBar />
     <QuickSwitcher />
+    <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->
+    <LineMenu />
+    <LineActionDialog />
     <SettingsDialog />
+    <!-- 右下角通知:层级最高,插件在用户翻设置时报的错也要看得见 -->
+    <ToastHost />
   </div>
 </template>

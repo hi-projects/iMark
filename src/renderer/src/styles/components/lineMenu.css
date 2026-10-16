@@ -1,0 +1,147 @@
+/* ---------- 光标行行首的「+」按钮 ---------- */
+
+/*
+ * 它挂在 .cm-line 里(Decoration.widget),靠绝对定位藏进行左侧那段 28px padding 里 ——
+ * 行内元素是占位的,不脱流就会把整行文字往右推。定位参照是 .cm-line 的 position: relative,
+ * 那条写在 editor/setup.ts 的 editorTheme 里(base theme 的特异度只能从那儿盖)。
+ */
+.line-plus {
+  position: absolute;
+  left: 2px;
+  top: 0.15em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-editor);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.line-plus:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--accent);
+}
+
+/* ---------- 弹出菜单(与文件树右键菜单同一档浮层) ---------- */
+
+/* 只负责接住「点别处」,本身不可见 */
+.line-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.line-menu {
+  position: fixed;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.line-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.line-menu-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.line-menu-empty {
+  padding: 6px 10px;
+  color: var(--text-tertiary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+}
+
+/* ---------- 参数对话框 ---------- */
+
+/* 在编辑器这一档里是最上层:切换器 100 之下、设置面板 110 之上不占位,
+   所以取 105 —— 它不该盖住设置面板,但必须盖住编辑器和行首菜单 */
+.line-dialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 105;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.line-dialog {
+  min-width: 300px;
+  max-width: 380px;
+  padding: 18px;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px var(--shadow);
+  font-family: var(--font-editor);
+}
+
+.line-dialog-head {
+  margin-bottom: 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.line-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.line-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.line-dialog-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.line-dialog-btn:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.line-dialog-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.line-dialog-primary:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}

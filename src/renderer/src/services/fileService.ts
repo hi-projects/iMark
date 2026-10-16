@@ -4,6 +4,7 @@ import { loadDocument } from '../editor/setup'
 import { updateOutline } from '../editor/outline'
 import { basename, computeStats, stripMarkdownExt, toEol } from '../utils/text'
 import { renderHtml } from './exportHtml'
+import { notifyError } from './notice'
 
 function requireView(): EditorView | null {
   const view = editorHolder.view
@@ -57,7 +58,7 @@ export async function openFileByPath(
     applyDocument(view, content, path, eol)
   } catch (err) {
     if (!opts?.silent) {
-      alert(`无法打开文件:${err instanceof Error ? err.message : String(err)}`)
+      notifyError('打开文件', err)
     }
   }
 }
@@ -67,19 +68,41 @@ export async function openFileViaDialog(): Promise<void> {
   if (path) await openFileByPath(path)
 }
 
+/**
+ * 把编辑器里的当前内容写回**指定路径**,失败时抛出。
+ *
+ * 单独抽出来是给定时保存用的:那条路径上没有人看着,不能像 saveCurrentFile 那样
+ * 在没有路径时回落到「另存为」—— 那会凭空弹出一个对话框打断正在打字的人。
+ * 内容在这里现取,不吃调用方的时间差。
+ */
+export async function writeCurrentFileInPlace(path: string): Promise<void> {
+  const view = requireView()
+  if (!view) throw new Error('编辑器未就绪')
+  const text = view.state.doc.toString()
+  await window.api.writeFile(path, toEol(text, appStore.eol))
+  // 落盘成功就报一声(插件的 document:save 钩子挂在这条上)。带着**刚写的那份
+  // 文档的路径**:下面那个早退分支说明用户已经切走了,不带路径的话插件会以为
+  // 是刚打开的那份被保存了。
+  window.api.notifyDocSaved(path)
+  // 写盘这一小会儿里用户可能已经切换了文件(定时保存尤其如此,它是在背后发生的):
+  // 只有当编辑器里还是刚才那份内容时,才轮到我们清脏标记 ——
+  // 否则会把**刚打开的那份文档**标记成「已保存」,它真实的改动就再也不会被提醒保存了
+  if (view.state.doc.toString() !== text) return
+  appStore.savedContent = text
+  appStore.dirty = false
+}
+
 export async function saveCurrentFile(): Promise<boolean> {
   const view = requireView()
   if (!view) return false
-  if (!appStore.filePath) return saveFileAs()
-  const text = view.state.doc.toString()
+  const path = appStore.filePath
+  if (!path) return saveFileAs()
   try {
-    await window.api.writeFile(appStore.filePath, toEol(text, appStore.eol))
+    await writeCurrentFileInPlace(path)
   } catch (err) {
-    alert(`保存失败:${err instanceof Error ? err.message : String(err)}`)
+    notifyError('保存', err)
     return false
   }
-  appStore.savedContent = text
-  appStore.dirty = false
   return true
 }
 
@@ -96,9 +119,11 @@ export async function saveFileAs(): Promise<boolean> {
   try {
     await window.api.writeFile(target, toEol(text, 'LF'))
   } catch (err) {
-    alert(`保存失败:${err instanceof Error ? err.message : String(err)}`)
+    notifyError('保存', err)
     return false
   }
+  // 另存为也是一次真的写盘,插件同样该收到 document:save(路径给的是新路径)
+  window.api.notifyDocSaved(target)
   appStore.filePath = target
   appStore.fileName = basename(target)
   appStore.eol = 'LF'
@@ -130,6 +155,6 @@ export async function exportHtmlFile(): Promise<void> {
   try {
     await window.api.writeFile(target, html)
   } catch (err) {
-    alert(`导出失败:${err instanceof Error ? err.message : String(err)}`)
+    notifyError('导出', err)
   }
 }

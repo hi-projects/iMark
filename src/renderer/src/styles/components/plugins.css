@@ -486,18 +486,37 @@
   min-width: 0;
 }
 
-/* 状态栏同步图标(选择器要压过 shell.css 的 .status-bar button) */
+/*
+ * 状态栏上的插件条目(选择器要压过 shell.css 的 .status-bar button)。
+ *
+ * 一个插件最多一条,列表顺序就是插件顺序 —— 这里不做排序:任何排序规则都会变成
+ * "为什么我的插件排后面"的问题,而状态栏本来就不该是插件争位置的地方。
+ */
 
-.status-bar .status-sync-btn .status-sync-running {
+/* 图标型按钮走 shell.css 的 24px 方按钮;文字型要自己撑开 */
+.status-bar button.status-plug-text {
+  width: auto;
+  max-width: 160px;
+  padding: 0 8px;
+}
+
+.status-bar .status-plug-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 运行中转圈:转的是图标,不是按钮 —— 按钮一起转会把方框也转歪 */
+.status-bar .status-plug.status-plug-running svg {
   animation: plugin-spin 1s linear infinite;
 }
 
-.status-bar .status-sync-error,
-.status-bar .status-sync-error:hover {
+.status-bar .status-plug-error,
+.status-bar .status-plug-error:hover {
   color: var(--danger);
 }
 
-.status-bar .status-sync-ok {
+.status-bar .status-plug-ok {
   color: var(--success);
 }
 
@@ -533,6 +552,28 @@
 
 .plugin-meta-warn {
   color: var(--danger);
+}
+
+/* 开发模式加载的插件(--plugin-dev):必须一眼认出来,否则用户会以为它一直都在 */
+.plugin-dev-banner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 7px 11px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.plugin-dev-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
 }
 
 .plugin-perm-bar {

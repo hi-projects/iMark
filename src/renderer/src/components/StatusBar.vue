@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronsUpDown, CloudUpload, ListTree, Moon, PanelLeft, Settings, Sun } from 'lucide-vue-next'
+import { ChevronsUpDown, ListTree, Moon, PanelLeft, Settings, Sun } from 'lucide-vue-next'
 import {
   appStore,
   editorHolder,
@@ -12,7 +12,14 @@ import {
   toggleTheme
 } from '../stores/app'
 import { requestVaultSwitch } from '../services/vaultService'
-import { gitSyncPlugin, openPluginSettings, syncNow } from '../services/pluginService'
+import { openPluginSettings, pluginById } from '../services/pluginService'
+import {
+  invokeContrib,
+  pluginIcon,
+  statusEntries,
+  statusTitle,
+  type StatusEntry
+} from '../services/pluginUi'
 
 function openVaultSwitcher(): void {
   void requestVaultSwitch()
@@ -37,28 +44,38 @@ const themeTitle = computed(
 const fileLabel = computed(() => `${appStore.fileName}${appStore.dirty ? ' ●' : ''}`)
 
 /**
- * 定时上传插件的状态图标。
- * 按 id 找、而不是取列表里的第一个:插件现在可以任意装卸,列表首位是谁并不确定。
- * 没装/已卸载时整颗按钮不显示 —— 这正是用户卸载了它之后应该看到的。
+ * 定时保存的即时反馈。自动保存是不声不响发生的,没点动静用户不会放心 ——
+ * 但常驻一个「已保存」又会在没改动时误导人,所以只在保存后亮几秒(时刻由服务决定)。
  */
-const syncPlugin = computed(() => gitSyncPlugin())
-const syncTitle = computed(() => {
-  const p = syncPlugin.value
-  if (!p) return ''
-  if (!p.state.enabled) return '定时上传未启用 · 点击打开插件设置'
-  const when = p.state.lastRunAt
-    ? new Date(p.state.lastRunAt).toLocaleString('zh-CN', { hour12: false })
-    : '从未运行'
-  const detail = p.state.lastDetail ? `\n${p.state.lastDetail}` : ''
-  return `定时上传:${p.state.lastMessage || '待运行'}(上次 ${when})${detail}`
-})
+const autoSaveClock = computed(() =>
+  appStore.autoSavedAt ? new Date(appStore.autoSavedAt).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+)
 
-function onSyncClick(): void {
-  const p = syncPlugin.value
-  if (!p) return
-  // 失败或未启用时直接进插件设置(那里有详情与「立即上传」),正常情况下点一下就是手动同步
-  if (!p.state.enabled || p.state.status === 'error') openPluginSettings()
-  else void syncNow()
+/**
+ * 插件状态条目的点击规则。
+ *
+ * 从前的「定时上传」按钮把这条规则写死在组件里(出错就进设置、正常就同步),
+ * 现在它成了**所有**插件条目共用的规则 —— 而且不是规定,是唯一说得通的做法:
+ * 插件处在错误状态时,它那条 action 自己也正是失败的那个,再点一次只会再失败一次;
+ * 这时用户要的是"去设置里看看为什么"。
+ */
+function onStatusClick(entry: StatusEntry): void {
+  const view = pluginById(entry.pluginId)
+  if (!view || !view.state.enabled || view.state.status === 'error') {
+    openPluginSettings(entry.pluginId)
+    return
+  }
+  void invokeContrib({ pluginId: entry.pluginId, itemId: entry.item.id, from: 'status' })
+}
+
+/** 状态栏按钮的着色:成功/失败直接反映插件自己报的状态 */
+function statusClass(pluginId: string): Record<string, boolean> {
+  const status = pluginById(pluginId)?.state.status
+  return {
+    'status-plug-error': status === 'error',
+    'status-plug-ok': status === 'ok',
+    'status-plug-running': status === 'running'
+  }
 }
 </script>
 
@@ -94,19 +111,42 @@ function onSyncClick(): void {
     <span>字符 {{ appStore.chars }}</span>
     <span>行数 {{ appStore.lines }}</span>
     <span class="status-spacer"></span>
+    <span
+      v-if="appStore.autoSaveError"
+      class="status-autosave status-autosave-error"
+      :title="`自动保存失败:${appStore.autoSaveError}`"
+    >
+      自动保存失败
+    </span>
+    <span
+      v-else-if="appStore.autoSavedAt"
+      :key="appStore.autoSavedAt"
+      class="status-autosave"
+      :title="`定时保存已写入文件 · ${autoSaveClock}`"
+    >
+      已自动保存 {{ autoSaveClock }}
+    </span>
     <span class="status-file" :title="appStore.filePath ?? '未保存到磁盘'">{{ fileLabel }}</span>
     <span class="status-actions">
+      <!--
+        插件状态条目:宿主不认识它们是什么(只认识一个 id 和一个动作)。
+        图标白名单里认得出的画图标,认不出的显示文字 —— 插件给的是一个名字,
+        不是一段界面。
+      -->
       <button
-        v-if="syncPlugin"
-        class="status-sync-btn"
-        :class="{
-          'status-sync-error': syncPlugin.state.status === 'error',
-          'status-sync-ok': syncPlugin.state.status === 'ok'
-        }"
-        :title="syncTitle"
-        @click="onSyncClick()"
+        v-for="entry in statusEntries"
+        :key="`${entry.pluginId}:${entry.item.id}`"
+        class="status-plug"
+        :class="{ ...statusClass(entry.pluginId), 'status-plug-text': !pluginIcon(entry.item.icon) }"
+        :title="statusTitle(entry)"
+        @click="onStatusClick(entry)"
       >
-        <CloudUpload :size="14" :class="{ 'status-sync-running': syncPlugin.state.status === 'running' }" />
+        <component
+          :is="pluginIcon(entry.item.icon)"
+          v-if="pluginIcon(entry.item.icon)"
+          :size="14"
+        />
+        <span v-else class="status-plug-label">{{ entry.item.label }}</span>
       </button>
       <button :title="themeTitle" @click="toggleTheme()">
         <Sun v-if="isDark" :size="14" />

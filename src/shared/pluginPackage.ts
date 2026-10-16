@@ -16,9 +16,23 @@
  *
  * 本文件零运行时依赖(不引 node:crypto),因为渲染层也要 import 它做展示与校验提示;
  * 真正算 sha256 的地方在主进程(market/verify.ts)。
+ *
+ * 有几处数据必须在**多个互不相通的环境**里保持一致(清单键序、扩展名白名单…):
+ * 应用(本文件)、scripts/build-plugins.mjs(裸 Node)、server/src/validate.mjs(独立进程)。
+ * 它们都在 ./pluginFormat.json 里,三处共用同一份 —— 各抄一份就是等着漂移,
+ * 而漂移的后果是「打包器算出的 integrity 与校验端对不上」或「作者发不出能装的包」。
  */
 
-import type { PluginDescriptor, PluginField } from './plugins'
+import formatData from './pluginFormat.json'
+import type {
+  PluginCommand,
+  PluginDescriptor,
+  PluginField,
+  PluginLineMenuDialog,
+  PluginLineMenuItem,
+  PluginMenuItem,
+  PluginStatusItem
+} from './plugins'
 
 export const PACKAGE_FORMAT = 'imk-plugin'
 export const PACKAGE_FORMAT_VERSION = 1
@@ -100,6 +114,27 @@ export interface PluginManifest {
   actions: PluginManifestAction[]
   targetActions?: PluginManifestAction[]
   targetFieldKey?: string
+  /**
+   * 编辑器行首「+」菜单的贡献条目(见 @shared/plugins 的 PluginLineMenuItem)。
+   * 条目的 action 只在这里声明,不写进 actions —— 它不会出现在设置页里。
+   */
+  lineMenu?: PluginLineMenuItem[]
+  /**
+   * 命令面板里的条目。见 @shared/plugins 的 PluginCommand。
+   *
+   * 与 lineMenu 同一种思路:这里只声明「叫什么、什么时候可用、有没有快捷键」,
+   * 点了之后做什么仍然走 actions 那条老路(runAction)。
+   */
+  commands?: PluginCommand[]
+  /**
+   * 状态栏条目。见 @shared/plugins 的 PluginStatusItem。
+   *
+   * 状态栏只有一条,所以它是**抢位制**:一个插件最多能占一条,多了校验直接报错。
+   * 理由见 PluginStatusItem 处的说明。
+   */
+  statusBar?: PluginStatusItem[]
+  /** 右键菜单条目。见 @shared/plugins 的 PluginMenuItem。 */
+  menus?: PluginMenuItem[]
 }
 
 export interface PackageFileEntry {
@@ -138,7 +173,29 @@ export const LIMITS = {
    * 源码查看器里单个文件最多显示多少字节。
    * main.js 的上限是 1 MiB,一整个塞进 `<pre>` 会让界面卡住;超出的部分截断并明确标注。
    */
-  sourceTextBytes: 200 * 1024
+  sourceTextBytes: 200 * 1024,
+  /**
+   * 行首菜单的模板文本预算。
+   *
+   * 卡的不是磁盘,而是**广播**:descriptor 随 PluginView 走,
+   * 插件每次 setState 都会把整份 descriptor 过一遍 IPC 下发给渲染层。
+   * 模板要是能塞几十 KB,一次状态变化就要搬几十 KB。
+   */
+  lineMenuEntries: 12,
+  lineMenuLabelChars: 40,
+  lineMenuTemplateBytes: 4 * 1024,
+  lineMenuTotalBytes: 16 * 1024,
+  /**
+   * 命令面板的上限。
+   *
+   * 命令是**要按名字搜**的:一个插件丢 500 条进来,别人的命令就会被自己的搜索结果淹掉。
+   * 50 条对任何单个插件都够用,不够就说明该拆成「一个命令 + 参数对话框」。
+   */
+  commands: 50,
+  /** 状态栏条目的上限。**是 1**,理由见 validateStatusBar */
+  statusBarItems: 1,
+  /** 右键菜单的上限。菜单比面板更难搜,所以更少 */
+  menuItems: 20
 } as const
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/
@@ -151,11 +208,20 @@ const FIELD_KINDS = ['text', 'password', 'number', 'boolean', 'select', 'targets
 /** id 里出现 ':' 会让 secretKey() 的拼接跨插件串台,所以是**安全规则**而非格式洁癖 */
 const RESERVED_IDS = ['imk', 'market', 'system', 'core', 'node', 'electron']
 
-/** 允许出现在包里的文件扩展名 */
-const ALLOWED_EXT = ['js', 'mjs', 'cjs', 'json', 'md', 'txt', 'svg', 'png', 'css']
+/** 允许出现在包里的文件扩展名(见 pluginFormat.json 的说明:此处必须是唯一一份) */
+const ALLOWED_EXT = formatData.allowedExtensions
 
 /** 其中能当文本直接显示的(其余是二进制,源码查看器不往界面上送) */
-const TEXT_EXT = ['js', 'mjs', 'cjs', 'json', 'md', 'txt', 'css']
+const TEXT_EXT = formatData.textExtensions
+
+/**
+ * 包内路径里禁止出现的路径段。
+ *
+ * 宿主将来要往插件目录里放自己的保留资源(主题令牌、执行器页面…),这些资源按
+ * 固定的相对路径提供。包内如果能有同名文件,就能把宿主的那个影子掉 ——
+ * 插件于是能替换掉宿主注入给它的样式或代码。现在还没有这些资源,规则先立着。
+ */
+const RESERVED_SEGMENT = formatData.reservedSegment
 
 /**
  * 这个文件能不能当文本看。
@@ -183,6 +249,10 @@ export function isSafeRelPath(p: string): boolean {
   if (parts.length > LIMITS.pathDepth) return false
   for (const seg of parts) {
     if (seg === '' || seg === '.' || seg === '..') return false
+    // 拦任何一段而不只是首段:插件没有任何正当理由把目录叫 __imark,
+    // 而少拦一段就要多论证一次「为什么这段安全」。大小写不敏感 —— macOS/Windows
+    // 的文件系统本来就不区分,只在 Linux 上拦会让同一份包在两处表现不同。
+    if (seg.toLowerCase() === RESERVED_SEGMENT) return false
   }
   const ext = (parts[parts.length - 1]!.split('.').pop() ?? '').toLowerCase()
   return ALLOWED_EXT.includes(ext)
@@ -241,37 +311,299 @@ export function integrityInput(
   return JSON.stringify({ manifest, files: map })
 }
 
-function validateFields(fields: unknown, errors: string[]): void {
+/**
+ * 字段表校验。清单的 `fields` 与行首菜单对话框的 `dialog.fields` 共用这一份 ——
+ * 两边渲染的都是同一套声明式字段,校验口径没有理由分家。
+ *
+ * @param where 报错前缀(清单里是 `fields`,对话框里是 `lineMenu[0].dialog.fields`)
+ */
+function validateFields(
+  fields: unknown,
+  errors: string[],
+  where = 'fields',
+  opts: { forbidKinds?: string[]; requireDefault?: boolean } = {}
+): void {
   if (!Array.isArray(fields)) {
-    errors.push('fields 必须是数组')
+    errors.push(`${where} 必须是数组`)
     return
   }
   const seen = new Set<string>()
   for (const [i, raw] of fields.entries()) {
     if (!raw || typeof raw !== 'object') {
-      errors.push(`fields[${i}] 不是对象`)
+      errors.push(`${where}[${i}] 不是对象`)
       continue
     }
     const f = raw as Partial<PluginField>
-    const where = `fields[${i}]`
+    const at = `${where}[${i}]`
     if (typeof f.key !== 'string' || !FIELD_KEY_RE.test(f.key)) {
-      errors.push(`${where}.key 非法(只能是字母/数字/下划线,1-40 字符)`)
+      errors.push(`${at}.key 非法(只能是字母/数字/下划线,1-40 字符)`)
     } else if (seen.has(f.key)) {
-      errors.push(`${where}.key 重复:${f.key}`)
+      errors.push(`${at}.key 重复:${f.key}`)
     } else {
       seen.add(f.key)
     }
     if (typeof f.kind !== 'string' || !FIELD_KINDS.includes(f.kind)) {
-      errors.push(`${where}.kind 非法:${String(f.kind)}`)
+      errors.push(`${at}.kind 非法:${String(f.kind)}`)
+    } else if (opts.forbidKinds?.includes(f.kind)) {
+      errors.push(`${at}.kind 不能是 ${f.kind}(对话框里放不下这类字段)`)
     }
     if (typeof f.label !== 'string' || f.label.trim().length === 0) {
-      errors.push(`${where}.label 不能为空`)
+      errors.push(`${at}.label 不能为空`)
     }
     if (f.kind === 'select' && (!Array.isArray(f.options) || f.options.length === 0)) {
-      errors.push(`${where} 是 select 但没有 options`)
+      errors.push(`${at} 是 select 但没有 options`)
     }
     if (f.showWhen && typeof f.showWhen.key !== 'string') {
-      errors.push(`${where}.showWhen.key 非法`)
+      errors.push(`${at}.showWhen.key 非法`)
+    }
+    if (opts.requireDefault && f.default === undefined) {
+      errors.push(`${at} 缺少 default(对话框拿它当初始值)`)
+    }
+  }
+}
+
+/** UTF-8 字节数。不用 Buffer:本文件渲染层也会 import,那边没有 Buffer */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+/** 对话框里允许出现的字段 kind —— 密钥与目标列表是一次性的对话框装不下的东西 */
+const DIALOG_FIELD_KINDS = ['text', 'number', 'boolean', 'select']
+
+export function validateLineMenu(list: unknown, errors: string[]): void {
+  if (list === undefined) return
+  if (!Array.isArray(list)) {
+    errors.push('lineMenu 必须是数组')
+    return
+  }
+  if (list.length > LIMITS.lineMenuEntries) {
+    errors.push(`lineMenu 条目过多(上限 ${LIMITS.lineMenuEntries} 条)`)
+  }
+  const seen = new Set<string>()
+  let totalBytes = 0
+  for (const [i, raw] of list.entries()) {
+    const at = `lineMenu[${i}]`
+    if (!raw || typeof raw !== 'object') {
+      errors.push(`${at} 不是对象`)
+      continue
+    }
+    const item = raw as Partial<PluginLineMenuItem>
+    if (typeof item.id !== 'string' || !ACTION_ID_RE.test(item.id)) {
+      errors.push(`${at}.id 非法(小写字母/数字/连字符,1-40 字符)`)
+    } else if (seen.has(item.id)) {
+      errors.push(`${at}.id 重复:${item.id}`)
+    } else {
+      seen.add(item.id)
+    }
+    if (typeof item.label !== 'string' || item.label.trim().length === 0) {
+      errors.push(`${at}.label 不能为空`)
+    } else if (item.label.length > LIMITS.lineMenuLabelChars) {
+      errors.push(`${at}.label 过长(上限 ${LIMITS.lineMenuLabelChars} 字)`)
+    }
+
+    // template 与 action 恰好二选一:前者由宿主直接插入,后者要过一趟插件
+    const hasTemplate = typeof item.template === 'string'
+    const hasAction = typeof item.action === 'string'
+    if (item.template !== undefined && !hasTemplate) errors.push(`${at}.template 必须是字符串`)
+    if (item.action !== undefined && !hasAction) errors.push(`${at}.action 必须是字符串`)
+    if (hasTemplate === hasAction) {
+      errors.push(`${at} 必须且只能声明 template 或 action 之一`)
+    }
+    if (hasAction && !ACTION_ID_RE.test(item.action as string)) {
+      errors.push(`${at}.action 非法(小写字母/数字/连字符,1-40 字符)`)
+    }
+    if (hasTemplate) {
+      const bytes = utf8Bytes(item.template as string)
+      totalBytes += bytes
+      if (bytes > LIMITS.lineMenuTemplateBytes) {
+        errors.push(`${at}.template 过长(上限 ${LIMITS.lineMenuTemplateBytes} 字节)`)
+      }
+    }
+
+    if (item.dialog !== undefined) {
+      const d = item.dialog as Partial<PluginLineMenuDialog>
+      if (!hasAction) {
+        errors.push(`${at}.dialog 必须配合 action 使用(纯模板条目没有要问的参数)`)
+      }
+      if (!d || typeof d !== 'object') {
+        errors.push(`${at}.dialog 必须是对象`)
+      } else {
+        if (typeof d.title !== 'string' || d.title.trim().length === 0) {
+          errors.push(`${at}.dialog.title 不能为空`)
+        }
+        if (d.confirmLabel !== undefined && typeof d.confirmLabel !== 'string') {
+          errors.push(`${at}.dialog.confirmLabel 必须是字符串`)
+        }
+        validateFields(d.fields, errors, `${at}.dialog.fields`, {
+          forbidKinds: FIELD_KINDS.filter(k => !DIALOG_FIELD_KINDS.includes(k)),
+          requireDefault: true
+        })
+      }
+    }
+  }
+  if (totalBytes > LIMITS.lineMenuTotalBytes) {
+    errors.push(`lineMenu 的模板文本合计过长(上限 ${LIMITS.lineMenuTotalBytes} 字节)`)
+  }
+}
+
+/**
+ * 快捷键的合法形状。
+ *
+ * 只认 `修饰键(+修饰键...)+主键`。刻意**不**做「这套组合有没有被占用」的判断 ——
+ * 那样等于把菜单表抄进来一份,而菜单是应用自己的东西、随时会变。
+ * 占用检测在真正注册的时候做(见 main/menu.ts),那里才拿得到权威的已用列表。
+ */
+export const KEYBINDING_RE = /^(?:(?:Cmd|Ctrl|CmdOrCtrl|Alt|Shift|Super)\+)+[A-Za-z0-9][A-Za-z0-9+-]{0,19}$/
+
+const COMMAND_WHENS = ['always', 'editor', 'vault']
+/**
+ * 插件能挂右键菜单的地方。
+ *
+ * **暂时只有 `files`(文件列表)**。`editor`(编辑器正文)是刻意留白的:编辑器现在
+ * 根本没有宿主右键菜单,插件条目无处可挂 —— 而先放出一个永远不会出现的取值,
+ * 只会让作者写完之后对着"为什么没反应"发呆。等编辑器有了自己的菜单
+ * (那需要先把剪切/复制/粘贴打通,菜单里缺了这三项才更奇怪)再把它加回来。
+ */
+const MENU_WHERES = ['files']
+
+/** 命令与右键菜单的 id 跟动作共用一套字符集:它们最终都指向一个 runAction */
+const SLOT_ID_RE = ACTION_ID_RE
+
+/**
+ * 命令 / 状态栏 / 右键菜单的通用校验。
+ *
+ * 三者形状几乎一样(一个 id、一个 label、一个指向 action 的指针),所以共用一份实现 ——
+ * 各写一遍的话,「action 必须在 actions 里声明过」这条迟早有一处会漏,而漏掉的后果是
+ * 界面上多出一个点了没反应的按钮。
+ */
+function validateSlotList(
+  list: unknown,
+  where: string,
+  errors: string[],
+  opts: {
+    max: number
+    /** 允许出现的字段白名单 —— 未知字段在这里直接报错(清单是重建的,写错了会被静默丢掉) */
+    allowed: string[]
+    /**
+     * 必须声明的字段。
+     *
+     * `action` 对三者都是必填,这条值得说清楚:清单里声明的东西是**装的时候就能看见**
+     * 的承诺,而"点了之后干什么"必须同样在清单里 —— 否则一条只等运行期回调的命令,
+     * 在插件崩了被熔断之后就会变成界面上一颗永远点不动的按钮。要按运行期状态决定
+     * 命令长什么样的插件,走 `imark.commands.register()`,那条路天然带着回调。
+     */
+    required: string[]
+    /** 这些指针字段必须能在 actions 里找到 */
+    actionPointers: string[]
+    actionIds: Set<string>
+  }
+): void {
+  if (list === undefined) return
+  if (!Array.isArray(list)) {
+    errors.push(`${where} 必须是数组`)
+    return
+  }
+  if (list.length > opts.max) {
+    errors.push(`${where} 最多 ${opts.max} 条(现在 ${list.length} 条)`)
+  }
+  const seen = new Set<string>()
+  for (const [i, raw] of list.entries()) {
+    const at = `${where}[${i}]`
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      errors.push(`${at} 必须是对象`)
+      continue
+    }
+    const item = raw as Record<string, unknown>
+
+    for (const key of Object.keys(item)) {
+      if (!opts.allowed.includes(key)) {
+        errors.push(`${at} 不认识的字段「${key}」(可用:${opts.allowed.join(' / ')})`)
+      }
+    }
+    for (const key of opts.required) {
+      if (typeof item[key] !== 'string' || (item[key] as string).trim().length === 0) {
+        errors.push(`${at}.${key} 不能为空`)
+      }
+    }
+
+    if (item.id !== undefined) {
+      if (typeof item.id !== 'string' || !SLOT_ID_RE.test(item.id)) {
+        errors.push(`${at}.id 非法(小写字母/数字/连字符,1-40 字符)`)
+      } else if (seen.has(item.id)) {
+        errors.push(`${at}.id 重复:${item.id}`)
+      } else {
+        seen.add(item.id)
+      }
+    }
+
+    for (const key of opts.actionPointers) {
+      const value = item[key]
+      if (value === undefined) continue
+      if (typeof value !== 'string' || !opts.actionIds.has(value)) {
+        errors.push(`${at}.${key} 指向了未声明的动作「${String(value)}」,请先在 actions 里声明`)
+      }
+    }
+  }
+}
+
+/** 命令面板条目 */
+function validateCommands(list: unknown, errors: string[], actionIds: Set<string>): void {
+  validateSlotList(list, 'commands', errors, {
+    max: LIMITS.commands,
+    allowed: ['id', 'label', 'detail', 'keybinding', 'when', 'action'],
+    required: ['id', 'label', 'action'],
+    actionPointers: ['action'],
+    actionIds
+  })
+  if (!Array.isArray(list)) return
+  for (const [i, raw] of list.entries()) {
+    const item = raw as { keybinding?: unknown; when?: unknown }
+    if (!item || typeof item !== 'object') continue
+    if (item.keybinding !== undefined && (typeof item.keybinding !== 'string' || !KEYBINDING_RE.test(item.keybinding))) {
+      errors.push(
+        `commands[${i}].keybinding 非法(形如 Ctrl+Shift+P,修饰键用 Cmd/Ctrl/CmdOrCtrl/Alt/Shift/Super)`
+      )
+    }
+    if (item.when !== undefined && !COMMAND_WHENS.includes(item.when as string)) {
+      errors.push(`commands[${i}].when 只能是 ${COMMAND_WHENS.join(' / ')}`)
+    }
+  }
+}
+
+/** 状态栏条目:一个插件最多占一条 */
+function validateStatusBar(list: unknown, errors: string[], actionIds: Set<string>): void {
+  validateSlotList(list, 'statusBar', errors, {
+    max: LIMITS.statusBarItems,
+    allowed: ['id', 'label', 'icon', 'tooltip', 'action'],
+    required: ['id', 'label', 'action'],
+    actionPointers: ['action'],
+    actionIds
+  })
+  if (Array.isArray(list) && list.length > 1) {
+    errors.push(
+      'statusBar 最多 1 条 —— 状态栏是全应用最挤的一条,一个插件占多个位置会把别人挤没'
+    )
+  }
+}
+
+/** 右键菜单条目 */
+function validateMenus(list: unknown, errors: string[], actionIds: Set<string>): void {
+  validateSlotList(list, 'menus', errors, {
+    max: LIMITS.menuItems,
+    allowed: ['id', 'label', 'where', 'action', 'danger'],
+    required: ['id', 'label', 'action'],
+    actionPointers: ['action'],
+    actionIds
+  })
+  if (!Array.isArray(list)) return
+  for (const [i, raw] of list.entries()) {
+    const item = raw as { where?: unknown; danger?: unknown }
+    if (!item || typeof item !== 'object') continue
+    if (!MENU_WHERES.includes(item.where as string)) {
+      errors.push(`menus[${i}].where 只能是 ${MENU_WHERES.join(' / ')}`)
+    }
+    if (item.danger !== undefined && typeof item.danger !== 'boolean') {
+      errors.push(`menus[${i}].danger 必须是布尔值`)
     }
   }
 }
@@ -359,6 +691,18 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   validateFields(m.fields, errors)
   validateActions(m.actions, 'actions', errors)
   validateActions(m.targetActions, 'targetActions', errors)
+  validateLineMenu(m.lineMenu, errors)
+
+  // 贡献点里的 action 指针必须指向 actions 里真有的东西。用「已校验通过的 id 集合」
+  // 而不是原始的 m.actions —— 后者可能根本不是数组,或者里面混着没有 id 的垃圾。
+  const actionIds = new Set(
+    (Array.isArray(m.actions) ? m.actions : [])
+      .map(a => (a && typeof a === 'object' ? (a as { id?: unknown }).id : undefined))
+      .filter((id): id is string => typeof id === 'string')
+  )
+  validateCommands(m.commands, errors, actionIds)
+  validateStatusBar(m.statusBar, errors, actionIds)
+  validateMenus(m.menus, errors, actionIds)
 
   if (m.targetActions !== undefined && m.targetActions.length > 0 && !isTargetsField) {
     errors.push('声明了 targetActions 但没有任何 targets 字段')
@@ -368,25 +712,29 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   }
 
   if (errors.length > 0) return fail(...errors)
-  const value: PluginManifest = {
-    id: m.id as string,
-    name: m.name as string,
-    description: m.description as string,
-    version: m.version as string,
-    kind: m.kind as PluginKind,
-    fields: m.fields as PluginField[],
-    actions: (m.actions ?? []) as PluginManifestAction[],
-    ...(m.author !== undefined ? { author: m.author } : {}),
-    ...(m.homepage !== undefined ? { homepage: m.homepage } : {}),
-    ...(m.capability !== undefined ? { capability: m.capability } : {}),
-    ...(m.main !== undefined ? { main: m.main } : {}),
-    ...(m.permissions !== undefined ? { permissions: m.permissions } : {}),
-    ...(m.icon !== undefined ? { icon: m.icon } : {}),
-    ...(m.engines !== undefined ? { engines: m.engines } : {}),
-    ...(m.targetActions !== undefined ? { targetActions: m.targetActions } : {}),
-    ...(m.targetFieldKey !== undefined ? { targetFieldKey: m.targetFieldKey } : {})
+  return { ok: true, errors: [], value: canonicalManifest(m) }
+}
+
+/**
+ * 按 pluginFormat.json 的键序重建清单 —— 校验通过后的**唯一**产出形状。
+ *
+ * 为什么值得单独抽出来:integrity 是对 `JSON.stringify({manifest, files})` 求的 sha256,
+ * 而 JSON.stringify 保留键的插入顺序。于是「清单按什么顺序重建」是格式的一部分,
+ * 不是代码风格问题。打包器怎么排、这里怎么排,两边必须逐字一致。
+ *
+ * 顺带的效果是未知键被**静默丢弃**:清单是从磁盘上读来的,磁盘上的东西可以被手改,
+ * 谁也不知道里面多塞了什么。丢掉它们意味着下游拿到的清单形状完全由这里说了算。
+ * (代价见 PluginKind 处的说明:新增**安全相关**的形态绝不能靠「多一个可选键」。)
+ */
+export function canonicalManifest(m: Partial<PluginManifest>): PluginManifest {
+  const arrayKeys = new Set<string>(formatData.arrayKeys)
+  const out: Record<string, unknown> = {}
+  for (const key of formatData.manifestKeyOrder) {
+    // 空数组兜底:fields / actions 是宿主代码无条件读的,缺了就得到处写 ?? []
+    if (arrayKeys.has(key)) out[key] = m[key as keyof PluginManifest] ?? []
+    else if (m[key as keyof PluginManifest] !== undefined) out[key] = m[key as keyof PluginManifest]
   }
-  return { ok: true, errors: [], value }
+  return out as unknown as PluginManifest
 }
 
 /**
@@ -488,6 +836,7 @@ export function descriptorFromManifest(manifest: PluginManifest): PluginDescript
     fields: manifest.fields,
     actions: manifest.actions,
     ...(manifest.targetActions ? { targetActions: manifest.targetActions } : {}),
-    ...(manifest.targetFieldKey ? { targetFieldKey: manifest.targetFieldKey } : {})
+    ...(manifest.targetFieldKey ? { targetFieldKey: manifest.targetFieldKey } : {}),
+    ...(manifest.lineMenu ? { lineMenu: manifest.lineMenu } : {})
   }
 }

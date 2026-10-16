@@ -53,14 +53,34 @@ interface AppState {
   vaultName: string | null
   vaultTree: VaultNode | null
   vaultFiles: VaultFileRef[]
+  /** 编辑器偏好(来自 settings,由 services/editorSettings 套用) */
+  autoSave: boolean
+  autoSaveInterval: number
+  lineWrapping: boolean
+  editorFontSize: number
+  /** 最近一次定时保存成功的时刻;null 表示不显示提示 */
+  autoSavedAt: number | null
+  /** 定时保存失败的说明(状态栏红字);成功后清掉 */
+  autoSaveError: string | null
   /** 展开的目录路径集合(刷新/重载后保留) */
   expandedDirs: Set<string>
   explorerVisible: boolean
   switcherOpen: boolean
+  /**
+   * 切换器的打开方式:「搜文件」还是「搜命令」。
+   *
+   * 打开的那一刻定下来,之后就由输入框里的内容说了算(以 `>` 开头 = 搜命令)——
+   * 两种模式在同一个面板里,靠一个前缀切换,而不是两个长得一样、
+   * 快捷键还差不多的面板(那才真的记不住)。
+   */
+  switcherMode: SwitcherMode
   settingsOpen: boolean
   /** 启动时跳过仓库选择界面(来自 settings) */
   skipVaultPicker: boolean
 }
+
+/** 切换器的两种模式:搜仓库里的文件 / 搜插件命令 */
+export type SwitcherMode = 'file' | 'command'
 
 export const appStore = reactive<AppState>({
   view: 'picker',
@@ -81,9 +101,16 @@ export const appStore = reactive<AppState>({
   vaultName: null,
   vaultTree: null,
   vaultFiles: [],
+  autoSave: false,
+  autoSaveInterval: 30,
+  lineWrapping: true,
+  editorFontSize: 16,
+  autoSavedAt: null,
+  autoSaveError: null,
   expandedDirs: new Set<string>(),
   explorerVisible: true,
   switcherOpen: false,
+  switcherMode: 'file',
   settingsOpen: false,
   skipVaultPicker: false
 })
@@ -112,6 +139,15 @@ export function initStoreWatchers(): void {
     () => [appStore.fileName, appStore.dirty, appStore.vaultName] as const,
     () => {
       window.api.setWindowTitle(appStore.fileName, appStore.dirty, appStore.vaultName)
+    },
+    { immediate: true }
+  )
+  // 文档路径单独盯:上面那个 watcher 盯的是文件名,而两个目录下的同名文件互相切换时
+  // 文件名根本不变 —— 主进程却必须跟着换基准(imark:// 的允许根、插件写文件的冲突判断)
+  watch(
+    () => appStore.filePath,
+    path => {
+      window.api.setDocPath(path)
     },
     { immediate: true }
   )

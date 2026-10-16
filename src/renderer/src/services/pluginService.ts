@@ -1,7 +1,8 @@
 import { reactive } from 'vue'
-import type { PluginActionResult, PluginView } from '@shared/plugins'
+import type { PluginActionPayload, PluginActionResult, PluginView } from '@shared/plugins'
 import { appStore, editorHolder, openSettings } from '../stores/app'
 import { saveCurrentFile } from './fileService'
+import { notifyError } from './notice'
 
 /** 市场页内部的子导航:三个页签 + 列表页的搜索条件 */
 export interface MarketNav {
@@ -13,9 +14,9 @@ export interface MarketNav {
   sort: 'updated' | 'name' | 'downloads'
 }
 
-/** 设置面板当前选中项:外观、某个插件的配置,或插件市场(与设置面板共享,便于从状态栏/菜单直达) */
+/** 设置面板当前选中项:外观、编辑器、某个插件的配置,或插件市场(与设置面板共享,便于从状态栏/菜单直达) */
 export const settingsNav = reactive<{
-  page: 'appearance' | 'plugin' | 'market'
+  page: 'appearance' | 'editor' | 'plugin' | 'market'
   pluginId: string | null
   /**
    * 市场内部的子导航放在这里,而不是继续往 page 联合里塞 ——
@@ -92,7 +93,7 @@ export function gitSyncPlugin(): PluginView | undefined {
 }
 
 function fail(err: unknown, action: string): void {
-  alert(`${action}失败:${err instanceof Error ? err.message : String(err)}`)
+  notifyError(action, err)
 }
 
 /**
@@ -144,13 +145,19 @@ export async function setPluginSecret(
 export async function runPluginAction(
   id: string,
   action: string,
-  targetId?: string
+  targetId?: string,
+  payload?: PluginActionPayload
 ): Promise<PluginActionResult | null> {
   const key = `${id}:${action}${targetId ? `:${targetId}` : ''}`
   if (pluginStore.busy) return { ok: false, message: '已有动作正在执行' }
   pluginStore.busy = key
   try {
-    const result = await window.api.runPluginAction(id, action, targetId)
+    const result = await window.api.runPluginAction(
+      id,
+      action,
+      targetId,
+      payload ? plain(payload) : undefined
+    )
     pluginStore.list = await window.api.listPlugins()
     return result
   } catch (err) {
@@ -159,17 +166,6 @@ export async function runPluginAction(
   } finally {
     pluginStore.busy = null
   }
-}
-
-/** 一键手动同步(状态栏图标用) */
-export async function syncNow(): Promise<void> {
-  const plugin = gitSyncPlugin()
-  if (!plugin) return
-  if (!plugin.state.enabled) {
-    alert('定时上传插件未启用:请在 设置 → 插件 中开启')
-    return
-  }
-  await runPluginAction(plugin.descriptor.id, 'sync-now')
 }
 
 /**

@@ -1,3 +1,5 @@
+import { joinPath } from './paths'
+
 export interface TextStats {
   words: number
   chars: number
@@ -20,9 +22,9 @@ export function resolveImageSrc(src: string, docDir: string | null): string {
   if (/^(https?:|data:|imark:|blob:)/i.test(src)) return src
   if (src.startsWith('//')) return 'https:' + src
   if (!docDir) return src
-  const base = docDir.replace(/[\\/]+$/, '')
+  // 分隔符跟着 docDir 走(POSIX 用 `/`、Windows 用 `\`),拼错了主进程那边读不到图
   const rel = src.replace(/^[\\/]+/, '')
-  return 'imark://img/' + encodeURIComponent(`${base}\\${rel}`)
+  return 'imark://img/' + encodeURIComponent(joinPath(docDir, rel))
 }
 
 /** 按 eol 约定转换行尾(内部统一 LF 存储,保存时还原) */

@@ -46,11 +46,21 @@ export async function createVaultDir(p: string): Promise<void> {
   await fs.promises.mkdir(p)
 }
 
+/**
+ * 大小写不敏感的文件系统(Windows、默认配置的 macOS)。
+ * 这些系统上 access('NOTE.md') 对 note.md 也成立,所以「只改大小写」的重命名
+ * 会被下面的存在性检查误判成"目标已存在"而拒绝 —— 得放行。
+ * Linux 上不能这么做:note.md 与 NOTE.md 是两个文件,放行就等于静默覆盖。
+ */
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
+
 /** 重命名/移动;目标已存在时拒绝,避免静默覆盖 */
 export async function renameVaultPath(from: string, to: string): Promise<void> {
   try {
     await fs.promises.access(to)
-    throw new Error(`目标已存在:${path.basename(to)}`)
+    const sameFile =
+      CASE_INSENSITIVE_FS && path.resolve(from).toLowerCase() === path.resolve(to).toLowerCase()
+    if (!sameFile) throw new Error(`目标已存在:${path.basename(to)}`)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }

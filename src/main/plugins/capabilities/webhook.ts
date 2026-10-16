@@ -4,7 +4,7 @@
  * 典型的声明式插件(markdown 转 JSON 即可发布,包内不含任何代码):
  *   {
  *     "id": "notify-feishu", "kind": "declarative", "capability": "webhook",
- *     "permissions": ["network", "vault:read"],
+ *     "permissions": ["network", "secrets"],
  *     "fields": [
  *       { "key": "targets", "kind": "targets", "label": "推送地址", "default": [],
  *         "targetSecret": { "label": "签名令牌（可选）" } },
@@ -99,7 +99,9 @@ export const webhookCapability: Capability = {
   id: 'webhook',
   name: 'Webhook 推送',
   description: '把事件以 HTTP 请求推送到你配置的地址(如企业微信 / 飞书机器人、自建服务)。',
-  permissions: ['network'],
+  // secrets 只在用户给某个目标填了签名令牌时才会真的读,但「可能读」就得如实声明:
+  // 确认框问的是「你同意它碰什么」,不是「它一定会碰什么」
+  permissions: ['network', 'secrets'],
   requiredFields: ['targets'],
   actions: [{ id: 'test', label: '发送测试请求' }],
   targetActions: [{ id: 'test-target', label: '测试这一条' }],
