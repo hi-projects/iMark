@@ -84,6 +84,7 @@ export type PluginPermission =
   | 'shell'
   | 'settings'
   | 'ui'
+  | 'editor:read'
   | 'editor:write'
 
 export const PLUGIN_PERMISSIONS: PluginPermission[] = [
@@ -95,17 +96,27 @@ export const PLUGIN_PERMISSIONS: PluginPermission[] = [
   'shell',
   'settings',
   'ui',
+  'editor:read',
   'editor:write'
 ]
 
 /**
- * 只有沙箱插件用得上、也必须用得到的权限词。
+ * 只有沙箱插件用得上的权限词。
  *
- * 出现在 script / declarative 清单里直接报错:那两个形态要么本来就不受门禁
- * (`ui` 对它们毫无约束力),要么根本没有界面与编辑器(`declarative`)。
- * 静默接受会变成"我声明了 ui 却什么也没发生"。
+ * `ui`(开自己的窗口 / 把面板停靠进主界面)需要一整个页面,而只有沙箱形态有页面。
+ * 脚本插件想往界面上放东西走的是另一条路(`imk.ui.mount`,见 README 的说明)——
+ * 它本来就全权,给它一个"窗口"的说法既多余又难懂。
+ * 出现在 script / declarative 清单里直接报错:静默接受会变成"我声明了 ui 却什么也没发生"。
  */
-export const SANDBOX_ONLY_PERMISSIONS: PluginPermission[] = ['ui', 'editor:write']
+export const SANDBOX_ONLY_PERMISSIONS: PluginPermission[] = ['ui']
+
+/**
+ * 只有**带代码**的形态(script / sandboxed)谈得上的权限词。
+ *
+ * 声明式插件没有代码,谈"读文档"没有意义 —— 那种包只声明字段与动作,
+ * 干活的是宿主内置能力。这两个词对它就是纯粹的噪音。
+ */
+export const CODE_ONLY_PERMISSIONS: PluginPermission[] = ['editor:read', 'editor:write']
 
 /** 权限的中文说明(安装确认框逐条展示,渲染层与主进程共用) */
 export const PERMISSION_INFO: Record<PluginPermission, { label: string; description: string }> = {
@@ -125,11 +136,17 @@ export const PERMISSION_INFO: Record<PluginPermission, { label: string; descript
   ui: {
     label: '打开自己的窗口',
     description:
-      '在自己的窗口里显示任意内容。窗口标题栏会标出插件名;它长得像 iMark 的界面,所以请只在这个窗口里输入你信任的插件要的东西。'
+      '在自己的窗口或主界面的侧栏里显示任意内容。窗口标题栏与面板顶栏都会标出插件名;它长得像 iMark 的界面,所以请只在这里输入你信任的插件要的东西。'
+  },
+  'editor:read': {
+    label: '读取当前文档',
+    description:
+      '读取你正在编辑的这篇文档的正文与光标位置,并可以在正文上叠高亮/标记(比如把待办渲染成方框)。它读不到仓库里别的文件 —— 那是「读取仓库文件」。'
   },
   'editor:write': {
     label: '修改当前文档',
-    description: '往你正在编辑的那篇文档里插入内容(不是改任意文件,那是「修改仓库文件」)。'
+    description:
+      '改写你正在编辑的这篇文档(替换选区、移动光标、插入内容)。不是改任意文件 —— 那是「修改仓库文件」。'
   }
 }
 
@@ -140,14 +157,30 @@ export const PERMISSION_INFO: Record<PluginPermission, { label: string; descript
  * 会直接报错 —— 那正是钓鱼窗口风险的告知位置。
  */
 export interface PluginUiSpec {
-  /** 窗口加载的包内 HTML 入口 */
+  /** 窗口/面板加载的包内 HTML 入口 */
   entry: string
-  /** 初始尺寸(不填用宿主的默认值;恢复上次大小优先于它) */
+  /**
+   * 初始尺寸(不填用宿主的默认值)。
+   * 开窗口时是窗口尺寸;停靠时左/右栏取 `width`、底栏取 `height`。
+   */
   width?: number
   height?: number
   minWidth?: number
   minHeight?: number
+  /**
+   * **停靠到主界面的哪一侧**。不写就是"开自己的窗口"。
+   *
+   * 两种形态的差别只有一件事:页面长在哪儿。页面本身、会话、CSP、能力完全一样 ——
+   * 所以作者不必为"停靠还是独立窗口"写两套代码。
+   *
+   * 停靠的是**插件自己的 renderer**(`WebContentsView`),不是把插件的 HTML 塞进
+   * iMark 的页面里:它碰不到主界面的任何 DOM,主界面的样式也影响不到它。
+   */
+  dock?: PluginDockSide
 }
+
+/** 面板能停靠的三侧(与主界面布局一一对应) */
+export type PluginDockSide = 'left' | 'right' | 'bottom'
 
 export interface PluginManifestAction {
   id: string
@@ -545,6 +578,17 @@ const SLOT_ID_RE = ACTION_ID_RE
  */
 export const UI_SIZE = { min: 240, max: 4000, defaultWidth: 900, defaultHeight: 640 }
 
+/** 面板能停靠的三侧(运行时校验用;类型上是 PluginDockSide) */
+export const DOCK_SIDES: PluginDockSide[] = ['left', 'right', 'bottom']
+
+/**
+ * 停靠面板的尺寸边界。
+ *
+ * 比窗口那套更紧:窗口开大了只是挡着别的窗口,而**面板会把主界面挤窄** ——
+ * 一个占了 3000px 宽的面板等于把编辑器挤没了,用户还找不到是哪个插件干的。
+ */
+export const DOCK_SIZE = { min: 180, max: 900, defaultWidth: 320, defaultHeight: 220 }
+
 /** 校验沙箱插件的界面声明(仅 kind:'sandboxed' 会走到这里) */
 function validateUiSpec(ui: unknown, errors: string[]): void {
   if (ui === undefined) return
@@ -553,20 +597,25 @@ function validateUiSpec(ui: unknown, errors: string[]): void {
     return
   }
   const u = ui as Partial<PluginUiSpec>
-  const allowed = ['entry', 'width', 'height', 'minWidth', 'minHeight']
+  const allowed = ['entry', 'width', 'height', 'minWidth', 'minHeight', 'dock']
   for (const key of Object.keys(u)) {
     if (!allowed.includes(key)) errors.push(`ui 里不认识的键:${key}`)
+  }
+  if (u.dock !== undefined && !DOCK_SIDES.includes(u.dock)) {
+    errors.push(`ui.dock 只能是 ${DOCK_SIDES.join(' / ')} 之一`)
   }
   if (typeof u.entry !== 'string' || !isSafeRelPath(u.entry)) {
     errors.push('ui.entry 必须是包内的合法相对路径')
   } else if (!/\.html?$/i.test(u.entry)) {
     errors.push('ui.entry 必须是 .html 文件')
   }
+  // 停靠的面板尺寸另有一套更紧的边界(见 DOCK_SIZE):它挤的是主界面,不是桌面
+  const size = u.dock ? DOCK_SIZE : UI_SIZE
   for (const key of ['width', 'height', 'minWidth', 'minHeight'] as const) {
     const v = u[key]
     if (v === undefined) continue
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < UI_SIZE.min || v > UI_SIZE.max) {
-      errors.push(`ui.${key} 必须是 ${UI_SIZE.min}-${UI_SIZE.max} 之间的数字`)
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < size.min || v > size.max) {
+      errors.push(`ui.${key} 必须是 ${size.min}-${size.max} 之间的数字`)
     }
   }
   if (u.minWidth !== undefined && u.width !== undefined && u.minWidth > u.width) {
@@ -802,7 +851,9 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
           // 而运行时因为词表里没这个词什么也没给 —— 他会去别处找原因,找不到
           errors.push(`未知权限:${String(p)}`)
         } else if (SANDBOX_ONLY_PERMISSIONS.includes(p as PluginPermission) && m.kind !== 'sandboxed') {
-          errors.push(`权限「${p}」只对沙箱插件(kind: 'sandboxed')有意义,脚本插件不该声明它`)
+          errors.push(`权限「${p}」只对沙箱插件(kind: 'sandboxed')有意义,别的形态不该声明它`)
+        } else if (m.kind !== undefined && CODE_ONLY_PERMISSIONS.includes(p as PluginPermission) && !hasMainEntry(m.kind)) {
+          errors.push(`声明式插件没有代码,不该声明「${p}」(它不会调用任何东西)`)
         }
       }
     }

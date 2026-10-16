@@ -20,8 +20,14 @@
 
 import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import type { PluginPermission } from '@shared/pluginPackage'
-import type { PluginCommand, PluginMenuItem, PluginState, PluginStatusItem } from '@shared/plugins'
+import { DOCK_SIDES, type PluginPermission } from '@shared/pluginPackage'
+import type {
+  PluginCommand,
+  PluginMenuItem,
+  PluginState,
+  PluginStatusItem,
+  RendererOpName
+} from '@shared/plugins'
 import { getSettings, getSettingsSync } from '../settings'
 import { getSecret, hasSecret } from '../secrets'
 import { isGitAvailable, redactUrl, runGit, summarize } from '../git'
@@ -53,6 +59,15 @@ export interface OpContext {
   flushDocument(): Promise<void>
   /** 往当前文档里插入内容(经渲染层),返回是否成功 */
   insertIntoEditor(text: string, cursorOffset?: number): Promise<boolean>
+  /**
+   * 请**渲染层**替插件做一件事(编辑器读写/装饰、往主界面挂东西)。
+   *
+   * 这不是"通用透传":能请它做什么由上面那张能力表说了算,插件永远拿不到这个方法 ——
+   * 它只是表里那些 op 通往渲染层的一段路(文档在渲染层、主界面也在渲染层)。
+   */
+  askRenderer(op: RendererOpName, args: unknown): Promise<unknown>
+  /** 这个插件是沙箱形态吗(个别能力只给其中一种形态) */
+  readonly isSandbox: boolean
   /** 让某个文件在渲染层重新加载(插件刚改过它) */
   notifyFileChanged(filePath: string): void
   /** 界面贡献点:注册的动作由宿主桥接回插件(manifest 声明的走 runAction) */
@@ -81,6 +96,12 @@ export interface OpDef {
   limit?: string
   /** 并发上限(只有挂很久的网络类 op 用得上) */
   maxConcurrent?: number
+  /**
+   * 只给**沙箱**插件(它有自己的一整个页面,比如开窗口)。
+   * 反过来 `trustedOnly` 只给脚本插件 —— 见 `ui.mount` 处的说明。
+   */
+  sandboxOnly?: boolean
+  trustedOnly?: boolean
   run(ctx: OpContext, args: unknown): Promise<unknown>
 }
 
@@ -240,6 +261,71 @@ async function resolveGitCwd(raw: unknown): Promise<string> {
     return realFull
   }
   return resolveVaultPath(raw ?? '', 'dir')
+}
+
+// ---------- 编辑器扩展点与界面注入的参数处理 ----------
+
+/** 一次装饰的数量上限(它会被写进 CodeMirror,几千条已经远超"看得见"的量) */
+const MAX_DECORATIONS = 2000
+/** 插件 CSS 的体积上限 */
+const MAX_CSS_BYTES = 64 * 1024
+/** 注入界面的 HTML 体积上限 */
+const MAX_INJECT_BYTES = 256 * 1024
+
+function normalizeRange(fromRaw: unknown, toRaw: unknown, op: string): { from: number; to: number } {
+  const from = Number(fromRaw)
+  const to = Number(toRaw)
+  if (!Number.isInteger(from) || from < 0) throw new OpError('E_BAD_ARGS', `${op} 的 from 必须是非负整数`)
+  if (!Number.isInteger(to) || to < 0) throw new OpError('E_BAD_ARGS', `${op} 的 to 必须是非负整数`)
+  if (to < from) throw new OpError('E_BAD_ARGS', `${op} 的 to 不能小于 from`)
+  return { from, to }
+}
+
+/**
+ * 装饰只收三样东西:起止位置 + 一个 class 名。**没有别的**。
+ *
+ * 特别是**不收 style**:让它自己写 `style="position:fixed;…"` 就等于给它一块可以
+ * 盖住整个编辑器的画布。class 由它自己的 CSS 定义,而那份 CSS 被 `@scope` 限制在
+ * 它标出来的元素里(见 renderer 的注入实现)—— 两条约束合起来,它画的图只能长在
+ * 自己标出的文字上。
+ */
+const DECO_CLASS_RE = /^[A-Za-z0-9_-]{1,64}$/
+
+function normalizeDecoration(raw: unknown, index: number): { from: number; to: number; class: string } {
+  const d = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const { from, to } = normalizeRange(d.from, d.to, `decorations[${index}]`)
+  const cls = typeof d.class === 'string' ? d.class : ''
+  if (!DECO_CLASS_RE.test(cls)) {
+    throw new OpError('E_BAD_ARGS', `decorations[${index}].class 只能是字母/数字/下划线/连字符`)
+  }
+  return { from, to, class: cls }
+}
+
+/**
+ * 插件 CSS 的两处**必要**处理(不是"净化"—— 净化 CSS 是做不到的事):
+ *   - 掐掉 `</style`:不掐的话插件能把宿主的 style 元素提前关掉,后面写什么都由它;
+ *   - 去掉 `@import`:远程样式表在 CSP 下本来就会被拦,但让它安静失败比报一堆
+ *     控制台错误好(作者会以为是自己写错了)。
+ * 真正把影响范围收住的是**渲染层注入时套的 `@scope`**,不是这里。
+ */
+function sanitizeCss(css: string): string {
+  return css.replace(/<\s*\/\s*style/gi, '<\\/style').replace(/@import[^;]*;?/gi, '')
+}
+
+/**
+ * 注入界面的 HTML 处理。
+ *
+ * 说清楚它的地位:这**不是**安全边界,是**防手滑**。真正兜底的是主窗口的 CSP ——
+ * `script-src 'self'` 让内联 `<script>` 与 `onclick="…"` 都跑不起来,而 `innerHTML`
+ * 本身也不执行脚本。这里去掉的是几类"也许能绕、但没有任何正当用途"的东西:
+ * 脚本/样式/内嵌框架/外链资源。真正的交互必须走 `data-imk-click` 回到插件代码里。
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|base)\b[^>]*>/gi, '')
+    .replace(/<\s*\/\s*(script|style|iframe|object|embed)\s*>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/javascript:/gi, '')
 }
 
 /** 展示给插件看的相对路径(统一正斜杠) */
@@ -519,6 +605,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'schedule.every': {
+    sandboxOnly: true,
     perm: null,
     timeoutMs: 1000,
     run: async (ctx, args) => {
@@ -529,6 +616,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'schedule.clear': {
+    sandboxOnly: true,
     perm: null,
     timeoutMs: 1000,
     run: async (ctx, args) => {
@@ -617,6 +705,10 @@ const OPS: Record<string, OpDef> = {
   },
 
   // ---------- 编辑器 ----------
+  //
+  // 这一段是**编辑器扩展点**:读、改、加装饰。三件事都发生在渲染层
+  // (文档在 CodeMirror 手里),所以一律经 ctx.askRenderer 转达 ——
+  // 插件自己永远碰不到编辑器实例。
 
   'editor.insert': {
     perm: 'editor:write',
@@ -626,6 +718,117 @@ const OPS: Record<string, OpDef> = {
       const text = asString(a.text, 'text', 64 * 1024)
       const offset = a.cursorOffset === undefined ? undefined : Number(a.cursorOffset)
       return ctx.insertIntoEditor(text, Number.isFinite(offset) ? offset : undefined)
+    }
+  },
+
+  'editor.read': {
+    perm: 'editor:read',
+    timeoutMs: 5000,
+    run: async ctx => ctx.askRenderer('editor.read', {})
+  },
+
+  'editor.replace': {
+    perm: 'editor:write',
+    timeoutMs: 5000,
+    limit: '60/60000',
+    run: async (ctx, args) => {
+      const a = asObject(args, 'editor.replace')
+      const text = asString(a.text, 'text', 256 * 1024)
+      const range = normalizeRange(a.from, a.to, 'editor.replace')
+      const select = a.select === undefined ? null : normalizeRange(asObject(a.select, 'select').from, asObject(a.select, 'select').to, 'select')
+      return ctx.askRenderer('editor.replace', { ...range, text, select })
+    }
+  },
+
+  'editor.setSelection': {
+    perm: 'editor:write',
+    timeoutMs: 5000,
+    run: async (_ctx, args) => {
+      const a = asObject(args, 'editor.setSelection')
+      const range = normalizeRange(a.from, a.to, 'editor.setSelection')
+      return _ctx.askRenderer('editor.replace', { ...range, text: null, select: range })
+    }
+  },
+
+  'editor.decorate': {
+    perm: 'editor:read',
+    timeoutMs: 5000,
+    limit: '120/60000',
+    run: async (ctx, args) => {
+      const a = asObject(args, 'editor.decorate')
+      const list = Array.isArray(a.decorations) ? a.decorations : null
+      if (!list) throw new OpError('E_BAD_ARGS', 'decorations 必须是数组')
+      if (list.length > MAX_DECORATIONS) {
+        throw new OpError('E_BAD_ARGS', `一次最多 ${MAX_DECORATIONS} 条标记(现在 ${list.length} 条)`)
+      }
+      const specs = list.map((raw, i) => normalizeDecoration(raw, i))
+      return ctx.askRenderer('editor.decorate', { specs })
+    }
+  },
+
+  'editor.clearDecorations': {
+    perm: 'editor:read',
+    timeoutMs: 5000,
+    run: async ctx => ctx.askRenderer('editor.clear', {})
+  },
+
+  'editor.styles': {
+    perm: 'editor:read',
+    timeoutMs: 5000,
+    limit: '60/60000',
+    run: async (ctx, args) => {
+      const css = asString(asObject(args, 'editor.styles').css, 'css', MAX_CSS_BYTES)
+      return ctx.askRenderer('editor.styles', { css: sanitizeCss(css) })
+    }
+  },
+
+  // ---------- 主界面(仅脚本插件,见 README 的说明) ----------
+
+  'ui.mount': {
+    perm: null,
+    trustedOnly: true,
+    timeoutMs: 5000,
+    run: async (ctx, args) => {
+      const a = asObject(args, 'ui.mount')
+      const html = asString(a.html, 'html', MAX_INJECT_BYTES)
+      const side = a.side === undefined ? 'right' : String(a.side)
+      if (!DOCK_SIDES.includes(side as never)) {
+        throw new OpError('E_BAD_ARGS', `side 只能是 ${DOCK_SIDES.join(' / ')} 之一`)
+      }
+      return ctx.askRenderer('ui.mount', {
+        id: asString(a.id, 'id', 64),
+        side,
+        title: a.title === undefined ? '' : asString(a.title, 'title', 100),
+        html: sanitizeHtml(html)
+      })
+    }
+  },
+
+  'ui.update': {
+    perm: null,
+    trustedOnly: true,
+    timeoutMs: 5000,
+    run: async (ctx, args) => {
+      const a = asObject(args, 'ui.update')
+      const html = asString(a.html, 'html', MAX_INJECT_BYTES)
+      return ctx.askRenderer('ui.update', { id: asString(a.id, 'id', 64), html: sanitizeHtml(html) })
+    }
+  },
+
+  'ui.remove': {
+    perm: null,
+    trustedOnly: true,
+    timeoutMs: 5000,
+    run: async (ctx, args) => ctx.askRenderer('ui.remove', { id: asString(asObject(args, 'ui.remove').id, 'id', 64) })
+  },
+
+  'ui.injectStyles': {
+    perm: null,
+    trustedOnly: true,
+    timeoutMs: 5000,
+    run: async (ctx, args) => {
+      const css = asString(asObject(args, 'ui.injectStyles').css, 'css', MAX_CSS_BYTES)
+      return ctx.askRenderer('ui.styles', { css: sanitizeCss(css) })
     }
   },
 
@@ -764,6 +967,7 @@ const OPS: Record<string, OpDef> = {
   // ---------- 窗口 ----------
 
   'window.open': {
+    sandboxOnly: true,
     perm: 'ui',
     timeoutMs: 5000,
     run: async ctx => {
@@ -773,6 +977,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'window.close': {
+    sandboxOnly: true,
     perm: 'ui',
     timeoutMs: 5000,
     run: async ctx => {
@@ -782,6 +987,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'window.show': {
+    sandboxOnly: true,
     perm: 'ui',
     timeoutMs: 5000,
     run: async ctx => {
@@ -791,6 +997,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'window.hide': {
+    sandboxOnly: true,
     perm: 'ui',
     timeoutMs: 5000,
     run: async ctx => {
@@ -800,6 +1007,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'window.setTitle': {
+    sandboxOnly: true,
     perm: 'ui',
     timeoutMs: 1000,
     run: async (ctx, args) => {

@@ -1,6 +1,11 @@
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type { PluginActionPayload, PluginContribInvoke } from '@shared/plugins'
+import type {
+  DockSlotRect,
+  PluginActionPayload,
+  PluginContribInvoke,
+  PluginUiClick
+} from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
 import {
   currentDocPath,
@@ -214,6 +219,17 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.PluginOpenWindow, (_e, id: string) => {
     requirePluginHost().openWindow(id)
+  })
+
+  // 渲染层报来的两类回执:停靠面板的位置、注入界面里的点击。
+  // 两条都是**渲染层说、宿主照做** —— 位置由它算(它才知道布局),点击由它捕获
+  // (只有它看得见 DOM)
+  ipcMain.on(IPC.PluginDockRect, (_e, rect: DockSlotRect) => {
+    getPluginHost()?.handleDockRect(rect)
+  })
+
+  ipcMain.on(IPC.PluginUiClick, (_e, click: PluginUiClick) => {
+    void getPluginHost()?.handleUiClick(click)
   })
 
   ipcMain.on(IPC.PluginFlushDone, () => {

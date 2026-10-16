@@ -10,9 +10,9 @@ export type PluginFieldKind = 'text' | 'password' | 'number' | 'boolean' | 'sele
 
 // 插件形态与权限词表定义在 pluginPackage.ts(它们本来就是清单的概念)。
 // 这里只做类型中转,方便渲染层从一处 import。
-import type { PluginKind, PluginPermission } from './pluginPackage'
+import type { PluginDockSide, PluginKind, PluginPermission } from './pluginPackage'
 
-export type { PluginKind, PluginPermission }
+export type { PluginDockSide, PluginKind, PluginPermission }
 
 export interface PluginFieldOption {
   value: string
@@ -381,6 +381,14 @@ export interface PluginView {
    * 界面上要显示成一个开关 —— 它是用户做过的决定,得能看见、能改回来。
    */
   allowLocalNet?: boolean
+  /**
+   * 沙箱插件的界面停在哪一侧(见 PluginUiSpec.dock);没有界面时为 undefined。
+   * 渲染层据此决定"给它留一块停靠面板"还是"它是独立窗口"。
+   */
+  dock?: PluginDockSide
+  /** 停靠面板想要的尺寸(左/右栏看宽,底栏看高);渲染层按它留位置 */
+  dockWidth?: number
+  dockHeight?: number
   source?: PluginSource
   permissions?: PluginPermission[]
   installed?: PluginInstallInfo
@@ -416,6 +424,74 @@ export interface PluginActionResult {
    * 而且失败与熔断路径上宿主不会带上这个字段 —— 拿不到就什么都不插,这正是想要的。
    */
   editor?: PluginEditorInsert
+}
+
+// ---------- 宿主 → 渲染层的界面请求(编辑器扩展点 + 界面注入) ----------
+//
+// 这两件事都**必须**发生在渲染层:文档与 CodeMirror 在那儿,主界面也在那儿。
+// 插件(不管跑在主进程还是自己的页面里)都只能请宿主转达 —— 插件代码本身
+// 永远进不了渲染层,这条从改造之初就没有松动过。
+
+/** 渲染层能替插件做的一次操作 */
+export type RendererOpName =
+  /** 读正文/选中/光标 */
+  | 'editor.read'
+  /** 替换一段(或选区),可顺带移动光标 */
+  | 'editor.replace'
+  /** 给一段范围加标记(class 由插件给,样式由它自己的 CSS 决定) */
+  | 'editor.decorate'
+  /** 撤掉某个插件的全部标记 */
+  | 'editor.clear'
+  /** 注入这个插件的样式(会被 `@scope` 限制在它自己标出来的元素里) */
+  | 'editor.styles'
+  /** 同上,只是给"挂了界面、但不碰编辑器"的插件用(语义不同,实现共用) */
+  | 'ui.styles'
+  /** 展开/收起某个插件的停靠面板(插件调 window.show()/hide() 时走到这儿) */
+  | 'panel.collapse'
+  /** 把一段 HTML 挂进主界面(仅 trusted 插件,见 README 的说明) */
+  | 'ui.mount'
+  /** 换掉已挂载的 HTML */
+  | 'ui.update'
+  /** 摘掉挂载 */
+  | 'ui.remove'
+
+export interface RendererOpRequest {
+  /** 请求序号(宿主生成,渲染层原样带回) */
+  id: number
+  /** 是谁要做的 —— 渲染层据此给元素打上归属标记(样式作用域靠它) */
+  pluginId: string
+  op: RendererOpName
+  args: unknown
+}
+
+export type RendererOpReply =
+  | { id: number; ok: true; value: unknown }
+  | { id: number; ok: false; message: string }
+
+/**
+ * 渲染层 → 主进程:停靠面板的槽位在哪儿。
+ *
+ * 停靠 = 把**插件自己的 renderer**(WebContentsView)摆到主窗口的某块区域上。
+ * 位置由渲染层说了算(它才知道三栏布局算出来是多大),主进程只负责照着摆。
+ */
+export interface DockSlotRect {
+  pluginId: string
+  /** 相对窗口内容区左上角,单位是 CSS 像素 */
+  x: number
+  y: number
+  width: number
+  height: number
+  /** 槽位此刻可见吗(被折叠、切到别的视图时为 false) */
+  visible: boolean
+}
+
+/** 渲染层 → 主进程:注入的界面里有人点了带 `data-imk-click` 的东西 */
+export interface PluginUiClick {
+  pluginId: string
+  /** 挂载 id(一个插件可以挂多块) */
+  mountId: string
+  /** 那个元素的 data-imk-click 值 */
+  name: string
 }
 
 /** 插件配置的持久化形态(存于 settings.json 的 plugins 字段) */

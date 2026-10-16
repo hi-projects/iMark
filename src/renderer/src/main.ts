@@ -4,6 +4,7 @@ import App from './App.vue'
 import './styles'
 import { initPluginService } from './services/pluginService'
 import { initPluginUi } from './services/pluginUi'
+import { initPluginHostOps } from './services/pluginHostOps'
 import { initMarketService } from './services/marketService'
 import { initLineMenu } from './services/lineMenu'
 import { initDocEvents } from './services/docEvents'
@@ -19,6 +20,8 @@ initPluginUi()
 initDocEvents()
 // 行首「+」菜单:跟着插件列表刷新(插件装好/停用后按钮要立刻跟着出现或消失)
 initLineMenu()
+// 编辑器扩展点与界面注入的执行端(插件请宿主做的事都落在这里)
+initPluginHostOps()
 // 市场进度播报(安装/下载);没有在安装时它只是挂着,不产生任何流量
 initMarketService()
 // 自定义样式(~/.imark/css):目录一变就重新注入,与设置面板开没开无关

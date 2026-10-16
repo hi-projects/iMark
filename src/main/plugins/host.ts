@@ -80,7 +80,8 @@ import {
   unregisterSandboxRuntime,
   type SandboxRuntime
 } from './sandbox'
-import { clearPluginStorage, closePluginWindow, setPluginRoot } from './windows'
+import { clearPluginStorage, closePluginWindow, setDockRect, setPluginRoot } from './windows'
+import { askRenderer, installRendererBridge } from './rendererBridge'
 
 /** 让渲染层保存脏文档的等待上限:超时就按磁盘现状继续,不阻塞同步 */
 const FLUSH_TIMEOUT = 2000
@@ -152,6 +153,13 @@ interface Entry {
   /** 通知限流用的时间窗口(近 1 分钟内发出的时间戳) */
   noticeTimes: number[]
   /**
+   * 注入界面里的点击回执(挂载 id → 处理函数)。
+   *
+   * 挂在 entry 上而不是 API 闭包里:停用插件时要跟着一起清干净 ——
+   * 留着的话,那个挂载 id 的下一个主人会莫名其妙地接到上一家的点击。
+   */
+  uiClicks: Map<string, (name: string) => unknown>
+  /**
    * **已生效**的权限 = 用户装的时候同意的 ∩ 清单现在声明的。
    *
    * 这个交集是沙箱的前提:`InstalledRecord.grantedPermissions` 记的是用户实际同意过的,
@@ -210,6 +218,7 @@ export class PluginHost {
 
     // 沙箱的通道先装上:插件窗口一建起来就可能开口说话,晚一步那次调用就是
     // "没有处理器"的静默失败(页面那边表现为一个永远不返回的 Promise)
+    installRendererBridge()
     installSandboxIpc({
       opContext: pluginId => {
         const entry = this.entries.get(pluginId)
@@ -221,6 +230,12 @@ export class PluginHost {
       onGone: (pluginId, reason) => {
         const entry = this.entries.get(pluginId)
         entry?.logs.push(`[warn] 插件页面结束了:${reason}(下次调用会尝试重建)`)
+      },
+      // 停靠面板的展开/收起:状态归渲染层,这里只把插件的 show/hide 翻成一句话
+      setPanelCollapsed: (pluginId, collapsed) => {
+        void askRenderer('panel.collapse', pluginId, { collapsed }).catch(err => {
+          this.entries.get(pluginId)?.logs.push(`[warn] 面板展开/收起失败:${(err as Error).message}`)
+        })
       }
     })
 
@@ -280,6 +295,7 @@ export class PluginHost {
         listeners: new Map(),
         enabledRun: false,
         noticeTimes: [],
+        uiClicks: new Map(),
         grants: [],
         sandbox: null,
         allowLocalNet: false
@@ -437,6 +453,14 @@ export class PluginHost {
           : {}),
         ...(entry.dev ? { dev: true } : {}),
         ...(entry.sandbox ? { allowLocalNet: entry.allowLocalNet } : {}),
+        // 停靠信息要下发给渲染层:它才知道该给哪个插件留一块侧栏
+        ...(entry.manifest?.ui?.dock
+          ? {
+              dock: entry.manifest.ui.dock,
+              dockWidth: entry.manifest.ui.width ?? 320,
+              dockHeight: entry.manifest.ui.height ?? 220
+            }
+          : {}),
         ...(entry.failures > 0 ? { failures: entry.failures } : {}),
         ...(entry.disabledByHost ? { disabledByHost: true } : {}),
         ...(entry.logs.length > 0 ? { logs: [...entry.logs] } : {}),
@@ -500,9 +524,31 @@ export class PluginHost {
     await this.broadcast()
   }
 
-  /** 设置界面里的「打开窗口」:沙箱插件自己开的窗口,由用户按需唤出 */
+  /** 设置界面里的「打开窗口」:沙箱插件自己开的窗口/面板,由用户按需唤出 */
   openWindow(id: string): void {
     this.entries.get(id)?.sandbox?.windowOpen()
+  }
+
+  /** 渲染层报来的停靠槽位 —— 交给窗口层把原生视图摆过去 */
+  handleDockRect(rect: { pluginId: string; x: number; y: number; width: number; height: number; visible: boolean }): void {
+    setDockRect(rect.pluginId, rect)
+  }
+
+  /**
+   * 注入界面里的点击。
+   *
+   * 走的还是 `safeCall`:一个在点击回调里抛异常的插件,与它在别处抛异常是同一件事 ——
+   * 计数、熔断、写日志,一条都不该少。
+   */
+  async handleUiClick(click: { pluginId: string; mountId: string; name: string }): Promise<void> {
+    const entry = this.entries.get(click.pluginId)
+    if (!entry || !entry.state.enabled) return
+    const handler = entry.uiClicks.get(click.mountId)
+    if (!handler) {
+      entry.logs.push(`[warn] 界面里的「${click.name}」被点了,但没有接住它的 onClick(${click.mountId})`)
+      return
+    }
+    await this.safeCall(entry, `ui.onClick(${click.name})`, () => handler(click.name))
   }
 
   async setSecretValue(
@@ -788,6 +834,7 @@ export class PluginHost {
     // 它每次都是从 manifest 重新算出来的,与运行时无关。
     entry.listeners.clear()
     entry.contrib.resetApi()
+    entry.uiClicks.clear()
   }
 
   // ---------- 内部 ----------
@@ -828,6 +875,7 @@ export class PluginHost {
       contrib: new ContribRegistry(),
       listeners: new Map(),
       noticeTimes: [],
+      uiClicks: new Map(),
       enabledRun: false,
       grants: effectiveGrantsOf(manifest, record),
       sandbox: null,
@@ -897,6 +945,7 @@ export class PluginHost {
       contrib: new ContribRegistry(),
       listeners: new Map(),
       noticeTimes: [],
+      uiClicks: new Map(),
       enabledRun: false,
       grants: effectiveGrantsOf(manifest, record),
       sandbox: null,
@@ -1010,6 +1059,8 @@ export class PluginHost {
         void this.broadcast()
       },
       flushDocument: () => this.flushDocument(),
+      isSandbox: runtime !== null,
+      askRenderer: (op, args) => askRenderer(op, entry.id, args),
       insertIntoEditor: (text, cursorOffset) => this.insertIntoEditor(entry, text, cursorOffset),
       notifyFileChanged: filePath => {
         const win = getMainWindow()
@@ -1125,6 +1176,7 @@ export class PluginHost {
       log: line => this.logLine(entry, 'warn', line),
       contrib: entry.contrib,
       listeners: entry.listeners,
+      uiClicks: entry.uiClicks,
       // 贡献点变了要立刻让界面看到 —— 命令刚注册完就该出现在面板里。
       // 走 schedule 而不是 broadcast:插件常在 onEnable 里连着注册十几条,
       // 每一条都推一次整份快照是没有意义的。
@@ -1456,18 +1508,22 @@ export class PluginHost {
 /**
  * 宿主事件 → 沙箱插件页事件的映射。
  *
- * 只映射**页面上确实有对应通知的**那几个(见 @shared/pluginRpc 的 PluginHostEventType)。
- * `document:change` 与 `file:open` 不在其中:它们是高频/上下文事件,沙箱插件要它们
- * 得先想清楚"一个隐藏页面每 400 毫秒被叫醒一次"值不值 —— 那是下一轮的事,
- * 现在宁可让 preload 明确报"不认识这个事件",也不要给一个悄悄不触发的订阅。
+ * `document:change` 的节流由**渲染层**做(最快约 400ms 一次)才发过来 —— 所以
+ * "一个隐藏页面被高频叫醒"这件事不会发生:它的粒度是"用户在写字",不是"每一次按键"。
+ * 页面上认不出的事件名会由 preload 报一条警告(写错了不该是静默的)。
  */
 const SANDBOX_EVENT_MAP: Partial<{
-  [E in PluginEvent]: { type: 'config' | 'theme' | 'vault' | 'doc-saved'; payload(p: PluginEventMap[E]): unknown }
+  [E in PluginEvent]: {
+    type: 'config' | 'theme' | 'vault' | 'doc-saved' | 'file-open' | 'doc-changed'
+    payload(p: PluginEventMap[E]): unknown
+  }
 }> = {
   'config:change': { type: 'config', payload: p => p },
   'theme:change': { type: 'theme', payload: p => p },
   'vault:change': { type: 'vault', payload: p => p },
-  'document:save': { type: 'doc-saved', payload: p => p }
+  'document:save': { type: 'doc-saved', payload: p => p },
+  'file:open': { type: 'file-open', payload: p => p },
+  'document:change': { type: 'doc-changed', payload: p => p }
 }
 
 /** 登记表记录 → 下发给渲染层的来源信息(只暴露展示需要的字段) */

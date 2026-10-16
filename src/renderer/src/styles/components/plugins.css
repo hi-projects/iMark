@@ -604,6 +604,41 @@
   color: var(--text-secondary);
 }
 
+/* ---------- 形态标签(列表里那枚小字) ---------- */
+
+/*
+ * 三种形态用**三个颜色档**:用户扫一眼列表就该看出哪几个是"能改我界面的"。
+ * 完整权限用警示色(它确实等于把电脑交出去),沙箱用中性偏冷,无代码是灰的。
+ */
+.plugin-kind-chip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.plugin-kind-script {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.plugin-kind-sandboxed {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* 名字要能截断,不能把标签挤出去 */
+.settings-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 「允许访问本机地址」—— 它是一条**授权**,所以长得像一个可勾的开关,
    而不是又一枚说明性 chip(那些是只读的) */
 .plugin-net-toggle {

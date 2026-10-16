@@ -8,6 +8,7 @@ import VaultPicker from './components/VaultPicker.vue'
 import EditorPane from './components/EditorPane.vue'
 import StatusBar from './components/StatusBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import PluginDock from './components/PluginDock.vue'
 import LineMenu from './components/LineMenu.vue'
 import LineActionDialog from './components/LineActionDialog.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -170,9 +171,13 @@ onBeforeUnmount(() => {
   <div v-else class="app-shell">
     <div class="app-body">
       <FileExplorer />
+      <!-- 插件停靠:没有插件要停在这一侧时整块不占位(见组件里的 v-if) -->
+      <PluginDock side="left" />
       <EditorPane />
       <OutlineSidebar />
+      <PluginDock side="right" />
     </div>
+    <PluginDock side="bottom" />
     <StatusBar />
     <QuickSwitcher />
     <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->

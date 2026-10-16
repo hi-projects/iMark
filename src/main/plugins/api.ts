@@ -67,8 +67,14 @@ export interface ApiDeps {
   contrib: ContribRegistry
   /** 该插件的宿主事件订阅表 */
   listeners: Map<PluginEvent, Set<(payload: unknown) => void>>
+  /** 注入界面里的点击回执,按挂载 id 存;停用时由宿主清掉 */
+  uiClicks: Map<string, (name: string) => unknown>
   /** 贡献点变了:让宿主重算快照并下发 */
   contribChanged(): void
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function formatArgs(args: unknown[]): string {
@@ -161,6 +167,32 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
       )
       if (problems.length > 0) log('warn', `状态栏条目被拒:${problems.join(';')}`)
       else deps.contribChanged()
+    },
+    // 下面这几个都走能力表(表里有信任形态的校验、参数校验与体积上限),
+    // 结果不返回值 —— 它们是"说了就做"的界面动作,失败进日志
+    mount: (options: { id: string; html: string; side?: string; title?: string }): void => {
+      void call('ui.mount', options).catch(err => log('warn', `挂载界面失败:${messageOf(err)}`))
+    },
+    update: (id: string, html: string): void => {
+      void call('ui.update', { id, html }).catch(err => log('warn', `更新界面失败:${messageOf(err)}`))
+    },
+    remove: (id: string): void => {
+      void call('ui.remove', { id }).catch(err => log('warn', `摘掉界面失败:${messageOf(err)}`))
+    },
+    injectStyles: (css: string): void => {
+      void call('ui.injectStyles', { css }).catch(err => log('warn', `注入样式失败:${messageOf(err)}`))
+    },
+    /**
+     * 注入界面里的点击回执。
+     *
+     * 注册表挂在 entry 上(由宿主给),而不是这张闭包里:停用插件时要跟着一起清干净 ——
+     * 留着的话,那个 id 的下一个主人会莫名其妙地接到上一家的点击。
+     */
+    onClick: (mountId: string, handler: (name: string) => unknown): (() => void) => {
+      deps.uiClicks.set(mountId, handler)
+      return () => {
+        if (deps.uiClicks.get(mountId) === handler) deps.uiClicks.delete(mountId)
+      }
     }
   })
 

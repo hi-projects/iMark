@@ -86,7 +86,32 @@ export interface PluginRpcAbort {
  * **都是通知,没有回执**:插件要么收到、要么还没订阅(所以 preload 会缓存
  * 每个类型的最后一份 payload,晚订阅也立刻能拿到)。
  */
-export type PluginHostEventType = 'hello' | 'config' | 'theme' | 'vault' | 'doc-saved' | 'tick'
+export type PluginHostEventType =
+  | 'hello'
+  | 'config'
+  | 'theme'
+  | 'vault'
+  | 'doc-saved'
+  /** 打开了另一个文件(路径;未保存的新文档为 null) */
+  | 'file-open'
+  /**
+   * 文档内容变了。**宿主已经节流**(最快约 400ms 一次)——
+   * 它的粒度是"用户在写字",不是"每一次按键"。
+   */
+  | 'doc-changed'
+  | 'tick'
+
+/** 页面上能订阅的事件名白名单(写错了要报出来,而不是永远收不到) */
+export const PLUGIN_PAGE_EVENTS: PluginHostEventType[] = [
+  'hello',
+  'config',
+  'theme',
+  'vault',
+  'doc-saved',
+  'file-open',
+  'doc-changed',
+  'tick'
+]
 
 export interface PluginHostEvent {
   type: PluginHostEventType

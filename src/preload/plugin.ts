@@ -17,6 +17,7 @@
 
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import {
+  PLUGIN_PAGE_EVENTS,
   RPC_BRIDGE,
   RPC_EVENT,
   RPC_INVOKE,
@@ -24,6 +25,7 @@ import {
   type PluginBridgeReply,
   type PluginHello,
   type PluginHostEvent,
+  type PluginHostEventType,
   type PluginRpcResult
 } from '@shared/pluginRpc'
 import tokensCss from '@shared/theme/tokens.css?raw'
@@ -91,7 +93,7 @@ function callQuiet(op: string, args?: unknown): void {
 
 // ---------- 宿主推来的事件 ----------
 
-type HostEventName = 'hello' | 'config' | 'theme' | 'vault' | 'doc-saved' | 'tick'
+type HostEventName = PluginHostEventType
 
 const listeners = new Map<HostEventName, Set<(payload: unknown) => void>>()
 /** 每个类型的最后一份 payload:**晚订阅也能立刻拿到**(见 sandbox.ts 的说明) */
@@ -333,8 +335,22 @@ const api = {
   },
   getConfig: <T = Record<string, unknown>>(): T => configCache as T,
   setState: (patch: unknown): void => callQuiet('state.set', patch),
-  on: (event: HostEventName | 'config' | 'theme', handler: (payload: unknown) => void): (() => void) =>
-    subscribe(event as HostEventName, handler),
+  /**
+   * 订阅宿主那边发生的事。
+   *
+   * 不认识的名字**明确报出来**(而不是静默地永远不触发)—— 页面里没有类型系统,
+   * 写错一个字母的后果本该是作者自己看得见的一句话,不是一场对着空白的排查。
+   */
+  on: (event: string, handler: (payload: unknown) => void): (() => void) => {
+    if (!PLUGIN_PAGE_EVENTS.includes(event as HostEventName)) {
+      console.warn(
+        `[imark] 不认识的事件「${event}」。可用:${PLUGIN_PAGE_EVENTS.join(' / ')}` +
+          `(一次性事件——主题、仓库、打开文件——订阅时会立刻收到当前值)`
+      )
+      return () => {}
+    }
+    return subscribe(event as HostEventName, handler)
+  },
   ui,
   commands,
   menus,

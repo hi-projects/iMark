@@ -541,10 +541,11 @@ window.imark.on('tick', ({ name, lateMs }) => {
 | `imark.getConfig()` / `setState()` / `log()` | – | 配置(同步读,已按字段表归一化)、状态栏那一行状态、日志(进插件页的日志区) |
 | `imark.ui.notify()` / `ui.statusItem()` | – | 右下角通知(每插件 10 条/分钟)、状态栏占一格 |
 | `imark.commands` / `imark.menus` | – | 注册命令面板条目 / 右键菜单条目,可带点击回调 |
-| `imark.on(事件, fn)` | – | `hello` / `config` / `theme` / `vault` / `doc-saved` / `tick`;**晚订阅也会立刻拿到最后一份** |
+| `imark.on(事件, fn)` | – | `hello` / `config` / `theme` / `vault` / `file-open` / `doc-changed` / `doc-saved` / `tick`;**晚订阅也会立刻拿到最后一份**(不认识的事件名会报一条警告) |
 | `imark.schedule` | – | `every(ms, name)` / `clear(name)`:宿主在主进程计时,到点发 `tick` |
 | `imark.document.flush()` | – | 让编辑器把脏文档落盘 |
-| `imark.window` | `ui` | `open/close/show/hide/setTitle`;没有它就没有窗口(纯后台插件) |
+| `imark.editor` | `editor:read` | `read()` 读正文/选中/光标,`decorate()` 加标记,`clearDecorations()`,`styles()` 注入样式;要改文档再加 `editor:write`(见下) |
+| `imark.window` | `ui` | `open/close/show/hide/setTitle`;面板停靠时 `show/hide` 就是展开/收起 |
 | `imark.vault` | `vault:read` | `path()` / `exists()` / `read()` / `list()`;加 `vault:write` 才有 `write()` / `remove()` |
 | `imark.editor.insert()` | `editor:write` | 往**当前文档**插入文本(插在哪儿由宿主决定) |
 | `imark.net.fetch()` | `network` | 由宿主代发:手动跟跳重定向、默认拒本机与内网地址、响应 ≤8 MiB、cookie 不进不出 |
@@ -560,7 +561,55 @@ window.imark.on('tick', ({ name, lateMs }) => {
 5. **打包时注意目录名**:打包器会**跳过 `dist/` 与 `node_modules/`**(`main/market/pack.ts` 的 `SKIP_DIRS`),所以界面产物请放在 `ui/` 这类目录里,别叫 `dist/`。清单声明的 `main` 与 `ui.entry` 必须在包里真实存在。
 6. **可以直接写 JS,也可以写 TS**:沙箱插件的入口是页面里的 ES 模块 —— 想用 TypeScript,自己配一份 `module: ESNext` 的 tsconfig 编译出 `.js`(仓库里的 `plugins-src/tsconfig.json` 是给脚本插件的 CommonJS,不适用于这一种)。
 
-**调试**:`--plugin-dev=plugins-src/note-embed` 直接以目录为源跑(改文件即热重载,不必打包安装);插件页面的 `console.log` 会转发到主进程的控制台;插件自己 `imark.log('warn', …)` 的行会留在设置页的插件日志区。
+#### 编辑器扩展点
+
+插件**碰不到 CodeMirror**,但可以让宿主替它做三件事 —— 读、改、加标记。两种带代码的形态(sandboxed 与 script)都能用,区别只是走 RPC 还是直调:
+
+| 能力 | 权限 | 说明 |
+|---|---|---|
+| `editor.read()` | `editor:read` | 返回正文、选区、光标位置、行数、当前文件路径。超过 1 MiB 只给开头一段(`truncated: true`),但 `length` 是准的 —— 位置都能用它算 |
+| `editor.decorate({decorations:[{from,to,class}]})` | `editor:read` | 给一段范围加标记。**只收范围和 class 名**,不收内联样式:样式由你自己的 CSS 决定,而那份 CSS 被 `@scope` 圈住 |
+| `editor.styles(css)` | `editor:read` | 注入样式。宿主会把它包成 `@scope ([data-imk-plugin="你的id"])`,于是它只作用在**你标出来的元素**上 |
+| `editor.clearDecorations()` | `editor:read` | 撤掉自己的全部标记 |
+| `editor.replace({from,to,text,select?})` | `editor:write` | 改写一段(不改 `from/to` 就是替换当前选区) |
+| `editor.setSelection({from,to})` | `editor:write` | 移动光标/选区(比如"点列表跳到那一行") |
+| `editor.insert(text, cursorOffset?)` | `editor:write` | 在当前光标行下面插一段(块级,宿主负责补空行) |
+
+**位置会跟着文档走**:用户在标记前面打字时,宿主会把这些装饰映射到新位置,标记**不会错位**——但也不会自动变准:新出现的待办要你自己重扫(见样板 `plugins-src/todo-marks/`)。标记属于**某一篇文档**:换文件时编辑器状态会重建,装饰随之清空,插件应当在 `file-open` 事件里重新装饰。
+
+**样式为什么是 `@scope` 而不是"作者自己加前缀"**:约定靠不住,而 `@scope` 是浏览器保证的。你写 `.todo { color: red }`,宿主注入的是 `@scope ([data-imk-plugin="你的id"]) { .todo { color: red } }` —— 它只可能命中你自己标出来的文字。想给整个应用换皮肤?那不在扩展点里,目前也没有计划(那是另一件事,需要另一套许可方式)。
+
+#### 主界面:面板与注入
+
+**沙箱插件——停靠自己的页面。** 清单里写 `ui.dock` 就把那个页面放进主界面的一侧,而不是开一扇独立窗口:
+
+```json
+"ui": { "entry": "ui/index.html", "dock": "right", "width": 300, "height": 260 }
+```
+
+- `dock` 取 `left` / `right` / `bottom`;不写就是独立窗口。**页面本身、会话、CSP、能力完全一样**,作者不必为两种形态写两套代码。
+- 停靠的是**插件自己的 renderer**(`WebContentsView`),位置由主界面算出来再摆过去 —— 它碰不到主界面的任何 DOM,主界面的样式也影响不到它。
+- 面板尺寸有更紧的上限(180–900):窗口开大了只是挡着别的窗口,而**面板会把主界面挤窄**。
+- 顶栏(插件名 + 「沙箱插件」标签 + 收起按钮)由**宿主**画,这一部分不可定制。
+- `imark.window.show()/hide()` 在停靠形态下就是展开/收起面板;收起**不会**停掉插件,它的页面还活着。
+
+**脚本插件——把界面挂进去。** 它跑在主进程、没有自己的页面,所以走另一条路:
+
+```js
+imk.ui.mount({ id: 'panel', side: 'right', title: '我的面板', html: '<p>…</p>' })
+imk.ui.injectStyles('.boxed { color: var(--accent) }')
+imk.ui.onClick('panel', name => { if (name === 'ping') … })
+imk.ui.update('panel', '<p>换一块内容</p>')   // 比 remove + mount 少一次闪烁
+imk.ui.remove('panel')
+```
+
+- 挂进去的是**HTML 与 CSS,不是脚本**:应用主窗口的 CSP 挡着内联 `<script>` 与 `onclick=`,宿主还会先剥掉脚本/框架/外链那几类标签。要交互就在元素上写 `data-imk-click="ping"`,用 `onClick` 接住 —— 点击会回到**你自己的主进程代码**里。
+- `injectStyles` 的内容同样被 `@scope` 圈住:它只作用在**你挂进来的元素**与你在正文上标的范围里。
+- 顶栏同样由宿主画,并且会标上「脚本插件」。
+
+> **要如实说的一件事**:脚本插件本来就有完整 Node 权限,所以"能改界面"并不增加它能做的事情 —— 它早就能读写你所有文件了。但**它画出来的界面与 iMark 自己的界面长得一样**,而这一点用户必须知道。所以:安装确认框里那条红字明说了、面板顶栏与插件列表里都标着形态。沙箱插件没有这条路(`ui.mount` 只给脚本插件)—— 它有自己的页面,不需要借宿主的界面。
+
+**调试**:`--plugin-dev=plugins-src/todo-marks` 直接以目录为源跑(改文件即热重载,不必打包安装);插件页面的 `console.log` 会转发到主进程的控制台;插件自己 `imark.log('warn', …)` 的行会留在设置页的插件日志区。想调主界面的样式,记住停靠面板与注入界面都带 `data-imk-plugin="<插件id>"`,在开发者工具里能一眼分辨"这块是谁画的"。
 
 #### 发布
 

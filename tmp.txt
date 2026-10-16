@@ -53,7 +53,16 @@
 > - 验收实测抓到三个真 bug,都已修:preload 收到宿主事件后**只缓存、不分发**;宿主重建后
 >   webContents 的身份绑定失效;窗口每秒重绑导致 `destroyed` 监听器泄漏。
 > - 另外把 `scripts/build-plugins.mjs` 的**换行归一**做了(文本文件一律以 LF 进包),
->   它解决了「Windows 上重建 → 内置包 integrity 变了 → 合并冲突」这个反复出现的坑。
+>   它解决了「Windows 上重建 → 内置包变脏 → 合并冲突」这个反复出现的坑。
+>
+> **阶段三之后又补的一轮(编辑器与主界面扩展点)**:`editor:read` 这个新权限词 +
+> `editor.read/replace/setSelection/decorate/clearDecorations/styles`(两种带代码的形态都能用),
+> 沙箱插件的 `ui.dock`(把自己的页面停靠进主界面,用 `WebContentsView` 摆位),
+> 脚本插件的 `ui.mount/injectStyles/onClick`(往主界面挂 HTML,注入的 CSS 由宿主用 `@scope` 圈住),
+> 以及 `file-open` / `doc-changed` 两个事件补给了沙箱插件。验收在 `verify/phase4-harness.ts`(29 项)。
+> 三个新踩到的坑:渲染层"窗口建好"≠"能收消息"(加了 ui-ready 握手)、
+> 停靠面板必须等渲染层给出槽位再建(否则启动顺序上必失败)、
+> 装饰位置要跟着文档映射(不然用户在标记前面打字就整体错位)。
 
 最近一次全量验收:**7 套 harness 共 335 项断言全绿 + 三份 typecheck 全过**。
 数字:phase1 56、phase2 113、bundled-upgrade 18、quick-edit 77、table-render 36、git-sync 14、editor-enter 21。

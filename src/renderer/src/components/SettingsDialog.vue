@@ -32,6 +32,19 @@ import MarketPage from './market/MarketPage.vue'
 import InstallConfirmDialog from './market/InstallConfirmDialog.vue'
 import MarketSource from './market/MarketSource.vue'
 
+/**
+ * 形态在列表里的短标签。
+ *
+ * 用词刻意选得直白(而不是"声明式/沙箱"这种术语):
+ * 用户要判断的是"这东西能碰我多少东西",不是记住了几个名词。
+ */
+const KIND_SHORT: Record<string, string> = {
+  script: '完整权限',
+  sandboxed: '沙箱',
+  declarative: '无代码',
+  builtin: '内置'
+}
+
 /** 右侧标题:选中的是插件就显示插件名,市场页则跟着它的页签走 */
 const title = computed(() => {
   if (settingsNav.page === 'market') {
@@ -144,7 +157,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
             :class="`plugin-status-${plugin.state.status}`"
             :title="plugin.state.lastMessage || '待运行'"
           />
-          <span>{{ plugin.descriptor.name }}</span>
+          <span class="settings-nav-label">{{ plugin.descriptor.name }}</span>
+          <!--
+            形态标签:**列表上就要看得见**。
+            脚本插件能做的事(完整权限 + 改主界面)和沙箱插件差着一个量级,
+            而这个区别只写在详情页里等于没写 —— 用户是在列表里挑插件的。
+          -->
+          <span class="plugin-kind-chip" :class="`plugin-kind-${plugin.kind ?? 'builtin'}`">
+            {{ KIND_SHORT[plugin.kind ?? 'builtin'] }}
+          </span>
         </button>
         <div v-if="pluginStore.list.length === 0" class="settings-nav-empty">没有可用的插件</div>
       </aside>

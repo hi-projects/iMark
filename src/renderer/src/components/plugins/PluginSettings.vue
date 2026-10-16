@@ -167,13 +167,13 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
     <!-- 外部安装的插件:来源、权限与校验值(内置插件不显示这一块) -->
     <div v-if="hasMeta" class="plugin-meta">
       <div class="plugin-meta-line">
-        <span class="plugin-chip">
+        <span class="plugin-chip" :class="`plugin-kind-chip plugin-kind-${selected.kind ?? 'builtin'}`">
           {{
             selected.kind === 'script'
-              ? '含可执行代码'
+              ? '完整权限'
               : selected.kind === 'sandboxed'
-                ? '沙箱插件(独立页面)'
-                : '无代码(声明式)'
+                ? '沙箱'
+                : '无代码'
           }}
         </span>
         <span class="plugin-chip">{{ sourceLabel(selected.source, marketStore.bundled.includes(selected.descriptor.id)) }}</span>
@@ -181,7 +181,19 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
           发布者 {{ selected.installed.publisher }}
         </span>
         <span v-if="selected.kind === 'script'" class="plugin-meta-warn">
-          此插件以完整权限运行,可读写你电脑上的任意文件
+          以完整权限运行:可读写任意文件、执行命令,并且能改动 iMark 的界面
+        </span>
+        <span v-else-if="selected.kind === 'sandboxed'" class="plugin-meta-note">
+          跑在沙箱里:权限逐条生效,界面是它自己的页面
+          {{
+            selected.dock === 'left'
+              ? '(停靠在左侧)'
+              : selected.dock === 'right'
+                ? '(停靠在右侧)'
+                : selected.dock === 'bottom'
+                  ? '(停靠在底部)'
+                  : '(独立窗口)'
+          }}
         </span>
       </div>
       <div v-if="selected.installed" class="plugin-meta-line">

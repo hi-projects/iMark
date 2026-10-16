@@ -25,7 +25,12 @@ import { getPluginHost, initPluginHost } from '../src/main/plugins/host'
 import { pluginDir, setRecord, getRecord } from '../src/main/plugins/installed'
 import { invokeOp } from '../src/main/plugins/gate'
 import { setNetFetchImpl, resolveVaultPath, opPermissions } from '../src/main/plugins/ops'
-import { validateManifest, SANDBOX_ONLY_PERMISSIONS, hasMainEntry } from '../src/shared/pluginPackage'
+import {
+  validateManifest,
+  SANDBOX_ONLY_PERMISSIONS,
+  CODE_ONLY_PERMISSIONS,
+  hasMainEntry
+} from '../src/shared/pluginPackage'
 import type { OpContext } from '../src/main/plugins/ops'
 
 // registerSchemesAsPrivileged 只在 app ready 之前有效(见 phase3-smoke 的说明)
@@ -490,7 +495,16 @@ async function main(): Promise<void> {
     })
     return r.ok === false && r.errors.some(e => e.includes('ui'))
   })())
-  check('SANDBOX_ONLY_PERMISSIONS 与 hasMainEntry 的口径对得上', SANDBOX_ONLY_PERMISSIONS.length === 2 && hasMainEntry('sandboxed'))
+  // 权限词表的三个口径:哪些只给沙箱、哪些只给带代码的形态、哪些谁都能声明。
+  // 这一条是**接口**,不是实现细节 —— 词表一变,这里的断言就该跟着变(它是故意的路障)
+  check(
+    '沙箱专属词只有 ui(编辑器扩展点对两种带代码的形态都开放)',
+    SANDBOX_ONLY_PERMISSIONS.length === 1 && SANDBOX_ONLY_PERMISSIONS[0] === 'ui'
+  )
+  check(
+    '编辑器词只给带代码的形态',
+    CODE_ONLY_PERMISSIONS.join(',') === 'editor:read,editor:write' && hasMainEntry('sandboxed') && !hasMainEntry('declarative')
+  )
 
   const resolved = await resolveVaultPath('', 'dir')
   check('仓库根可以被解析出来', resolved === vault, resolved)

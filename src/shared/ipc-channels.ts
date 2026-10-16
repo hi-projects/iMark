@@ -62,6 +62,27 @@ export const IPC = {
   /** 渲染→主:唤出某个沙箱插件自己的窗口 */
   PluginOpenWindow: 'plugin:open-window',
   /**
+   * 主→渲染:请渲染层替插件做一件事(编辑器读写/装饰、往主界面挂东西)。
+   *
+   * 插件代码永远进不了渲染层,所以这一类能力只能由宿主转达 —— 渲染层做完用
+   * `PluginHostReply` 回执。这条通道是**双向的**,和 plugin:bridge 一样:
+   * 同一条通道名,主→渲染是请求,渲染→主是回执。
+   */
+  PluginHostRequest: 'plugin:host-request',
+  PluginHostReply: 'plugin:host-reply',
+  /** 渲染→主:注入的界面里有人点了带 data-imk-click 的元素 */
+  PluginUiClick: 'plugin:ui-click',
+  /** 渲染→主:停靠面板的槽位位置变了(WebContentsView 要按它摆) */
+  PluginDockRect: 'plugin:dock-rect',
+  /**
+   * 渲染→主:界面这边准备好了,可以往这儿发 PluginHostRequest 了。
+   *
+   * 必须有这条握手:主进程"窗口对象建好了"与"渲染层能收消息了"之间隔着整个页面加载
+   * —— 早发的那几条会**被静默丢掉**(没有监听器),而插件那边只看到一句超时。
+   * 页面重载时也会再报一次,于是重载后界面能自己长回来。
+   */
+  PluginUiReady: 'plugin:ui-ready',
+  /**
    * 主→渲染:「插件」菜单(或它的快捷键)点了某条命令。
    *
    * 命令的快捷键必须挂成原生菜单项,于是这条命令的入口就在主进程那边 ——

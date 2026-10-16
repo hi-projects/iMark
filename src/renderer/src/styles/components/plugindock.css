@@ -1,0 +1,142 @@
+/* ---------- 插件停靠(沙箱插件自己的页面 / 脚本插件挂进来的界面) ---------- */
+
+.plugin-dock {
+  display: flex;
+  flex: 0 0 auto;
+  background: var(--bg-app);
+}
+
+.plugin-dock-left,
+.plugin-dock-right {
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+/* 同一侧停多个面板时上下平分;只有一个时它自然占满这一栏的可用高度 */
+.plugin-dock-left,
+.plugin-dock-right {
+  min-width: 0;
+}
+
+.plugin-dock-bottom {
+  flex-direction: row;
+  border-top: 1px solid var(--border);
+}
+
+.plugin-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.plugin-panel-vertical {
+  flex: 1 1 0;
+}
+
+.plugin-dock-bottom .plugin-panel {
+  flex: 1 1 0;
+}
+
+/*
+ * 顶栏由**宿主**画:一块盖在主界面上的东西必须能一眼看出是谁的,
+ * 也必须由宿主提供收起方式 —— 这两件事都不能交给插件自己实现。
+ */
+.plugin-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 6px 0 2px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  user-select: none;
+}
+
+.plugin-panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.plugin-panel-toggle:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-secondary);
+}
+
+.plugin-panel-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.plugin-panel-kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.plugin-panel-kind-script {
+  color: var(--accent);
+  border-color: var(--accent);
+  opacity: 0.8;
+}
+
+/*
+ * 停靠槽位:**必须保持空白**。
+ * 插件自己的 renderer(WebContentsView)会被主进程摆在这个矩形上,里面画什么都看不见。
+ */
+.plugin-panel-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-editor);
+}
+
+/* 注入进来的那块界面(仅脚本插件):普通 DOM,流式布局 */
+.plugin-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.plugin-panel-body > :first-child {
+  margin-top: 0;
+}
+
+/* 插件可以给这些元素加 data-imk-click,点了会回到它自己的代码里 */
+.plugin-panel-body [data-imk-click] {
+  cursor: pointer;
+}
+
+/* ---------- 插件在正文上的标记(编辑器扩展点) ---------- */
+
+/*
+ * 插件自己的样式是**它自己注入**的(@scope 圈在它的 data-imk-plugin 上),
+ * 这里只给一个"确实画上了"的默认可见度:插件忘了写 CSS 时,标记还在,
+ * 只是淡淡的 —— 比"完全看不见、以为没生效"好查。
+ */
+.cm-content [data-imk-plugin] {
+  border-radius: 2px;
+}

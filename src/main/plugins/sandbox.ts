@@ -40,7 +40,12 @@ import {
 } from '@shared/pluginRpc'
 import { invokeOp } from './gate'
 import type { OpContext } from './ops'
-import { closePluginWindow, openPluginWindow, pluginWindowOf } from './windows'
+import {
+  closePluginWindow,
+  openPluginSurface,
+  pluginWebContentsOf,
+  pluginWindowSurfaceOf
+} from './windows'
 
 /** 宿主给沙箱层提供的东西 */
 export interface SandboxDeps {
@@ -50,6 +55,13 @@ export interface SandboxDeps {
   onReady?(pluginId: string): void
   /** 页面没了(崩了 / 被导航走) */
   onGone?(pluginId: string, reason: string): void
+  /**
+   * 停靠面板的展开/收起。
+   *
+   * 状态**归渲染层**(它才知道这块界面此刻在屏幕上是什么样),这里只是把插件的
+   * `window.show()/hide()` 翻成一句"请展开/收起"。
+   */
+  setPanelCollapsed?(pluginId: string, collapsed: boolean): void
 }
 
 let deps: SandboxDeps | null = null
@@ -110,17 +122,17 @@ export class SandboxRuntime {
   }
 
   private async ensureWindow(): Promise<void> {
-    const existing = pluginWindowOf(this.pluginId)
+    const existing = pluginWebContentsOf(this.pluginId)
     if (existing) {
-      // 窗口还在,但运行时换了一个(宿主重建、插件重载)。**必须重绑**:回执是按
+      // 载体还在,但运行时换了一个(宿主重建、插件重载)。**必须重绑**:回执是按
       // webContents 反查运行时投递的,不重绑的话页面回的话会交给上一个已经作废的
       // 运行时,新运行时永远等不到回执(表现是每个调用都超时,而页面明明回了)
-      bindWebContents(existing.webContents, this)
+      bindWebContents(existing, this)
       return
     }
     if (Date.now() < this.rebuildAfter) return
     this.rebuildAfter = Date.now() + 5000
-    await openPluginWindow({
+    await openPluginSurface({
       pluginId: this.pluginId,
       name: this.name,
       dir: this.dir,
@@ -130,7 +142,7 @@ export class SandboxRuntime {
       // **身份绑定在建窗这一刻完成**,不依赖页面自报:主进程知道这个 webContents
       // 是自己为哪个插件建的。页面能伪造的是参数,伪造不了这个。
       // 必须早于 loadURL —— 页面一跑起来就可能开口(见 windows.ts 的 onCreated)
-      onCreated: win => bindWebContents(win.webContents, this),
+      onCreated: wc => bindWebContents(wc, this),
       onReady: () => this.markReady(),
       onGone: reason => {
         this.gone = true
@@ -163,8 +175,8 @@ export class SandboxRuntime {
 
   /** 宿主 → 插件。页面没注册对应方法时由 preload 回 E_UNKNOWN_OP */
   call(method: PluginBridgeCall['method'], args: unknown[], timeoutMs: number): Promise<unknown> {
-    const win = pluginWindowOf(this.pluginId)
-    if (!win || this.gone) {
+    const wc = pluginWebContentsOf(this.pluginId)
+    if (!wc || this.gone) {
       return Promise.reject(new Error('插件的页面不在(可能已崩溃)'))
     }
     const id = this.nextCallId++
@@ -174,7 +186,7 @@ export class SandboxRuntime {
         reject(new Error(`${method} 超时(超过 ${Math.round(timeoutMs / 1000)} 秒)`))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      win.webContents.send(RPC_BRIDGE, { id, method, args } satisfies PluginBridgeCall)
+      wc.send(RPC_BRIDGE, { id, method, args } satisfies PluginBridgeCall)
     })
   }
 
@@ -191,33 +203,47 @@ export class SandboxRuntime {
   /** 主进程 → 页面的一次性通知(缓存最后一份,晚订阅也能拿到) */
   send(type: PluginHostEventType, payload: unknown): void {
     this.lastEvents.set(type, payload)
-    const win = pluginWindowOf(this.pluginId)
-    if (!win) return
-    win.webContents.send(RPC_EVENT, { type, payload } satisfies PluginHostEvent)
+    const wc = pluginWebContentsOf(this.pluginId)
+    if (!wc) return
+    wc.send(RPC_EVENT, { type, payload } satisfies PluginHostEvent)
   }
 
   /** 让页面重新加载(开发模式热重载用) */
   reload(): void {
-    const win = pluginWindowOf(this.pluginId)
     this.isReady = false
-    win?.webContents.reload()
+    pluginWebContentsOf(this.pluginId)?.reload()
   }
 
+  /**
+   * 显示。
+   *
+   * 两种载体的语义不太一样,但作者看到的都是同一个 `window.show()`:
+   *   - 独立窗口 → `win.show()`;
+   *   - **停靠面板 → 去掉"收起"状态**(展开它)。停靠时"显示/隐藏"就是展开/收起,
+   *     面板的位置由渲染层算,主进程只负责把原生视图摆到那个矩形上。
+   */
   windowOpen(): void {
     if (this.ui === null) return
-    const win = pluginWindowOf(this.pluginId)
-    if (win) win.show()
-    else void this.ensureWindow().then(() => pluginWindowOf(this.pluginId)?.show())
+    if (this.ui.dock) {
+      deps?.setPanelCollapsed?.(this.pluginId, false)
+      return
+    }
+    const surface = pluginWindowSurfaceOf(this.pluginId)
+    if (surface) surface.show()
+    else void this.ensureWindow().then(() => pluginWindowSurfaceOf(this.pluginId)?.show())
   }
 
   windowShow(): void {
-    const win = pluginWindowOf(this.pluginId)
-    if (win) win.show()
-    else if (this.ui !== null) this.windowOpen()
+    this.windowOpen()
   }
 
   windowHide(): void {
-    if (this.ui !== null) pluginWindowOf(this.pluginId)?.hide()
+    if (this.ui === null) return
+    if (this.ui.dock) {
+      deps?.setPanelCollapsed?.(this.pluginId, true)
+      return
+    }
+    pluginWindowSurfaceOf(this.pluginId)?.hide()
   }
 
   windowClose(): void {
@@ -225,8 +251,7 @@ export class SandboxRuntime {
   }
 
   windowSetTitle(title: string): void {
-    const win = pluginWindowOf(this.pluginId)
-    if (win) win.setTitle(`${title} — iMark 插件`)
+    pluginWindowSurfaceOf(this.pluginId)?.setTitle(`${title} — iMark 插件`)
   }
 
   /**

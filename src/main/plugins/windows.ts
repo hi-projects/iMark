@@ -22,13 +22,23 @@
  *    再加一条:锁死 `url.host` 必须是本插件的 id —— 否则 A 插件能读 B 插件的文件。
  */
 
-import { BrowserWindow, protocol, screen, session, shell, type Session } from 'electron'
+import {
+  BrowserWindow,
+  protocol,
+  screen,
+  session,
+  shell,
+  WebContentsView,
+  type Session,
+  type WebContents
+} from 'electron'
 import { mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { app } from 'electron'
 import { dirname, join, normalize, resolve, sep } from 'node:path'
 import { isSafeRelPath, type PluginUiSpec } from '@shared/pluginPackage'
 import tokensCss from '@shared/theme/tokens.css?raw'
 import { getSettingsSync } from '../settings'
+import { getMainWindow } from '../window'
 
 export const PLUGIN_SCHEME = 'imk-plugin'
 
@@ -391,50 +401,242 @@ export interface PluginWindowSpec {
    */
   permissions: readonly string[]
   /**
-   * 窗口对象刚建好、**还没开始加载页面**时回调。
+   * 页面载体刚建好、**还没开始加载页面**时回调(独立窗口与停靠视图都是它)。
    *
    * 存在的理由是身份绑定:页面里的脚本可能在 loadURL 的过程中就跑起来并开口说话,
    * 而"这个 webContents 是哪个插件的"必须先登记好 —— 晚一步,页面最早的那几次调用
    * 会以"没有绑定到任何插件"被丢掉(其中就有 plugin.ready 这个握手)。
    */
-  onCreated?(win: BrowserWindow): void
+  onCreated?(wc: WebContents): void
   /** 页面就绪(执行器或作者页面里的脚本已经跑起来)时回调 */
   onReady(): void
   /** 页面崩了/被销毁 */
   onGone(reason: string): void
 }
 
-interface OpenWindow {
-  win: BrowserWindow
+/**
+ * 一个插件的"界面载体"。
+ *
+ * 两种形态共用一套生命周期,差别只有"页面长在哪儿":
+ *   - `window` —— 一个独立的 BrowserWindow(没声明 ui.dock 的插件);
+ *   - `docked` —— 一个挂在主窗口上的 WebContentsView,位置由**渲染层**报上来
+ *     (它才知道三栏布局算出来是多大;让主进程去猜布局等于把布局算法写两遍)。
+ *
+ * 两者都是**插件自己的 renderer**:独立 session、独立 CSP、拿不到主界面的 DOM。
+ * "停靠"只是把这块矩形摆到主窗口里面,不是把插件的 HTML 塞进 iMark 的页面。
+ */
+interface OpenSurface {
   spec: PluginWindowSpec
+  wc: WebContents
+  kind: 'window' | 'docked'
+  win: BrowserWindow | null
+  view: WebContentsView | null
+  /** 上一次收到的槽位矩形(停靠才有) */
+  rect: { x: number; y: number; width: number; height: number; visible: boolean } | null
   /** 关窗时正在等的那个 resolve */
   closing: (() => void) | null
 }
 
-const openWindows = new Map<string, OpenWindow>()
+const openWindows = new Map<string, OpenSurface>()
+
+/** 插件的页面(两种载体都适用)。插件运行时要发消息时用这个,而不是去找窗口 */
+export function pluginWebContentsOf(pluginId: string): WebContents | null {
+  const open = openWindows.get(pluginId)
+  if (!open || open.wc.isDestroyed()) return null
+  return open.wc
+}
 
 export function pluginWindowOf(pluginId: string): BrowserWindow | null {
   const open = openWindows.get(pluginId)
-  if (!open || open.win.isDestroyed()) return null
+  if (!open || !open.win || open.win.isDestroyed()) return null
   return open.win
 }
 
+/**
+ * 独立窗口的一层薄壳(停靠面板没有窗口,返回 null)。
+ *
+ * 存在的意义是让 sandbox.ts 不必关心"这个插件是窗口还是面板" —— 它只调
+ * `show()/hide()/setTitle()`,而面板那边这些动作走的是渲染层(展开/收起)。
+ */
+export function pluginWindowSurfaceOf(pluginId: string): {
+  show(): void
+  hide(): void
+  setTitle(title: string): void
+} | null {
+  const win = pluginWindowOf(pluginId)
+  if (!win) return null
+  return {
+    show: () => win.show(),
+    hide: () => win.hide(),
+    setTitle: (title: string) => win.setTitle(title)
+  }
+}
+
 export function isPluginWindowOpen(pluginId: string): boolean {
-  return pluginWindowOf(pluginId) !== null
+  return pluginWebContentsOf(pluginId) !== null
+}
+
+export function isPluginDocked(pluginId: string): boolean {
+  return openWindows.get(pluginId)?.kind === 'docked'
+}
+
+/**
+ * 载体的现状(给设置界面与验收用)。
+ *
+ * 停靠面板是**原生层**的东西,DOM 里查不到它 —— 想知道它摆在哪儿、可见不可见,
+ * 只能问主进程。这一条也是"面板确实建出来了"的唯一证据。
+ */
+export function pluginSurfaceInfoOf(pluginId: string): {
+  kind: 'window' | 'docked'
+  bounds: { x: number; y: number; width: number; height: number } | null
+  visible: boolean
+} | null {
+  const open = openWindows.get(pluginId)
+  if (!open) return null
+  if (open.kind === 'docked' && open.view) {
+    return { kind: 'docked', bounds: open.view.getBounds(), visible: open.view.getVisible() }
+  }
+  const win = open.win
+  if (!win || win.isDestroyed()) return null
+  return { kind: 'window', bounds: win.getBounds(), visible: win.isVisible() }
+}
+
+/**
+ * 渲染层报来的槽位矩形 —— 停靠视图就摆在这儿。
+ *
+ * 报"不可见"时把视图藏起来(而不是销毁):面板收起 / 用户切到别的视图时,
+ * 插件的页面还得活着,它只是在屏幕上不占地方。
+ */
+/**
+ * 停靠插件在等渲染层给槽位:规格先存着,槽位一到就建视图。
+ *
+ * **为什么要等**:启动顺序是「插件宿主就绪 → 再建主窗口」(宿主握着 settings 与
+ * safeStorage,必须在建窗之前起来),而停靠面板的创建需要主窗口 —— 直接建会失败,
+ * 于是插件在启动那一刻永远起不来,用户手动关一次再打开就好了(最难查的那种毛病)。
+ * 等槽位就没这个问题:槽位是渲染层算出来的,它出现就意味着主界面已经在那儿了。
+ */
+const pendingDocked = new Map<string, PluginWindowSpec>()
+
+export function setDockRect(
+  pluginId: string,
+  rect: { x: number; y: number; width: number; height: number; visible: boolean }
+): void {
+  let open = openWindows.get(pluginId)
+  if (!open) {
+    const spec = pendingDocked.get(pluginId)
+    // 槽位报来"可见"才建:收起状态的面板不该白占一个 renderer
+    if (!spec || !rect.visible || rect.width < 2 || rect.height < 2) return
+    createDockedView(spec)
+    open = openWindows.get(pluginId)
+    if (!open) return
+  }
+  if (open.kind !== 'docked' || !open.view) return
+  open.rect = rect
+  applyDockBounds(open)
+}
+
+/** 建停靠视图(渲染层给出槽位、或主窗口已经在了的时候) */
+function createDockedView(spec: PluginWindowSpec): void {
+  const main = getMainWindow()
+  if (!main) return
+  pendingDocked.delete(spec.pluginId)
+  const view = new WebContentsView({ webPreferences: pluginWebPreferences(spec) })
+  // 先摆上但不可见:槽位确认之前它不该出现在任何地方
+  view.setVisible(false)
+  main.contentView.addChildView(view)
+  const entry: OpenSurface = {
+    spec,
+    wc: view.webContents,
+    kind: 'docked',
+    win: null,
+    view,
+    rect: null,
+    closing: null
+  }
+  openWindows.set(spec.pluginId, entry)
+  // 身份绑定必须发生在 loadURL **之前**(见 spec.onCreated 的说明)
+  spec.onCreated?.(view.webContents)
+  wireWebContents(entry)
+  void view.webContents.loadURL(pluginSurfaceUrl(spec)).catch(err => {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[iMark] 插件 ${spec.pluginId} 的停靠面板加载失败:${message}`)
+    spec.onGone(`面板加载失败:${message}`)
+  })
+}
+
+/** 插件页面的 webPreferences(窗口与停靠视图共用一份) */
+function pluginWebPreferences(spec: PluginWindowSpec): Electron.WebPreferences {
+  return {
+    session: sessionFor(spec.pluginId),
+    preload: join(__dirname, '../preload/plugin.js'),
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    // 隐藏页面会被节流到 1Hz→每 60 秒一次(见 §3.5)。关掉它 = 作者自己写的
+    // setInterval 还能跑得动;官方推荐仍然是宿主调度器 imark.schedule.every
+    backgroundThrottling: false,
+    spellcheck: false,
+    additionalArguments: [
+      `--imark-plugin-id=${spec.pluginId}`,
+      `--imark-plugin-perms=${spec.permissions.join(',')}`,
+      `--imark-plugin-theme=${getSettingsSync()?.theme ?? 'dark'}`
+    ]
+  }
+}
+
+/** 插件页面加载的地址:有 ui.entry 就加载它,纯后台的加载宿主的执行器页面 */
+function pluginSurfaceUrl(spec: PluginWindowSpec): string {
+  return spec.ui === null
+    ? `${PLUGIN_SCHEME}://${spec.pluginId}/${RESERVED}/exec.html`
+    : `${PLUGIN_SCHEME}://${spec.pluginId}/${spec.ui.entry.split('/').map(encodeURIComponent).join('/')}`
+}
+
+function applyDockBounds(open: OpenSurface): void {
+  const rect = open.rect
+  const view = open.view
+  const win = getMainWindow()
+  if (!view || !win) return
+  if (!rect || !rect.visible || rect.width < 2 || rect.height < 2) {
+    view.setVisible(false)
+    return
+  }
+  const [winWidth, winHeight] = win.getContentSize()
+  // 夹回窗口内:渲染层的数字理论上不会越界,但停靠视图是原生层,越界会画到窗口外面去
+  const x = Math.max(0, Math.min(rect.x, Math.max(0, winWidth - 40)))
+  const y = Math.max(0, Math.min(rect.y, Math.max(0, winHeight - 40)))
+  const width = Math.max(1, Math.min(rect.width, winWidth - x))
+  const height = Math.max(1, Math.min(rect.height, winHeight - y))
+  view.setBounds({ x, y, width, height })
+  view.setVisible(true)
 }
 
 /**
  * 建窗(不显示)。带 ui 的插件由它自己调 `imark.window.show()` 显示 ——
  * 一个只想在用户点命令时才露面的插件,不该在启用的一瞬间弹出来。
  */
-export async function openPluginWindow(spec: PluginWindowSpec): Promise<BrowserWindow> {
+/**
+ * 建"界面载体":要么一个独立窗口,要么一块停靠在主窗口上的视图。
+ *
+ * 不显示 —— 带 ui 的插件由它自己调 `imark.window.show()`;停靠的那些则等渲染层
+ * 报来槽位矩形(它才知道三栏布局算出来是多大)。一个只想在用户点命令时才露面的
+ * 插件,不该在启用的一瞬间弹出来。
+ */
+export async function openPluginSurface(spec: PluginWindowSpec): Promise<void> {
   setPluginRoot(spec.pluginId, spec.dir, spec.name)
   mains.set(spec.pluginId, spec.main)
 
-  const existing = pluginWindowOf(spec.pluginId)
-  if (existing) return existing
+  if (pluginWebContentsOf(spec.pluginId)) return
 
-  const s = sessionFor(spec.pluginId)
+  if (spec.ui?.dock) {
+    // 主窗口还没建出来(启动顺序是宿主先起来、再建窗)—— 先记着,等渲染层报来槽位再建
+    if (!getMainWindow()) {
+      pendingDocked.set(spec.pluginId, spec)
+      return
+    }
+    createDockedView(spec)
+    return
+  }
+
   const saved = await loadGeometry(spec.pluginId)
   const geo = clampToWorkArea(
     saved ?? {
@@ -453,72 +655,21 @@ export async function openPluginWindow(spec: PluginWindowSpec): Promise<BrowserW
     // 纯后台插件不进任务栏:它没有界面,占一个任务栏图标只会让人困惑
     skipTaskbar: spec.ui === null,
     backgroundColor: getSettingsSync()?.theme === 'black' ? '#000000' : '#0d1117',
-    webPreferences: {
-      session: s,
-      preload: join(__dirname, '../preload/plugin.js'),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      // 隐藏页面会被节流到 1Hz→每 60 秒一次(见 §3.5)。关掉它 = 作者自己写的
-      // setInterval 还能跑得动;官方推荐仍然是宿主调度器 imark.schedule.every
-      backgroundThrottling: false,
-      spellcheck: false,
-      additionalArguments: [
-        `--imark-plugin-id=${spec.pluginId}`,
-        `--imark-plugin-perms=${spec.permissions.join(',')}`,
-        `--imark-plugin-theme=${getSettingsSync()?.theme ?? 'dark'}`
-      ]
-    }
+    webPreferences: pluginWebPreferences(spec)
   })
 
-  const entry = { win, spec, closing: null as (() => void) | null }
+  const entry: OpenSurface = {
+    spec,
+    wc: win.webContents,
+    kind: 'window',
+    win,
+    view: null,
+    rect: null,
+    closing: null
+  }
   openWindows.set(spec.pluginId, entry)
-  // 身份绑定必须发生在 loadURL **之前**(见 spec.onCreated 的说明)
-  spec.onCreated?.(win)
-
-  // 页面里的身份只给页面自己看日志用 —— 主进程**永不采信**它(身份靠 sender.id 反查)
-  win.webContents.on('did-finish-load', () => {
-    entry.spec.onReady()
-  })
-
-  /**
-   * 插件页面的控制台转发到主进程。
-   *
-   * 不是锦上添花:插件页面是**独立**的 renderer,它的 console 默认没有任何人看得见 ——
-   * 作者写错一行、某个资源 404、CSP 拦了一个请求,全都静默消失,表现是"插件没反应"。
-   * 这条转发是作者唯一能拿到现场的地方。
-   */
-  win.webContents.on('console-message', (...args: unknown[]) => {
-    // Electron 35 起改成了单参数对象(event.message),旧版是 (event, level, message)
-    const first = args[0] as { message?: string; level?: unknown } | undefined
-    const message = typeof first?.message === 'string' ? first.message : String(args[2] ?? '')
-    if (message) console.log(`[plugin:${spec.pluginId}] 页面:${message}`)
-  })
-
-  win.webContents.on('did-fail-load', (_e, code, description, url) => {
-    console.error(`[iMark] 插件 ${spec.pluginId} 的资源加载失败:${description}(${code}) ${url}`)
-  })
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    // 插件页里点外链:交给系统浏览器,绝不在应用里开新窗口
-    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-
-  win.webContents.on('will-navigate', (event, url) => {
-    // 只许在自己插件的范围内导航
-    if (!url.startsWith(`${PLUGIN_SCHEME}://${spec.pluginId}/`)) {
-      event.preventDefault()
-      entry.spec.onGone('页面试图离开插件自己的范围')
-      void closePluginWindow(spec.pluginId, 'navigate-away')
-    }
-  })
-
-  win.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[iMark] 插件 ${spec.pluginId} 的页面崩了:${details.reason}`)
-    entry.spec.onGone(details.reason)
-    openWindows.delete(spec.pluginId)
-  })
+  spec.onCreated?.(win.webContents)
+  wireWebContents(entry)
 
   win.on('close', () => {
     void saveGeometry(spec.pluginId, {
@@ -534,36 +685,105 @@ export async function openPluginWindow(spec: PluginWindowSpec): Promise<BrowserW
     openWindows.delete(spec.pluginId)
   })
 
-  const target =
-    spec.ui === null
-      ? `${PLUGIN_SCHEME}://${spec.pluginId}/${RESERVED}/exec.html`
-      : `${PLUGIN_SCHEME}://${spec.pluginId}/${spec.ui.entry.split('/').map(encodeURIComponent).join('/')}`
-
   try {
-    await win.loadURL(target)
+    await win.loadURL(pluginSurfaceUrl(spec))
   } catch (err) {
     // 加载失败(入口文件不在包里、CSP 拦了……):窗口留着但说清楚为什么
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[iMark] 插件 ${spec.pluginId} 的窗口加载失败:${message}`)
     entry.spec.onGone(`窗口加载失败:${message}`)
-    win.webContents.once('did-finish-load', () => {})
   }
-  return win
 }
 
 /**
- * 关窗。**默认是优雅的**:先请求关闭,2 秒还没关掉就强杀。
+ * 页面事件接线(窗口与停靠视图共用一份)。
+ *
+ * 这些行为与"页面长在哪儿"无关:控制台要转发、外链要走系统浏览器、
+ * 不许导航出插件自己的范围、崩了要如实报出来。
+ */
+function wireWebContents(entry: OpenSurface): void {
+  const { wc, spec } = entry
+
+  // 页面里的身份只给页面自己看日志用 —— 主进程**永不采信**它(身份靠 sender.id 反查)
+  wc.on('did-finish-load', () => {
+    spec.onReady()
+  })
+
+  /**
+   * 插件页面的控制台转发到主进程。
+   *
+   * 不是锦上添花:插件页面是**独立**的 renderer,它的 console 默认没有任何人看得见 ——
+   * 作者写错一行、某个资源 404、CSP 拦了一个请求,全都静默消失,表现是"插件没反应"。
+   * 这条转发是作者唯一能拿到现场的地方。
+   */
+  wc.on('console-message', (...args: unknown[]) => {
+    // Electron 35 起改成了单参数对象(event.message),旧版是 (event, level, message)
+    const first = args[0] as { message?: string; level?: unknown } | undefined
+    const message = typeof first?.message === 'string' ? first.message : String(args[2] ?? '')
+    if (message) console.log(`[plugin:${spec.pluginId}] 页面:${message}`)
+  })
+
+  wc.on('did-fail-load', (_e, code, description, url) => {
+    console.error(`[iMark] 插件 ${spec.pluginId} 的资源加载失败:${description}(${code}) ${url}`)
+  })
+
+  wc.setWindowOpenHandler(({ url }) => {
+    // 插件页里点外链:交给系统浏览器,绝不在应用里开新窗口
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  wc.on('will-navigate', (event, url) => {
+    // 只许在自己插件的范围内导航
+    if (!url.startsWith(`${PLUGIN_SCHEME}://${spec.pluginId}/`)) {
+      event.preventDefault()
+      spec.onGone('页面试图离开插件自己的范围')
+      void closePluginWindow(spec.pluginId, 'navigate-away')
+    }
+  })
+
+  wc.on('render-process-gone', (_e, details) => {
+    console.error(`[iMark] 插件 ${spec.pluginId} 的页面崩了:${details.reason}`)
+    spec.onGone(details.reason)
+    detachSurface(spec.pluginId)
+  })
+}
+
+/** 把载体从窗口上摘下来(不触发任何回调) */
+function detachSurface(pluginId: string): void {
+  const open = openWindows.get(pluginId)
+  if (!open) return
+  openWindows.delete(pluginId)
+  if (open.view) {
+    try {
+      getMainWindow()?.contentView.removeChildView(open.view)
+      open.view.webContents.close()
+    } catch {
+      /* 已经没了就算了 */
+    }
+  }
+}
+
+/**
+ * 关掉载体。**默认是优雅的**:先请求关闭,2 秒还没关掉就强杀。
  *
  * 强杀那一步不是洁癖:插件页里可能有 `beforeunload`、可能正在跑一个死循环,
- * 而停用/卸载/升级都**必须**让窗口真的消失 —— 否则升级时目录被 rename 掉,
+ * 而停用/卸载/升级都**必须**让它真的消失 —— 否则升级时目录被 rename 掉,
  * 页面还在,再点一下就是 404 的半旧半新状态。
  */
 export async function closePluginWindow(pluginId: string, reason: string): Promise<void> {
+  pendingDocked.delete(pluginId)
   const open = openWindows.get(pluginId)
   if (!open) return
   void reason
-  const { win } = open
-  if (win.isDestroyed()) {
+
+  if (open.kind === 'docked') {
+    detachSurface(pluginId)
+    return
+  }
+
+  const win = open.win
+  if (!win || win.isDestroyed()) {
     openWindows.delete(pluginId)
     return
   }
@@ -587,6 +807,7 @@ export async function closePluginWindow(pluginId: string, reason: string): Promi
   })
   openWindows.delete(pluginId)
 }
+
 
 /**
  * 卸载后清掉这个插件的分区数据(localStorage / IndexedDB / 缓存)。

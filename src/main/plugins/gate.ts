@@ -145,6 +145,23 @@ export async function invokeOp(
     })
   }
 
+  // 形态专属的能力:不是权限问题(作者申请也没用),而是"这个形态根本没有那件东西"。
+  // 说清楚哪一半缺、该走哪条路,比笼统地拒掉强
+  if (def.sandboxOnly && !ctx.isSandbox) {
+    return fail({
+      code: 'E_PERMISSION',
+      message: `「${name}」只有沙箱插件能用 —— 它需要插件自己的一整个页面。脚本插件请用自己的代码直接做。`
+    })
+  }
+  if (def.trustedOnly && ctx.isSandbox) {
+    return fail({
+      code: 'E_PERMISSION',
+      message:
+        `「${name}」只有脚本插件能用(往 iMark 的界面里挂东西)。` +
+        `沙箱插件走的是另一条路:在清单里声明 ui.dock,把**自己的页面**停靠到侧栏 —— 宿主不去渲染它的 HTML。`
+    })
+  }
+
   const normalized = normalizeArgs(args)
   if (!normalized.ok) return fail(normalized.error, false)
 

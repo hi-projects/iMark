@@ -2,12 +2,16 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
 import type {
+  DockSlotRect,
   PluginActionPayload,
   PluginActionResult,
   PluginContribInvoke,
   PluginContribsSnapshot,
   PluginNotice,
-  PluginView
+  PluginUiClick,
+  PluginView,
+  RendererOpReply,
+  RendererOpRequest
 } from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
@@ -92,6 +96,18 @@ const api = {
   /** 主→渲染:这个文件被插件改了(是正开着的就重新加载) */
   onFileExternalChange: (cb: (filePath: string) => void): (() => void) =>
     subscribe<string>(IPC.FileExternalChange, cb),
+  // ---------- 编辑器扩展点与界面注入(宿主请渲染层办事) ----------
+  /** 主→渲染:替某个插件做一件事(读/改文档、加装饰、挂界面);做完要 replyHostRequest */
+  onPluginHostRequest: (cb: (req: RendererOpRequest) => void): (() => void) =>
+    subscribe<RendererOpRequest>(IPC.PluginHostRequest, cb),
+  /** 渲染→主:上面那件事的结果 */
+  replyHostRequest: (reply: RendererOpReply): void => ipcRenderer.send(IPC.PluginHostReply, reply),
+  /** 渲染→主:注入的界面里有人点了带 data-imk-click 的元素 */
+  notifyPluginUiClick: (click: PluginUiClick): void => ipcRenderer.send(IPC.PluginUiClick, click),
+  /** 渲染→主:停靠面板的槽位位置(主进程据此摆 WebContentsView) */
+  notifyPluginDockRect: (rect: DockSlotRect): void => ipcRenderer.send(IPC.PluginDockRect, rect),
+  /** 渲染→主:界面这边准备好了(见 IPC.PluginUiReady 的说明) */
+  notifyPluginUiReady: (): void => ipcRenderer.send(IPC.PluginUiReady),
   // ---------- 插件市场 ----------
   pickMarketPackage: () => ipcRenderer.invoke(IPC.MarketPickPackage),
   packMarketDir: () => ipcRenderer.invoke(IPC.MarketPackDir),

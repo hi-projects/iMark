@@ -13,11 +13,15 @@ import type {
   PublishResult
 } from './market'
 import type {
+  DockSlotRect,
   PluginActionPayload,
   PluginActionResult,
   PluginContribInvoke,
   PluginContribsSnapshot,
   PluginNotice,
+  PluginUiClick,
+  RendererOpReply,
+  RendererOpRequest,
   PluginView
 } from './plugins'
 import type { ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
@@ -93,6 +97,16 @@ export interface WindowApi {
   onPluginEditorInsert(cb: (o: { text: string; cursorOffset?: number }) => void): () => void
   /** 某个文件被插件改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
   onFileExternalChange(cb: (filePath: string) => void): () => void
+  // ---------- 编辑器扩展点与界面注入 ----------
+  /** 主→渲染:替插件做一件事(读/改文档、加装饰、挂界面)。**必须**回执,否则主进程那边会超时 */
+  onPluginHostRequest(cb: (req: RendererOpRequest) => void): () => void
+  replyHostRequest(reply: RendererOpReply): void
+  /** 注入的界面里有人点了带 `data-imk-click` 的元素 */
+  notifyPluginUiClick(click: PluginUiClick): void
+  /** 停靠面板的槽位位置变了(主进程据此摆原生视图) */
+  notifyPluginDockRect(rect: DockSlotRect): void
+  /** 界面这边准备好了 —— 主进程收到之后才会开始发编辑器/界面请求 */
+  notifyPluginUiReady(): void
   /** 「插件」菜单(含快捷键)点了某条命令 */
   onPluginCommand(cb: (o: { pluginId: string; itemId: string }) => void): () => void
   /** 文档内容变了。**调用方负责节流** —— 每次按键都过一次 IPC 是不可接受的 */

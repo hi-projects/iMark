@@ -7,6 +7,7 @@ import { languages } from '@codemirror/language-data'
 import { classHighlighter } from '@lezer/highlight'
 import { wysiwyg } from './wysiwyg'
 import { lineMenu } from './lineMenu'
+import { pluginEditorExtension } from './pluginExt'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { updateActiveOutline } from './outline'
@@ -75,6 +76,8 @@ export function buildExtensions(onDocChange: (view: EditorView) => void): Extens
     syntaxHighlighting(classHighlighter),
     wysiwyg(),
     lineMenu(),
+    // 插件的编辑器扩展点(读/改由宿主代劳,这里只负责把它们的标记画出来)
+    pluginEditorExtension(),
     keymap.of([
       ...editorKeymap,
       ...markdownKeymap,

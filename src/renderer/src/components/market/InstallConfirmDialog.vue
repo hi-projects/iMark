@@ -102,7 +102,8 @@ async function copyIntegrity(): Promise<void> {
             <b>此插件包含可执行代码,将获得与 iMark 相同的权限。</b>
             <p>
               它能读取或修改你电脑上的任意文件(包括你的笔记、SSH 密钥与已保存的登录令牌),
-              也能发起网络请求。请只安装你信任来源的插件。
+              也能发起网络请求,并且<b>可以在 iMark 的界面里放东西</b> ——
+              它画出来的界面与 iMark 自己的界面长得一样。请只安装你信任来源的插件。
             </p>
             <label class="market-ack">
               <input v-model="acknowledged" type="checkbox" />

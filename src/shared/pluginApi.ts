@@ -171,6 +171,36 @@ export interface ImkUiApi {
    * (清单声明的条目做不到这件事,那条路的 `action` 必须在清单里写死)。
    */
   statusItem(item: PluginStatusItem | null, onClick?: () => void | Promise<void>): void
+
+  /**
+   * 把一块**自己写的界面**挂进主界面(仅脚本插件,见 README 的说明)。
+   *
+   * 挂进去的是 HTML 与 CSS:**那段 HTML 里跑不了脚本**(应用主窗口的 CSP 挡着
+   * 内联脚本与 `onclick`),要交互就在元素上写 `data-imk-click="名字"`,
+   * 再用下面的 `onClick` 接住 —— 于是"界面长什么样"与"点它做什么"是分开的两件事。
+   *
+   * 面板的**顶栏由宿主画**(插件名 + 形态标签),这部分不可定制:一块盖在主界面上的
+   * 东西必须能一眼看出是谁的。
+   *
+   * 同一个 id 重复挂是替换。插件被停用时全部摘掉,不需要自己收拾。
+   */
+  mount(options: { id: string; html: string; side?: 'left' | 'right' | 'bottom'; title?: string }): void
+  /** 换掉已挂载那块的内容(比先 remove 再 mount 少一次闪烁) */
+  update(id: string, html: string): void
+  /** 摘掉挂载 */
+  remove(id: string): void
+  /**
+   * 注入样式。**只会作用在你标记过的元素上**(编辑器里的装饰、以及你挂进主界面
+   * 的那几块),不会漏到应用的其它地方 —— 宿主用 `@scope` 圈住了作用域。
+   */
+  injectStyles(css: string): void
+  /**
+   * 接住注入界面里的点击。
+   *
+   * @param mountId 哪一块(`mount` 时给的 id)
+   * @param handler 收到的是被点元素的 `data-imk-click` 值
+   */
+  onClick(mountId: string, handler: (name: string) => void | Promise<void>): () => void
 }
 
 /**

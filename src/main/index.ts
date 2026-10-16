@@ -10,6 +10,7 @@ import { ensureBundledProvisioned } from './market/bundled'
 import { checkUpdates } from './market/updates'
 import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
 import { registerPluginScheme } from './plugins/windows'
+import { markRendererGone } from './plugins/rendererBridge'
 import { closeAllPluginWindows } from './plugins/windows'
 
 /**
@@ -93,6 +94,9 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   setMainWindowClosedHandler(() => {
+    // 界面没了:还在等回执的那些渲染层请求永远等不到了,现在就把它们结束掉 ——
+    // 不结束的话插件要等满 12 秒才拿到一句"超时",而真正的原因是窗口关了
+    markRendererGone('主界面已关闭')
     if (!app.isPackaged) console.log('[iMark] 主窗口已关闭 → 退出')
     app.quit()
   })
