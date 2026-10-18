@@ -24,38 +24,45 @@
   background: var(--bg-selection) !important;
 }
 
+/*
+ * 选区图层必须画在正文**之上**。
+ *
+ * drawSelection() 默认把选区图层放到内容下方(此处的实际 z-index 是 -2),好让文字
+ * 压在色块上面;代价是**任何不透明底色都会把选区盖掉**——代码块行 .cm-md-code 的
+ * --bg-codeblock、行内代码 .cm-md-inlinecode、公式源码 .cm-md-math-src 全是实色。
+ * 表现就是拖选代码块里的文字时「什么都没发生」:选区其实已经建好了,只是完全看不见。
+ * (把底色改画到伪元素上没用——行盒有 position: relative,负 z-index 的伪元素会被
+ * 画在选区图层上方,实测仍是实色盖住。)
+ *
+ * 提到 0 之后绘制顺序是:内容背景 → 文字 → 选区(半透明) → 光标。--bg-selection
+ * 自带 alpha,文字被罩一层淡色,仍然可读。
+ *
+ * pointer-events: none 是必需的:图层盖在正文上方后,不加它鼠标事件会落在图层上,
+ * CodeMirror 的 eventBelongsToEditor 会判定事件不属于编辑器,点按/拖选全部失效。
+ */
+.cm-scroller > .cm-selectionLayer {
+  z-index: 0 !important;
+  pointer-events: none;
+}
+
 /* ---------- WYSIWYG 内容样式 ---------- */
 
-.cm-md-h1 {
-  font-size: 1.8em;
-  font-weight: 700;
+/*
+ * 标题字号/字重与 Obsidian(用户启用中的 title-for-plugins.css)一致:
+ * h1–h6 统一 1.125em / 600。颜色不跟 Obsidian 走,保持 iMark 默认。
+ */
+.cm-md-h1,
+.cm-md-h2,
+.cm-md-h3,
+.cm-md-h4,
+.cm-md-h5,
+.cm-md-h6 {
+  font-size: 1.125em;
+  font-weight: 600;
   line-height: 1.4;
-}
-
-.cm-md-h2 {
-  font-size: 1.55em;
-  font-weight: 700;
-  line-height: 1.4;
-}
-
-.cm-md-h3 {
-  font-size: 1.35em;
-  font-weight: 650;
-}
-
-.cm-md-h4 {
-  font-size: 1.2em;
-  font-weight: 650;
-}
-
-.cm-md-h5 {
-  font-size: 1.08em;
-  font-weight: 650;
 }
 
 .cm-md-h6 {
-  font-size: 1em;
-  font-weight: 650;
   color: var(--text-secondary);
 }
 
@@ -101,13 +108,30 @@
   color: var(--text-tertiary);
 }
 
+/*
+ * 引用块:一条细灰竖线,画在普通正文起始处(行左内边距 28px 的右缘)而不是行框最左。
+ * 引用内容再向右缩进 1em(setup.ts 的 editorTheme 里设置),竖线到首个字符正好
+ * 留出一个字符宽。不铺底色、不改正文颜色:引用靠竖线和弱化后的标记区分。
+ * 26px = 行左内边距 28px - 竖线宽 2px,数值与 setup.ts 里 .cm-line 的 padding 对应。
+ */
 .cm-md-quote {
-  border-left: 3px solid var(--border);
-  color: var(--text-secondary);
+  background-image: linear-gradient(var(--quote-bar), var(--quote-bar));
+  background-size: 2px 100%;
+  background-position: 26px 0;
+  background-repeat: no-repeat;
+}
+
+/*
+ * 光标在引用行上时显形的 `>` 标记:弱化,别和正文抢注意力。
+ * 取正文色的 62%(混 transparent,随主题自适应):比 --text-tertiary 亮一档,
+ * 与 Obsidian 语法标记的灰度接近。
+ */
+.cm-md-quotemark {
+  color: color-mix(in oklch, var(--text-primary) 62%, transparent);
 }
 
 .cm-md-listmark {
-  color: var(--accent);
+  color: var(--list-marker-color);
   font-weight: 600;
 }
 
@@ -123,7 +147,7 @@
      但要跟着正文字号缩放,所以直接算 —— 写死 0.95rem 的话调大字号后圆点会明显偏小 */
   font-size: calc(var(--editor-font-size) * 0.95);
   line-height: 1;
-  color: var(--accent);
+  color: var(--list-marker-color);
 }
 
 .cm-md-headermark {
@@ -137,29 +161,68 @@
   color: var(--text-secondary);
 }
 
-/* 表格渲染态:整张表挂在表头那一行上,其余行由 cm-md-table-void 折叠 */
+/* 表格渲染态:整张表挂在表头那一行上,其余行由 cm-md-table-void 折叠。
+   单元格就地编辑(见 TableWidget),所以这里不能再让点击穿透给 CodeMirror。
+   不用 overflow:auto —— 控件要能画在表格外侧,不能被裁掉 */
 .cm-md-table-widget {
   display: block;
-  overflow-x: auto;
-  /* 单元格里的链接不能抢走点击 —— 点表格任何位置都该把光标送进表格。
-     CM 按坐标定位(不看 elementFromPoint),所以穿透不影响落点;
-     顺带也堵死了 widget 内的 <a> 触发页面跳转这条路 */
-  pointer-events: none;
+}
+
+/* 承载整张表的表头行:行盒自身的字体基线留白要清零,否则表格上下会多出半行空白 */
+.cm-md-table-host {
+  line-height: 0;
+  font-size: 0;
+}
+
+.cm-md-table-host .cm-md-table-frame {
+  font-size: var(--editor-font-size);
+  line-height: normal;
+}
+
+/*
+ * 控件浮在表格四周,但**不占版式空间**:
+ * 左右的 padding 用等量负 margin 抵消,表格与正文左对齐;
+ * 上下**不留白** —— 表格顶边直接贴住上一行,不会多出一条"表格自己的空行",
+ * 上方的控件浮在表格顶边之外(负 top),需要时再出现。
+ * 数值与 widgets.ts 里 layoutControls 的常量对应,改一边记得改另一边。
+ */
+.cm-md-table-frame {
+  position: relative;
+  display: inline-block;
+  /* 表格与正文的上下间距:这两段是 widget 自己的留白,不是可点击的文档行 */
+  padding: var(--md-table-gap-top, var(--md-table-gap, 12px)) 30px
+    var(--md-table-gap-bottom, var(--md-table-gap, 12px)) 24px;
+  margin: 0 -30px 0 -24px;
+  outline: none;
 }
 
 .cm-md-table-widget table {
   border-collapse: collapse;
-  margin: 4px 0;
+  /* 上下间距由 frame 的 --md-table-gap padding 提供,这里不再另外加 margin */
+  margin: 0;
   /* 表格不该继承编辑器的等宽降级样式,回到正文字体 */
   font-family: var(--font-editor);
   font-size: 0.95em;
+  line-height: 1.45;
 }
 
+/*
+ * 行高压扁、列宽拉大:表格是密集内容,原来的 6px 上下内边距让每行都太高,
+ * 而列宽只由内容决定,空格子挤成窄条。min-width 同时给空格子一块可点击的区域
+ * —— 「+」插出来的新表整张都是空格子。
+ */
 .cm-md-table-widget th,
 .cm-md-table-widget td {
   border: 1px solid var(--border);
-  padding: 6px 13px;
+  padding: 2px 16px;
+  min-width: 110px;
   vertical-align: top;
+  cursor: text;
+}
+
+/* 单元格里的链接不抢点击:点哪儿都该进编辑态,而不是跳转 */
+.cm-md-table-widget a {
+  pointer-events: none;
 }
 
 /*
@@ -182,8 +245,101 @@
   font-weight: 600;
 }
 
+/* 就地编辑:正在输入的格子给出明确边框;里面显示的是该格的 Markdown 源码。
+   只认 [contenteditable]:Esc 结束后焦点还留在格子上,但那时不该再摆出编辑态 */
+.cm-md-table-widget th[contenteditable]:focus,
+.cm-md-table-widget td[contenteditable]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-editor));
+}
+
+.cm-md-table-widget th[contenteditable],
+.cm-md-table-widget td[contenteditable] {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- 表格结构控件(插/删行、列、整表) ---------- */
+
+.cm-md-table-ctl-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cm-md-table-ctl {
+  position: absolute;
+  /* 位置由 layoutControls 按单元格几何算出来,这里只负责把坐标当作中心点 */
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-editor);
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  /* 默认完全藏起来;由 applyHoverControls 按鼠标所在的行/列/边界
+     给对应的按钮加 is-shown。visibility 一起切,免得看不见的按钮先接住误点 */
+  opacity: 0;
+  visibility: hidden;
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: opacity 0.15s, visibility 0.15s, color 0.12s, border-color 0.12s;
+}
+
+.cm-md-table-ctl.is-shown,
+.cm-md-table-ctl:focus {
+  opacity: 1;
+  visibility: visible;
+}
+
+.cm-md-table-ctl:hover,
+.cm-md-table-ctl.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.cm-md-table-ctl.is-active {
+  background: var(--bg-selection);
+}
+
+.cm-md-table-ctl-del:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.cm-md-table-ctl-add {
+  border-radius: 50%;
+  font-size: 13px;
+}
+
+.cm-md-table-trash svg {
+  display: block;
+}
+
+/* 选中整张表 / 一行 / 一列(按 Backspace / Delete 删除) */
+.cm-md-table-selected {
+  background: var(--bg-selection) !important;
+}
+
+.cm-md-table-frame.is-selected > table {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 /* 多行表格的后续行为空并折叠高度 */
-.cm-md-table-void {
+.cm-md-table-void,
+/* 表格紧邻的空行:间距改由 widget 的 padding 提供,这里折成零高度 */
+.cm-md-table-spacer {
   line-height: 0;
   font-size: 0;
   min-height: 0;
@@ -203,9 +359,15 @@
 .cm-md-math-display {
   display: block;
   margin: 2px 0;
-  padding: 4px 0;
+  /* 上下留白随字号缩放:KaTeX 的 vlist/strut 会带来约 0.25em 的滚动溢出,
+     写死 4px 时字号一过 18px 就兜不住(见下面的 overflow-y) */
+  padding: 0.25em 0;
   text-align: center;
   overflow-x: auto;
+  /* overflow-x:auto 会让 overflow-y 隐式计算成 auto,而 KaTeX 内容比盒子高出
+     几像素 —— 字号 ≥20px 时公式块右侧就会冒出一条竖向滚动条。
+     竖向溢出全部来自 strut,不是可见笔画,直接压掉 */
+  overflow-y: hidden;
 }
 
 /* KaTeX 自带 1em 上下外边距,编辑器内叠加上去留白过大 */
@@ -234,6 +396,91 @@
   color: #d1242f;
   font-family: var(--font-mono);
   font-size: 0.9em;
+}
+
+/* ---------- 公式编辑预览 ---------- */
+
+/*
+ * 光标在公式源码里时浮在旁边的实时预览(见 editor/mathPreview.ts)。
+ * 位置由 JS 按源码包围盒算好(left/top),这里只管长相。
+ * pointer-events: none —— 它只是「看」的,不能挡住打字和点击。
+ */
+.cm-md-math-preview {
+  position: fixed;
+  z-index: 8;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-editor);
+  box-shadow: 0 8px 24px var(--shadow);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: var(--editor-font-size);
+  line-height: 1.4;
+  /* 超宽公式才轮到横向滚动,竖向永不滚动(KaTeX 的 strut 会带来几像素溢出) */
+  max-width: min(640px, calc(100vw - 48px));
+  overflow-x: auto;
+  overflow-y: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 预览卡片里不需要 KaTeX 自带的 1em 上下留白 */
+.cm-md-math-preview .katex-display {
+  margin: 0;
+}
+
+.cm-md-math-preview-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* ---------- Mermaid 图表 ---------- */
+
+/* 渲染态:widget 挂在围栏首行,后续行由 cm-md-mermaid-void 折叠 */
+.cm-md-mermaid {
+  display: block;
+  margin: 4px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-codeblock);
+  overflow-x: auto;
+  text-align: center;
+}
+
+.cm-md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  /* 点击一律交给 CodeMirror 按坐标映射回文档位置;SVG 里的 <a>/节点交互不能抢走
+     mousedown,否则点图不进编辑态(表格 widget 用同一套做法) */
+  pointer-events: none;
+}
+
+.cm-md-mermaid-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  color: var(--text-tertiary);
+  font-size: 0.9em;
+}
+
+.cm-md-mermaid-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+/* 多行图表的后续行为空并折叠高度 */
+.cm-md-mermaid-void {
+  line-height: 0;
+  font-size: 0;
+  min-height: 0;
 }
 
 /* ---------- Widget ---------- */

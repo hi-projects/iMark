@@ -1,14 +1,14 @@
 import { reactive, watch } from 'vue'
 import type { EditorView } from '@codemirror/view'
-import type { Theme, VaultNode } from '@shared/types'
+import type { AutoSaveMode, Theme, VaultNode } from '@shared/types'
+import { api } from '../services/api'
 
 /** 主题枚举顺序(设置面板的选项顺序,也是循环切换顺序) */
-export const THEME_ORDER: Theme[] = ['light', 'dark', 'black']
+export const THEME_ORDER: Theme[] = ['light', 'dark']
 
 export const THEME_LABELS: Record<Theme, string> = {
   light: '亮色',
-  dark: '暗色',
-  black: '黑色'
+  dark: '深色'
 }
 
 /** 大纲条目:标题级别 + 纯文本 + 文档位置 */
@@ -54,13 +54,14 @@ interface AppState {
   vaultTree: VaultNode | null
   vaultFiles: VaultFileRef[]
   /** 编辑器偏好(来自 settings,由 services/editorSettings 套用) */
-  autoSave: boolean
-  autoSaveInterval: number
+  autoSaveMode: AutoSaveMode
+  /** afterDelay 模式下的延迟(秒) */
+  autoSaveDelay: number
   lineWrapping: boolean
   editorFontSize: number
-  /** 最近一次定时保存成功的时刻;null 表示不显示提示 */
+  /** 最近一次自动保存成功的时刻;null 表示不显示提示 */
   autoSavedAt: number | null
-  /** 定时保存失败的说明(状态栏红字);成功后清掉 */
+  /** 自动保存失败的说明(状态栏红字);成功后清掉 */
   autoSaveError: string | null
   /** 展开的目录路径集合(刷新/重载后保留) */
   expandedDirs: Set<string>
@@ -101,8 +102,8 @@ export const appStore = reactive<AppState>({
   vaultName: null,
   vaultTree: null,
   vaultFiles: [],
-  autoSave: false,
-  autoSaveInterval: 30,
+  autoSaveMode: 'off',
+  autoSaveDelay: 1,
   lineWrapping: true,
   editorFontSize: 16,
   autoSavedAt: null,
@@ -132,7 +133,7 @@ export function initStoreWatchers(): void {
   watch(
     () => appStore.dirty,
     value => {
-      window.api.setDocDirty(value)
+      api.setDocDirty(value)
     }
   )
   watch(
@@ -140,7 +141,7 @@ export function initStoreWatchers(): void {
     () => {
       // 仓库选择页没有文档上下文,标题只留应用名(传 null 而不是「未命名」)
       const atPicker = appStore.view === 'picker'
-      window.api.setWindowTitle(
+      api.setWindowTitle(
         atPicker ? null : appStore.fileName,
         appStore.dirty,
         appStore.vaultName
@@ -154,7 +155,7 @@ export function initStoreWatchers(): void {
   watch(
     () => appStore.view,
     view => {
-      window.api.setWindowView(view)
+      api.setWindowView(view)
     }
   )
   // 文档路径单独盯:上面那个 watcher 盯的是文件名,而两个目录下的同名文件互相切换时
@@ -162,7 +163,7 @@ export function initStoreWatchers(): void {
   watch(
     () => appStore.filePath,
     path => {
-      window.api.setDocPath(path)
+      api.setDocPath(path)
     },
     { immediate: true }
   )
@@ -176,10 +177,10 @@ export function applyTheme(theme: Theme): void {
 /** 由设置面板调用:立即生效并写盘 */
 export async function setTheme(theme: Theme): Promise<void> {
   applyTheme(theme)
-  await window.api.saveSettings({ theme })
+  await api.saveSettings({ theme })
 }
 
-/** 状态栏快捷键:亮色 → 暗色 → 黑色 → 亮色 */
+/** 状态栏快捷键:亮色 ↔ 深色 */
 export async function toggleTheme(): Promise<void> {
   const i = THEME_ORDER.indexOf(appStore.theme)
   await setTheme(THEME_ORDER[(i + 1) % THEME_ORDER.length]!)
@@ -201,7 +202,7 @@ export function initOutlineVisible(visible: boolean): void {
 export function toggleOutlineVisible(): void {
   const next = !appStore.outlineVisible
   appStore.outlineVisible = next
-  void window.api.saveSettings({ outline: next })
+  void api.saveSettings({ outline: next })
 }
 
 export function initExplorerVisible(visible: boolean): void {
@@ -216,7 +217,7 @@ export function initSkipVaultPicker(skip: boolean): void {
 export function toggleExplorerVisible(): void {
   const next = !appStore.explorerVisible
   appStore.explorerVisible = next
-  void window.api.saveSettings({ explorer: next })
+  void api.saveSettings({ explorer: next })
 }
 
 /** 文档所在目录(用于解析相对路径图片),无文件路径时为 null */

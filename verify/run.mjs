@@ -13,8 +13,9 @@
 //      `Cannot read properties of undefined (reading 'registerSchemesAsPrivileged')`,
 //      看着像 electron 少了个 API,其实是根本没进 Electron;
 //   3. 给一个**独立的 userData**(仓库里的 .verify-ud/<名字>,已 gitignore):
-//      harness 会往那里写桩 settings.json、还会 rm -rf 那里的 vault 和 plugins,
-//      绝不能让它落到真实配置 ~/.config/imarkdown 上;
+//      harness 会往那里写桩 settings.json、还会 rm -rf 那里的 vault 和 plugins。
+//      有 `--user-data-dir` 时数据根就是它(见 src/main/dataDir.ts),所以**一切**
+//      ——包括样式目录与 profile——都在这一个临时目录里,碰不到用户真实的 ~/.imark;
 //   4. 每次都从这个干净目录重来(上次跑剩的插件登记会让断言结果不一样)。
 //
 // ⚠️ **它只重新打包 harness,不会重新构建应用。** harness 是从源码 bundle 的,但
@@ -41,11 +42,24 @@ if (!name) {
         'bundled-upgrade',
         'quick-edit',
         'table-render',
+        'mermaid',
         'git-sync',
+        'git-sync-auth',
         'editor-enter',
+        'image-paste',
+        'autosave-modes',
+        'layers',
+        'data-dir',
+        'settings-reflow',
+        'settings-system',
+        'plugin-ui',
+        'userstyle-dir',
         'phase3',
         'phase3-smoke',
-        'phase3-throttle'
+        'phase3-throttle',
+        'layers',
+        'samples',
+        'install-confirm'
       ]
     : []
   if (files.length) console.error(`现有:${files.join(' / ')}`)

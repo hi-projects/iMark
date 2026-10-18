@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
 import katex from 'katex'
 import katexCssRaw from 'katex/dist/katex.min.css?raw'
+import { mermaidErrorMessage, renderMermaid } from './mermaid'
 
 /** KaTeX 的字体走 CDN(导出文件给浏览器打开,内联 CSS 只保留字体外链) */
 const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/'
@@ -24,6 +25,34 @@ const md: MarkdownIt = new MarkdownIt({
     return `<pre class="hljs"><code>${md.utils.escapeHtml(code)}</code></pre>`
   }
 })
+
+// ---------- Mermaid 图表 ----------
+//
+// 围栏先渲染成占位 div,全文渲染完再把 SVG 填回去。mermaid.render 是异步的,
+// 而 markdown-it 的 renderer 必须同步返回字符串;占位符里只放序号,放源码会被
+// markdown-it 再转义一遍,取回来还要反解,反而更容易错。
+
+interface MermaidEnv {
+  mermaid?: string[]
+}
+
+const mermaidPlaceholder = (index: number): string =>
+  `<div class="mermaid-diagram" data-mermaid-index="${index}"></div>`
+
+const defaultFence = md.renderer.rules.fence!
+
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]!
+  const info = token.info ? md.utils.unescapeAll(token.info).trim() : ''
+  const lang = info.split(/\s+/)[0]?.toLowerCase() ?? ''
+  if (lang === 'mermaid') {
+    const target = env as MermaidEnv
+    const blocks = (target.mermaid ??= [])
+    blocks.push(token.content)
+    return `${mermaidPlaceholder(blocks.length - 1)}\n`
+  }
+  return defaultFence(tokens, idx, options, env, self)
+}
 
 // ---------- LaTeX 公式(markdown-it 内置无数学支持,这里补最小实现) ----------
 
@@ -137,11 +166,38 @@ const EXPORT_CSS = `
   .hljs-title, .hljs-title.function_, .hljs-name { color: #8250df; }
   .hljs-type, .hljs-class .hljs-title { color: #953800; }
   .hljs-deletion { color: #82071e; }
+  .mermaid-diagram { margin: 1.2em 0; padding: 12px; border: 1px solid #d8dee4; border-radius: 8px; background: #f6f8fa; text-align: center; overflow-x: auto; }
+  .mermaid-diagram svg { max-width: 100%; height: auto; }
+  .mermaid-diagram-error { color: #cf222e; text-align: left; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; }
+  .mermaid-diagram-error p { margin: 0; }
+  .mermaid-diagram-error pre { background: transparent; padding: 0; margin: 0.6em 0 0; }
   ${MATH_BLOCK_CSS}
 `
 
-export function renderHtml(source: string, title: string): string {
-  const body = md.render(source)
+export async function renderHtml(source: string, title: string): Promise<string> {
+  const env: MermaidEnv = {}
+  let body = md.render(source, env)
+  const mermaidBlocks = env.mermaid ?? []
+  if (mermaidBlocks.length > 0) {
+    // 导出统一用亮色主题:导出的 HTML 模板本身就是亮色,跟随应用当前主题会得到
+    // 深色图配白底页面的怪结果。单块失败只毁那一块,不该让整份导出失败。
+    const diagrams = await Promise.all(
+      mermaidBlocks.map(async code => {
+        try {
+          return `<div class="mermaid-diagram">${await renderMermaid(code, 'light')}</div>`
+        } catch (err) {
+          return (
+            `<div class="mermaid-diagram mermaid-diagram-error">` +
+            `<p>Mermaid 渲染失败:${md.utils.escapeHtml(mermaidErrorMessage(err))}</p>` +
+            `<pre>${md.utils.escapeHtml(code)}</pre></div>`
+          )
+        }
+      })
+    )
+    mermaidBlocks.forEach((_, index) => {
+      body = body.replace(mermaidPlaceholder(index), diagrams[index] ?? '')
+    })
+  }
   const safeTitle = title
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

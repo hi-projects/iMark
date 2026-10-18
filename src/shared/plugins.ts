@@ -8,11 +8,11 @@
 
 export type PluginFieldKind = 'text' | 'password' | 'number' | 'boolean' | 'select' | 'targets'
 
-// 插件形态与权限词表定义在 pluginPackage.ts(它们本来就是清单的概念)。
+// 插件层与权限词表定义在 pluginPackage.ts(它们本来就是清单的概念)。
 // 这里只做类型中转,方便渲染层从一处 import。
-import type { PluginDockSide, PluginKind, PluginPermission } from './pluginPackage'
+import type { PluginMainMode, PluginPermission } from './pluginPackage'
 
-export type { PluginDockSide, PluginKind, PluginPermission }
+export type { PluginMainMode, PluginPermission }
 
 export interface PluginFieldOption {
   value: string
@@ -207,7 +207,7 @@ export function commandAvailable(
  * 一个插件当前贡献的全部槽位(下发给渲染层的快照)。
  *
  * **只有启用中的插件才在列表里**。关掉的插件不该在界面上留东西,这跟行首「+」菜单
- * 现在的行为一致:停用 quick-edit,那个「+」就没了。
+ * 现在的行为一致:停用 quick-edit(Advanced Table),那个「+」就没了。
  *
  * 刻意走单独一条通道、而不是塞进 PluginView:PluginView 是**高频**的
  * (插件每 setState 一次就广播一遍),而贡献点只在插件启停/重载时变。
@@ -313,17 +313,57 @@ export interface PluginEditorInsert {
   cursorOffset?: number
 }
 
-export type PluginStatus = 'idle' | 'running' | 'ok' | 'error'
+export type PluginStatus = 'idle' | 'running' | 'ok' | 'partial' | 'error'
 
 export interface PluginState {
   enabled: boolean
   status: PluginStatus
   /** 上次运行结束时间(epoch ms),从未运行为 null */
   lastRunAt: number | null
-  /** 一句话结果,如「已推送到 2 个远端」「无改动」 */
+  /**
+   * 状态的**唯一**一段文本,如「已推送到 2 个远端」「部分失败\n\n第 1 个远端…」。
+   * 多远端的结果直接在这里逐行罗列,不再另起一份摘要。
+   */
   lastMessage: string
-  /** 失败详情(已脱敏,可能较长) */
+  /**
+   * 失败详情(已脱敏,可能较长)。
+   *
+   * 仍保留在插件 API 里是为了不破坏已有插件;宿主会把它写进操作日志,
+   * **不会**再挂回状态里重复显示(状态只有 lastMessage 一段文本)。
+   */
   lastDetail?: string
+}
+
+/**
+ * 一条插件日志的级别。
+ *
+ * 前四档来自插件自己的 `imk.log()`(以及宿主替它写的安全审计);
+ * `operation` 是宿主在动作结束后记的摘要 —— 它和插件日志进同一个尾巴、同一个文件,
+ * 这样设置页看到的行与磁盘日志始终是同一份内容。
+ */
+export type PluginLogLevel = 'debug' | 'info' | 'warn' | 'error' | 'operation'
+
+/** 设置页「插件日志」的一条;磁盘文件由宿主用同一套字段拼成 `时间戳 [级别] 正文` */
+export interface PluginLogEntry {
+  /** 产生时间(epoch ms) */
+  at: number
+  level: PluginLogLevel
+  /** 正文;操作记录可能带换行(第一行是摘要,后面是明细) */
+  message: string
+}
+
+/** 一次已经结束的插件操作,设置页的「调试」模块用它;完整版另有日志文件 */
+export interface PluginOperation {
+  /** 结束时间(epoch ms) */
+  at: number
+  /** 按钮名(如「测试连接」「立即上传」);后台触发时为「后台任务」 */
+  action: string
+  /** 结束时的整体状态:成功 / 部分失败 / 失败 */
+  status: 'ok' | 'partial' | 'error'
+  /** 结果文本(逐项明细;整体状态由 status 或状态卡徽标负责) */
+  message: string
+  /** 更长的失败原因/逐项明细;与 message 相同的话宿主不会再存一份 */
+  detail?: string
 }
 
 export interface PluginDescriptor {
@@ -352,7 +392,7 @@ export interface PluginDescriptor {
 /** 插件来源:内置核心插件 / 市场安装 / 应用自带的兜底包 / 手动放进插件目录 */
 export type PluginSource = 'builtin' | 'market' | 'bundled' | 'local'
 
-/** 已安装插件的来源信息(持久化在 userData/plugins/installed.json) */
+/** 已安装插件的来源信息(持久化在数据根下的 plugins/installed.json,即 ~/.imark/plugins/installed.json) */
 export interface PluginInstallInfo {
   version: string
   installedAt: number
@@ -361,6 +401,16 @@ export interface PluginInstallInfo {
   /** 发布者用户名(本机手动安装为 null) */
   publisher: string | null
   source: PluginSource
+  /** main 层模式;没有 main 层时为 null */
+  mainMode?: PluginMainMode | null
+  /** 是否有 render 层 */
+  hasRender?: boolean
+  /** 无代码插件绑定的宿主内置能力 */
+  capability?: string | null
+  /** main 入口的 sha256(没有 main 层时为 null) */
+  mainSha256?: string | null
+  /** render 入口的 sha256(没有 render 层时为 null) */
+  renderSha256?: string | null
 }
 
 /** 主进程返回给渲染层的插件视图:含配置与状态,但**永远不含密钥明文** */
@@ -374,21 +424,17 @@ export interface PluginView {
   secrets: Record<string, string>
   state: PluginState
   // ---------- 以下均为可选:内置核心插件不填,外部安装的插件才有 ----------
-  /** 'script' 会在主进程执行代码,'declarative' 不含代码,'sandboxed' 在独立页面里跑 */
-  kind?: PluginKind
+  /** main 层模式;没有 main 层时为 undefined */
+  mainMode?: PluginMainMode
+  /** 是否有 render 层 */
+  hasRender?: boolean
+  /** 无代码插件绑定的宿主内置能力 id */
+  capability?: string
   /**
-   * 沙箱插件:用户是否为它放开了「允许访问本机地址」。
+   * 受限 main 层:用户是否为它放开了「允许访问本机地址」。
    * 界面上要显示成一个开关 —— 它是用户做过的决定,得能看见、能改回来。
    */
   allowLocalNet?: boolean
-  /**
-   * 沙箱插件的界面停在哪一侧(见 PluginUiSpec.dock);没有界面时为 undefined。
-   * 渲染层据此决定"给它留一块停靠面板"还是"它是独立窗口"。
-   */
-  dock?: PluginDockSide
-  /** 停靠面板想要的尺寸(左/右栏看宽,底栏看高);渲染层按它留位置 */
-  dockWidth?: number
-  dockHeight?: number
   source?: PluginSource
   permissions?: PluginPermission[]
   installed?: PluginInstallInfo
@@ -404,8 +450,13 @@ export interface PluginView {
    * 用户会以为它一直都在,而下次启动它就不见了。
    */
   dev?: boolean
-  /** 插件自己 log() 的最近若干行,设置界面用来排查第三方插件 */
-  logs?: string[]
+  /**
+   * 日志尾巴(最近若干条):插件自己 log() 的行 + 宿主记录的操作摘要/警告。
+   * 与 `logs/plugins/<id>.log` 的内容一一对应,只是没有磁盘上的完整历史。
+   */
+  logs?: PluginLogEntry[]
+  /** 最近 3 次操作结果(新的在前);完整日志在数据根下的 logs/plugins/<id>.log */
+  recentOps?: PluginOperation[]
   /**
    * **加载期**失败(如 main.js 抛异常)—— 这种插件连 descriptor 都不可信,
    * 由宿主合成一个最小描述符并置此项,让它在设置界面里可见、可卸载。
@@ -417,6 +468,12 @@ export interface PluginActionResult {
   ok: boolean
   message: string
   detail?: string
+  /**
+   * 结果对应的状态;不填时由宿主按 `ok` 推断(成功 / 失败)。
+   * 异步动作可以用 'running' 表示「已接受/已排队,还没结束」,
+   * 多远端动作可以用 'partial' 表示部分失败。
+   */
+  status?: PluginStatus
   /**
    * 插件要求往文档里插入的内容(仅行首菜单的动作会用到)。
    *
@@ -432,28 +489,20 @@ export interface PluginActionResult {
 // 插件(不管跑在主进程还是自己的页面里)都只能请宿主转达 —— 插件代码本身
 // 永远进不了渲染层,这条从改造之初就没有松动过。
 
-/** 渲染层能替插件做的一次操作 */
+/** 宿主请渲染层做的一次操作(只剩 render 层生命周期) */
 export type RendererOpName =
-  /** 读正文/选中/光标 */
-  | 'editor.read'
-  /** 替换一段(或选区),可顺带移动光标 */
-  | 'editor.replace'
-  /** 给一段范围加标记(class 由插件给,样式由它自己的 CSS 决定) */
-  | 'editor.decorate'
-  /** 撤掉某个插件的全部标记 */
-  | 'editor.clear'
-  /** 注入这个插件的样式(会被 `@scope` 限制在它自己标出来的元素里) */
-  | 'editor.styles'
-  /** 同上,只是给"挂了界面、但不碰编辑器"的插件用(语义不同,实现共用) */
-  | 'ui.styles'
-  /** 展开/收起某个插件的停靠面板(插件调 window.show()/hide() 时走到这儿) */
-  | 'panel.collapse'
-  /** 把一段 HTML 挂进主界面(仅 trusted 插件,见 README 的说明) */
-  | 'ui.mount'
-  /** 换掉已挂载的 HTML */
-  | 'ui.update'
-  /** 摘掉挂载 */
-  | 'ui.remove'
+  // 这几个不是"宿主替插件做事",而是**宿主把插件代码叫起来**。
+  // 走同一条请求/回执通道是为了复用"渲染层不在就明确失败 + 超时清挂起"那套纪律。
+  /** 为主进程即将注入的 render 层登记 nonce / 配置 */
+  | 'render.prepare'
+  /** 注入完成后调用插件登记的 onEnable */
+  | 'render.enable'
+  /** 配置变了 → 更新快照并调用 onConfigChange */
+  | 'render.config'
+  /** 宿主条目(菜单/命令/状态栏)的动作交给 render 层执行 */
+  | 'render.runAction'
+  /** 停用/卸载:调用 onDisable、移除它注册的扩展、丢掉会话 */
+  | 'render.unload'
 
 export interface RendererOpRequest {
   /** 请求序号(宿主生成,渲染层原样带回) */
@@ -469,29 +518,16 @@ export type RendererOpReply =
   | { id: number; ok: false; message: string }
 
 /**
- * 渲染层 → 主进程:停靠面板的槽位在哪儿。
+ * 渲染半 ↔ 后端半的一条消息。
  *
- * 停靠 = 把**插件自己的 renderer**(WebContentsView)摆到主窗口的某块区域上。
- * 位置由渲染层说了算(它才知道三栏布局算出来是多大),主进程只负责照着摆。
+ * **它不携带能力**:只是把数据从同一插件的一半送到另一半。真正的系统能力仍然由
+ * 后端半经 `plugin:rpc` 向闸门申请。宿主只做校验(通道名、体积、频率)与转发。
  */
-export interface DockSlotRect {
+export interface RenderHalfMessage {
   pluginId: string
-  /** 相对窗口内容区左上角,单位是 CSS 像素 */
-  x: number
-  y: number
-  width: number
-  height: number
-  /** 槽位此刻可见吗(被折叠、切到别的视图时为 false) */
-  visible: boolean
-}
-
-/** 渲染层 → 主进程:注入的界面里有人点了带 `data-imk-click` 的东西 */
-export interface PluginUiClick {
-  pluginId: string
-  /** 挂载 id(一个插件可以挂多块) */
-  mountId: string
-  /** 那个元素的 data-imk-click 值 */
-  name: string
+  /** 通道名:字母数字与 `. _ -`,≤64 字符 */
+  channel: string
+  data: unknown
 }
 
 /** 插件配置的持久化形态(存于 settings.json 的 plugins 字段) */

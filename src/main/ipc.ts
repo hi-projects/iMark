@@ -1,11 +1,6 @@
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type {
-  DockSlotRect,
-  PluginActionPayload,
-  PluginContribInvoke,
-  PluginUiClick
-} from '@shared/plugins'
+import type { PluginActionPayload, PluginContribInvoke } from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
 import {
   currentDocPath,
@@ -26,8 +21,10 @@ import {
   showOpenFileDialog,
   showSaveFileDialog
 } from './dialogs'
-import { readFileContent, writeFileAtomic } from './files'
+import { readFileContent, saveImageAsset, writeFileAtomic } from './files'
 import { getSettings, saveSettings } from './settings'
+import { takePendingOpenFile } from './openFile'
+import { defaultEditorStatus, registerAsDefaultEditor } from './system'
 import { getPluginHost, type PluginHost } from './plugins/host'
 import { registerMarketIpc } from './market/ipc'
 import {
@@ -40,7 +37,7 @@ import {
 import {
   ensureUserStylesDir,
   importUserStyle,
-  importUserStylesFromDir,
+  importUserStyleDir,
   readUserStyles,
   removeUserStyle,
   userStylesDir
@@ -73,9 +70,22 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.FileRead, (_e, path: string) => readFileContent(path))
 
+  // 启动参数里带的文件(双击 .md 启动时那条路);渲染层初始化完后主动来取
+  ipcMain.handle(IPC.OpenFileTake, () => takePendingOpenFile())
+
+  // ---------- 系统(设置 → 系统) ----------
+  ipcMain.handle(IPC.SystemDefaultEditorStatus, () => defaultEditorStatus())
+  ipcMain.handle(IPC.SystemSetDefaultEditor, () => registerAsDefaultEditor())
+
   ipcMain.handle(IPC.FileWrite, async (_e, o: { path: string; content: string }) => {
     await writeFileAtomic(o.path, o.content)
   })
+
+  ipcMain.handle(
+    IPC.FileSaveImage,
+    (_e, o: { docPath: string; mime: string; data: Uint8Array }) =>
+      saveImageAsset(o.docPath, o.mime, o.data)
+  )
 
   ipcMain.handle(IPC.ConfirmDiscard, (_e, o: { fileName: string }) => {
     const win = getMainWindow()
@@ -140,7 +150,7 @@ export function registerIpc(): void {
     handleSaveDone(o.ok)
   })
 
-  // 一次真的写盘完成了(手动保存、定时保存、另存为都走这儿)。
+  // 一次真的写盘完成了(手动保存、自动保存、另存为都走这儿)。
   // 关闭前那次保存走的是上面的 SaveDone —— 那条路上渲染层调用 saveCurrentFile,
   // 于是这里照样会收到一条,不必在那边重复发。
   ipcMain.on(IPC.DocSaved, (_e, path: unknown) => {
@@ -217,23 +227,27 @@ export function registerIpc(): void {
     }
   )
 
-  ipcMain.handle(IPC.PluginOpenWindow, (_e, id: string) => {
-    requirePluginHost().openWindow(id)
-  })
-
-  // 渲染层报来的两类回执:停靠面板的位置、注入界面里的点击。
-  // 两条都是**渲染层说、宿主照做** —— 位置由它算(它才知道布局),点击由它捕获
-  // (只有它看得见 DOM)
-  ipcMain.on(IPC.PluginDockRect, (_e, rect: DockSlotRect) => {
-    getPluginHost()?.handleDockRect(rect)
-  })
-
-  ipcMain.on(IPC.PluginUiClick, (_e, click: PluginUiClick) => {
-    void getPluginHost()?.handleUiClick(click)
+  ipcMain.handle(IPC.PluginLogOpen, async (_e, id: unknown) => {
+    if (typeof id !== 'string' || !id) throw new Error('插件 id 不合法')
+    const problem = await shell.openPath(requirePluginHost().ensureLogFile(id))
+    if (problem) throw new Error(`打开插件日志失败：${problem}`)
   })
 
   ipcMain.on(IPC.PluginFlushDone, () => {
     getPluginHost()?.handleFlushDone()
+  })
+
+  // ---------- render 层 ----------
+  // 三条都是渲染层单向告知(消息 / 状态 / 日志),没有回执 —— 容量与频率校验
+  // 在主进程再做一次(渲染层里可能有插件代码,不能默认它是礼貌的)
+  ipcMain.on(IPC.PluginRenderMessage, (_e, o: unknown) => {
+    void getPluginHost()?.handleRenderMessage(o)
+  })
+  ipcMain.on(IPC.PluginRenderState, (_e, o: unknown) => {
+    void getPluginHost()?.applyRenderState(o)
+  })
+  ipcMain.on(IPC.PluginRenderLog, (_e, o: unknown) => {
+    getPluginHost()?.logRenderLayer(o)
   })
 
   // ---------- 插件界面贡献点 ----------
@@ -281,7 +295,7 @@ export function registerIpc(): void {
     if (!win) return null
     const picked = await showOpenCssDirDialog(win)
     if (!picked) return null
-    const outcome = await importUserStylesFromDir(picked)
+    const outcome = await importUserStyleDir(picked)
     return { state: await readUserStyles(), outcome }
   })
 

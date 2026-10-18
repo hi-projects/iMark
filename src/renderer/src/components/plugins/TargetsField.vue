@@ -95,7 +95,7 @@ function targetState(target: PluginTarget): TargetState {
 /** 缺什么,给悬停提示用 */
 function missingHint(target: PluginTarget): string {
   const state = targetState(target)
-  if (state === 'ok') return '已配置,可以推送'
+  if (state === 'ok') return '已配置，可以推送'
   if (state === 'blank') return '还没填写'
   if (!target.url.trim()) return '还没填远程仓库地址'
   if (!target.localBranch.trim()) return '还没填本地分支'
@@ -211,7 +211,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
           </template>
         </label>
       </div>
-      <p v-else class="plugin-target-hint">SSH 认证:使用本机 SSH 密钥,无需填写密钥。</p>
+      <p v-else class="plugin-target-hint">SSH 认证：使用本机 SSH 密钥，无需填写密钥。</p>
 
       <!-- 每个远端自己的动作(测试连接…)与删除 -->
       <div class="plugin-target-actions">

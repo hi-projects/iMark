@@ -15,7 +15,6 @@
 
 import { createHash } from 'node:crypto'
 import {
-  hasMainEntry,
   integrityInput,
   validateEnvelope,
   type PackageFileEntry,
@@ -38,8 +37,10 @@ export function computeIntegrity(
 export interface VerifiedPackage {
   envelope: PluginPackageEnvelope
   manifest: PluginManifest
-  /** 入口文件的 sha256(script 插件才有),记进登记表便于比对「跑的是不是这一份」 */
+  /** main 入口的 sha256(没有 main 层时为 null),记进登记表便于比对「跑的是不是这一份」 */
   mainSha256: string | null
+  /** render 入口的 sha256(没有 render 层时为 null) */
+  renderSha256: string | null
 }
 
 /**
@@ -81,9 +82,13 @@ export function verifyEnvelope(
   }
   if (errors.length > 0) return { ok: false, errors }
 
-  const mainName = hasMainEntry(manifest.kind) ? (manifest.main ?? 'main.js') : null
-  const mainSha256 = mainName ? (envelope.files[mainName]?.sha256 ?? null) : null
-  return { ok: true, value: { envelope, manifest, mainSha256 } }
+  const mainSha256 = manifest.main
+    ? (envelope.files[manifest.main.entry]?.sha256 ?? null)
+    : null
+  const renderSha256 = manifest.render
+    ? (envelope.files[manifest.render.entry]?.sha256 ?? null)
+    : null
+  return { ok: true, value: { envelope, manifest, mainSha256, renderSha256 } }
 }
 
 /** 界面上展示 sha256 时统一截断成 `abc123…def456`,完整值留给「复制」按钮 */

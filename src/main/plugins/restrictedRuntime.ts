@@ -1,31 +1,27 @@
 /**
- * 沙箱插件的**通道**:页面 ↔ 主进程(阶段三 §3.3)。
+ * restricted main 层的**通道**:隐藏执行页 ↔ 主进程。
  *
  * 两个方向各有一条道,职责完全不同:
  *
  *   - **插件 → 宿主**(`plugin:rpc`):一次能力调用。走 `gate.invokeOp`,永远 resolve。
- *   - **宿主 → 插件**(`plugin:bridge`):请插件做一件事。这条就是沙箱版的
- *     `PluginRuntime` —— `onEnable` / `onDisable` / `onConfigChange` / `runAction`
- *     一一对应,于是 host.ts 的 `safeCall`(超时、失败计数、熔断、回滚)
- *     在沙箱插件上一行都不用改。
+ *   - **宿主 → 插件**(`plugin:bridge`):请插件做一件事。这条就是
+ *     restricted 版的 `PluginRuntime` —— `onEnable` / `onDisable` / `onConfigChange` /
+ *     `runAction` 一一对应,于是 host.ts 的 `safeCall`(超时、失败计数、熔断、回滚)
+ *     一行都不用改。
  *
  * 还有一条单向的 `plugin:event`:hello / 配置 / 主题 / 仓库 / 文档保存 / tick。
- * 页面晚订阅也能立刻拿到最后一份 payload(preload 缓存),这是刻意的 ——
- * "我订阅的时候宿主已经发过了"在插件里是常态,不该变成偶发的空转。
+ * 页面晚订阅也能立刻拿到最后一份 payload(preload 缓存),这是刻意的。
  *
  * ## 身份
  *
  * **绝不接受页面传来的 pluginId。** 通道里根本没有这个字段:主进程用
  * `event.sender.id`(webContents id)在自己的注册表里反查"这是谁"。
- * 页面能伪造的只有自己的参数,伪造不了身份。`additionalArguments` 里那份 id
- * 只给页面自己打日志用 —— Linux 上 `/proc/<pid>/cmdline` 能读到进程参数,
- * 所以那里**不能**放任何密钥。
+ * 页面能伪造的只有自己的参数,伪造不了身份。
  */
 
 import { ipcMain, type WebContents } from 'electron'
 import type { PluginActionResult } from '@shared/plugins'
 import type { PluginRuntime } from '@shared/pluginApi'
-import type { PluginUiSpec } from '@shared/pluginPackage'
 import {
   RPC_ABORT,
   RPC_BRIDGE,
@@ -40,31 +36,19 @@ import {
 } from '@shared/pluginRpc'
 import { invokeOp } from './gate'
 import type { OpContext } from './ops'
-import {
-  closePluginWindow,
-  openPluginSurface,
-  pluginWebContentsOf,
-  pluginWindowSurfaceOf
-} from './windows'
+import { openRestrictedPage, pluginWebContentsOf } from './restrictedPage'
 
-/** 宿主给沙箱层提供的东西 */
-export interface SandboxDeps {
+/** 宿主给 restricted 层提供的东西 */
+export interface RestrictedDeps {
   /** 造一次能力调用的现场(host.ts 才知道权限、配置、贡献点)。返回 null = 这个插件不该被受理 */
   opContext(pluginId: string): OpContext | null
   /** 页面第一次报「就绪」时叫一声(host 用它把 onEnable 接上) */
   onReady?(pluginId: string): void
   /** 页面没了(崩了 / 被导航走) */
   onGone?(pluginId: string, reason: string): void
-  /**
-   * 停靠面板的展开/收起。
-   *
-   * 状态**归渲染层**(它才知道这块界面此刻在屏幕上是什么样),这里只是把插件的
-   * `window.show()/hide()` 翻成一句"请展开/收起"。
-   */
-  setPanelCollapsed?(pluginId: string, collapsed: boolean): void
 }
 
-let deps: SandboxDeps | null = null
+let deps: RestrictedDeps | null = null
 let ipcInstalled = false
 
 /** 一次宿主 → 插件的调用(等页面回话) */
@@ -74,23 +58,22 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>
 }
 
-/** 一个沙箱插件的运行时状态 */
-export class SandboxRuntime {
+/** 一个 restricted main 插件的运行时状态 */
+export class RestrictedRuntime {
   readonly pluginId: string
   readonly name: string
   readonly dir: string
-  readonly main: string
-  readonly ui: PluginUiSpec | null
-  /** 已生效的权限 —— 只用于塑形 preload 里的 window.imark(判定在主进程闸门里) */
+  readonly entry: string
   readonly permissions: string[]
-  /** 页面报告就绪后兑现 */
-  readonly ready: Promise<void>
+  readonly hasRender: boolean
+  /** 页面报告就绪后兑现(dispose 之后会换成一个新的,用于重新启用) */
+  ready: Promise<void>
   private readyResolve: (() => void) | null = null
   private isReady = false
   private gone = false
   private nextCallId = 1
   private pending = new Map<number, PendingCall>()
-  /** 下一次允许重建窗口的时刻(崩了之后带退避,别疯狂重试) */
+  /** 下一次允许重建页面的时刻(崩了之后带退避,别疯狂重试) */
   private rebuildAfter = 0
   private timers = new Map<string, ReturnType<typeof setInterval>>()
   private lastEvents = new Map<PluginHostEventType, unknown>()
@@ -99,49 +82,49 @@ export class SandboxRuntime {
     pluginId: string
     name: string
     dir: string
-    main: string
-    ui: PluginUiSpec | null
+    entry: string
     permissions: readonly string[]
+    hasRender: boolean
   }) {
     this.pluginId = init.pluginId
     this.name = init.name
     this.dir = init.dir
-    this.main = init.main
-    this.ui = init.ui
+    this.entry = init.entry
     this.permissions = [...init.permissions]
+    this.hasRender = init.hasRender
     this.ready = new Promise<void>(resolve => {
       this.readyResolve = resolve
     })
   }
 
-  /** 建窗并等页面就绪。超时不算失败 —— 页面慢的时候插件照样能被调用(只是可能还没注册处理函数) */
+  /** 建页并等页面就绪。超时不算失败 —— 页面慢的时候插件照样能被调用 */
   async start(timeoutMs = 8000): Promise<void> {
-    await this.ensureWindow()
+    await this.ensurePage()
     const timeout = new Promise<void>(resolve => setTimeout(resolve, timeoutMs))
     await Promise.race([this.ready, timeout])
   }
 
-  private async ensureWindow(): Promise<void> {
+  private async ensurePage(): Promise<void> {
     const existing = pluginWebContentsOf(this.pluginId)
     if (existing) {
-      // 载体还在,但运行时换了一个(宿主重建、插件重载)。**必须重绑**:回执是按
-      // webContents 反查运行时投递的,不重绑的话页面回的话会交给上一个已经作废的
-      // 运行时,新运行时永远等不到回执(表现是每个调用都超时,而页面明明回了)
+      // 载体还在,但运行时换了一个(宿主重建、插件重载)。**必须重绑**:
+      // 回执是按 webContents 反查运行时投递的,不重绑的话页面回的话会交给上一个
+      // 已经作废的运行时,新运行时永远等不到回执(表现是每个调用都超时,而页面明明回了)
       bindWebContents(existing, this)
       return
     }
     if (Date.now() < this.rebuildAfter) return
     this.rebuildAfter = Date.now() + 5000
-    await openPluginSurface({
+    await openRestrictedPage({
       pluginId: this.pluginId,
       name: this.name,
       dir: this.dir,
-      main: this.main,
-      ui: this.ui,
+      entry: this.entry,
       permissions: this.permissions,
-      // **身份绑定在建窗这一刻完成**,不依赖页面自报:主进程知道这个 webContents
+      hasRender: this.hasRender,
+      // **身份绑定在建页这一刻完成**,不依赖页面自报:主进程知道这个 webContents
       // 是自己为哪个插件建的。页面能伪造的是参数,伪造不了这个。
-      // 必须早于 loadURL —— 页面一跑起来就可能开口(见 windows.ts 的 onCreated)
+      // 必须早于 loadURL —— 页面一跑起来就可能开口
       onCreated: wc => bindWebContents(wc, this),
       onReady: () => this.markReady(),
       onGone: reason => {
@@ -190,7 +173,7 @@ export class SandboxRuntime {
     })
   }
 
-  /** 页面回的执 */
+  /** 页面回的回执 */
   settle(id: number, reply: PluginBridgeReply): void {
     const call = this.pending.get(id)
     if (!call) return
@@ -215,49 +198,9 @@ export class SandboxRuntime {
   }
 
   /**
-   * 显示。
-   *
-   * 两种载体的语义不太一样,但作者看到的都是同一个 `window.show()`:
-   *   - 独立窗口 → `win.show()`;
-   *   - **停靠面板 → 去掉"收起"状态**(展开它)。停靠时"显示/隐藏"就是展开/收起,
-   *     面板的位置由渲染层算,主进程只负责把原生视图摆到那个矩形上。
-   */
-  windowOpen(): void {
-    if (this.ui === null) return
-    if (this.ui.dock) {
-      deps?.setPanelCollapsed?.(this.pluginId, false)
-      return
-    }
-    const surface = pluginWindowSurfaceOf(this.pluginId)
-    if (surface) surface.show()
-    else void this.ensureWindow().then(() => pluginWindowSurfaceOf(this.pluginId)?.show())
-  }
-
-  windowShow(): void {
-    this.windowOpen()
-  }
-
-  windowHide(): void {
-    if (this.ui === null) return
-    if (this.ui.dock) {
-      deps?.setPanelCollapsed?.(this.pluginId, true)
-      return
-    }
-    pluginWindowSurfaceOf(this.pluginId)?.hide()
-  }
-
-  windowClose(): void {
-    void closePluginWindow(this.pluginId, 'plugin-request')
-  }
-
-  windowSetTitle(title: string): void {
-    pluginWindowSurfaceOf(this.pluginId)?.setTitle(`${title} — iMark 插件`)
-  }
-
-  /**
-   * 宿主调度器(§3.5)。**主进程的 Node 定时器不受渲染层节流影响**,
+   * 宿主调度器。**主进程的 Node 定时器不受渲染层节流影响**,
    * 这是隐藏页面唯一可靠的时间来源;作者自己写的 setInterval 在隐藏超过 5 分钟后
-   * 会被降到 60 秒一次,而这件事在文档里写着"尽力而为"。
+   * 会被降到 60 秒一次。
    */
   scheduleEvery(ms: number, name: string): void {
     const period = Math.max(1000, Math.round(Number(ms) || 0))
@@ -270,7 +213,7 @@ export class SandboxRuntime {
     const timer = setInterval(() => {
       const lateMs = Math.max(0, Date.now() - expected)
       expected = Date.now() + period
-      void this.ensureWindow().then(() => {
+      void this.ensurePage().then(() => {
         this.send('tick', { name, lateMs })
       })
     }, period)
@@ -290,38 +233,47 @@ export class SandboxRuntime {
     for (const timer of this.timers.values()) clearInterval(timer)
     this.timers.clear()
     this.failAll(new Error('插件已停用'))
+    // 停用后同一个运行时还要能再次 start():页面会被宿主关掉,而 isReady / gone /
+    // rebuildAfter 若不复位,5 秒内重新启用会以为"页面还在",新的 onEnable 直接打到
+    // 空气上(实测症状:重新启用报「插件的页面不在」)。
+    this.isReady = false
+    this.gone = false
+    this.rebuildAfter = 0
+    this.ready = new Promise<void>(resolve => {
+      this.readyResolve = resolve
+    })
   }
 }
 
 /** pluginId → 运行时 */
-const runtimes = new Map<string, SandboxRuntime>()
-/** webContents id → 运行时。**身份的唯一来源**(建窗时登记,见 ensureWindow) */
-const byWebContents = new Map<number, SandboxRuntime>()
+const runtimes = new Map<string, RestrictedRuntime>()
+/** webContents id → 运行时。**身份的唯一来源** */
+const byWebContents = new Map<number, RestrictedRuntime>()
 
-export function hasSandboxRuntime(pluginId: string): boolean {
+export function hasRestrictedRuntime(pluginId: string): boolean {
   return runtimes.has(pluginId)
 }
 
-export function createSandboxRuntime(init: {
+export function createRestrictedRuntime(init: {
   pluginId: string
   name: string
   dir: string
-  main: string
-  ui: PluginUiSpec | null
+  entry: string
   permissions: readonly string[]
-}): SandboxRuntime {
-  const runtime = new SandboxRuntime(init)
+  hasRender: boolean
+}): RestrictedRuntime {
+  const runtime = new RestrictedRuntime(init)
   runtimes.set(init.pluginId, runtime)
   return runtime
 }
 
 /** 停用:清掉定时器与挂起的调用。**不注销运行时** —— 再启用时还要用它 */
-export function disposeSandboxRuntime(pluginId: string): void {
+export function disposeRestrictedRuntime(pluginId: string): void {
   runtimes.get(pluginId)?.dispose()
 }
 
 /** 卸载/移除:连注册一起清掉,此后这个插件不该再收到任何东西 */
-export function unregisterSandboxRuntime(pluginId: string): void {
+export function unregisterRestrictedRuntime(pluginId: string): void {
   const runtime = runtimes.get(pluginId)
   if (!runtime) return
   runtime.dispose()
@@ -332,15 +284,12 @@ export function unregisterSandboxRuntime(pluginId: string): void {
 }
 
 /**
- * 把 webContents 绑到运行时(见 ensureWindow 的说明)。
+ * 把 webContents 绑到运行时(见 ensurePage 的说明)。
  *
  * 同一个插件只允许有一条绑定:换运行时的时候旧的必须让位,否则回执会投给
  * 一个已经作废的运行时(它的挂起表早就清空了,消息石沉大海)。
  */
-function bindWebContents(wc: WebContents, runtime: SandboxRuntime): void {
-  // 已经绑好了就直接返回。这一句不是优化:scheduler 每秒都会走一遍 ensureWindow,
-  // 每次都挂一个 once('destroyed') 监听器的话,一小时就是三千多个 ——
-  // 会先收到 Electron 的 MaxListenersExceededWarning,再变成一处真实的泄漏
+function bindWebContents(wc: WebContents, runtime: RestrictedRuntime): void {
   if (byWebContents.get(wc.id) === runtime) return
   for (const [wcId, rt] of byWebContents) {
     if (rt.pluginId === runtime.pluginId && wcId !== wc.id) byWebContents.delete(wcId)
@@ -351,12 +300,12 @@ function bindWebContents(wc: WebContents, runtime: SandboxRuntime): void {
   })
 }
 
-function runtimeFor(sender: WebContents): SandboxRuntime | null {
+function runtimeFor(sender: WebContents): RestrictedRuntime | null {
   return byWebContents.get(sender.id) ?? null
 }
 
-/** 装 IPC 处理器(整个应用一次)。必须在建第一个插件窗口之前调用 */
-export function installSandboxIpc(hostDeps: SandboxDeps): void {
+/** 装 IPC 处理器(整个应用一次)。必须在建第一个插件页面之前调用 */
+export function installRestrictedIpc(hostDeps: RestrictedDeps): void {
   deps = hostDeps
   if (ipcInstalled) return
   ipcInstalled = true
@@ -365,7 +314,6 @@ export function installSandboxIpc(hostDeps: SandboxDeps): void {
     const runtime = runtimeFor(event.sender)
     const request = raw as PluginRpcRequest
     if (!runtime) {
-      // 页面不在注册表里:要么是旧页面(窗口已重建),要么根本不是插件页
       return {
         ok: false,
         error: { code: 'E_INTERNAL', message: '这个页面没有绑定到任何插件,调用被忽略' }
@@ -379,17 +327,16 @@ export function installSandboxIpc(hostDeps: SandboxDeps): void {
       }
     }
     // 握手不是能力,不进能力表:它没有权限可言,也不该出现在作者文档的能力清单里。
-    // 页面脚本跑起来的第一件事就是它(见 preload 的 plugin.handle)。
     if (request?.op === 'plugin.ready') {
       runtime.markReady()
       return { ok: true, value: null }
     }
-    const ctx = sandboxDeps().opContext(runtime.pluginId)
+    const ctx = restrictedDeps().opContext(runtime.pluginId)
     if (!ctx) {
       return { ok: false, error: { code: 'E_FAILED', message: '插件已停用' } }
     }
     return invokeOp(ctx, request?.op, request?.args, {
-      source: 'sandbox',
+      source: 'restricted',
       audit: line => ctx.log('warn', line.replace(/^\[warn\]\s*/, ''))
     })
   })
@@ -399,7 +346,6 @@ export function installSandboxIpc(hostDeps: SandboxDeps): void {
     if (!runtime) return
     void payload
     // 中止只影响**页面的等待**:宿主侧的 op 多半已经跑起来了,让它跑完
-    // (真正的取消语义留到有 op 需要它时再做,那时才有具体的中断点可写)
   })
 
   ipcMain.on(RPC_BRIDGE, (event, raw: unknown) => {
@@ -411,21 +357,24 @@ export function installSandboxIpc(hostDeps: SandboxDeps): void {
   })
 }
 
-function sandboxDeps(): SandboxDeps {
-  if (!deps) throw new Error('沙箱层尚未初始化')
+function restrictedDeps(): RestrictedDeps {
+  if (!deps) throw new Error('restricted 层尚未初始化')
   return deps
 }
 
 /**
  * 给 host 的 `safeCall` 用的 `PluginRuntime` 适配器。
  *
- * 就是"沙箱版的 PluginRuntime":四个方法与 trusted 插件一一对应,
- * 于是超时、失败计数、熔断、升级回滚在两种插件上是同一段代码。
- * `onEnable` 的实现在页面那边(作者写),这边只负责把调用送过去、把拒绝变成异常。
+ * 就是"restricted 版的 PluginRuntime":四个方法与 node main 一一对应,
+ * 于是超时、失败计数、熔断、升级回滚在两种 main 层上是同一段代码。
  */
-export function sandboxPluginRuntime(runtime: SandboxRuntime, timeoutMs: number): PluginRuntime {
+export function restrictedPluginRuntime(
+  runtime: RestrictedRuntime,
+  timeoutMs: number,
+  actionTimeoutMs = timeoutMs
+): PluginRuntime {
   /**
-   * 生命周期三件套都是**可选**的(trusted 那边也是 `runtime.onEnable?.()`)。
+   * 生命周期三件套都是**可选**的(与 node main 一致)。
    * 页面没实现不该算失败 —— 否则一个只写 runAction 的插件会因为"没实现 onDisable"
    * 被记三次失败然后熔断,而它什么都没做错。
    * `runAction` 不在此列:宿主明确在调一个它声明过的动作,查无此人才是错。
@@ -435,6 +384,14 @@ export function sandboxPluginRuntime(runtime: SandboxRuntime, timeoutMs: number)
       () => undefined,
       (err: Error) => {
         if (/没有实现/.test(err.message)) return undefined
+        // 页面已经崩了/已被关闭(常见于退出流程):onDisable 只是收尾,
+        // 没有对象可收,不该记为失败或触发熔断。
+        if (
+          method === 'onDisable' &&
+          /页面不在|已崩溃|已停用|页面已结束/.test(err.message)
+        ) {
+          return undefined
+        }
         throw err
       }
     )
@@ -451,7 +408,10 @@ export function sandboxPluginRuntime(runtime: SandboxRuntime, timeoutMs: number)
         }
       ),
     runAction: async (actionId, _ctx, targetId, payload) =>
-      (await runtime.call('runAction', [actionId, targetId ?? null, payload ?? null], timeoutMs)) as PluginActionResult
+      (await runtime.call(
+        'runAction',
+        [actionId, targetId ?? null, payload ?? null],
+        actionTimeoutMs
+      )) as PluginActionResult
   }
 }
-

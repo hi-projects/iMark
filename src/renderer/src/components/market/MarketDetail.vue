@@ -37,7 +37,9 @@ import {
   searchMarket
 } from '../../services/marketService'
 import { settingsNav } from '../../services/pluginService'
+import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
+import { api } from '../../services/api'
 
 const detail = computed(() => remoteStore.detail)
 const id = computed(() => settingsNav.market.detailId)
@@ -73,7 +75,7 @@ function permDesc(p: string): string {
 }
 
 function openHomepage(url: string): void {
-  void window.api.openExternal(url)
+  void api.openExternal(url)
 }
 
 onMounted(() => {
@@ -118,11 +120,13 @@ onMounted(() => {
           <h1>
             {{ detail.name }}
             <span class="market-mono market-dim">v{{ detail.version }}</span>
-            <span v-if="detail.kind === 'script'" class="market-badge market-badge-code">含代码</span>
-            <span v-else-if="detail.kind === 'sandboxed'" class="market-badge market-badge-code">
-              沙箱代码
-            </span>
-            <span v-else class="market-badge market-badge-safe">不含代码</span>
+            <span
+              v-for="s in shapeLabels(shapeOf(detail))"
+              :key="s.label"
+              class="market-badge"
+              :class="`market-shape-${s.tone}`"
+              >{{ s.label }}</span
+            >
           </h1>
           <p class="market-detail-sub">
             <span v-if="detail.author">{{ detail.author }}</span>
@@ -139,7 +143,7 @@ onMounted(() => {
                「显示的就是将要运行的字节」这条承诺对它同样成立,而且更该兑现 ——
                用户要判断的正是"这段代码值不值得我给它那些权限" -->
           <button
-            v-if="detail.kind === 'script' || detail.kind === 'sandboxed'"
+            v-if="detail.mainMode || detail.hasRender"
             class="plugin-btn"
             @click="openSource(detail.version)"
           >
@@ -166,34 +170,45 @@ onMounted(() => {
       </div>
 
       <p v-if="local" class="market-hint">
-        本地已安装 <b>v{{ local }}</b>{{ local === detail.version ? '(与市场最新版相同)' : '' }}。
-        想换回某个旧版本,在下面的版本列表里点对应版本的「安装此版本」。
+        本地已安装 <b>v{{ local }}</b>{{ local === detail.version ? '（与市场最新版相同）' : '' }}。
+        想换回某个旧版本，在下面的版本列表里点对应版本的「安装此版本」。
       </p>
 
-      <p class="market-detail-desc">{{ detail.description || '(这个插件还没有写说明)' }}</p>
+      <p class="market-detail-desc">{{ detail.description || '（这个插件还没有写说明）' }}</p>
 
       <section class="market-block">
         <h2 class="market-block-title">权限</h2>
         <p v-if="detail.permissions.length === 0" class="market-hint">
           没有声明任何权限。
-          <template v-if="detail.kind === 'script'">
-            注意:这不代表它做不到什么 —— 脚本插件在系统层面拥有与 iMark 相同的权限,
+          <template v-if="detail.mainMode === 'node'">
+            注意：这不代表它做不到什么 —— node main 在系统层面拥有与 iMark 相同的权限，
             这张列表说明的是它「声明要用到」的能力。
           </template>
-          <template v-else-if="detail.kind === 'sandboxed'">
-            对这个插件来说这是字面意思:它跑在沙箱里,没申请的权限连调用入口都不存在。
+          <template v-else-if="detail.mainMode === 'restricted'">
+            对这个插件来说这是字面意思：它跑在受限沙箱页里，没申请的权限连调用入口都不存在。
+          </template>
+          <template v-else-if="detail.hasRender">
+            它只有 render 层：能改界面、读当前文档，但不申请任何系统能力。
+          </template>
+          <template v-else-if="detail.capability">
+            它不含代码，行为完全由宿主内置能力实现。
           </template>
         </p>
-        <ul v-else class="market-perms">
-          <li v-for="p in detail.permissions" :key="p" class="market-perm">
-            <span class="market-perm-label">{{ permLabel(p) }}</span>
-            <span class="market-perm-desc">{{ permDesc(p) }}</span>
-          </li>
-        </ul>
+        <template v-else>
+          <p v-if="detail.mainMode === 'node'" class="market-hint">
+            它拥有完整 Node，下面不是它「被允许」的范围，只是作者声明会用到哪些能力。
+          </p>
+          <ul class="market-perms">
+            <li v-for="p in detail.permissions" :key="p" class="market-perm">
+              <span class="market-perm-label">{{ permLabel(p) }}</span>
+              <span class="market-perm-desc">{{ permDesc(p) }}</span>
+            </li>
+          </ul>
+        </template>
       </section>
 
       <section class="market-block">
-        <h2 class="market-block-title">版本({{ versions.length }})</h2>
+        <h2 class="market-block-title">版本（{{ versions.length }}）</h2>
         <ul class="market-files">
           <li v-for="v in visibleVersions" :key="v.version">
             <span>
@@ -244,48 +259,74 @@ onMounted(() => {
         </div>
         <p class="market-hint">
           这个 sha256 是插件的整包摘要。安装确认框里显示的应当与它一致 ——
-          不一致就说明中途被人换过,不要安装。
+          不一致就说明中途被人换过，不要安装。
         </p>
       </section>
 
-      <div v-if="detail.kind === 'script'" class="market-alert market-alert-danger">
+      <div v-if="detail.mainMode === 'node'" class="market-alert market-alert-danger">
         <AlertTriangle :size="14" />
         <div>
-          <b>这是一个会在主进程里执行的插件。</b>
+          <b>它的 main 层在主进程里执行代码，拥有完整 Node 权限。</b>
           <p>
-            安装它等于让作者写的代码以与 iMark 相同的权限在你的电脑上运行:
-            可以读写任意文件、发起网络请求、启动其他程序,还能<b>把界面放进 iMark 里</b>
-            (它画的东西与 iMark 自己的界面长得一样)。下面的权限清单、发布者与
-            sha256 是用来帮你做判断的,它们<b>不构成沙箱</b>。
+            安装它等于让作者写的代码以与 iMark 相同的权限在你的电脑上运行：
+            可以读写任意文件、发起网络请求、启动其他程序。下面的权限清单、发布者与
+            sha256 是用来帮你做判断的，它们<b>不构成沙箱</b>。
           </p>
         </div>
       </div>
-      <div v-else-if="detail.kind === 'sandboxed'" class="market-alert market-alert-safe">
+      <div v-if="detail.hasRender" class="market-alert market-alert-danger">
+        <AlertTriangle :size="14" />
+        <div>
+          <b>它的 render 层在主界面里执行代码。</b>
+          <p>
+            它与 iMark 的界面跑在同一个 realm：能改界面、读当前文档、看到你在这个窗口里的
+            键盘输入 —— 请只安装你信任来源的插件。它<b>拿不到系统能力</b>：文件、网络、git、
+            密钥都由 main 层经 iMark 逐项授权后转发；没有 main 层时它连这些能力都没有。
+          </p>
+        </div>
+      </div>
+      <div v-if="detail.mainMode === 'restricted'" class="market-alert market-alert-safe">
         <ShieldCheck :size="14" />
         <div>
-          <b>这段代码跑在沙箱里,不是主进程。</b>
+          <b>它的 main 层跑在受限沙箱页里，不是主进程。</b>
           <p>
-            它没有 Node、没有文件系统:下面的每一条权限都要经 iMark 转发,没申请的连入口都不存在。
-            它的界面是<b>自己的页面</b>(独立窗口,或者停靠在主界面一侧的面板)——
-            面板顶栏与窗口标题栏都会标出插件名,那是它,不是 iMark。
+            它没有 Node、没有文件系统：下面的每一条权限都要经 iMark 转发，没申请的连入口都不存在，
+            而且<b>每一次调用</b>都会再审查一遍。
           </p>
         </div>
       </div>
-      <div v-else class="market-alert market-alert-safe">
+      <div
+        v-if="!detail.mainMode && !detail.hasRender && detail.capabilityName"
+        class="market-alert market-alert-safe"
+      >
         <FileCode2 :size="14" />
         <div>
           <b>这个插件不含代码。</b>
-          <!-- 「不含代码」只是半句话:它借的是哪只别人的手才是用户要判断的东西。
-               认不出能力时也要如实说,而不是含糊过去 —— 那种包本来也装不上 -->
-          <p v-if="detail.capabilityName">
-            它不会执行任何第三方程序 —— 它只是一份配置,交给 iMark 自带的能力
+          <!-- 「不含代码」只是半句话:它借的是哪只别人的手才是用户要判断的东西。 -->
+          <p>
+            它不会执行任何第三方程序 —— 它只是一份配置，交给 iMark 自带的能力
             <b>「{{ detail.capabilityName }}」</b>按你的设置去执行。
           </p>
-          <p v-else>
-            它声明了一个<b>本应用不认识的能力</b>(<span class="market-mono">{{
-              detail.capability ?? '未声明'
-            }}</span>),当前版本装不上它 —— 安装时会明确报错。
-          </p>
+        </div>
+      </div>
+      <div
+        v-if="!detail.mainMode && !detail.hasRender && !detail.capability"
+        class="market-alert market-alert-danger"
+      >
+        <AlertTriangle :size="14" />
+        <div>
+          <b>未知形态。</b>
+          <p>这份清单既没有 main、render，也没有绑定内置能力 —— 当前版本装不上它。</p>
+        </div>
+      </div>
+      <div
+        v-if="detail.capability && (detail.mainMode || detail.hasRender)"
+        class="market-alert market-alert-danger"
+      >
+        <AlertTriangle :size="14" />
+        <div>
+          <b>清单同时声明了代码层与 capability。</b>
+          <p>这是非法组合，当前版本会拒绝安装。</p>
         </div>
       </div>
     </template>

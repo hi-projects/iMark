@@ -101,6 +101,7 @@ export async function installFromEnvelope(
       version: pkg.manifest.version,
       integrity: computeIntegrity(pkg.manifest, pkg.envelope.files),
       mainSha256: pkg.mainSha256,
+      renderSha256: pkg.renderSha256,
       publisher: opts.publisher,
       source: opts.source,
       registryUrl: opts.registryUrl,
@@ -229,7 +230,7 @@ export function previewEnvelope(
 ): { ok: true; value: PackagePreview } | { ok: false; errors: string[] } {
   const result = verifyEnvelope(raw)
   if (!result.ok) return { ok: false, errors: result.errors }
-  const { manifest, envelope, mainSha256 } = result.value
+  const { manifest, envelope, mainSha256, renderSha256 } = result.value
   const granted = new Set(installed?.permissions ?? [])
   const required = manifest.permissions ?? []
   return {
@@ -240,7 +241,9 @@ export function previewEnvelope(
       version: manifest.version,
       author: manifest.author ?? null,
       description: manifest.description,
-      kind: manifest.kind,
+      mainMode: manifest.main?.mode ?? null,
+      hasRender: Boolean(manifest.render),
+      capability: manifest.capability ?? null,
       // 声明式插件要告诉用户「它借的是哪只手」——「不含代码」这句话本身不构成判断依据
       capabilityName: manifest.capability
         ? (getCapability(manifest.capability)?.name ?? null)
@@ -254,6 +257,7 @@ export function previewEnvelope(
         .map(([name, meta]) => ({ name, size: meta.size }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       mainSha256,
+      renderSha256,
       installed: installed
         ? { version: installed.version, integrity: installed.integrity }
         : null,

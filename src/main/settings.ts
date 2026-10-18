@@ -1,8 +1,31 @@
-import { app } from 'electron'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { Settings } from '@shared/types'
-import { clampFontSize, clampInterval, EDITOR_DEFAULTS } from '@shared/editorSettings'
+import type { AutoSaveMode, Settings, Theme } from '@shared/types'
+import { clampAutoSaveDelay, clampFontSize, EDITOR_DEFAULTS } from '@shared/editorSettings'
+import { dataRoot } from './dataDir'
+
+/** 上一版用来表达三种自动保存状态的字段;只用于迁移,不再往磁盘上写 */
+type LegacyAutoSave = {
+  autoSave?: unknown
+  autoSaveRealtime?: unknown
+  autoSaveInterval?: unknown
+}
+
+const AUTO_SAVE_MODES: readonly AutoSaveMode[] = ['off', 'afterDelay', 'onFocusChange', 'onWindowChange']
+
+const THEMES: readonly Theme[] = ['light', 'dark']
+
+/**
+ * 主题的迁移与校验。
+ *
+ * 上一版还有一档纯黑(`black`),现在只保留亮色 / 深色两档。存过纯黑的用户
+ * 保留「深色」这个偏好,就地落到 `dark`;被手改成未知值的落回默认亮色。
+ */
+function normalizeTheme(value: unknown): Theme {
+  if ((THEMES as readonly unknown[]).includes(value)) return value as Theme
+  if (value === 'black') return 'dark'
+  return DEFAULTS.theme
+}
 
 const DEFAULTS: Settings = {
   theme: 'light',
@@ -25,7 +48,36 @@ const DEFAULTS: Settings = {
 let cache: Settings | null = null
 
 function settingsPath(): string {
-  return join(app.getPath('userData'), 'settings.json')
+  return join(dataRoot(), 'settings.json')
+}
+
+function isAutoSaveMode(v: unknown): v is AutoSaveMode {
+  return typeof v === 'string' && (AUTO_SAVE_MODES as readonly string[]).includes(v)
+}
+
+/**
+ * 自动保存的迁移与夹取。
+ *
+ * 新版只有 mode + delay 两个字段。旧配置(没有 autoSaveMode)按上一版的
+ * autoSave / autoSaveRealtime / autoSaveInterval 推:
+ * - 没开自动保存 → off;
+ * - 开的是上一版「实时保存」→ afterDelay + 1 秒(它本来就是短延迟的定时保存);
+ * - 开的是定时保存 → afterDelay + 原来的间隔。
+ */
+function normalizeAutoSave(
+  raw: Partial<Settings> & LegacyAutoSave
+): Pick<Settings, 'autoSaveMode' | 'autoSaveDelay'> {
+  if (isAutoSaveMode(raw.autoSaveMode)) {
+    return { autoSaveMode: raw.autoSaveMode, autoSaveDelay: clampAutoSaveDelay(raw.autoSaveDelay) }
+  }
+  if (raw.autoSave !== true) {
+    return { autoSaveMode: 'off', autoSaveDelay: EDITOR_DEFAULTS.autoSaveDelay }
+  }
+  return {
+    autoSaveMode: 'afterDelay',
+    // 旧版的默认间隔是 30 秒;没有这个字段时按它兜底,别把老用户的节奏悄悄改成 1 秒
+    autoSaveDelay: raw.autoSaveRealtime === true ? 1 : clampAutoSaveDelay(raw.autoSaveInterval, 30)
+  }
 }
 
 /**
@@ -33,18 +85,22 @@ function settingsPath(): string {
  * 若被手改成非法形状,就地落回默认值,避免各处读取时崩。
  * 插件内部的字段级默认值由插件宿主负责补(那里才知道各插件的字段表)。
  */
-function normalize(raw: Partial<Settings>): Settings {
-  const merged = { ...DEFAULTS, ...raw }
+function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
+  const merged = { ...DEFAULTS, ...raw } as Settings & Record<string, unknown>
   const plugins = merged.plugins
   if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
     merged.plugins = {}
   }
   // 数值型的编辑器偏好逐个夹回区间:settings.json 是纯文本,手改成 0 秒会让渲染层的
   // 定时器变成疯狂写盘,改成字符串则会让它一直空转。放在这里比在各处读时判要可靠
-  merged.autoSaveInterval = clampInterval(merged.autoSaveInterval)
+  Object.assign(merged, normalizeAutoSave(raw))
+  merged.theme = normalizeTheme(merged.theme)
   merged.editorFontSize = clampFontSize(merged.editorFontSize)
-  merged.autoSave = merged.autoSave === true
   merged.lineWrapping = merged.lineWrapping !== false
+  // 旧字段不留在磁盘上:下一次 saveSettings 写出的就是新模型
+  for (const key of ['autoSave', 'autoSaveRealtime', 'autoSaveInterval']) {
+    delete merged[key]
+  }
   return merged
 }
 
@@ -52,7 +108,7 @@ export async function loadSettings(): Promise<Settings> {
   if (cache) return cache
   try {
     const raw = await readFile(settingsPath(), 'utf8')
-    cache = normalize(JSON.parse(raw) as Partial<Settings>)
+    cache = normalize(JSON.parse(raw) as Partial<Settings> & LegacyAutoSave)
   } catch {
     cache = { ...DEFAULTS }
   }

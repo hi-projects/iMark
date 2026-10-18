@@ -7,20 +7,25 @@
   "author": "Chuxiao Xiang <13439022108@163.com>",
   "scripts": {
     "predev": "npm run plugins:build",
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
     "prebuild": "npm run plugins:build",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "plugins:build": "node scripts/build-plugins.mjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck:plugins": "tsc --noEmit -p plugins-src/tsconfig.json",
+    "typecheck:plugins:node": "tsc --noEmit -p plugins-src/tsconfig.node.json",
+    "typecheck:plugins:restricted": "tsc --noEmit -p plugins-src/tsconfig.restricted.json",
+    "typecheck:plugins:render": "tsc --noEmit -p plugins-src/tsconfig.render.json",
+    "typecheck:plugins": "npm run typecheck:plugins:node && npm run typecheck:plugins:restricted && npm run typecheck:plugins:render",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:plugins",
     "market": "node server/index.mjs",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win nsis",
     "dist:linux": "electron-vite build && electron-builder --linux",
-    "plugins:watch": "tsc -w -p plugins-src/tsconfig.json"
+    "plugins:watch": "tsc -w -p plugins-src/tsconfig.node.json",
+    "plugins:watch:restricted": "tsc -w -p plugins-src/tsconfig.restricted.json",
+    "plugins:watch:render": "tsc -w -p plugins-src/tsconfig.render.json"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -50,6 +55,8 @@
     "electron@44.7.0": true
   },
   "dependencies": {
-    "katex": "^0.19.0"
+    "@iconify-json/lucide": "^1.2.145",
+    "katex": "^0.19.0",
+    "mermaid": "^12.2.0"
   }
 }

@@ -6,6 +6,8 @@ import { updateOutline } from '../editor/outline'
 import { appStore, editorHolder } from '../stores/app'
 import { computeStats } from '../utils/text'
 import { openFileByPath } from '../services/fileService'
+import { noteDocChangeForAutoSave } from '../services/autoSave'
+import { api } from '../services/api'
 
 const container = ref<HTMLElement | null>(null)
 
@@ -14,6 +16,9 @@ let dirtyTimer: ReturnType<typeof setTimeout> | undefined
 let outlineTimer: ReturnType<typeof setTimeout> | undefined
 
 function onDocChange(view: EditorView): void {
+  // 实时保存的防抖从这里起算:只有真实输入才该触发写盘,
+  // 打开/新建文档走的是 setState,不会经过这里
+  noteDocChangeForAutoSave()
   clearTimeout(statsTimer)
   statsTimer = setTimeout(() => {
     Object.assign(appStore, computeStats(view.state.doc.toString()))
@@ -37,7 +42,7 @@ function onDrop(e: DragEvent): void {
   e.preventDefault()
   const file = dt.files?.[0]
   if (!file) return
-  const path = window.api.getPathForFile(file)
+  const path = api.getPathForFile(file)
   if (!path || !/\.(md|markdown|mdown|txt)$/i.test(path)) return
   void openFileByPath(path)
 }

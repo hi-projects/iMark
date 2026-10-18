@@ -118,12 +118,12 @@
 }
 
 .explorer-file-active {
-  color: var(--accent);
-  background: var(--bg-selection);
+  color: var(--active-text);
+  background: var(--bg-active);
 }
 
 .explorer-file-active .explorer-icon {
-  color: var(--accent);
+  color: var(--active-text);
 }
 
 .explorer-item-actions {
@@ -277,8 +277,8 @@
 
 .outline-item.outline-active {
   border-left-color: var(--accent);
-  color: var(--accent);
-  background: var(--bg-selection);
+  color: var(--active-text);
+  background: var(--bg-active);
 }
 
 .outline-h1 {
@@ -330,7 +330,7 @@
   flex: 1;
 }
 
-/* 定时保存的即时反馈:亮几秒自己消失(存活时间由 services/autoSave 控制),
+/* 自动保存的即时反馈:亮几秒自己消失(存活时间由 services/autoSave 控制),
    常驻一个「已保存」会在没有改动时也显得刚保存过,反而不可信 */
 .status-bar .status-autosave {
   font-size: 11.5px;
@@ -396,8 +396,8 @@
 
 /* 侧栏展开时按钮高亮 */
 .status-bar button.status-toggle-on {
-  background: var(--bg-selection);
-  color: var(--accent);
+  background: var(--bg-active);
+  color: var(--active-text);
 }
 
 /* 仓库名按钮:宽度自适应,过长省略 */

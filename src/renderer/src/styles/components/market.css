@@ -42,7 +42,7 @@
 
 .market-tab-active,
 .market-tab-active:hover {
-  background: var(--bg-selection);
+  background: var(--bg-active);
   color: var(--text-primary);
 }
 
@@ -122,6 +122,40 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* ---------- 权限(已安装列表每行名字下面那一排) ---------- */
+
+/*
+ * 不写「权限」两个字:一枚盾牌图标 + 一排柔和胶囊,读起来就是「这插件拿到了什么」。
+ * 用**底色**而不是描边 —— 描边胶囊在这一页长得像按钮(设置/卸载都是描边的),
+ * 权限只是事实,不该看上去能点。
+ *
+ * 类名带 row 前缀:下面「权限清单」里的 .market-perms / .market-perm 是安装确认框
+ * 的列式条目(label + 说明),两者长得完全不同,不能共用名字(撞过一次,胶囊被排成一列)。
+ */
+.market-row-perms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.market-row-perms-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.market-row-perm {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 .market-row-error {
@@ -356,6 +390,39 @@
 .market-kind-sandboxed {
   color: var(--accent);
   opacity: 0.75;
+}
+
+/* 渲染层插件:有代码、且渲染半与应用界面同权(但不是系统全权),
+   用警告色提示"它比沙箱插件更能碰界面" */
+.market-kind-renderer {
+  color: var(--warn);
+}
+
+.market-kind-declarative {
+  color: var(--text-secondary);
+}
+
+/* v2 层徽标:node / restricted / render / capability。颜色只表达风险,
+   具体含义由文字承担,不靠颜色让用户猜 */
+.market-shape-node {
+  color: var(--danger);
+}
+
+.market-shape-restricted {
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+.market-shape-render {
+  color: var(--warn);
+}
+
+.market-shape-capability {
+  color: var(--text-secondary);
+}
+
+.market-shape-unknown {
+  color: var(--danger);
 }
 
 .market-confirm-title h1 {

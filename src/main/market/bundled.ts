@@ -5,7 +5,7 @@
  *   - 离线、或市场服务没起来时,用户依然能装上它;
  *   - 老用户升级到本版本时,它是**自动补装**的,配置与密钥一个字节都不用改。
  *
- * 「快速编辑（Quick Edit）」也在这里,理由不同:它提供编辑器里那个「+」按钮,
+ * 「高级表格（Advanced Table）」也在这里,理由不同:它提供编辑器里那个「+」按钮,
  * 是**开箱即用**的一部分(见下面 `enable`)。
  *
  * 之所以用 `?raw` 字符串而不是 JSON 模块导入,见 src/main/env.d.ts 的说明。
@@ -78,7 +78,7 @@ function peekId(raw: string): ParsedBundle | null {
  * 已经在装的**内置**插件,版本落后就跟上。
  *
  * 为什么必须有这一段:内置插件的补装逻辑是「有同 id 就完全不碰」,而插件的新能力
- * (比如 git-sync 0.3.0 才有的状态栏条目与命令)是**跟着应用版本一起来**的。
+ * (比如 git-sync 后来才有的状态栏条目与命令)是**跟着应用版本一起来**的。
  * 没有这段的后果不是「用户晚一点看到新功能」,而是**界面直接缺一块** ——
  * 应用这边已经把写死的按钮换成插件声明的了,插件那边还停在没声明的老版本。
  *
@@ -102,7 +102,7 @@ async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<v
   const added = parsed.permissions.filter(p => !granted.includes(p))
   if (added.length > 0) {
     console.warn(
-      `[iMark] 内置插件 ${parsed.id} 的新版本声明了新权限(${added.join('、')}),` +
+      `[iMark] 插件 ${parsed.id} 的新版本声明了新权限(${added.join('、')}),` +
         `在你确认之前不会生效`
     )
   }
@@ -113,7 +113,7 @@ async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<v
     registryUrl: null,
     grantedPermissions: granted
   })
-  console.log(`[iMark] 已升级内置插件 ${outcome.name} ${record.version} → ${outcome.version}`)
+  console.log(`[iMark] 已升级插件 ${outcome.name} ${record.version} → ${outcome.version}`)
 }
 
 /**
@@ -127,7 +127,7 @@ export async function ensureBundledProvisioned(host: PluginHost): Promise<void> 
   for (const item of BUNDLED) {
     const parsed = peekId(item.raw)
     if (!parsed) {
-      console.error('[iMark] 内置插件包无法解析,已跳过')
+      console.error('[iMark] 插件包无法解析,已跳过')
       continue
     }
     // 已经在里面了(从市场装的、用户手放的、或上一轮补装的)就不重新补装:
@@ -138,7 +138,7 @@ export async function ensureBundledProvisioned(host: PluginHost): Promise<void> 
       } catch (err) {
         // 升级失败**必须吞掉**:installFromEnvelope 内部已经回滚到旧版本了,
         // 一个起不来的新版插件不该拦着应用启动 —— 旧版本照常能用
-        console.error(`[iMark] 内置插件 ${parsed.id} 升级失败,继续用旧版本:`, err)
+        console.error(`[iMark] 插件 ${parsed.id} 升级失败,继续用旧版本:`, err)
       }
       continue
     }
@@ -151,7 +151,7 @@ export async function ensureBundledProvisioned(host: PluginHost): Promise<void> 
         // 内置包没有安装确认环节,授权集合就是它自己声明的权限
         grantedPermissions: parsed.permissions
       })
-      console.log(`[iMark] 已补装内置插件 ${outcome.name} ${outcome.version}`)
+      console.log(`[iMark] 已补装插件 ${outcome.name} ${outcome.version}`)
 
       // 必须走 save():它既置位又写进 settings.json。直接调私有的 enable()
       // 是不落盘的,下次启动又变回关闭。
@@ -159,11 +159,11 @@ export async function ensureBundledProvisioned(host: PluginHost): Promise<void> 
       // 注意由此带来的一个已知副作用:save() 里的 enable() 对同一个 entry
       // **不幂等**(host.enable 不看当前态直接跑生命周期),而 init() 结尾的启动循环
       // 还会对 state.enabled 为真的 entry 再跑一次 —— 所以默认启用的内置插件
-      // 首次启动时 onEnable 会执行两遍。Quick Edit 的 onEnable 是空操作,无害;
+      // 首次启动时 onEnable 会执行两遍。Advanced Table 的 onEnable 是空操作,无害;
       // 将来若有自带插件要默认启用、且 onEnable 有副作用,先给 enable() 加幂等守卫。
       if (item.enable) await host.save(outcome.id, { enabled: true })
     } catch (err) {
-      console.error(`[iMark] 内置插件 ${parsed.id} 补装失败:`, err)
+      console.error(`[iMark] 插件 ${parsed.id} 补装失败:`, err)
     }
   }
 }

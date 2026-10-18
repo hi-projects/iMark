@@ -1,20 +1,28 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
-import { Palette, RotateCcw, Store, TextCursorInput, X } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
-  AUTO_SAVE_INTERVAL_MAX,
-  AUTO_SAVE_INTERVAL_MIN,
+  CircleHelp,
+  Palette,
+  RotateCcw,
+  Settings2,
+  Store,
+  TextCursorInput,
+  X
+} from 'lucide-vue-next'
+import { computed } from 'vue'
+import type { AutoSaveMode } from '@shared/types'
+import {
+  AUTO_SAVE_DELAY_MIN,
+  delayLabel,
   EDITOR_FONT_SIZE_MAX,
-  EDITOR_FONT_SIZE_MIN,
-  intervalLabel
+  EDITOR_FONT_SIZE_MIN
 } from '@shared/editorSettings'
 import { appStore, closeSettings, setTheme, THEME_LABELS, THEME_ORDER } from '../stores/app'
 import {
   previewFontSize,
   resetEditorSettings,
-  setAutoSave,
-  setAutoSaveInterval,
+  setAutoSaveDelay,
+  setAutoSaveMode,
   setEditorFontSize,
   setLineWrapping
 } from '../services/editorSettings'
@@ -26,24 +34,25 @@ import {
   settingsNav,
   type MarketNav
 } from '../services/pluginService'
+import { pluginStatusMessage, pluginStatusTone } from '../services/pluginStatus'
 import PluginSettings from './plugins/PluginSettings.vue'
+import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
 import MarketPage from './market/MarketPage.vue'
 import InstallConfirmDialog from './market/InstallConfirmDialog.vue'
 import MarketSource from './market/MarketSource.vue'
 
 /**
- * 形态在列表里的短标签。
+ * 「插件」分组标题旁那个问号的内容。
  *
- * 用词刻意选得直白(而不是"声明式/沙箱"这种术语):
- * 用户要判断的是"这东西能碰我多少东西",不是记住了几个名词。
+ * 列表里已经不再挂形态标签,而两层之间的信任差着一个量级 ——
+ * 这个区别总得有地方说清楚,所以就放在这一句提示里,不占列表的地。
  */
-const KIND_SHORT: Record<string, string> = {
-  script: '完整权限',
-  sandboxed: '沙箱',
-  declarative: '无代码',
-  builtin: '内置'
-}
+const LAYER_HELP = [
+  'node main：代码在主进程里跑，拥有完整 Node 权限 —— 能读写任意文件、执行命令。',
+  'restricted main：代码在隐藏沙箱页里跑，没有 Node、文件系统；权限逐条申请、由宿主门禁放行。',
+  'render 层：与主界面同 realm，能改界面、读当前文档，但没有系统能力；需要时消息给 main 层。'
+].join('\n')
 
 /** 右侧标题:选中的是插件就显示插件名,市场页则跟着它的页签走 */
 const title = computed(() => {
@@ -53,6 +62,7 @@ const title = computed(() => {
     return tab === 'publish' ? '发布插件' : '已安装插件'
   }
   if (settingsNav.page === 'editor') return '编辑器'
+  if (settingsNav.page === 'system') return '系统'
   if (settingsNav.page === 'plugin') {
     return (
       pluginStore.list.find(p => p.descriptor.id === settingsNav.pluginId)?.descriptor.name ?? '插件'
@@ -61,23 +71,46 @@ const title = computed(() => {
   return '外观'
 })
 
-/** 间隔的常用档位。多数人只想在「别太频繁」和「别丢太多」之间挑一个,不想算秒数 */
-const INTERVAL_PRESETS = [
-  { label: '10 秒', sec: 10 },
+/** 保存方式:名称与 VS Code 的 files.autoSave 对齐,「定时保存」含 1 秒档(即实时保存) */
+const AUTO_SAVE_MODE_OPTIONS: { mode: AutoSaveMode; label: string; title: string }[] = [
+  { mode: 'off', label: '关闭', title: '只能手动保存（Ctrl+S）' },
+  { mode: 'afterDelay', label: '定时保存', title: '停止输入一段时间后写盘' },
+  { mode: 'onFocusChange', label: '切换焦点时', title: '编辑器失去焦点时写盘' },
+  { mode: 'onWindowChange', label: '切换窗口时', title: '切换到其他窗口时写盘' }
+]
+
+/** 延迟的常用档位。1 秒档就是原来的「实时保存」 */
+const DELAY_PRESETS = [
+  { label: '1 秒', sec: 1 },
+  { label: '5 秒', sec: 5 },
   { label: '30 秒', sec: 30 },
   { label: '1 分钟', sec: 60 },
   { label: '5 分钟', sec: 300 },
   { label: '10 分钟', sec: 600 }
 ]
 
+/** 保存方式下方那句话:当前到底会不会自动写盘、在什么时候写 */
+const autoSaveSummary = computed(() => {
+  switch (appStore.autoSaveMode) {
+    case 'afterDelay':
+      return `已开启 · 停止输入 ${delayLabel(appStore.autoSaveDelay)}后写盘`
+    case 'onFocusChange':
+      return '已开启 · 编辑器失去焦点时写盘'
+    case 'onWindowChange':
+      return '已开启 · 切换到其他窗口时写盘'
+    default:
+      return '当前关闭，只能手动保存（Ctrl+S）'
+  }
+})
+
 /**
- * 手打间隔:越界由 clampInterval 夹到上下限,输入框会跟着回弹。
- * 清空时按「没输入」而不是 0 处理 —— 否则一顿删除反而落到最短的 5 秒,
+ * 手打延迟:越界由 clampAutoSaveDelay 夹到上下限,输入框会跟着回弹。
+ * 清空时按「没输入」而不是 0 处理 —— 否则一顿删除反而落到最短的 1 秒,
  * 成了最激进的档位,显然不是清空的人想要的。
  */
-function onIntervalChange(e: Event): void {
+function onDelayChange(e: Event): void {
   const raw = (e.target as HTMLInputElement).value.trim()
-  void setAutoSaveInterval(raw === '' ? Number.NaN : Number(raw))
+  void setAutoSaveDelay(raw === '' ? Number.NaN : Number(raw))
 }
 
 /** 拖滑块时即时预览字号(只改画面),松手才写盘 */
@@ -105,11 +138,123 @@ function onKeydown(e: KeyboardEvent): void {
 
 onMounted(() => window.addEventListener('keydown', onKeydown, true))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
+
+// ---------- 拖动面板 ----------
+//
+// 只改**相对居中位置的位移**(transform),不改 layout:这样窗口尺寸一变,基准位置
+// 仍然跟着居中走,不会因为一次拖动就把面板永久偏到一边。关闭面板时归零 ——
+// 下次打开还是一个居中、完整的面板(而不是上次随手拖到的某个角落)。
+
+const dialogEl = ref<HTMLElement | null>(null)
+const dragOffset = reactive({ x: 0, y: 0 })
+const dragging = ref(false)
+/** 一次拖动的起点;base* 是「没拖动时面板在视口里的位置」,用来算边界 */
+let dragStart: {
+  pointerX: number
+  pointerY: number
+  originX: number
+  originY: number
+  baseLeft: number
+  baseTop: number
+  width: number
+  height: number
+} | null = null
+
+/** 面板与视口边缘至少留这么多,怎么拖都整块留在视线里 */
+const DRAG_MARGIN = 8
+
+const dialogStyle = computed(() => ({
+  transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`
+}))
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(Math.max(v, min), Math.max(min, max))
+}
+
+function onDragStart(e: PointerEvent): void {
+  if (e.button !== 0 || !dialogEl.value) return
+  // 标题栏里的按钮(关闭)不参与拖动
+  if ((e.target as HTMLElement).closest('button, input, a')) return
+  const rect = dialogEl.value.getBoundingClientRect()
+  dragStart = {
+    pointerX: e.clientX,
+    pointerY: e.clientY,
+    originX: dragOffset.x,
+    originY: dragOffset.y,
+    baseLeft: rect.left - dragOffset.x,
+    baseTop: rect.top - dragOffset.y,
+    width: rect.width,
+    height: rect.height
+  }
+  dragging.value = true
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd)
+  e.preventDefault()
+}
+
+function onDragMove(e: PointerEvent): void {
+  const from = dragStart
+  if (!from) return
+  const minX = DRAG_MARGIN - from.baseLeft
+  const maxX = window.innerWidth - DRAG_MARGIN - from.baseLeft - from.width
+  const minY = DRAG_MARGIN - from.baseTop
+  const maxY = window.innerHeight - DRAG_MARGIN - from.baseTop - from.height
+  dragOffset.x = clamp(from.originX + (e.clientX - from.pointerX), minX, maxX)
+  dragOffset.y = clamp(from.originY + (e.clientY - from.pointerY), minY, maxY)
+}
+
+function onDragEnd(): void {
+  dragStart = null
+  dragging.value = false
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragEnd)
+}
+
+/** 窗口变小 / 拖动中改了尺寸:把面板重新夹回视口,别让它有一半在屏幕外 */
+function clampIntoView(): void {
+  const el = dialogEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const baseLeft = rect.left - dragOffset.x
+  const baseTop = rect.top - dragOffset.y
+  dragOffset.x = clamp(
+    dragOffset.x,
+    DRAG_MARGIN - baseLeft,
+    window.innerWidth - DRAG_MARGIN - baseLeft - rect.width
+  )
+  dragOffset.y = clamp(
+    dragOffset.y,
+    DRAG_MARGIN - baseTop,
+    window.innerHeight - DRAG_MARGIN - baseTop - rect.height
+  )
+}
+
+// 关掉面板就还原位置:Esc / 点遮罩 / 关闭按钮都会走到这里
+watch(
+  () => appStore.settingsOpen,
+  open => {
+    if (open) return
+    dragOffset.x = 0
+    dragOffset.y = 0
+    onDragEnd()
+  }
+)
+
+onMounted(() => window.addEventListener('resize', clampIntoView))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', clampIntoView)
+  onDragEnd()
+})
 </script>
 
 <template>
   <div v-if="appStore.settingsOpen" class="settings-mask" @mousedown.self="closeSettings()">
-    <div class="settings-dialog">
+    <div
+      ref="dialogEl"
+      class="settings-dialog"
+      :class="{ 'settings-dialog-dragging': dragging }"
+      :style="dialogStyle"
+    >
       <aside class="settings-nav">
         <div class="settings-nav-group">选项</div>
         <button
@@ -128,8 +273,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
           <TextCursorInput :size="15" />
           <span>编辑器</span>
         </button>
+        <button
+          class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'system' }"
+          @click="settingsNav.page = 'system'"
+        >
+          <Settings2 :size="15" />
+          <span>系统</span>
+        </button>
         <!-- 插件单独一行分组:市场排第一项,下面直接列出每个已安装插件 -->
-        <div class="settings-nav-group">插件</div>
+        <div class="settings-nav-group">
+          <span>插件</span>
+          <span class="settings-nav-help" :title="LAYER_HELP">
+            <CircleHelp :size="12" />
+          </span>
+        </div>
         <button
           class="settings-nav-item"
           :class="{ 'settings-nav-active': settingsNav.page === 'market' }"
@@ -154,26 +312,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
         >
           <span
             class="plugin-status-dot"
-            :class="`plugin-status-${plugin.state.status}`"
-            :title="plugin.state.lastMessage || '待运行'"
+            :class="`plugin-status-${pluginStatusTone(plugin.state)}`"
+            :title="pluginStatusMessage(plugin.state)"
           />
           <span class="settings-nav-label">{{ plugin.descriptor.name }}</span>
           <!--
-            形态标签:**列表上就要看得见**。
-            脚本插件能做的事(完整权限 + 改主界面)和沙箱插件差着一个量级,
-            而这个区别只写在详情页里等于没写 —— 用户是在列表里挑插件的。
+            这里刻意不挂形态标签(完整权限 / 沙箱 / 无代码):
+            形态之间的差别由分组标题旁的那个问号解释,权限明细在市场「已安装」里逐条列着 ——
+            列表只负责回答「装了哪几个、各自跑得怎么样」。
           -->
-          <span class="plugin-kind-chip" :class="`plugin-kind-${plugin.kind ?? 'builtin'}`">
-            {{ KIND_SHORT[plugin.kind ?? 'builtin'] }}
-          </span>
         </button>
         <div v-if="pluginStore.list.length === 0" class="settings-nav-empty">没有可用的插件</div>
       </aside>
 
       <section class="settings-main">
-        <header class="settings-main-header">
+        <!-- 标题栏就是拖动把手:标题文字上按下并拖动即可挪动整个面板 -->
+        <header class="settings-main-header" @pointerdown="onDragStart">
           <h1>{{ title }}</h1>
-          <button class="settings-close" title="关闭 (Esc)" @click="closeSettings()">
+          <button class="settings-close" title="关闭（Esc）" @click="closeSettings()">
             <X :size="16" />
           </button>
         </header>
@@ -186,54 +342,52 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
           <PluginSettings />
         </div>
 
+        <div v-else-if="settingsNav.page === 'system'" class="settings-body">
+          <SystemSettings />
+        </div>
+
         <div v-else-if="settingsNav.page === 'editor'" class="settings-body">
           <div class="settings-section">
             <div class="settings-section-head">
-              <div class="settings-section-title">定时保存</div>
-              <div class="settings-section-desc">
-                按固定间隔把改动写回文件,不用一直惦记着按 Ctrl+S。
-                只对已经保存过的文件生效:还没落过盘的新文档不会被自动保存,
-                免得在输入到一半时弹出「另存为」。
-              </div>
+              <div class="settings-section-title">自动保存</div>
+              <div class="settings-section-desc">自动保存文档改动。注意：该功能只对已保存文件生效，未落盘的新文档不生效，以免弹出保存弹窗</div>
             </div>
 
             <div class="settings-card">
-              <div class="settings-row">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">启用定时保存</div>
-                  <div class="settings-row-desc">
-                    {{
-                      appStore.autoSave
-                        ? `已开启 · ${intervalLabel(appStore.autoSaveInterval)}保存一次`
-                        : '当前关闭,只能手动保存 (Ctrl+S)'
-                    }}
-                  </div>
-                </div>
-                <label
-                  class="settings-switch"
-                  :title="appStore.autoSave ? '关闭定时保存' : '开启定时保存'"
-                >
-                  <input type="checkbox" :checked="appStore.autoSave" @change="setAutoSave(!appStore.autoSave)" />
-                  <span class="settings-switch-track" />
-                </label>
-              </div>
-
               <div class="settings-row settings-row-stack">
                 <div class="settings-row-info">
-                  <div class="settings-row-title">保存间隔</div>
-                  <div class="settings-row-desc">
-                    最短 {{ AUTO_SAVE_INTERVAL_MIN }} 秒,最长 1 小时。
-                    没有改动的间隔不写盘,文件不会被无谓地刷新时间戳。
-                  </div>
+                  <div class="settings-row-title">保存方式</div>
+                  <div class="settings-row-desc">{{ autoSaveSummary }}</div>
                 </div>
                 <div class="settings-control">
                   <span class="settings-presets">
                     <button
-                      v-for="p in INTERVAL_PRESETS"
+                      v-for="option in AUTO_SAVE_MODE_OPTIONS"
+                      :key="option.mode"
+                      class="settings-preset"
+                      :class="{ 'settings-preset-active': appStore.autoSaveMode === option.mode }"
+                      :title="option.title"
+                      @click="setAutoSaveMode(option.mode)"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="appStore.autoSaveMode === 'afterDelay'" class="settings-row settings-row-stack">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">保存延迟</div>
+                  <div class="settings-row-desc">自动保存间隔时长，最短{{ AUTO_SAVE_DELAY_MIN }}秒，文档没有改动时，不触发自动保存</div>
+                </div>
+                <div class="settings-control">
+                  <span class="settings-presets">
+                    <button
+                      v-for="p in DELAY_PRESETS"
                       :key="p.sec"
                       class="settings-preset"
-                      :class="{ 'settings-preset-active': appStore.autoSaveInterval === p.sec }"
-                      @click="setAutoSaveInterval(p.sec)"
+                      :class="{ 'settings-preset-active': appStore.autoSaveDelay === p.sec }"
+                      @click="setAutoSaveDelay(p.sec)"
                     >
                       {{ p.label }}
                     </button>
@@ -242,11 +396,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
                     <input
                       class="settings-number"
                       type="number"
-                      :min="AUTO_SAVE_INTERVAL_MIN"
-                      :max="AUTO_SAVE_INTERVAL_MAX"
-                      step="5"
-                      :value="appStore.autoSaveInterval"
-                      @change="onIntervalChange"
+                      :min="AUTO_SAVE_DELAY_MIN"
+                      step="1"
+                      :value="appStore.autoSaveDelay"
+                      @change="onDelayChange"
                     />
                     <span class="settings-unit">秒</span>
                   </label>
@@ -265,7 +418,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
                 <div class="settings-row-info">
                   <div class="settings-row-title">自动换行</div>
                   <div class="settings-row-desc">
-                    关闭后长段落不折行,靠横向滚动看完整行;表格、公式这类宽内容更适合关闭。
+                    关闭后长段落不折行，靠横向滚动看完整行；表格、公式这类宽内容更适合关闭。
                   </div>
                 </div>
                 <label
@@ -280,7 +433,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
               <div class="settings-row settings-row-stack">
                 <div class="settings-row-info">
                   <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">标题、代码块会按比例一起缩放,只影响编辑器,不影响导出。</div>
+                  <div class="settings-row-desc">标题、代码块会按比例一起缩放，只影响编辑器，不影响导出。</div>
                 </div>
                 <div class="settings-control">
                   <input
@@ -311,7 +464,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
           <div class="settings-section">
             <div class="settings-section-head">
               <div class="settings-section-title">基础颜色</div>
-              <div class="settings-section-desc">设置界面主题。选择后立即生效,并保存到本地设置。</div>
+              <div class="settings-section-desc">设置界面主题。选择后立即生效，并保存到本地设置。</div>
             </div>
             <div class="settings-themes">
               <button

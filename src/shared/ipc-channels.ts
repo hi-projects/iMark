@@ -4,6 +4,13 @@ export const IPC = {
   FileSaveDialog: 'file:save-dialog',
   FileRead: 'file:read',
   FileWrite: 'file:write',
+  /**
+   * 渲染→主:把剪贴板图片保存到当前文档旁的 `assets/` 目录。
+   *
+   * 图片字节走 IPC 的结构化克隆(Uint8Array),不转 base64;主进程负责生成不与现有
+   * 文件冲突的名字,并返回**相对文档目录**的引用路径(见 main/files.ts)。
+   */
+  FileSaveImage: 'file:save-image',
   ConfirmDiscard: 'dialog:confirm-discard',
   SettingsGet: 'settings:get',
   SettingsSet: 'settings:set',
@@ -26,6 +33,24 @@ export const IPC = {
   MenuCommand: 'menu:command',
   SaveBeforeClose: 'app:save-before-close',
   SaveDone: 'app:save-done',
+  /**
+   * 主→渲染:系统递来一个要打开的文件(双击 .md / 资源管理器「打开方式」)。
+   *
+   * 单独一条通道而不是塞进 MenuCommand:菜单命令是「用户点了某个功能」,
+   * 这里带的是**一个路径**,而且可能在启动过程中就发生(见 OpenFileTake)。
+   */
+  OpenFileFromSystem: 'app:open-file-from-system',
+  /**
+   * 渲染→主:取走启动时命令行里带的文件(只取一次)。
+   *
+   * 启动那一个用**拉取**而不是推送:窗口刚建好时渲染层的服务还没初始化完,
+   * 推过去只能靠延时赌时序;拉取发生在 App 初始化之后,天然没有竞态。
+   */
+  OpenFileTake: 'app:open-file-take',
+  /** 渲染→主:默认编辑器现在是谁(设置 → 系统) */
+  SystemDefaultEditorStatus: 'system:default-editor-status',
+  /** 渲染→主:把 iMark 注册进 .md 的「打开方式」,并打开系统的默认应用设置 */
+  SystemSetDefaultEditor: 'system:set-default-editor',
   VaultSelectDialog: 'vault:select-dialog',
   VaultList: 'vault:list',
   VaultCreateFile: 'vault:create-file',
@@ -57,23 +82,30 @@ export const IPC = {
   PluginContribGet: 'plugin:contrib-get',
   /** 主→渲染:插件发来的一条通知(右下角气泡) */
   PluginNotice: 'plugin:notice',
-  /** 渲染→主:为某个沙箱插件放开/收回「允许访问本机地址」 */
+  /** 渲染→主:为某个 restricted main 放开/收回「允许访问本机地址」 */
   PluginSetNetAccess: 'plugin:set-net-access',
-  /** 渲染→主:唤出某个沙箱插件自己的窗口 */
-  PluginOpenWindow: 'plugin:open-window',
+  /** 用系统默认程序打开某个插件的完整日志文件(不存在则先创建) */
+  PluginLogOpen: 'plugin:log-open',
   /**
-   * 主→渲染:请渲染层替插件做一件事(编辑器读写/装饰、往主界面挂东西)。
+   * 主→渲染:render 层的生命周期请求(prepare/enable/config/runAction/unload)。
    *
-   * 插件代码永远进不了渲染层,所以这一类能力只能由宿主转达 —— 渲染层做完用
+   * render 层代码跑在渲染进程里,宿主只能经这条通道把它叫起来 —— 渲染层做完用
    * `PluginHostReply` 回执。这条通道是**双向的**,和 plugin:bridge 一样:
    * 同一条通道名,主→渲染是请求,渲染→主是回执。
    */
   PluginHostRequest: 'plugin:host-request',
   PluginHostReply: 'plugin:host-reply',
-  /** 渲染→主:注入的界面里有人点了带 data-imk-click 的元素 */
-  PluginUiClick: 'plugin:ui-click',
-  /** 渲染→主:停靠面板的槽位位置变了(WebContentsView 要按它摆) */
-  PluginDockRect: 'plugin:dock-rect',
+  /**
+   * render 层 ↔ main 层的消息。**同一条通道名,双向**:
+   * 渲染层用 `send` 往主进程发,主进程中转给该插件的 main 层;
+   * main 层发来的消息由主进程用 `send` 推回渲染层。
+   * 消息只是不可解析的数据 —— 它不携带任何能力,能力永远走 `plugin:rpc` 的闸门。
+   */
+  PluginRenderMessage: 'plugin:render-message',
+  /** 渲染→主:render 层更新自己的状态卡(setState) */
+  PluginRenderState: 'plugin:render-state',
+  /** 渲染→主:render 层写一行日志 */
+  PluginRenderLog: 'plugin:render-log',
   /**
    * 渲染→主:界面这边准备好了,可以往这儿发 PluginHostRequest 了。
    *
@@ -110,20 +142,13 @@ export const IPC = {
    *
    * 与 SaveDone 是两件事,别合并:那条是"关闭窗口前那次保存做完了"的**回执**,
    * 主进程在等它(handleSaveDone 会兑现一个挂起的 flush);这条是**通知**,
-   * 谁都没在等 —— 手动保存、定时保存各来一条,插件的 document:save 钩子靠它触发。
+   * 谁都没在等 —— 手动保存、自动保存各来一条,插件的 document:save 钩子靠它触发。
    * 合并的话,一次用户随手按的 Ctrl+S 会去兑现一个与它无关的 flush 等待。
    *
    * 为什么由渲染层发而不是主进程自己看:只有渲染层知道"这次写盘是哪份文档"——
-   * 写盘那一小会儿用户可能已经切走了(定时保存尤其如此)。
+   * 写盘那一小会儿用户可能已经切走了(自动保存尤其如此)。
    */
   DocSaved: 'doc:saved',
-  /**
-   * 主→渲染:插件请求往当前文档里插入内容(沙箱插件的 `editor.insert`)。
-   *
-   * 文档始终由宿主来改,插件只是出文本 —— 与 PluginActionResult.editor 同一套做法。
-   * 走 IPC 而不是回给某个调用方,是因为发起方是插件页面,不是渲染层。
-   */
-  PluginEditorInsert: 'plugin:editor-insert',
   /**
    * 主→渲染:某个文件被插件改了(插件有 vault:write)。
    *

@@ -1,8 +1,8 @@
 /**
- * **唯一权威的能力表** —— 沙箱插件与 trusted 插件共同的家底。
+ * **唯一权威的能力表** —— restricted main 与 node main 共同的家底。
  *
  * 改造前,能力就是 `api.ts` 直接造出来的那些闭包(`imk.vault.read` 就是函数本身);
- * 沙箱插件要的是同一批能力,却隔着一条 IPC。于是只剩两条路:在 IPC 处理里再抄一份
+ * 受限层要的是同一批能力,却隔着一条 IPC。于是只剩两条路:在 IPC 处理里再抄一份
  * (两份实现迟早分家,而分家的后果是**权限判定在其中一份上漏掉**),或者把能力抽成
  * 一张表、两条传输共用(就是这里)。
  *
@@ -12,7 +12,7 @@
  *   - `limit`     —— 频率/并发(闸门见 gate.ts)
  *   - `run`       —— 真正干活的那段
  *
- * **trusted 插件也过这张表**:`api.ts` 从本表生成方法,每个方法内部再走一次
+ * **node main 插件也过这张表**:`api.ts` 从本表生成方法,每个方法内部再走一次
  * `invokeOp`。它本来就有完整 Node 能力,这层挡不住存心作恶的插件 ——
  * 它挡的是**误用**(参数写错、路径跑出仓库)与**审计**(被拒的调用会留在插件日志里,
  * 设置界面看得见"哪一步被拒")。
@@ -20,13 +20,12 @@
 
 import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { DOCK_SIDES, type PluginPermission } from '@shared/pluginPackage'
+import type { PluginPermission } from '@shared/pluginPackage'
 import type {
   PluginCommand,
   PluginMenuItem,
   PluginState,
-  PluginStatusItem,
-  RendererOpName
+  PluginStatusItem
 } from '@shared/plugins'
 import { getSettings, getSettingsSync } from '../settings'
 import { getSecret, hasSecret } from '../secrets'
@@ -57,17 +56,15 @@ export interface OpContext {
   setState(patch: Partial<PluginState>): void
   /** 让渲染层先把脏文档落盘 */
   flushDocument(): Promise<void>
-  /** 往当前文档里插入内容(经渲染层),返回是否成功 */
-  insertIntoEditor(text: string, cursorOffset?: number): Promise<boolean>
+  /** 这个 main 层是不是 restricted(个别能力只给受限层/只给 node 层) */
+  readonly isRestricted: boolean
+  /** 这个插件有没有 render 层 */
+  readonly hasRender: boolean
   /**
-   * 请**渲染层**替插件做一件事(编辑器读写/装饰、往主界面挂东西)。
-   *
-   * 这不是"通用透传":能请它做什么由上面那张能力表说了算,插件永远拿不到这个方法 ——
-   * 它只是表里那些 op 通往渲染层的一段路(文档在渲染层、主界面也在渲染层)。
+   * 把一条消息送给这个插件的 render 层。
+   * 没有 render 层、或 render 层还没就绪时抛错(由能力表归一成结构化失败)。
    */
-  askRenderer(op: RendererOpName, args: unknown): Promise<unknown>
-  /** 这个插件是沙箱形态吗(个别能力只给其中一种形态) */
-  readonly isSandbox: boolean
+  sendToRenderLayer(channel: string, data: unknown): void
   /** 让某个文件在渲染层重新加载(插件刚改过它) */
   notifyFileChanged(filePath: string): void
   /** 界面贡献点:注册的动作由宿主桥接回插件(manifest 声明的走 runAction) */
@@ -77,13 +74,6 @@ export interface OpContext {
   addMenuItem(item: PluginMenuItem): string[]
   /** 宿主调度的定时器(主进程 Node 定时器不受渲染层节流影响) */
   schedule: { every(ms: number, name: string): void; clear(name: string): void }
-  window: {
-    open(): void
-    close(): void
-    show(): void
-    hide(): void
-    setTitle(title: string): void
-  }
   validateSecretTarget(fieldKey: string, targetId?: string): void
 }
 
@@ -96,13 +86,22 @@ export interface OpDef {
   limit?: string
   /** 并发上限(只有挂很久的网络类 op 用得上) */
   maxConcurrent?: number
+  /** 只给 **restricted main**(它有隐藏执行页,比如宿主调度器) */
+  restrictedOnly?: boolean
   /**
-   * 只给**沙箱**插件(它有自己的一整个页面,比如开窗口)。
-   * 反过来 `trustedOnly` 只给脚本插件 —— 见 `ui.mount` 处的说明。
+   * 第三参数是**过不了 JSON 的那一半现场信息**(现在只有撤销信号)。
+   * 沙箱那条路上它是空的:AbortSignal 不能序列化,插件那一侧也没有"取消"这个动作。
    */
-  sandboxOnly?: boolean
-  trustedOnly?: boolean
-  run(ctx: OpContext, args: unknown): Promise<unknown>
+  run(ctx: OpContext, args: unknown, run: OpRunOptions): Promise<unknown>
+}
+
+/** op 运行时拿得到的、不能经 JSON 传的现场信息 */
+export interface OpRunOptions {
+  /**
+   * 调用方撤销时触发(见 gate.ts:`AbortSignal.any([调用方的, 超时的])`)。
+   * 只有长命子进程类的 op 用得上 —— 今天只有 `git.run`。
+   */
+  signal: AbortSignal
 }
 
 /** op 内部抛的错:带错误码,由 gate.ts 归一后交给插件 */
@@ -242,7 +241,7 @@ function assertInside(base: string, target: string, message: string): void {
 /**
  * `git.run` 的工作目录:接受仓库内的**绝对**路径,也接受**相对**路径。
  *
- * 这里比 `vault:*` 宽松一档,原因很具体:trusted 插件(git-sync)一直传的是
+ * 这里比 `vault:*` 宽松一档,原因很具体:node main 插件(git-sync)一直传的是
  * `settings.vaultPath` 那个**绝对**路径 —— 它本来就有完整 Node 能力,给它一句
  * 「路径请用正斜杠 / 分隔」既拦不住什么,又会把既有插件当场打断(实测:验收
  * 套跑出来的第一条回归)。要守住的是**范围**(必须在仓库里),不是写法。
@@ -261,71 +260,6 @@ async function resolveGitCwd(raw: unknown): Promise<string> {
     return realFull
   }
   return resolveVaultPath(raw ?? '', 'dir')
-}
-
-// ---------- 编辑器扩展点与界面注入的参数处理 ----------
-
-/** 一次装饰的数量上限(它会被写进 CodeMirror,几千条已经远超"看得见"的量) */
-const MAX_DECORATIONS = 2000
-/** 插件 CSS 的体积上限 */
-const MAX_CSS_BYTES = 64 * 1024
-/** 注入界面的 HTML 体积上限 */
-const MAX_INJECT_BYTES = 256 * 1024
-
-function normalizeRange(fromRaw: unknown, toRaw: unknown, op: string): { from: number; to: number } {
-  const from = Number(fromRaw)
-  const to = Number(toRaw)
-  if (!Number.isInteger(from) || from < 0) throw new OpError('E_BAD_ARGS', `${op} 的 from 必须是非负整数`)
-  if (!Number.isInteger(to) || to < 0) throw new OpError('E_BAD_ARGS', `${op} 的 to 必须是非负整数`)
-  if (to < from) throw new OpError('E_BAD_ARGS', `${op} 的 to 不能小于 from`)
-  return { from, to }
-}
-
-/**
- * 装饰只收三样东西:起止位置 + 一个 class 名。**没有别的**。
- *
- * 特别是**不收 style**:让它自己写 `style="position:fixed;…"` 就等于给它一块可以
- * 盖住整个编辑器的画布。class 由它自己的 CSS 定义,而那份 CSS 被 `@scope` 限制在
- * 它标出来的元素里(见 renderer 的注入实现)—— 两条约束合起来,它画的图只能长在
- * 自己标出的文字上。
- */
-const DECO_CLASS_RE = /^[A-Za-z0-9_-]{1,64}$/
-
-function normalizeDecoration(raw: unknown, index: number): { from: number; to: number; class: string } {
-  const d = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-  const { from, to } = normalizeRange(d.from, d.to, `decorations[${index}]`)
-  const cls = typeof d.class === 'string' ? d.class : ''
-  if (!DECO_CLASS_RE.test(cls)) {
-    throw new OpError('E_BAD_ARGS', `decorations[${index}].class 只能是字母/数字/下划线/连字符`)
-  }
-  return { from, to, class: cls }
-}
-
-/**
- * 插件 CSS 的两处**必要**处理(不是"净化"—— 净化 CSS 是做不到的事):
- *   - 掐掉 `</style`:不掐的话插件能把宿主的 style 元素提前关掉,后面写什么都由它;
- *   - 去掉 `@import`:远程样式表在 CSP 下本来就会被拦,但让它安静失败比报一堆
- *     控制台错误好(作者会以为是自己写错了)。
- * 真正把影响范围收住的是**渲染层注入时套的 `@scope`**,不是这里。
- */
-function sanitizeCss(css: string): string {
-  return css.replace(/<\s*\/\s*style/gi, '<\\/style').replace(/@import[^;]*;?/gi, '')
-}
-
-/**
- * 注入界面的 HTML 处理。
- *
- * 说清楚它的地位:这**不是**安全边界,是**防手滑**。真正兜底的是主窗口的 CSP ——
- * `script-src 'self'` 让内联 `<script>` 与 `onclick="…"` 都跑不起来,而 `innerHTML`
- * 本身也不执行脚本。这里去掉的是几类"也许能绕、但没有任何正当用途"的东西:
- * 脚本/样式/内嵌框架/外链资源。真正的交互必须走 `data-imk-click` 回到插件代码里。
- */
-function sanitizeHtml(html: string): string {
-  return html
-    .replace(/<\s*(script|style|iframe|object|embed|link|meta|base)\b[^>]*>/gi, '')
-    .replace(/<\s*\/\s*(script|style|iframe|object|embed)\s*>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/javascript:/gi, '')
 }
 
 /** 展示给插件看的相对路径(统一正斜杠) */
@@ -435,12 +369,19 @@ async function readCapped(res: Response, limit: number): Promise<Buffer> {
 // ---------- git 参数校验(§3.8) ----------
 
 /**
- * 危险的 git 参数 —— 沙箱下它们等价于任意命令执行:
+ * 危险的 git 参数 —— **沙箱下**它们等价于任意命令执行:
  *   `-c core.sshCommand=…` / `-c core.pager=…` 会执行任意程序;
  *   `--upload-pack=` / `--receive-pack=` 同上;
  *   `ext::` 传输协议的字面含义就是"执行这个命令"。
- * trusted 插件本来就随意执行命令,拦它没意义;这里拦的是**作者声明的东西与
- * 实际拿到的东西之间的落差** —— 用户在确认框上看到的是"调用 Git",不是"执行任意命令"。
+ *
+ * **只对沙箱插件生效。** `imark.git`(沙箱那条路)的能力表里就是写着"有白名单"的(README §五),
+ * 而脚本插件本来就有完整 Node:`child_process` 一行就能做同样的事,拦它不增加任何安全性,
+ * 却会把正当用法一起打断 —— 这两条都实测踩到过:
+ *   1. 宿主自己发给它的 `credentialArgs()` 是 `-c credential.helper=…`,身份兜底是
+ *      `-c user.name=…` —— 于是**用访问令牌的上传整个用不了**(报错还挂着"沙箱插件只放开了
+ *      常用读写命令",让人以为是沙箱的锅);
+ *   2. `ls-remote`(「测试连接」用的)与 `symbolic-ref` 也不在白名单里。
+ * 用户在安装确认框里对脚本插件看到的是"完整权限",这里再假装有一条门禁反而是撒谎。
  */
 const GIT_DENY_ARG = /^(-c|-C|--exec.*|--upload-pack.*|--receive-pack.*|--upload_pack.*|--receive_pack.*)/i
 const GIT_DENY_URL = /^(ext|file|fd)::/i
@@ -450,19 +391,22 @@ const GIT_SUBCOMMANDS = new Set([
   'status', 'log', 'diff', 'show', 'add', 'rm', 'mv', 'commit', 'push', 'pull', 'fetch',
   'clone', 'init', 'branch', 'checkout', 'switch', 'merge', 'rebase', 'stash', 'tag',
   'remote', 'rev-parse', 'ls-files', 'cat-file', 'hash-object', 'describe', 'shortlog',
-  'blame', 'config', 'restore', 'reset', 'clean'
+  'blame', 'config', 'restore', 'reset', 'clean',
+  // 只读的两个:问远端有哪些分支(「测试连接」就是它)、读写 HEAD 指向的分支名
+  'ls-remote', 'symbolic-ref'
 ])
 
-export function assertGitArgs(args: unknown): void {
+export function assertGitArgs(args: unknown, isRestricted: boolean): void {
   if (!Array.isArray(args) || args.some(a => typeof a !== 'string')) {
     throw new OpError('E_BAD_ARGS', 'git.run 的参数必须是字符串数组')
   }
+  if (!isRestricted) return
   const list = args as string[]
   const sub = list.find(a => !a.startsWith('-'))
   if (!sub || !GIT_SUBCOMMANDS.has(sub)) {
     throw new OpError(
       'E_BAD_ARGS',
-      `不允许的 git 子命令${sub ? `「${sub}」` : '(没给子命令)'}。沙箱插件只放开了常用读写命令。`
+      `不允许的 git 子命令${sub ? `「${sub}」` : '(没给子命令)'}。受限 main 只放开了常用读写命令。`
     )
   }
   for (const a of list) {
@@ -475,9 +419,35 @@ export function assertGitArgs(args: unknown): void {
   }
 }
 
+/**
+ * 子进程的环境变量。**只给 node main** —— 对 restricted 来说它和 `-c` 是同一个口子
+ * (`GIT_SSH_COMMAND` / `GIT_EXTERNAL_DIFF` / `GIT_PAGER` 都能变成"执行任意程序"),
+ * 而受限那条路本来也没有凭据可注入(credentialArgs / credentialEnv 不给它)。
+ */
+function normalizeGitEnv(raw: unknown, isRestricted: boolean): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (isRestricted) {
+    throw new OpError('E_BAD_ARGS', 'git.run 的 env 只对脚本插件开放(它能用来挂执行外部程序的钩子)')
+  }
+  const obj = asObject(raw, 'git.run.env')
+  const keys = Object.keys(obj)
+  if (keys.length > 32) throw new OpError('E_BAD_ARGS', 'git.run 的 env 最多 32 个变量')
+  const out: Record<string, string> = {}
+  for (const k of keys) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) {
+      throw new OpError('E_BAD_ARGS', `不合法的环境变量名「${k}」`)
+    }
+    const v = obj[k]
+    if (typeof v !== 'string') throw new OpError('E_BAD_ARGS', `环境变量「${k}」的值必须是字符串`)
+    if (Buffer.byteLength(v) > 8192) throw new OpError('E_BAD_ARGS', `环境变量「${k}」的值超过 8 KiB`)
+    out[k] = v
+  }
+  return out
+}
+
 // ---------- 状态补丁的白名单 ----------
 
-const STATE_STATUS = ['idle', 'running', 'ok', 'error']
+const STATE_STATUS = ['idle', 'running', 'ok', 'partial', 'error']
 
 function normalizeStatePatch(patch: unknown): Partial<PluginState> {
   const p = asObject(patch, 'state.set')
@@ -515,6 +485,40 @@ const OPS: Record<string, OpDef> = {
     timeoutMs: 1000,
     run: async (ctx, args) => {
       ctx.setState(normalizeStatePatch(args))
+      return null
+    }
+  },
+
+  /**
+   * main 层 → render 层的一条消息。
+   *
+   * 不要权限:它不碰任何用户数据,只是把数据从同一插件的另一半送过去。
+   * 但仍然限流、限体积、校验通道名 —— 一个失控的插件不该能靠消息把对面淹掉。
+   */
+  'render.send': {
+    perm: null,
+    timeoutMs: 2000,
+    limit: '120/60000',
+    run: async (ctx, args) => {
+      if (!ctx.hasRender) {
+        throw new OpError('E_FAILED', '这个插件没有 render 层,消息无处投递')
+      }
+      const a = asObject(args, 'render.send')
+      const channel = asString(a.channel, 'channel', 64)
+      if (!/^[A-Za-z0-9._-]{1,64}$/.test(channel)) {
+        throw new OpError('E_BAD_ARGS', 'channel 只能包含字母、数字与 . _ -(≤64 字符)')
+      }
+      const data = a.data ?? null
+      let size = 0
+      try {
+        size = JSON.stringify(data).length
+      } catch {
+        throw new OpError('E_BAD_ARGS', '消息必须是可 JSON 化的数据')
+      }
+      if (size > 256 * 1024) {
+        throw new OpError('E_BAD_ARGS', '单条消息不能超过 256 KiB')
+      }
+      ctx.sendToRenderLayer(channel, data)
       return null
     }
   },
@@ -605,7 +609,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'schedule.every': {
-    sandboxOnly: true,
+    restrictedOnly: true,
     perm: null,
     timeoutMs: 1000,
     run: async (ctx, args) => {
@@ -616,7 +620,7 @@ const OPS: Record<string, OpDef> = {
   },
 
   'schedule.clear': {
-    sandboxOnly: true,
+    restrictedOnly: true,
     perm: null,
     timeoutMs: 1000,
     run: async (ctx, args) => {
@@ -701,134 +705,6 @@ const OPS: Record<string, OpDef> = {
       const full = await resolveVaultPath(asObject(args, 'vault.remove').path, 'existing')
       await trashVaultPath(full)
       return null
-    }
-  },
-
-  // ---------- 编辑器 ----------
-  //
-  // 这一段是**编辑器扩展点**:读、改、加装饰。三件事都发生在渲染层
-  // (文档在 CodeMirror 手里),所以一律经 ctx.askRenderer 转达 ——
-  // 插件自己永远碰不到编辑器实例。
-
-  'editor.insert': {
-    perm: 'editor:write',
-    timeoutMs: 5000,
-    run: async (ctx, args) => {
-      const a = asObject(args, 'editor.insert')
-      const text = asString(a.text, 'text', 64 * 1024)
-      const offset = a.cursorOffset === undefined ? undefined : Number(a.cursorOffset)
-      return ctx.insertIntoEditor(text, Number.isFinite(offset) ? offset : undefined)
-    }
-  },
-
-  'editor.read': {
-    perm: 'editor:read',
-    timeoutMs: 5000,
-    run: async ctx => ctx.askRenderer('editor.read', {})
-  },
-
-  'editor.replace': {
-    perm: 'editor:write',
-    timeoutMs: 5000,
-    limit: '60/60000',
-    run: async (ctx, args) => {
-      const a = asObject(args, 'editor.replace')
-      const text = asString(a.text, 'text', 256 * 1024)
-      const range = normalizeRange(a.from, a.to, 'editor.replace')
-      const select = a.select === undefined ? null : normalizeRange(asObject(a.select, 'select').from, asObject(a.select, 'select').to, 'select')
-      return ctx.askRenderer('editor.replace', { ...range, text, select })
-    }
-  },
-
-  'editor.setSelection': {
-    perm: 'editor:write',
-    timeoutMs: 5000,
-    run: async (_ctx, args) => {
-      const a = asObject(args, 'editor.setSelection')
-      const range = normalizeRange(a.from, a.to, 'editor.setSelection')
-      return _ctx.askRenderer('editor.replace', { ...range, text: null, select: range })
-    }
-  },
-
-  'editor.decorate': {
-    perm: 'editor:read',
-    timeoutMs: 5000,
-    limit: '120/60000',
-    run: async (ctx, args) => {
-      const a = asObject(args, 'editor.decorate')
-      const list = Array.isArray(a.decorations) ? a.decorations : null
-      if (!list) throw new OpError('E_BAD_ARGS', 'decorations 必须是数组')
-      if (list.length > MAX_DECORATIONS) {
-        throw new OpError('E_BAD_ARGS', `一次最多 ${MAX_DECORATIONS} 条标记(现在 ${list.length} 条)`)
-      }
-      const specs = list.map((raw, i) => normalizeDecoration(raw, i))
-      return ctx.askRenderer('editor.decorate', { specs })
-    }
-  },
-
-  'editor.clearDecorations': {
-    perm: 'editor:read',
-    timeoutMs: 5000,
-    run: async ctx => ctx.askRenderer('editor.clear', {})
-  },
-
-  'editor.styles': {
-    perm: 'editor:read',
-    timeoutMs: 5000,
-    limit: '60/60000',
-    run: async (ctx, args) => {
-      const css = asString(asObject(args, 'editor.styles').css, 'css', MAX_CSS_BYTES)
-      return ctx.askRenderer('editor.styles', { css: sanitizeCss(css) })
-    }
-  },
-
-  // ---------- 主界面(仅脚本插件,见 README 的说明) ----------
-
-  'ui.mount': {
-    perm: null,
-    trustedOnly: true,
-    timeoutMs: 5000,
-    run: async (ctx, args) => {
-      const a = asObject(args, 'ui.mount')
-      const html = asString(a.html, 'html', MAX_INJECT_BYTES)
-      const side = a.side === undefined ? 'right' : String(a.side)
-      if (!DOCK_SIDES.includes(side as never)) {
-        throw new OpError('E_BAD_ARGS', `side 只能是 ${DOCK_SIDES.join(' / ')} 之一`)
-      }
-      return ctx.askRenderer('ui.mount', {
-        id: asString(a.id, 'id', 64),
-        side,
-        title: a.title === undefined ? '' : asString(a.title, 'title', 100),
-        html: sanitizeHtml(html)
-      })
-    }
-  },
-
-  'ui.update': {
-    perm: null,
-    trustedOnly: true,
-    timeoutMs: 5000,
-    run: async (ctx, args) => {
-      const a = asObject(args, 'ui.update')
-      const html = asString(a.html, 'html', MAX_INJECT_BYTES)
-      return ctx.askRenderer('ui.update', { id: asString(a.id, 'id', 64), html: sanitizeHtml(html) })
-    }
-  },
-
-  'ui.remove': {
-    perm: null,
-    trustedOnly: true,
-    timeoutMs: 5000,
-    run: async (ctx, args) => ctx.askRenderer('ui.remove', { id: asString(asObject(args, 'ui.remove').id, 'id', 64) })
-  },
-
-  'ui.injectStyles': {
-    perm: null,
-    trustedOnly: true,
-    timeoutMs: 5000,
-    run: async (ctx, args) => {
-      const css = asString(asObject(args, 'ui.injectStyles').css, 'css', MAX_CSS_BYTES)
-      return ctx.askRenderer('ui.styles', { css: sanitizeCss(css) })
     }
   },
 
@@ -930,13 +806,16 @@ const OPS: Record<string, OpDef> = {
   'git.run': {
     perm: 'git',
     timeoutMs: 120_000,
-    run: async (_ctx, args) => {
+    run: async (ctx, args, run) => {
       const a = asObject(args, 'git.run')
-      assertGitArgs(a.args)
+      assertGitArgs(a.args, ctx.isRestricted)
       const list = a.args as string[]
+      // env 与 signal 都是"插件与 git 之间"的东西:凭据经环境变量进子进程(别自己拼命令行),
+      // signal 让「停用插件 / 关应用」能把正在跑的 git 真的杀掉,而不是留着跑到超时
+      const env = normalizeGitEnv(a.env, ctx.isRestricted)
       const cwd = await resolveGitCwd(a.cwd)
       const timeoutMs = a.timeoutMs === undefined ? 60_000 : Math.min(Number(a.timeoutMs) || 60_000, 120_000)
-      const result = await runGit(list, { cwd, timeoutMs })
+      const result = await runGit(list, { cwd, timeoutMs, env, signal: run.signal })
       return {
         ok: result.ok,
         code: result.code,
@@ -961,58 +840,6 @@ const OPS: Record<string, OpDef> = {
       const a = asObject(args, 'git.summarize')
       const maxLines = a.maxLines === undefined ? 12 : Math.min(Number(a.maxLines) || 12, 100)
       return summarize(asString(a.text, 'text', 64 * 1024), maxLines)
-    }
-  },
-
-  // ---------- 窗口 ----------
-
-  'window.open': {
-    sandboxOnly: true,
-    perm: 'ui',
-    timeoutMs: 5000,
-    run: async ctx => {
-      ctx.window.open()
-      return null
-    }
-  },
-
-  'window.close': {
-    sandboxOnly: true,
-    perm: 'ui',
-    timeoutMs: 5000,
-    run: async ctx => {
-      ctx.window.close()
-      return null
-    }
-  },
-
-  'window.show': {
-    sandboxOnly: true,
-    perm: 'ui',
-    timeoutMs: 5000,
-    run: async ctx => {
-      ctx.window.show()
-      return null
-    }
-  },
-
-  'window.hide': {
-    sandboxOnly: true,
-    perm: 'ui',
-    timeoutMs: 5000,
-    run: async ctx => {
-      ctx.window.hide()
-      return null
-    }
-  },
-
-  'window.setTitle': {
-    sandboxOnly: true,
-    perm: 'ui',
-    timeoutMs: 1000,
-    run: async (ctx, args) => {
-      ctx.window.setTitle(asString(asObject(args, 'window.setTitle').title, 'title', 200))
-      return null
     }
   }
 }

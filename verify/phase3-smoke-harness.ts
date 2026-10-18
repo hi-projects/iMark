@@ -12,7 +12,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
-import { registerPluginScheme } from '../src/main/plugins/windows'
+import { registerPluginScheme, pluginWebContentsOf } from '../src/main/plugins/restrictedPage'
 import { initPluginHost } from '../src/main/plugins/host'
 import { pluginDir, setRecord } from '../src/main/plugins/installed'
 
@@ -103,8 +103,7 @@ async function main(): Promise<void> {
         name: '冒烟沙箱插件',
         description: '验收用',
         version: '1.0.0',
-        kind: 'sandboxed',
-        main: 'main.js',
+        main: { mode: 'restricted', entry: 'main.js' },
         permissions: ['vault:read'],
         fields: [],
         actions: [{ id: 'report', label: '报告' }]
@@ -118,9 +117,12 @@ async function main(): Promise<void> {
   await setRecord({
     id: 'sbx-smoke',
     version: '1.0.0',
-    kind: 'sandboxed',
+    mainMode: 'restricted',
+    hasRender: false,
+    capability: null,
     integrity: 'x'.repeat(64),
     mainSha256: null,
+    renderSha256: null,
     publisher: null,
     source: 'local',
     registryUrl: null,
@@ -148,16 +150,14 @@ async function main(): Promise<void> {
 
   const host = await initPluginHost()
 
-  console.log('\n[A] 窗口与运行时')
-  const { pluginWindowOf } = await import('../src/main/plugins/windows')
+  console.log('\n[A] 隐藏执行页与运行时')
   await sleep(2500)
-  const win = pluginWindowOf('sbx-smoke')
-  check('沙箱插件建出了自己的窗口', win !== null)
-  if (win) {
-    check('窗口是隐藏的(纯后台插件)', win.isVisible() === false)
-    check('窗口不进任务栏', win.isVisible() === false)
-    const wc = win.webContents
-    check('页面就是宿主的执行器页面', wc.getURL().includes('__imark/exec.html'), wc.getURL())
+  const page = pluginWebContentsOf('sbx-smoke')
+  check('restricted main 建出了隐藏执行页', page !== null)
+  if (page) {
+    const bw = BrowserWindow.fromWebContents(page)
+    check('执行页是隐藏的', bw ? bw.isVisible() === false : true)
+    check('页面就是宿主的执行器页面', page.getURL().includes('__imark/exec.html'), page.getURL())
   }
 
   console.log('\n[B] 页面里的探针')
@@ -180,11 +180,11 @@ async function main(): Promise<void> {
   check('页面里没有 process', probes.typeofProcess === 'undefined', String(probes.typeofProcess))
   check('CSP 掐死了裸 fetch', probes.netRaw === 'blocked', String(probes.netRaw))
 
-  console.log('\n[C] 停用与窗口')
+  console.log('\n[C] 停用与执行页')
   await host.save('sbx-smoke', { enabled: false })
   const t0 = Date.now()
-  while (pluginWindowOf('sbx-smoke') && Date.now() - t0 < 3000) await sleep(50)
-  check('停用后窗口在 2 秒内消失', pluginWindowOf('sbx-smoke') === null, `${Date.now() - t0}ms`)
+  while (pluginWebContentsOf('sbx-smoke') && Date.now() - t0 < 3000) await sleep(50)
+  check('停用后执行页在 2 秒内关闭', pluginWebContentsOf('sbx-smoke') === null, `${Date.now() - t0}ms`)
 
   console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)
   for (const w of BrowserWindow.getAllWindows()) w.destroy()

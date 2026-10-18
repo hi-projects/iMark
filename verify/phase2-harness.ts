@@ -25,7 +25,8 @@ import {
   validateManifest,
   type PluginManifest
 } from '../src/shared/pluginPackage'
-import { commandAvailable } from '../src/shared/plugins'
+import { commandAvailable, type PluginLogEntry } from '../src/shared/plugins'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 import {
   ContribRegistry,
   checkCommand,
@@ -71,6 +72,7 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
   }
 ])
+registerPluginScheme()
 
 // ---------------------------------------------------------------- A 纯函数
 
@@ -81,10 +83,9 @@ function manifest(over: Record<string, unknown>): Record<string, unknown> {
     name: '探针',
     description: '',
     version: '1.0.0',
-    kind: 'script',
+    main: { mode: 'node', entry: 'main.js' },
     fields: [],
     actions: [{ id: 'do-it', label: '干活' }],
-    main: 'main.js',
     ...over
   }
 }
@@ -162,7 +163,7 @@ function pureChecks(): void {
   const keys = Object.keys(rebuilt).join(',')
   check(
     '既有键的**相对顺序**没变(新键追在末尾)',
-    keys.startsWith('id,name,description,version,kind,fields,actions,main'),
+    keys.startsWith('id,name,description,version,main,fields,actions'),
     keys
   )
   check('新键排在最后三位', keys.endsWith('commands,statusBar,menus'), keys)
@@ -412,10 +413,9 @@ async function main(): Promise<void> {
       name: '阶段二探针A',
       description: 'harness 用:槽位全部走 API',
       version: '1.0.0',
-      kind: 'script',
+      main: { mode: 'node', entry: 'main.js' },
       fields: [{ key: 'note', kind: 'text', label: '备注', default: '' }],
-      actions: [],
-      main: 'main.js'
+      actions: []
     },
     PLUGIN_A_MAIN
   )
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
       name: '阶段二探针B',
       description: 'harness 用:槽位全部写在清单里',
       version: '1.0.0',
-      kind: 'script',
+      main: { mode: 'node', entry: 'main.js' },
       fields: [],
       actions: [{ id: 'b-do', label: '清单动作' }],
       commands: [
@@ -442,8 +442,7 @@ async function main(): Promise<void> {
       statusBar: [
         { id: 'b-status', label: '清单', icon: 'star', tooltip: '清单声明的状态条目', action: 'b-do' }
       ],
-      menus: [{ id: 'b-menu', label: '清单菜单项', where: 'files', action: 'b-do' }],
-      main: 'main.js'
+      menus: [{ id: 'b-menu', label: '清单菜单项', where: 'files', action: 'b-do' }]
     },
     PLUGIN_B_MAIN
   )
@@ -475,10 +474,10 @@ async function main(): Promise<void> {
     last?: Record<string, unknown>
     enabled?: boolean
   }
-  const viewOf = async (id: string): Promise<{ state: State; logs: string[] } | undefined> => {
+  const viewOf = async (id: string): Promise<{ state: State; logs: PluginLogEntry[] } | undefined> => {
     const list = await host.list()
     const v = list.find(x => x.descriptor.id === id)
-    return v ? { state: v.state as unknown as State, logs: (v.logs ?? []) as string[] } : undefined
+    return v ? { state: v.state as unknown as State, logs: v.logs ?? [] } : undefined
   }
   const countOf = async (id: string, name: string): Promise<number> =>
     (await viewOf(id))?.state.counts?.[name] ?? 0
@@ -495,9 +494,17 @@ async function main(): Promise<void> {
       `Array.from(document.querySelectorAll('.toast')).map(el => (el.textContent || '').replace(/\\s+/g, ' ').trim())`
     )
 
-  /** 贡献点快照(渲染层手里的那一份,不是主进程的) */
-  const snapshot = (): Promise<{ contribs: unknown[]; context: Record<string, boolean> }> =>
-    evalJs(`window.api.getPluginContribs()`)
+  /**
+   * 贡献点快照。
+   *
+   * 原来走 `window.api.getPluginContribs()`;宿主桥改成「启动时一次性取走」之后
+   * (见 src/preload/index.ts),渲染层不再有可直接调用的全局桥。这里直接调主进程
+   * 侧的同一对方法 —— IPC 处理器(PluginContribGet)做的也正是这两件事。
+   */
+  const snapshot = async (): Promise<{
+    contribs: unknown[]
+    context: Record<string, boolean>
+  }> => ({ contribs: await host.contributions(), context: host.commandContext() })
 
   // ---- 两个探针都起来了 ----
   console.log('\n[B] 开发目录里的两个探针')
@@ -509,8 +516,8 @@ async function main(): Promise<void> {
   check('探针 B 已启用且没有加载错误', b?.state.enabled === true, JSON.stringify(b?.state))
   check(
     '探针 A 的 onEnable 跑到注册完成那一步',
-    (a?.logs ?? []).some(l => l.includes('注册完毕')),
-    (a?.logs ?? []).join(' | ')
+    (a?.logs ?? []).some(l => l.message.includes('注册完毕')),
+    (a?.logs ?? []).map(l => l.message).join(' | ')
   )
 
   // ---- 通知 ----
@@ -518,7 +525,7 @@ async function main(): Promise<void> {
   // onEnable 里那条通知发生在**建窗之前**,没地方可画,只能丢掉并留一句日志
   check(
     '窗口还没起来时发的通知被记了一笔(而不是无声消失)',
-    (await viewOf('phase2a'))?.logs.some(l => l.includes('界面还没就绪')) === true,
+    (await viewOf('phase2a'))?.logs.some(l => l.message.includes('界面还没就绪')) === true,
     JSON.stringify((await viewOf('phase2a'))?.logs)
   )
   // 现在有窗口了:再让它发一条
@@ -719,7 +726,9 @@ async function main(): Promise<void> {
   )
   check(
     '被摘掉的原因写进了插件日志(作者才知道被谁占着)',
-    (await viewOf('phase2a'))?.logs.some(l => l.includes('Ctrl+S') && l.includes('保存')) === true,
+    (await viewOf('phase2a'))?.logs.some(
+      l => l.message.includes('Ctrl+S') && l.message.includes('保存')
+    ) === true,
     JSON.stringify((await viewOf('phase2a'))?.logs)
   )
 
@@ -910,7 +919,7 @@ async function main(): Promise<void> {
   }
   check('停用前面板里确实有这条命令(先证明这条路是通的)', await paletteHas('打招呼'))
 
-  await evalJs(`window.api.savePlugin('phase2a', { enabled: false })`)
+  await host.save('phase2a', { enabled: false })
   await sleep(700)
   check('停用后命令从面板里消失', !(await paletteHas('打招呼')))
   const rootAfterOff = Menu.getApplicationMenu()?.items.find(i => i.label === '插件')
@@ -924,7 +933,7 @@ async function main(): Promise<void> {
     rootAfterOff?.submenu?.items.find(i => i.label === '阶段二探针B') !== undefined
   )
 
-  await evalJs(`window.api.savePlugin('phase2a', { enabled: true })`)
+  await host.save('phase2a', { enabled: true })
   await sleep(900)
   const rootAfterOn = Menu.getApplicationMenu()?.items.find(i => i.label === '插件')
   const groupA2 = rootAfterOn?.submenu?.items.find(i => i.label === '阶段二探针A')
@@ -966,11 +975,23 @@ async function main(): Promise<void> {
 
   // document:change 必须节流:敲 12 下不该换来 12 条事件
   const beforeChange = await countOf('phase2a', 'document:change')
+  const textBefore = await evalJs<string>(
+    `(document.querySelector('.cm-content')?.textContent ?? '').length`
+  )
   for (const ch of 'cdefghijklmn') {
     wc.sendInputEvent({ type: 'char', keyCode: ch })
     await sleep(30)
   }
-  await sleep(1000)
+  // 链路是:停止输入 → 250ms 后 store 更新 → 400ms 节流后才发 document:change。
+  // 等 1 秒刚好卡在边界上(实测会偶发 0 条),留足余量。
+  await sleep(1800)
+  const textAfter = await evalJs<string>(
+    `(document.querySelector('.cm-content')?.textContent ?? '').length`
+  )
+  // 先证明这 13 下真的敲进了文档 —— 否则「节流后 0 条」既可能是节流对,也可能是
+  // 输入根本没到达(比如窗口焦点在别处),那条断言就成了空转
+  check('13 个字符真的落进了文档(先证明输入有效)', Number(textAfter) > Number(textBefore),
+    `${textBefore} → ${textAfter}`)
   const afterChange = await countOf('phase2a', 'document:change')
   const delta = afterChange - beforeChange
   check(
@@ -990,7 +1011,7 @@ async function main(): Promise<void> {
   // config:change 只发给被改的那个插件
   const aCfgBefore = await countOf('phase2a', 'config:change')
   const bCfgBefore = await countOf('phase2b', 'config:change')
-  await evalJs(`window.api.savePlugin('phase2a', { config: { note: '改过了' } })`)
+  await host.save('phase2a', { config: { note: '改过了' } })
   await sleep(700)
   check(
     '改 A 的配置 → A 收到 config:change',
@@ -1020,7 +1041,7 @@ async function main(): Promise<void> {
   )
   check(
     '被丢掉这件事写进了插件日志(作者能查"我的通知怎么没出来")',
-    (await viewOf('phase2a'))?.logs.some(l => l.includes('通知超过 10 条')) === true,
+    (await viewOf('phase2a'))?.logs.some(l => l.message.includes('通知超过 10 条')) === true,
     JSON.stringify((await viewOf('phase2a'))?.logs)
   )
 
@@ -1043,7 +1064,7 @@ async function main(): Promise<void> {
   )
   // git-sync 是兜底包,装上但不自动启用(用户没让它碰过他的仓库)。要验它的槽位
   // 就得先打开它 —— 这顺带也是「清单声明的槽位在真插件上生效」的一次实测
-  await evalJs(`window.api.savePlugin('git-sync', { enabled: true })`)
+  await host.save('git-sync', { enabled: true })
   await sleep(900)
   const gitContrib = (await snapshot()).contribs as Array<{
     pluginId: string
@@ -1071,8 +1092,8 @@ async function main(): Promise<void> {
   const qeLogs = (await viewOf('quick-edit'))?.logs ?? []
   check(
     '启动时插件只被启用一次(onEnable 不会跑两遍)',
-    qeLogs.filter(l => l.includes('Quick Edit 已就绪')).length === 1,
-    JSON.stringify(qeLogs.filter(l => l.includes('已就绪')))
+    qeLogs.filter(l => l.message.includes('Advanced Table 已就绪')).length === 1,
+    JSON.stringify(qeLogs.filter(l => l.message.includes('已就绪')).map(l => l.message))
   )
 
   const quickContrib = gitContrib.find(c => c.pluginId === 'quick-edit')

@@ -119,7 +119,7 @@ function onSecretInput(e: Event): void {
         v-if="!hint || replacing"
         class="plugin-input plugin-field-control"
         type="password"
-        :placeholder="field.placeholder ?? '粘贴令牌后回车/失焦保存'"
+        :placeholder="field.placeholder ?? '粘贴令牌后回车或失焦保存'"
         @change="onSecretInput($event)"
       />
       <button v-if="hint && replacing" class="plugin-btn" @click="replacing = false">取消</button>

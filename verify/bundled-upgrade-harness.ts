@@ -2,7 +2,7 @@
  * 内置插件的「跟着应用一起升级」验收。
  *
  * 为什么需要这一段:应用自带的插件包在补装时是「有同 id 就完全不碰」的,而插件的新
- * 能力(比如 git-sync 0.3.0 才有的状态栏条目与命令)是随应用版本一起发出去的。
+ * 能力(比如 git-sync 后来才有的状态栏条目与命令)是随应用版本一起发出去的。
  * 没有升级这条路,用户升了应用却拿不到新能力 —— 而且这次的表现不是"少个新功能",
  * 是**状态栏上那个按钮直接不见了**(应用这边已经改成插件声明,插件那边还停在没声明的版本)。
  *
@@ -34,6 +34,10 @@ import {
   removeRecord
 } from '../src/main/plugins/installed'
 import gitSyncPackage from '../src/main/market/builtin/git-sync.imkpkg.json?raw'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
+
+// quick-edit 现在是 restricted main,隐藏执行页走 imk-plugin:// —— 必须在 ready 之前注册
+registerPluginScheme()
 
 let pass = 0
 let fail = 0
@@ -136,7 +140,7 @@ async function main(): Promise<void> {
   // 「补装时 save() 启用一次」和「启动循环对已启用项再启用一次」本来会撞在一起,
   // 一个在 onEnable 里 setInterval 的插件会因此拿到两个定时器
   const qeStartup = ((await host.list()).find(v => v.descriptor.id === 'quick-edit')?.logs ?? [])
-    .filter(l => l.includes('Quick Edit 已就绪')).length
+    .filter(l => l.message.includes('Advanced Table 已就绪')).length
   check('启动时插件只被启用一次(onEnable 不跑两遍)', qeStartup === 1, String(qeStartup))
 
   // ---- 2. 老用户:装的是旧版,应用是新的 ----

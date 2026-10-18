@@ -83,5 +83,6 @@ export function pushNotice(
 
 /** 出错时的统一说法。替换 `alert('…失败:…')` 用 */
 export function notifyError(action: string, err: unknown): void {
-  pushNotice(`${action}失败:${err instanceof Error ? err.message : String(err)}`, { level: 'error' })
+  const text = (err instanceof Error ? err.message : String(err)).replace(/^Error:\s*/, '')
+  pushNotice(`${action}失败：${text}`, { level: 'error' })
 }

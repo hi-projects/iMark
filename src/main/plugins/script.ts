@@ -60,7 +60,7 @@ export function loadScriptRuntime(
   manifest: PluginManifest,
   api: ImkApi
 ): PluginRuntime {
-  const mainFile = manifest.main ?? 'main.js'
+  const mainFile = manifest.main?.entry ?? 'main.js'
   // 锚点文件不必真实存在,createRequire 只用它来确定「相对谁解析」
   const req = createRequire(`${dir}${sep}__imk_anchor__.js`)
   const entryPath = `${dir}${sep}${mainFile.replace(/\//g, sep)}`

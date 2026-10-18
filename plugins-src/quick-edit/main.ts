@@ -1,19 +1,23 @@
 /**
- * Quick Edit —— 光标行左侧「+」菜单里的内容插入。
+ * Advanced Table —— 光标行左侧「+」菜单里的表格插入。
  *
  * 这个插件的存在本身就是那个贡献点的样板:它只做两件事 ——
  * 在清单里声明「菜单里有一条『表格』,点它要问行数与列数」,
  * 以及在 runAction 里把这两个数字变成一段 Markdown 文本。
+ * 插入之后的单元格编辑由宿主的表格 widget 负责(渲染态直接输入,不退回源码)。
  *
  * **它从头到尾碰不到编辑器**:按钮、菜单、对话框、光标的落点全部由宿主实现,
  * 插件只是把文本交回去(`editor` 字段)。这样即使插件写得再糟,也顶多插入一段难看的文本。
+ *
+ * 也正因为「+」由宿主绘制,所有插件的 `lineMenu` 条目才能合进同一个菜单 ——
+ * 如果某个插件自己画一个「+」,它就只是一个私有按钮,别的插件插不进去。
  *
  * 插件源码只允许依赖 `@shared/*` 的**类型**(import type)—— 值导入会留下
  * `require('@shared/…')`,在用户机器上直接 MODULE_NOT_FOUND。
  */
 
-import type { ImkApi, PluginRuntime } from '@shared/pluginApi'
-import type { PluginActionResult } from '@shared/plugins'
+import type { ImkRestrictedApi } from '@shared/pluginApi'
+import type { PluginActionPayload, PluginActionResult } from '@shared/plugins'
 
 /** 行列的边界:清单里声明给对话框用,这里再夹一次 —— 插件不该假定调用方一定守规矩 */
 const ROWS_MIN = 1
@@ -51,18 +55,18 @@ function buildTable(rows: number, cols: number): { text: string; cursorOffset: n
 }
 
 class QuickEditPlugin {
-  constructor(private readonly imk: ImkApi) {}
+  constructor(private readonly imk: ImkRestrictedApi) {}
 
   /** 宿主只认「至少实现一个生命周期方法」的对象,而这个插件没有需要启动/收尾的东西 */
   onEnable(): void {
-    this.imk.log('debug', 'Quick Edit 已就绪:行首「+」菜单由宿主渲染')
+    this.imk.log('debug', 'Advanced Table 已就绪:行首「+」菜单由宿主渲染')
   }
 
   async runAction(
     actionId: string,
     _ctx: unknown,
     _targetId?: string,
-    payload?: { values?: Record<string, unknown> }
+    payload?: PluginActionPayload
   ): Promise<PluginActionResult> {
     if (actionId !== 'insert-table') {
       return { ok: false, message: `未知动作:${actionId}` }
@@ -80,4 +84,15 @@ class QuickEditPlugin {
   }
 }
 
-export = (imk: ImkApi): PluginRuntime => new QuickEditPlugin(imk)
+const imk = window.imark
+const plugin = new QuickEditPlugin(imk)
+
+// restricted main 的约定:脚本顶层同步登记生命周期,宿主在页面就绪后调用 onEnable。
+imk.plugin.handle({
+  onEnable: () => plugin.onEnable(),
+  // restricted 页面的 runAction 是 (actionId, targetId, payload) —— 没有 ctx
+  runAction: (actionId, targetId, payload) =>
+    plugin.runAction(actionId, null, targetId ?? undefined, payload ?? undefined)
+})
+
+export {}

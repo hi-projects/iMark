@@ -9,9 +9,12 @@ import { devDirsFromArgv } from './plugins/dev'
 import { ensureBundledProvisioned } from './market/bundled'
 import { checkUpdates } from './market/updates'
 import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
-import { registerPluginScheme } from './plugins/windows'
+import { registerPluginScheme } from './plugins/restrictedPage'
+import { describeDataPaths, prepareDataDirs } from './dataDir'
 import { markRendererGone } from './plugins/rendererBridge'
-import { closeAllPluginWindows } from './plugins/windows'
+import { closeAllRestrictedPages } from './plugins/restrictedPage'
+import { fileFromArgv, setPendingOpenFile } from './openFile'
+import { IPC } from '@shared/ipc-channels'
 
 /**
  * 启动后查一次插件更新。
@@ -31,6 +34,14 @@ function scheduleUpdateCheck(enabled: boolean): void {
   timer.unref()
 }
 
+// 开发模式下 Electron 的 Crashpad handler 有时不会启动,Chromium 会在控制台打印
+// `registration_protocol_win.cc ... CreateFile ... (0x2)`。它是崩溃上报的注册噪声,
+// 不影响应用运行。开发期关掉崩溃上报,保持控制台干净;打包版保留。
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('disable-breakpad')
+  app.commandLine.appendSwitch('disable-crash-reporter')
+}
+
 // 必须在 app.ready 之前注册特权协议
 // standard: true 保证 Windows 大小写敏感路径不被当作 host 小写化
 protocol.registerSchemesAsPrivileged([
@@ -44,16 +55,39 @@ protocol.registerSchemesAsPrivileged([
 // 而症状是插件界面一片空白
 registerPluginScheme()
 
+/**
+ * 数据目录:`app.getPath('userData')` / `sessionData` 指到 `~/.imark/profile`,
+ * 应用自有数据(插件、设置、密钥、窗口几何、样式)放在 `~/.imark` 顶层;
+ * 老用户第一次跑新版时在这里做一次性搬迁(见 main/dataDir.ts)。
+ *
+ * 位置与"同步"这两个要求都是硬的:
+ *   - 必须在 `app.whenReady()` **之前**:Chromium 按这两个路径开 profile,
+ *     晚了就成了"Chromium 用旧路径、应用代码用新路径";
+ *   - 必须在 `requestSingleInstanceLock()` **之前**:那把锁就绑在 userData 上,
+ *     先后颠倒会让新旧版本互相看不见(同时跑两个实例写同一份 profile);
+ *   - **同步**:写成 async 会跟 Chromium 自己的初始化抢跑(它是主脚本返回后继续
+ *     跑的),而这一步只是几次 rename。
+ */
+prepareDataDirs()
+if (!app.isPackaged) console.log(`[iMark] ${describeDataPaths()}`)
+
 if (!app.requestSingleInstanceLock()) {
   // 开发期诊断:另一实例持有单实例锁时这里会静默退出(exit 0),容易被误判为"崩了"
   if (!app.isPackaged) console.warn('[iMark] 单实例锁被占用,本实例退出')
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
     const win = getMainWindow()
     if (win) {
       if (win.isMinimized()) win.restore()
       win.focus()
+      // 双击 .md 时 Windows 起的是**新实例**:文件在它的 argv 里。
+      // 窗口已经开着,直接递过去;还在加载就暂存,等渲染层初始化完来取
+      const file = fileFromArgv(argv, app.isPackaged)
+      if (file) {
+        if (win.webContents.isLoading()) setPendingOpenFile(file)
+        else win.webContents.send(IPC.OpenFileFromSystem, file)
+      }
     }
   })
 
@@ -71,6 +105,9 @@ if (!app.requestSingleInstanceLock()) {
     const devDirs = devDirsFromArgv(process.argv)
     if (devDirs.length > 0) console.log(`[iMark] 开发模式插件目录:${devDirs.join(', ')}`)
     await initPluginHost(ensureBundledProvisioned, devDirs)
+    // 双击 .md 启动时,文件在 argv 里;暂存起来,等渲染层初始化完自己来取
+    // (窗口刚建好就推过去的话,渲染层的服务可能还没挂上监听)
+    setPendingOpenFile(fileFromArgv(process.argv, app.isPackaged))
     buildAppMenu()
     createMainWindow(settings)
     // 看门狗要等窗口出来才挂:目录一变就要广播给渲染层,没有窗口时广播是空转
@@ -104,8 +141,12 @@ if (!app.requestSingleInstanceLock()) {
   // 退出前释放插件资源(定时器、在跑的 git 子进程、插件窗口)与样式目录的看门狗
   app.on('will-quit', () => {
     stopUserStylesWatch()
-    // 插件窗口要在 host 之前关:它们的页面还在跑插件代码,
-    // 而 shutdown() 会让插件停用(再调一次 onDisable)
-    void closeAllPluginWindows().then(() => getPluginHost()?.shutdown())
+    // **先停用、再兜底关页**:onDisable 需要受限页面还活着;
+    // host 的 disable 自己会关页面。反过来先关页会让 onDisable 拿到
+    // "插件的页面不在",在退出时制造一条看似严重的失败日志。
+    void (async () => {
+      await getPluginHost()?.shutdown()
+      await closeAllRestrictedPages()
+    })()
   })
 }

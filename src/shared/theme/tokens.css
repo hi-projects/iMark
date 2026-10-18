@@ -4,6 +4,10 @@
   /* 编辑器正文字号:设置面板「编辑器」页写这个变量,标题/代码块按 em 跟着缩。
      它不属于任何一档主题 —— 换主题不该把字号也换掉 */
   --editor-font-size: 16px;
+  /* 正文栏最大宽度:按 Obsidian(Minimal)在「可读行宽」关闭时的做法,
+     正文容器占编辑区的 88%,左右各留 6% 空白。想固定成像素值(如 700px)
+     或改宽窄,在自定义样式里覆盖这个变量即可。 */
+  --editor-line-width: 88%;
 }
 
 :root,
@@ -16,6 +20,8 @@
   --text-secondary: #57606a;
   --text-tertiary: #8b949e;
   --border: #d0d7de;
+  /* 引用块左侧竖线:比 --border 在深色下更亮一档;浅色沿用边框灰 */
+  --quote-bar: #d0d7de;
   --accent: #0969da;
   --bg-code: rgba(175, 184, 193, 0.25);
   --bg-codeblock: #f6f8fa;
@@ -24,43 +30,63 @@
   --success: #1a7f37;
   --warn: #9a6700;
   --danger: #cf222e;
+  /*
+   * UI 选中行(文件 / 大纲 / 设置导航)与编辑器选区是两回事,分开着色:
+   * 亮色维持原来的蓝色淡底与蓝色文字。
+   */
+  --bg-active: rgba(9, 105, 218, 0.18);
+  --active-text: var(--accent);
+  --caret-color: var(--accent);
+  --list-marker-color: var(--accent);
+  /* 滚动条拇指:与 Obsidian 同款 —— 10% 前景色,悬停/拖动加深到 20% */
+  --scrollbar-thumb-bg: color-mix(in oklch, #000000 10%, transparent);
+  --scrollbar-hover-thumb-bg: color-mix(in oklch, #000000 20%, transparent);
+  --scrollbar-active-thumb-bg: color-mix(in oklch, #000000 20%, transparent);
 }
 
+/*
+ * 深色:底色 / 边框 / 滚动条对齐用户 Obsidian 的 Minimal 主题,
+ * **文字颜色保持 iMark 自己的默认值**,不跟着 Obsidian 走。
+ *
+ *   bg1 #262626 编辑区        bg2 #212121 侧栏 / 工具栏 / 代码底色
+ *   ui1 #363636 边框          ui2 #454545 悬停 / 引用条
+ *   正文 #dadada / 次级 #b3b3b3 / 弱化 #666666 / 强调色 #8a5cf5
+ */
 :root[data-theme='dark'] {
-  --bg-app: #1c2128;
-  --bg-editor: #0d1117;
-  --bg-toolbar: #22272e;
-  --bg-toolbar-btn-hover: #2d333b;
-  --text-primary: #e6edf3;
-  --text-secondary: #9198a1;
-  --text-tertiary: #6e7681;
-  --border: #30363d;
-  --accent: #4493f8;
-  --bg-code: rgba(110, 118, 129, 0.4);
-  --bg-codeblock: #161b22;
-  --bg-selection: rgba(68, 147, 248, 0.28);
-  --shadow: rgba(1, 4, 9, 0.4);
-  --success: #3fb950;
-  --warn: #d29922;
-  --danger: #f85149;
-}
-
-/* 纯黑:编辑区与侧栏全黑,仅用描边与文字层级区分 */
-:root[data-theme='black'] {
-  --bg-app: #000000;
-  --bg-editor: #000000;
-  --bg-toolbar: #0a0a0a;
-  --bg-toolbar-btn-hover: #1c1c1c;
-  --text-primary: #e3e3e3;
-  --text-secondary: #9a9a9a;
-  --text-tertiary: #6b6b6b;
-  --border: #262626;
-  --accent: #4d9fff;
-  --bg-code: rgba(140, 148, 160, 0.22);
-  --bg-codeblock: #141414;
-  --bg-selection: rgba(77, 159, 255, 0.26);
-  --shadow: rgba(0, 0, 0, 0.75);
-  --success: #4ec46a;
-  --warn: #e3b341;
-  --danger: #ff5f56;
+  --bg-app: #212121;
+  --bg-editor: #262626;
+  --bg-toolbar: #212121;
+  --bg-toolbar-btn-hover: #2e2e2e;
+  --text-primary: #dadada;
+  --text-secondary: #b3b3b3;
+  --text-tertiary: #666666;
+  --border: #363636;
+  /* Minimal 的引用条:--quote-opening-modifier = --ui2 */
+  --quote-bar: #454545;
+  --accent: #8a5cf5;
+  /* Obsidian 的代码底色 = --background-primary-alt = bg2 */
+  --bg-code: #212121;
+  --bg-codeblock: #212121;
+  /* 编辑器选区:Minimal 的 --hl1 = hsla(201, 50%, 40%, 30%) */
+  --bg-selection: rgba(51, 117, 153, 0.3);
+  /*
+   * UI 选中行用 Obsidian 的灰色高亮,而不是蓝色/紫色选区色;
+   * 文字仍用 iMark 默认的强调色。
+   */
+  --bg-active: #2e2e2e;
+  --active-text: var(--accent);
+  --caret-color: var(--accent);
+  --list-marker-color: var(--accent);
+  --shadow: rgba(0, 0, 0, 0.3);
+  --success: #44cf6e;
+  --warn: #e9973f;
+  --danger: #fb464c;
+  /*
+   * 滚动条:与 Obsidian + Minimal 主题的深色滚动条同款色号 ——
+   * ui1 #363636(常态)、ui2 #454545(悬停)、ui3 #595959(拖动)。
+   * 11px 轨道、3px 透明边框后的 5px 拇指,几何见 base.css。
+   */
+  --scrollbar-thumb-bg: #363636;
+  --scrollbar-hover-thumb-bg: #454545;
+  --scrollbar-active-thumb-bg: #595959;
 }

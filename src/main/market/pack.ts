@@ -13,10 +13,10 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import {
-  hasMainEntry,
   integrityInput,
   isSafeRelPath,
   LIMITS,
+  PACKAGE_FORMAT_VERSION,
   validateManifest,
   type PackageFileEntry,
   type PluginManifest,
@@ -80,11 +80,13 @@ export async function packDirectory(dir: string): Promise<PackResult> {
   const names = (await collect(dir)).sort()
   if (names.length === 0) throw new Error('这个目录里没有任何可打包的文件')
 
-  if (hasMainEntry(manifest.kind)) {
-    const main = manifest.main ?? 'main.js'
-    if (!names.includes(main)) {
+  const entries: { label: string; file: string }[] = []
+  if (manifest.main) entries.push({ label: 'main 入口', file: manifest.main.entry })
+  if (manifest.render) entries.push({ label: 'render 入口', file: manifest.render.entry })
+  for (const { label, file } of entries) {
+    if (!names.includes(file)) {
       throw new Error(
-        `清单声明的入口 ${main} 不在目录里。若是 TypeScript 写的,请先编译出 ${main} 再打包。`
+        `清单声明的 ${label} ${file} 不在目录里。若是 TypeScript 写的,请先编译出 ${file} 再打包。`
       )
     }
   }
@@ -107,7 +109,7 @@ export async function packDirectory(dir: string): Promise<PackResult> {
 
   const envelope: PluginPackageEnvelope = {
     format: 'imk-plugin',
-    formatVersion: 1,
+    formatVersion: PACKAGE_FORMAT_VERSION,
     manifest,
     files,
     data,

@@ -4,17 +4,20 @@
  * 只有**进度**是单向播报,其余都是一问一答。
  */
 
-import type { PluginKind, PluginPermission } from './pluginPackage'
+import type { PluginPermission } from './pluginPackage'
 import type { PluginDescriptor, PluginView } from './plugins'
 
 /**
- * 市场视角的插件形态。
+ * 市场视角的插件层信息。
  *
- * 直接取格式定义里的那一个,而不是在这里再列一遍字面量 —— 形态是会长的
- * (script → declarative → sandboxed),列两遍就是等着一处漏改,而漏改的表现是
- * 一个新的沙箱插件在市场列表里显示不出正确标签。
+ * 与清单的 `main:{mode}` / `render` / `capability` 一一对应,由服务端从 manifest
+ * 派生后下发;界面只认这三个字段,不再按旧的四种 kind 分支。
  */
-export type MarketPluginKind = PluginKind
+export interface MarketPluginShape {
+  mainMode: 'restricted' | 'node' | null
+  hasRender: boolean
+  capability: string | null
+}
 
 // ---------- 进度 ----------
 
@@ -61,9 +64,13 @@ export interface PackagePreview {
   /** 清单里的作者署名。**不是**发布者用户名(那是市场账号,本地安装时没有) */
   author: string | null
   description: string
-  /** 'script' 会在主进程里执行代码;'declarative' 不含代码 */
-  kind: MarketPluginKind
-  /** 声明式插件绑定的内置能力显示名(会替它执行的那只手);脚本插件为 null */
+  /** main 层模式;没有 main 层时为 null */
+  mainMode: 'restricted' | 'node' | null
+  /** 是否有 render 层 */
+  hasRender: boolean
+  /** 无代码插件绑定的内置能力 id;有代码插件为 null */
+  capability: string | null
+  /** 声明式插件绑定的内置能力显示名(会替它执行的那只手);有代码插件为 null */
   capabilityName: string | null
   permissions: PluginPermission[]
   descriptor: PluginDescriptor
@@ -72,8 +79,10 @@ export interface PackagePreview {
   fileCount: number
   totalBytes: number
   files: PackageFileInfo[]
-  /** script 插件的入口文件 sha256 —— 「跑的是不是这一份代码」的凭据 */
+  /** main 入口的 sha256 —— 「跑的是不是这一份代码」的凭据 */
   mainSha256: string | null
+  /** render 入口的 sha256(没有 render 层时为 null) */
+  renderSha256: string | null
   /** 本地已装的版本(用于把按钮文案变成「更新」并展示版本变化),没装过为 null */
   installed: { version: string; integrity: string } | null
   /** 这次安装是降级(本地版本更新) */
@@ -115,7 +124,8 @@ export interface MarketUpdate {
   latestVersion: string
   /** 新版本要求的权限里,比本地已授权的多出来的那些 */
   newPermissions: PluginPermission[]
-  kind: MarketPluginKind
+  mainMode: 'restricted' | 'node' | null
+  hasRender: boolean
 }
 
 // ---------- 市场(服务端返回的形状) ----------
@@ -127,7 +137,7 @@ export interface MarketUpdate {
  * 这份服务端数据join 出来的,不归服务端回答。服务端并不知道谁装了什么,
  * 也不该知道。
  */
-export interface MarketEntry {
+export interface MarketEntry extends MarketPluginShape {
   id: string
   name: string
   description: string
@@ -137,9 +147,8 @@ export interface MarketEntry {
   author: string | null
   /** 发布者账号(市场用户名)—— 与 author 不是一回事,界面上要分开写 */
   publisher: string
-  kind: MarketPluginKind
   /**
-   * 声明式插件绑定的内置能力 id;脚本插件为 null。
+   * 声明式插件绑定的内置能力 id;有代码插件为 null。
    * 名字不在这里 —— 能力注册表在主进程,名字由它翻好再下发(见 capabilityName)。
    */
   capability: string | null
@@ -173,6 +182,7 @@ export interface MarketVersionInfo {
   yanked: boolean
   size: number | null
   mainSha256: string | null
+  renderSha256: string | null
 }
 
 export interface MarketDetail extends MarketEntry {
@@ -218,7 +228,9 @@ export interface MarketQuery {
   page: number
   pageSize: number
   sort: MarketSort
-  kind: MarketPluginKind | null
+  /** 'none' = 没有 main 层;null = 不筛选 */
+  mainMode: 'restricted' | 'node' | 'none' | null
+  hasRender: boolean | null
 }
 
 export interface MarketAuthStatus {
@@ -237,9 +249,12 @@ export interface PublishPreview {
   id: string
   name: string
   version: string
-  kind: MarketPluginKind
+  mainMode: 'restricted' | 'node' | null
+  hasRender: boolean
+  capability: string | null
   integrity: string
   mainSha256: string | null
+  renderSha256: string | null
   fileCount: number
   totalBytes: number
   files: PackageFileInfo[]

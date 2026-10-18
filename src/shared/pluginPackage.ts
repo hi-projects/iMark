@@ -35,45 +35,81 @@ import type {
 } from './plugins'
 
 export const PACKAGE_FORMAT = 'imk-plugin'
-export const PACKAGE_FORMAT_VERSION = 1
+/** 信封版本;三处(应用/打包器/服务端)都读 pluginFormat.json 的同一份 */
+export const PACKAGE_FORMAT_VERSION: number = formatData.formatVersion
 
 /**
- * 插件形态。
+ * 插件由两层组成,均可不写,但至少要有一层:
  *
- * - `script`   —— 包内有 main.js,在**主进程**以完整 Node 能力执行(旧形态,权限只是告知)
- * - `declarative` —— 无代码,绑定宿主内置能力
- * - `sandboxed` —— 代码跑在**自己的渲染器**里(无 Node、无 fs),能力全部经宿主审查后转发
+ * - **main 层** —— 代码跑在宿主侧
+ *   - `restricted`:隐藏沙箱页(无 Node/fs),能力逐次过 `gate.invokeOp`;
+ *   - `node`:主进程 CommonJS,完整 Node。
+ * - **render 层** —— 代码跑在主窗口渲染进程,直接拿真实 EditorView / CM6 kit / DOM;
+ *   没有系统能力,需要时只能消息给 main 层。
  *
- * **沙箱形态必须是一个新的 kind 值,不能是 `runtime: 'sandboxed'` 这样的可选字段。**
- * 原因在本文末尾的说明里:清单是被「白名单重建、未知键静默丢弃」的,旧客户端会把
- * 旁路字段悄悄丢掉,然后把沙箱插件当成普通 script 插件在主进程里以完整 Node 跑起来 ——
- * 整个安全模型无声蒸发。用新 kind 值,旧客户端会明确拒绝安装。
- * 推广成规则:**将来任何"更安全的形态"都换 kind 值,不加旁路字段。**
+ * `capability`(无代码、绑定宿主内置能力)是可以单独存在的退化形态。
+ *
+ * 清单会被白名单重建、未知键静默丢弃,所以「层」必须是一等字段,不能靠旁路可选字段
+ * 表达。将来新增更安全的形态时,同样换新的字段/版本,而不是加一个旧客户端会忽略的键。
  */
-export type PluginKind = 'script' | 'declarative' | 'sandboxed'
+export type PluginMainMode = 'restricted' | 'node'
 
-/**
- * 这个形态的插件带代码入口(main)吗。
- *
- * script 的 main 在主进程跑,sandboxed 的 main 在插件自己的页面里跑 ——
- * 对「打包时入口文件必须在包里」「登记 mainSha256」「算加载错误」这些事而言,
- * 两者的判断完全一样,只有「谁来执行它」不同。抽出来是为了不再到处写
- * `kind === 'script'`,那种写法在加入第二种带代码的形态时必然会漏掉几处。
- */
-export function hasMainEntry(kind: PluginKind): boolean {
-  return kind === 'script' || kind === 'sandboxed'
+/** main 层的入口声明 */
+export interface PluginMainSpec {
+  mode: PluginMainMode
+  /** 包内相对路径;node 用 .js/.cjs(CommonJS),restricted 用 .js/.mjs(ES module) */
+  entry: string
+}
+
+/** render 层的入口声明 */
+export interface PluginRenderSpec {
+  /** 包内相对路径;普通脚本(IIFE),不能有 import/export/require */
+  entry: string
+}
+
+/** 插件形态的派生视图(市场/安装确认/设置页共用一套判断) */
+export interface PluginShape {
+  mainMode: PluginMainMode | null
+  hasRender: boolean
+  capability: string | null
+}
+
+export function hasMainLayer(manifest: Pick<PluginManifest, 'main'>): boolean {
+  return Boolean(manifest.main)
+}
+
+export function hasRenderLayer(manifest: Pick<PluginManifest, 'render'>): boolean {
+  return Boolean(manifest.render)
+}
+
+/** 清单里所有需要打进包的代码入口(用于信封校验与 sha256 记录) */
+export function entryFilesOf(manifest: PluginManifest): string[] {
+  const out: string[] = []
+  if (manifest.main) out.push(manifest.main.entry)
+  if (manifest.render) out.push(manifest.render.entry)
+  return out
+}
+
+export function pluginShapeOf(manifest: Pick<PluginManifest, 'main' | 'render' | 'capability'>): PluginShape {
+  return {
+    mainMode: manifest.main?.mode ?? null,
+    hasRender: Boolean(manifest.render),
+    capability: manifest.capability ?? null
+  }
 }
 
 /**
  * 权限词表。
  *
- * 语义**取决于 kind**,这一点在界面上必须说清楚:
- * - 对 `script`(完整 Node):除 git / secrets 外都是**声明性说明** —— fs / net / shell
- *   本来挡不住,列出来是为了让安装者知道自己在同意什么。
- * - 对 `sandboxed`:**每一项都是真门禁**。没声明的能力连 API 对象都不存在,
+ * 语义**取决于 main.mode**,界面上必须说清楚:
+ * - `restricted`:**每一项都是真门禁**。没声明的能力连 API 对象都不存在,
  *   每一次调用还要在主进程再查一遍。
+ * - `node`:**告知 + API 塑形**。主进程里本来就有完整 Node,权限列表是为了
+ *   让安装者知道作者声称要做什么,不是安全边界。
+ * - `capability`(无代码):宿主能力所需的权限,只用于安装披露。
  *
- * 所以 README 与安装对话框的准确说法是:**装了沙箱插件才是真门禁,装了脚本插件仍是告知。**
+ * render 层没有权限概念:它与主界面同 realm,能改 UI/读当前文档/看键盘输入,
+ * 这些不是"申请"出来的,只能靠安装时的知情确认兜底。
  */
 export type PluginPermission =
   | 'git'
@@ -83,9 +119,6 @@ export type PluginPermission =
   | 'network'
   | 'shell'
   | 'settings'
-  | 'ui'
-  | 'editor:read'
-  | 'editor:write'
 
 export const PLUGIN_PERMISSIONS: PluginPermission[] = [
   'git',
@@ -94,93 +127,39 @@ export const PLUGIN_PERMISSIONS: PluginPermission[] = [
   'vault:write',
   'network',
   'shell',
-  'settings',
-  'ui',
-  'editor:read',
-  'editor:write'
+  'settings'
 ]
 
 /**
- * 只有沙箱插件用得上的权限词。
+ * 受限 main 层真正有对应能力的权限词。
  *
- * `ui`(开自己的窗口 / 把面板停靠进主界面)需要一整个页面,而只有沙箱形态有页面。
- * 脚本插件想往界面上放东西走的是另一条路(`imk.ui.mount`,见 README 的说明)——
- * 它本来就全权,给它一个"窗口"的说法既多余又难懂。
- * 出现在 script / declarative 清单里直接报错:静默接受会变成"我声明了 ui 却什么也没发生"。
+ * `settings` 与 `shell` 在受限页面里没有实现(没有 Node、没有进程启动),
+ * 声明它们只会让安装确认框多一行解释不了的承诺 —— 直接报错。
  */
-export const SANDBOX_ONLY_PERMISSIONS: PluginPermission[] = ['ui']
-
-/**
- * 只有**带代码**的形态(script / sandboxed)谈得上的权限词。
- *
- * 声明式插件没有代码,谈"读文档"没有意义 —— 那种包只声明字段与动作,
- * 干活的是宿主内置能力。这两个词对它就是纯粹的噪音。
- */
-export const CODE_ONLY_PERMISSIONS: PluginPermission[] = ['editor:read', 'editor:write']
+export const RESTRICTED_PERMISSIONS: PluginPermission[] = [
+  'git',
+  'secrets',
+  'vault:read',
+  'vault:write',
+  'network'
+]
 
 /** 权限的中文说明(安装确认框逐条展示,渲染层与主进程共用) */
 export const PERMISSION_INFO: Record<PluginPermission, { label: string; description: string }> = {
   git: {
     label: '调用 Git',
-    description: '通过宿主提供的接口执行 git 命令(推送、拉取、查看远端等)。'
+    description: '通过宿主提供的接口执行 git 命令（推送、拉取、查看远端等）。'
   },
   secrets: {
     label: '读取已保存的密钥',
-    description: '读取本插件自己名下的访问令牌 / 密码(只读,不能改写其他插件的密钥)。'
+    description: '读取本插件自己名下的访问令牌、密码（只读，不能改写其他插件的密钥）。'
   },
   'vault:read': { label: '读取仓库文件', description: '读取当前仓库里的笔记与目录结构。' },
   'vault:write': { label: '修改仓库文件', description: '在当前仓库里新建、修改或删除文件。' },
-  network: { label: '访问网络', description: '连接互联网,把数据发送到你配置的服务器。' },
-  shell: { label: '执行系统命令', description: '在你电脑上启动其他程序或命令。' },
-  settings: { label: '读取编辑器设置', description: '读取主题、仓库路径等编辑器设置。' },
-  ui: {
-    label: '打开自己的窗口',
-    description:
-      '在自己的窗口或主界面的侧栏里显示任意内容。窗口标题栏与面板顶栏都会标出插件名;它长得像 iMark 的界面,所以请只在这里输入你信任的插件要的东西。'
-  },
-  'editor:read': {
-    label: '读取当前文档',
-    description:
-      '读取你正在编辑的这篇文档的正文与光标位置,并可以在正文上叠高亮/标记(比如把待办渲染成方框)。它读不到仓库里别的文件 —— 那是「读取仓库文件」。'
-  },
-  'editor:write': {
-    label: '修改当前文档',
-    description:
-      '改写你正在编辑的这篇文档(替换选区、移动光标、插入内容)。不是改任意文件 —— 那是「修改仓库文件」。'
-  }
+  network: { label: '访问网络', description: '连接互联网，把数据发送到你配置的服务器。' },
+  shell: { label: '执行系统命令', description: '在你的电脑上启动其他程序或命令（仅 node 主层有意义）。' },
+  settings: { label: '读取编辑器设置', description: '读取主题、仓库路径等编辑器设置（仅 node 主层有意义）。' }
 }
-
-/**
- * 沙箱插件的界面声明。**没有 ui 就是纯后台插件**(宿主给它一个隐藏的执行器页面)。
- *
- * 这个对象存在本身就意味着「要开窗口」,所以清单里写了它却没声明 `ui` 权限
- * 会直接报错 —— 那正是钓鱼窗口风险的告知位置。
- */
-export interface PluginUiSpec {
-  /** 窗口/面板加载的包内 HTML 入口 */
-  entry: string
-  /**
-   * 初始尺寸(不填用宿主的默认值)。
-   * 开窗口时是窗口尺寸;停靠时左/右栏取 `width`、底栏取 `height`。
-   */
-  width?: number
-  height?: number
-  minWidth?: number
-  minHeight?: number
-  /**
-   * **停靠到主界面的哪一侧**。不写就是"开自己的窗口"。
-   *
-   * 两种形态的差别只有一件事:页面长在哪儿。页面本身、会话、CSP、能力完全一样 ——
-   * 所以作者不必为"停靠还是独立窗口"写两套代码。
-   *
-   * 停靠的是**插件自己的 renderer**(`WebContentsView`),不是把插件的 HTML 塞进
-   * iMark 的页面里:它碰不到主界面的任何 DOM,主界面的样式也影响不到它。
-   */
-  dock?: PluginDockSide
-}
-
-/** 面板能停靠的三侧(与主界面布局一一对应) */
-export type PluginDockSide = 'left' | 'right' | 'bottom'
 
 export interface PluginManifestAction {
   id: string
@@ -195,13 +174,21 @@ export interface PluginManifest {
   author?: string
   /** 只能是 https 地址(界面里经 shell.openExternal 打开) */
   homepage?: string
-  kind: PluginKind
-  /** 仅 declarative:内置能力 id(见 main/plugins/capabilities.ts) */
+  /**
+   * main 层:代码跑在宿主侧,`mode` 决定是受限沙箱页还是主进程完整 Node。
+   * 与 `render` 至少写一个;也可以两者都写(受限 main + 界面)。
+   */
+  main?: PluginMainSpec
+  /**
+   * render 层:代码跑在主窗口渲染进程,直接拿 EditorView / CM6 kit / DOM。
+   * 没有系统能力,需要时消息给 main。
+   */
+  render?: PluginRenderSpec
+  /**
+   * 无代码形态:绑定宿主内置能力(见 main/plugins/capabilities.ts)。
+   * **只能单独出现**,不能与 main/render 并存。
+   */
   capability?: string
-  /** 仅 script / sandboxed:入口文件名,必须是包内存在的 .js */
-  main?: string
-  /** 仅 sandboxed:开自己的窗口(不写 = 纯后台插件,宿主给一个隐藏的执行器页面) */
-  ui?: PluginUiSpec
   permissions?: PluginPermission[]
   /** 包内图标文件名(建议 svg/png,≤64 KiB) */
   icon?: string
@@ -264,7 +251,8 @@ export const LIMITS = {
   envelopeBytes: 8 * 1024 * 1024,
   /** 单个文件上限 */
   fileBytes: 2 * 1024 * 1024,
-  mainBytes: 1024 * 1024,
+  /** main / render 各自入口的上限 */
+  entryBytes: 1024 * 1024,
   readmeBytes: 256 * 1024,
   iconBytes: 64 * 1024,
   fileCount: 64,
@@ -571,62 +559,6 @@ const MENU_WHERES = ['files']
 const SLOT_ID_RE = ACTION_ID_RE
 
 /**
- * 插件窗口尺寸的边界。
- *
- * 校验在这里、夹取在主进程建窗时各做一次:前者让作者在**打包时**就知道自己写错了,
- * 后者保证手改 manifest.json 也越不过去(磁盘上的东西可以是手改的)。
- */
-export const UI_SIZE = { min: 240, max: 4000, defaultWidth: 900, defaultHeight: 640 }
-
-/** 面板能停靠的三侧(运行时校验用;类型上是 PluginDockSide) */
-export const DOCK_SIDES: PluginDockSide[] = ['left', 'right', 'bottom']
-
-/**
- * 停靠面板的尺寸边界。
- *
- * 比窗口那套更紧:窗口开大了只是挡着别的窗口,而**面板会把主界面挤窄** ——
- * 一个占了 3000px 宽的面板等于把编辑器挤没了,用户还找不到是哪个插件干的。
- */
-export const DOCK_SIZE = { min: 180, max: 900, defaultWidth: 320, defaultHeight: 220 }
-
-/** 校验沙箱插件的界面声明(仅 kind:'sandboxed' 会走到这里) */
-function validateUiSpec(ui: unknown, errors: string[]): void {
-  if (ui === undefined) return
-  if (!ui || typeof ui !== 'object' || Array.isArray(ui)) {
-    errors.push('ui 必须是对象')
-    return
-  }
-  const u = ui as Partial<PluginUiSpec>
-  const allowed = ['entry', 'width', 'height', 'minWidth', 'minHeight', 'dock']
-  for (const key of Object.keys(u)) {
-    if (!allowed.includes(key)) errors.push(`ui 里不认识的键:${key}`)
-  }
-  if (u.dock !== undefined && !DOCK_SIDES.includes(u.dock)) {
-    errors.push(`ui.dock 只能是 ${DOCK_SIDES.join(' / ')} 之一`)
-  }
-  if (typeof u.entry !== 'string' || !isSafeRelPath(u.entry)) {
-    errors.push('ui.entry 必须是包内的合法相对路径')
-  } else if (!/\.html?$/i.test(u.entry)) {
-    errors.push('ui.entry 必须是 .html 文件')
-  }
-  // 停靠的面板尺寸另有一套更紧的边界(见 DOCK_SIZE):它挤的是主界面,不是桌面
-  const size = u.dock ? DOCK_SIZE : UI_SIZE
-  for (const key of ['width', 'height', 'minWidth', 'minHeight'] as const) {
-    const v = u[key]
-    if (v === undefined) continue
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < size.min || v > size.max) {
-      errors.push(`ui.${key} 必须是 ${size.min}-${size.max} 之间的数字`)
-    }
-  }
-  if (u.minWidth !== undefined && u.width !== undefined && u.minWidth > u.width) {
-    errors.push('ui.minWidth 不能大于 ui.width(窗口一建出来就是矛盾的)')
-  }
-  if (u.minHeight !== undefined && u.height !== undefined && u.minHeight > u.height) {
-    errors.push('ui.minHeight 不能大于 ui.height')
-  }
-}
-
-/**
  * 命令 / 状态栏 / 右键菜单的通用校验。
  *
  * 三者形状几乎一样(一个 id、一个 label、一个指向 action 的指针),所以共用一份实现 ——
@@ -803,36 +735,55 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   if (typeof m.version !== 'string' || !VERSION_RE.test(m.version)) {
     errors.push('version 非法(需形如 1.2.3 或 1.2.3-beta.1)')
   }
-  if (m.kind !== 'script' && m.kind !== 'declarative' && m.kind !== 'sandboxed') {
-    errors.push("kind 必须是 'script' / 'declarative' / 'sandboxed' 之一")
+
+  // ---- 层:main / render / capability 至少一个 ----
+  const hasMain = m.main !== undefined
+  const hasRender = m.render !== undefined
+  const hasCapability = m.capability !== undefined
+
+  if (!hasMain && !hasRender && !hasCapability) {
+    errors.push('清单必须至少声明 main / render / capability 之一')
+  }
+  if (hasCapability && (hasMain || hasRender)) {
+    errors.push('capability 只能单独出现,不能与 main / render 并存')
   }
 
-  const files = Array.isArray(m.fields) ? m.fields : []
-  const isTargetsField = files.some(
-    (f) => f && typeof f === 'object' && (f as PluginField).kind === 'targets'
-  )
-
-  if (m.kind === 'script') {
-    if (typeof m.main !== 'string' || !isSafeRelPath(m.main) || !/\.(c?js)$/.test(m.main)) {
-      errors.push('script 插件必须给出合法的 main(包内的 .js 文件)')
+  let mainMode: PluginMainMode | null = null
+  if (hasMain) {
+    const main = m.main as Partial<PluginMainSpec> | null
+    if (!main || typeof main !== 'object' || Array.isArray(main)) {
+      errors.push('main 必须是对象 { mode, entry }')
+    } else {
+      if (main.mode !== 'restricted' && main.mode !== 'node') {
+        errors.push("main.mode 必须是 'restricted' 或 'node'")
+      } else {
+        mainMode = main.mode
+      }
+      if (typeof main.entry !== 'string' || !isSafeRelPath(main.entry)) {
+        errors.push('main.entry 必须是包内的合法相对路径')
+      } else if (main.mode === 'node' && !/\.(c?js)$/.test(main.entry)) {
+        errors.push('node main 的入口必须是 .js / .cjs(CommonJS)')
+      } else if (main.mode === 'restricted' && !/\.(m?js)$/.test(main.entry)) {
+        errors.push('restricted main 的入口必须是 .js / .mjs(ES module)')
+      }
     }
-    if (m.capability !== undefined) errors.push('script 插件不应声明 capability')
-  } else if (m.kind === 'declarative') {
-    if (m.main !== undefined) errors.push('declarative 插件不应有 main(声明式插件不含代码)')
-    if (typeof m.capability !== 'string' || m.capability.trim().length === 0) {
-      errors.push('declarative 插件必须声明 capability')
-    }
-  } else if (m.kind === 'sandboxed') {
-    if (typeof m.main !== 'string' || !isSafeRelPath(m.main) || !/\.(c?js)$/.test(m.main)) {
-      errors.push('sandboxed 插件必须给出合法的 main(包内的 .js 文件,在插件自己的页面里执行)')
-    }
-    if (m.capability !== undefined) errors.push('sandboxed 插件不应声明 capability')
-    validateUiSpec(m.ui, errors)
   }
-  if (m.kind !== 'sandboxed') {
-    if (m.ui !== undefined) {
-      errors.push("只有 kind:'sandboxed' 的插件才能声明 ui(脚本插件跑在主进程,没有属于它的窗口)")
+
+  if (hasRender) {
+    const render = m.render as Partial<PluginRenderSpec> | null
+    if (!render || typeof render !== 'object' || Array.isArray(render)) {
+      errors.push('render 必须是对象 { entry }')
+    } else {
+      if (typeof render.entry !== 'string' || !isSafeRelPath(render.entry)) {
+        errors.push('render.entry 必须是包内的合法相对路径')
+      } else if (!/\.js$/.test(render.entry)) {
+        errors.push('render 入口必须是 .js(普通脚本,不能有 import/export/require)')
+      }
     }
+  }
+
+  if (hasCapability && (typeof m.capability !== 'string' || m.capability.trim().length === 0)) {
+    errors.push('capability 必须是非空字符串')
   }
 
   if (m.homepage !== undefined && !/^https:\/\//i.test(String(m.homepage))) {
@@ -841,36 +792,37 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   if (m.icon !== undefined && (typeof m.icon !== 'string' || !isSafeRelPath(m.icon))) {
     errors.push('icon 必须是包内的合法相对路径')
   }
-  if (m.permissions !== undefined) {
-    if (!Array.isArray(m.permissions)) {
-      errors.push('permissions 必须是数组')
-    } else {
-      for (const p of m.permissions) {
-        if (!PLUGIN_PERMISSIONS.includes(p as PluginPermission)) {
-          // 未知权限硬报错而不是静默放行:静默放行的后果是作者以为「我申请了网络」,
-          // 而运行时因为词表里没这个词什么也没给 —— 他会去别处找原因,找不到
-          errors.push(`未知权限:${String(p)}`)
-        } else if (SANDBOX_ONLY_PERMISSIONS.includes(p as PluginPermission) && m.kind !== 'sandboxed') {
-          errors.push(`权限「${p}」只对沙箱插件(kind: 'sandboxed')有意义,别的形态不该声明它`)
-        } else if (m.kind !== undefined && CODE_ONLY_PERMISSIONS.includes(p as PluginPermission) && !hasMainEntry(m.kind)) {
-          errors.push(`声明式插件没有代码,不该声明「${p}」(它不会调用任何东西)`)
-        }
+
+  // ---- 权限:只在 main / capability 里有意义 ----
+  if (m.permissions !== undefined && !Array.isArray(m.permissions)) {
+    errors.push('permissions 必须是数组')
+  } else {
+    const seen = new Set<unknown>()
+    for (const p of Array.isArray(m.permissions) ? m.permissions : []) {
+      if (seen.has(p)) errors.push(`权限「${String(p)}」重复声明`)
+      seen.add(p)
+      if (!PLUGIN_PERMISSIONS.includes(p as PluginPermission)) {
+        // 未知权限硬报错而不是静默放行:静默放行的后果是作者以为「我申请了网络」,
+        // 而运行时因为词表里没这个词什么也没给 —— 他会去别处找原因,找不到
+        errors.push(`未知权限:${String(p)}`)
+        continue
+      }
+      if (!hasMain && !hasCapability) {
+        errors.push(`render-only 插件没有系统能力,不该声明权限「${p}」`)
+      } else if (mainMode === 'restricted' && !RESTRICTED_PERMISSIONS.includes(p as PluginPermission)) {
+        errors.push(`受限 main 没有「${p}」对应的能力,不该声明它`)
       }
     }
   }
+
   if (m.engines !== undefined && (typeof m.engines !== 'object' || Array.isArray(m.engines))) {
     errors.push('engines 必须是对象')
   }
-  // 「要开窗口」和「申请了开窗口的权限」必须同时成立。允许只写 ui 不申请权限的话,
-  // 安装确认框就少了一行 —— 而钓鱼窗口正是这一行在告知的东西。
-  //
-  // 注意 `permissions` 整个没写的情况:那等于"什么都没申请",同样要拦住。
-  // 只在 `Array.isArray(...)` 成立时才判的话,一个连 permissions 键都没有的清单
-  // 会从这条校验下面溜过去。
-  const declaredPerms = Array.isArray(m.permissions) ? m.permissions : []
-  if (m.kind === 'sandboxed' && m.ui !== undefined && !declaredPerms.includes('ui')) {
-    errors.push("声明了 ui(自己的窗口)却没有申请「ui」权限")
-  }
+
+  const fields = Array.isArray(m.fields) ? m.fields : []
+  const isTargetsField = fields.some(
+    (f) => f && typeof f === 'object' && (f as PluginField).kind === 'targets'
+  )
 
   validateFields(m.fields, errors)
   validateActions(m.actions, 'actions', errors)
@@ -908,17 +860,34 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
  *
  * 顺带的效果是未知键被**静默丢弃**:清单是从磁盘上读来的,磁盘上的东西可以被手改,
  * 谁也不知道里面多塞了什么。丢掉它们意味着下游拿到的清单形状完全由这里说了算。
- * (代价见 PluginKind 处的说明:新增**安全相关**的形态绝不能靠「多一个可选键」。)
+ * (代价见 PluginMainMode 处的说明:新增**安全相关**的形态绝不能靠「多一个可选键」。)
  */
 export function canonicalManifest(m: Partial<PluginManifest>): PluginManifest {
   const arrayKeys = new Set<string>(formatData.arrayKeys)
   const out: Record<string, unknown> = {}
   for (const key of formatData.manifestKeyOrder) {
     // 空数组兜底:fields / actions 是宿主代码无条件读的,缺了就得到处写 ?? []
-    if (arrayKeys.has(key)) out[key] = m[key as keyof PluginManifest] ?? []
-    else if (m[key as keyof PluginManifest] !== undefined) out[key] = m[key as keyof PluginManifest]
+    if (arrayKeys.has(key)) {
+      out[key] = m[key as keyof PluginManifest] ?? []
+    } else if (key === 'main') {
+      if (m.main) out.main = orderObject(m.main, formatData.mainKeyOrder)
+    } else if (key === 'render') {
+      if (m.render) out.render = orderObject(m.render, formatData.renderKeyOrder)
+    } else if (m[key as keyof PluginManifest] !== undefined) {
+      out[key] = m[key as keyof PluginManifest]
+    }
   }
   return out as unknown as PluginManifest
+}
+
+/** 嵌套对象的键序也是 integrity 的一部分:三处必须按同一份顺序重建 */
+function orderObject(value: object, keys: readonly string[]): Record<string, unknown> {
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of keys) {
+    if (source[key] !== undefined) out[key] = source[key]
+  }
+  return out
 }
 
 /**
@@ -984,12 +953,15 @@ export function validateEnvelope(raw: unknown): Validation<PluginPackageEnvelope
 
     const manifest = manifestResult.value
     if (manifest) {
-      if (manifest.kind === 'script') {
-        const main = manifest.main!
-        if (!names.includes(main)) errors.push(`main「${main}」不在包内`)
-        const mainMeta = e.files[main]
-        if (mainMeta && mainMeta.size > LIMITS.mainBytes) {
-          errors.push(`main 超过 ${LIMITS.mainBytes} 字节上限`)
+      // 每个声明的层都必须把入口打进包里,且各自受入口体积上限约束。
+      const entries: { label: string; file: string }[] = []
+      if (manifest.main) entries.push({ label: 'main', file: manifest.main.entry })
+      if (manifest.render) entries.push({ label: 'render', file: manifest.render.entry })
+      for (const { label, file } of entries) {
+        if (!names.includes(file)) errors.push(`${label} 入口「${file}」不在包内`)
+        const meta = e.files[file]
+        if (meta && meta.size > LIMITS.entryBytes) {
+          errors.push(`${label} 入口超过 ${LIMITS.entryBytes} 字节上限`)
         }
       }
       if (manifest.icon && !names.includes(manifest.icon)) {

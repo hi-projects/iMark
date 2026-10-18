@@ -39,8 +39,8 @@ const mainName = computed(() => (files.value.some(f => f.name === 'main.js') ? '
             <span class="market-mono market-dim">{{ source.id }} v{{ source.version }}</span>
           </h1>
           <p class="market-hint">
-            下面是这个版本包里的文本文件,与将要安装的那份是<b>同一份字节</b>
-            (整包 sha256 与详情页一致)。二进制文件不在这里显示。
+            下面是这个版本包里的文本文件，与将要安装的那份是<b>同一份字节</b>
+            （整包 sha256 与详情页一致）。二进制文件不在这里显示。
           </p>
         </div>
         <button class="settings-close" title="关闭" @click="closeSource()">
@@ -69,9 +69,9 @@ const mainName = computed(() => (files.value.some(f => f.name === 'main.js') ? '
             <div v-if="active.truncated" class="market-alert market-alert-danger">
               <AlertTriangle :size="14" />
               <div>
-                <b>这个文件太大,只显示了一部分。</b>
+                <b>这个文件太大，只显示了一部分。</b>
                 <p>
-                  界面里显示不下整份文件。要完整审查它,请把它下载下来在编辑器里读 ——
+                  界面里显示不下整份文件。要完整审查它，请把它下载下来在编辑器里读 ——
                   在看不全的情况下做判断是不安全的。
                 </p>
               </div>

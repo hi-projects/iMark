@@ -44,7 +44,7 @@ const themeTitle = computed(
 const fileLabel = computed(() => `${appStore.fileName}${appStore.dirty ? ' ●' : ''}`)
 
 /**
- * 定时保存的即时反馈。自动保存是不声不响发生的,没点动静用户不会放心 ——
+ * 自动保存的即时反馈。自动保存是不声不响发生的,没点动静用户不会放心 ——
  * 但常驻一个「已保存」又会在没改动时误导人,所以只在保存后亮几秒(时刻由服务决定)。
  */
 const autoSaveClock = computed(() =>
@@ -61,7 +61,12 @@ const autoSaveClock = computed(() =>
  */
 function onStatusClick(entry: StatusEntry): void {
   const view = pluginById(entry.pluginId)
-  if (!view || !view.state.enabled || view.state.status === 'error') {
+  if (
+    !view ||
+    !view.state.enabled ||
+    view.state.status === 'error' ||
+    view.state.status === 'partial'
+  ) {
     openPluginSettings(entry.pluginId)
     return
   }
@@ -72,7 +77,7 @@ function onStatusClick(entry: StatusEntry): void {
 function statusClass(pluginId: string): Record<string, boolean> {
   const status = pluginById(pluginId)?.state.status
   return {
-    'status-plug-error': status === 'error',
+    'status-plug-error': status === 'error' || status === 'partial',
     'status-plug-ok': status === 'ok',
     'status-plug-running': status === 'running'
   }
@@ -122,7 +127,7 @@ function statusClass(pluginId: string): Record<string, boolean> {
       v-else-if="appStore.autoSavedAt"
       :key="appStore.autoSavedAt"
       class="status-autosave"
-      :title="`定时保存已写入文件 · ${autoSaveClock}`"
+      :title="`自动保存已写入文件 · ${autoSaveClock}`"
     >
       已自动保存 {{ autoSaveClock }}
     </span>

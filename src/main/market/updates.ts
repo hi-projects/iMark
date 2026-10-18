@@ -56,7 +56,8 @@ export async function checkUpdates(force = false): Promise<MarketUpdate[]> {
           latestVersion: remote.version,
           // 权限扩大要在这里就算出来:界面得在用户点「更新」之前把这件事摆在台面上
           newPermissions: remote.permissions.filter(p => !granted.has(p)),
-          kind: remote.kind
+          mainMode: remote.mainMode,
+          hasRender: remote.hasRender
         }
       })
   )

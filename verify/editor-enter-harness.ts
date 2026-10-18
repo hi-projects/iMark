@@ -33,6 +33,7 @@ import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
 import { initPluginHost } from '../src/main/plugins/host'
 import { createMainWindow } from '../src/main/window'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 // 仓库根:打包产物固定落在 <仓库>/out/main/ 下(见文件头),所以由 __dirname 往上两级。
 // 截图一类的临时产物都放这儿,别写到家目录去 —— 换个机器就没有了
@@ -54,11 +55,19 @@ function check(label: string, ok: boolean, detail = ''): void {
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 /** 一行 DOM 的观感:文字、类名、字号字重(加起来才分得清「正文」和「长得像正文的标题」) */
-type LineInfo = { text: string; cls: string; size: string; weight: string; bullet: string }
+type LineInfo = {
+  text: string
+  cls: string
+  size: string
+  weight: string
+  bullet: string
+  bar: string
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
+registerPluginScheme()
 
 async function main(): Promise<void> {
   await app.whenReady()
@@ -126,7 +135,8 @@ async function main(): Promise<void> {
           cls: el.className,
           size: cs.fontSize,
           weight: cs.fontWeight,
-          bullet: b ? getComputedStyle(b, '::after').content : ''
+          bullet: b ? getComputedStyle(b, '::after').content : '',
+          bar: cs.backgroundImage
         }
       })`)
 
@@ -298,6 +308,13 @@ async function main(): Promise<void> {
 
     const head = (await domLines())[0]
     check('引用里的标题行仍按标题渲染', /cm-md-h3/.test(head.cls) && isHeading(head), looks(head))
+    // 回归:节点名是 lezer 的 `Blockquote`(小写 q)。写成 `BlockQuote` 时这条规则
+    // 永不命中 —— 标记被藏掉、引用条也不画,整行看起来就是普通正文。
+    check(
+      '引用行带 cm-md-quote,引用竖线真的画出来',
+      /cm-md-quote/.test(head.cls) && head.bar !== 'none',
+      `${looks(head)} bar=${head.bar}`
+    )
   }
 
   console.log('\n【E】h4 的真正来源是 Ctrl+4 —— 顺便复现「#### 藏起来、只剩加大加粗」')
@@ -322,7 +339,12 @@ async function main(): Promise<void> {
 
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })
-  await writeFile(join(shots, 'editor-enter.png'), (await wc.capturePage()).toPNG())
+  // capturePage 偶发 UnknownVizError(见 verify 记忆):截图是观感产物,不能因此把全绿判成失败
+  try {
+    await writeFile(join(shots, 'editor-enter.png'), (await wc.capturePage()).toPNG())
+  } catch (err) {
+    console.warn(`[verify] 截图失败(不影响断言):${err instanceof Error ? err.message : String(err)}`)
+  }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)
   app.exit(fail === 0 ? 0 : 1)

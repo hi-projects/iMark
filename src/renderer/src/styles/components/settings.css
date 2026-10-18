@@ -34,10 +34,24 @@
 }
 
 .settings-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 0 10px 8px;
   font-size: 11px;
   color: var(--text-tertiary);
   letter-spacing: 0.05em;
+}
+
+/* 分组标题旁的小问号(目前只有「插件」用):原生 title 足够,不引入新的浮层 */
+.settings-nav-help {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  cursor: help;
+}
+
+.settings-nav-help:hover {
+  color: var(--text-secondary);
 }
 
 /* 第二组起(「插件」)与上面拉开一点距离 */
@@ -68,8 +82,8 @@
 
 .settings-nav-active,
 .settings-nav-active:hover {
-  background: var(--bg-selection);
-  color: var(--accent);
+  background: var(--bg-active);
+  color: var(--active-text);
 }
 
 /* 右侧内容 */
@@ -81,12 +95,20 @@
   min-width: 0;
 }
 
+/* 标题栏同时是拖动把手(见 SettingsDialog 的 onDragStart):
+   grab 光标是唯一的提示,但足够 —— 面板里没有别的「可拖」错觉 */
 .settings-main-header {
   display: flex;
   align-items: center;
   gap: 12px;
   flex: 0 0 auto;
   padding: 16px 20px 12px;
+  cursor: grab;
+  user-select: none;
+}
+
+.settings-dialog-dragging .settings-main-header {
+  cursor: grabbing;
 }
 
 .settings-main-header h1 {
@@ -119,6 +141,12 @@
 .settings-body {
   flex: 1 1 auto;
   overflow-y: auto;
+  /* 常驻预留滚动条的宽度。
+     内容是「点一下才变高」的(展开「可以改哪些东西?」、插件报错横幅等),不预留的话,
+     展开瞬间滚动条冒出来把正文挤窄一格,上面的说明文字就会**重新折行** ——
+     同一个面板点一下前后长得不一样,像是点坏了。这里把位置一直留着,两种状态
+     的可用宽度相等,展开就只影响下面,不影响上面。 */
+  scrollbar-gutter: stable;
   padding: 0 20px 24px;
 }
 
@@ -215,17 +243,10 @@
 }
 
 .settings-theme-swatch[data-preview='dark'] {
-  --sw-bg: #0d1117;
-  --sw-border: #30363d;
-  --sw-bar: #22272e;
-  --sw-line: #3d444d;
-}
-
-.settings-theme-swatch[data-preview='black'] {
-  --sw-bg: #000000;
-  --sw-border: #2e2e2e;
-  --sw-bar: #121212;
-  --sw-line: #333333;
+  --sw-bg: #262626;
+  --sw-border: #363636;
+  --sw-bar: #212121;
+  --sw-line: #454545;
 }
 
 /* ---------- 设置项(「编辑器」页:一行一项,开关/滑杆在右) ---------- */
@@ -277,6 +298,35 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 行内的小动作(「刷新」):看起来是链接,点起来是按钮 */
+.settings-inline-link {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-editor);
+  cursor: pointer;
+}
+
+.settings-inline-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.settings-inline-link:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+/* 操作后的补充说明(设置 → 系统:注册完还要去系统设置里确认一下) */
+.settings-note {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 
 /* 开关:与插件设置页同一套观感。类名不复用那边的是因为 `.plugin-switch` 长在插件域,
@@ -354,8 +404,8 @@
 .settings-preset-active,
 .settings-preset-active:hover {
   border-color: var(--accent);
-  color: var(--accent);
-  background: var(--bg-selection);
+  color: var(--active-text);
+  background: var(--bg-active);
 }
 
 .settings-number-wrap {

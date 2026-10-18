@@ -1,7 +1,8 @@
-import { app, safeStorage } from 'electron'
+import { safeStorage } from 'electron'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { writeFileAtomic } from './files'
+import { dataRoot } from './dataDir'
 
 /**
  * 插件密钥(token 等)存储。
@@ -27,7 +28,7 @@ interface SecretFile {
 let cache: SecretFile | null = null
 
 function secretsPath(): string {
-  return join(app.getPath('userData'), 'secrets.json')
+  return join(dataRoot(), 'secrets.json')
 }
 
 function encryptionAvailable(): boolean {

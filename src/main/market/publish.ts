@@ -26,7 +26,7 @@ export async function previewPublish(dir: string): Promise<PublishPreview> {
   if (!verified.ok) {
     throw new Error(`打包结果未通过校验:${verified.errors.slice(0, 4).join(';')}`)
   }
-  const { manifest, envelope, mainSha256 } = verified.value
+  const { manifest, envelope, mainSha256, renderSha256 } = verified.value
 
   let existingVersion: string | null = null
   let existingOwner: string | null = null
@@ -49,9 +49,12 @@ export async function previewPublish(dir: string): Promise<PublishPreview> {
     id: manifest.id,
     name: manifest.name,
     version: manifest.version,
-    kind: manifest.kind,
+    mainMode: manifest.main?.mode ?? null,
+    hasRender: Boolean(manifest.render),
+    capability: manifest.capability ?? null,
     integrity: envelope.integrity,
     mainSha256,
+    renderSha256,
     fileCount: packed.files.length,
     totalBytes: packed.totalBytes,
     files: packed.files,

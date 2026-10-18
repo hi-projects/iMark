@@ -1,5 +1,5 @@
 /**
- * 能力闸门 —— **所有** op 调用的唯一入口(沙箱走 IPC,trusted 走 `api.ts` 生成的薄壳)。
+ * 能力闸门 —— **所有** op 调用的唯一入口(沙箱走 IPC,node main 走 `api.ts` 生成的薄壳)。
  *
  * 顺序是刻意的,每一步都在回答一个不同的问题:
  *
@@ -99,10 +99,15 @@ export function normalizeArgs(value: unknown): { ok: true; value: unknown } | { 
 }
 
 export interface InvokeOptions {
-  /** 调用来源:沙箱(IPC)还是 trusted(直接调用)。只影响审计文案 */
-  source: 'sandbox' | 'trusted'
+  /** 调用来源:restricted(IPC)、node(直接调用)还是 render(经主进程中转)。只影响审计文案 */
+  source: 'restricted' | 'node' | 'render'
   /** 被拒时写进哪里(插件日志)。不传就不记 */
   audit?(line: string): void
+  /**
+   * 调用方撤销时触发。**只有 node main 侧给得出**:AbortSignal 过不了 IPC,
+   * 沙箱插件那边也没有"取消"这个动作(超时对它就是撤销)。
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -145,20 +150,12 @@ export async function invokeOp(
     })
   }
 
-  // 形态专属的能力:不是权限问题(作者申请也没用),而是"这个形态根本没有那件东西"。
-  // 说清楚哪一半缺、该走哪条路,比笼统地拒掉强
-  if (def.sandboxOnly && !ctx.isSandbox) {
+  // 层专属的能力:不是权限问题(作者申请也没用),而是"这个层根本没有那件东西"。
+  // 说清楚哪一层缺、该走哪条路,比笼统地拒掉强
+  if (def.restrictedOnly && !ctx.isRestricted) {
     return fail({
       code: 'E_PERMISSION',
-      message: `「${name}」只有沙箱插件能用 —— 它需要插件自己的一整个页面。脚本插件请用自己的代码直接做。`
-    })
-  }
-  if (def.trustedOnly && ctx.isSandbox) {
-    return fail({
-      code: 'E_PERMISSION',
-      message:
-        `「${name}」只有脚本插件能用(往 iMark 的界面里挂东西)。` +
-        `沙箱插件走的是另一条路:在清单里声明 ui.dock,把**自己的页面**停靠到侧栏 —— 宿主不去渲染它的 HTML。`
+      message: `「${name}」只有 restricted main 能用 —— 它依赖隐藏执行页的调度器。node main 请直接用自己的定时器。`
     })
   }
 
@@ -186,15 +183,20 @@ export async function invokeOp(
     inflight.set(key, now + 1)
   }
 
+  // 撤销信号有两个来源:调用方主动取消(git-sync 停用插件时会 abort),以及这次调用超时。
+  // 合起来交给 op —— 否则「超时」只是不再等它,子进程会一直跑到自己的超时才结束。
+  const abort = new AbortController()
+  const opSignal = opts.signal ? AbortSignal.any([opts.signal, abort.signal]) : abort.signal
+
   let timer: ReturnType<typeof setTimeout> | null = null
   try {
     const value = await Promise.race([
-      Promise.resolve().then(() => def.run(ctx, normalized.value)),
+      Promise.resolve().then(() => def.run(ctx, normalized.value, { signal: opSignal })),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new OpError('E_TIMEOUT', `「${name}」超过 ${def.timeoutMs / 1000} 秒未完成`)),
-          def.timeoutMs
-        )
+        timer = setTimeout(() => {
+          abort.abort()
+          reject(new OpError('E_TIMEOUT', `「${name}」超过 ${def.timeoutMs / 1000} 秒未完成`))
+        }, def.timeoutMs)
       })
     ])
     return { ok: true, value: value ?? null }
@@ -216,7 +218,7 @@ export async function invokeOp(
   }
 }
 
-/** trusted 侧要的「权限 + 参数」两问,不跑 op(api.ts 生成只读属性时用) */
+/** node main 侧要的「权限 + 参数」两问,不跑 op(api.ts 生成只读属性时用) */
 export function opRequires(opName: string): PluginPermission | null {
   return getOp(opName)?.perm ?? null
 }

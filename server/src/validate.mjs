@@ -40,7 +40,7 @@ try {
 export const LIMITS = {
   envelopeBytes: 8 * 1024 * 1024,
   fileBytes: 2 * 1024 * 1024,
-  mainBytes: 1024 * 1024,
+  entryBytes: 1024 * 1024,
   readmeBytes: 256 * 1024,
   iconBytes: 64 * 1024,
   fileCount: 64,
@@ -62,6 +62,10 @@ const FIELD_KINDS = ['text', 'password', 'number', 'boolean', 'select', 'targets
 /** 对话框里允许出现的字段 kind —— 密钥与目标列表是一次性的对话框装不下的东西 */
 const DIALOG_FIELD_KINDS = ['text', 'number', 'boolean', 'select']
 const RESERVED_IDS = ['imk', 'market', 'system', 'core', 'node', 'electron']
+/** 权限词表(与 src/shared/pluginPackage.ts 保持一致) */
+const PERMISSIONS = ['git', 'secrets', 'vault:read', 'vault:write', 'network', 'shell', 'settings']
+/** restricted main 真正有对应能力的权限 */
+const RESTRICTED_PERMISSIONS = ['git', 'secrets', 'vault:read', 'vault:write', 'network']
 /** 见文件头:这一份来自 src/shared/pluginFormat.json,与客户端、打包器共用 */
 const ALLOWED_EXT = FORMAT.allowedExtensions
 const RESERVED_SEGMENT = FORMAT.reservedSegment
@@ -211,20 +215,48 @@ export function validateManifest(manifest) {
   if (typeof manifest.version !== 'string' || !VERSION_RE.test(manifest.version)) {
     errors.push('version 必须是 x.y.z 形式')
   }
-  if (manifest.kind !== 'script' && manifest.kind !== 'declarative' && manifest.kind !== 'sandboxed') {
-    errors.push("kind 必须是 'script' / 'declarative' / 'sandboxed' 之一")
+  const hasMain = manifest.main !== undefined
+  const hasRender = manifest.render !== undefined
+  const hasCapability = manifest.capability !== undefined
+  if (!hasMain && !hasRender && !hasCapability) {
+    errors.push('清单必须至少声明 main / render / capability 之一')
   }
-  // 客户端那边同名的判断见 src/shared/pluginPackage.ts 的 hasMainEntry:
-  // script 的 main 在主进程跑,sandboxed 的 main 在插件自己的页面里跑,
-  // 对「入口必须在包里」这件事两者一模一样
-  if (manifest.kind === 'sandboxed') {
-    if (typeof manifest.main !== 'string' || !manifest.main || !/\.(c?js)$/.test(manifest.main)) {
-      errors.push('沙箱插件必须给出 main(包内的 .js 文件)')
+  if (hasCapability && (hasMain || hasRender)) {
+    errors.push('capability 只能单独出现,不能与 main / render 并存')
+  }
+
+  let mainMode = null
+  if (hasMain) {
+    if (!manifest.main || typeof manifest.main !== 'object' || Array.isArray(manifest.main)) {
+      errors.push('main 必须是对象 { mode, entry }')
+    } else {
+      if (manifest.main.mode !== 'restricted' && manifest.main.mode !== 'node') {
+        errors.push("main.mode 必须是 'restricted' 或 'node'")
+      } else {
+        mainMode = manifest.main.mode
+      }
+      if (typeof manifest.main.entry !== 'string' || !isSafeRelPath(manifest.main.entry)) {
+        errors.push('main.entry 必须是包内的合法相对路径')
+      } else if (mainMode === 'node' && !/\.(c?js)$/.test(manifest.main.entry)) {
+        errors.push('node main 的入口必须是 .js / .cjs(CommonJS)')
+      } else if (mainMode === 'restricted' && !/\.(m?js)$/.test(manifest.main.entry)) {
+        errors.push('restricted main 的入口必须是 .js / .mjs(ES module)')
+      }
     }
-    if (manifest.capability !== undefined) errors.push('沙箱插件不能声明 capability')
   }
-  if (manifest.ui !== undefined && manifest.kind !== 'sandboxed') {
-    errors.push("只有沙箱插件能声明 ui")
+  if (hasRender) {
+    if (!manifest.render || typeof manifest.render !== 'object' || Array.isArray(manifest.render)) {
+      errors.push('render 必须是对象 { entry }')
+    } else if (
+      typeof manifest.render.entry !== 'string' ||
+      !isSafeRelPath(manifest.render.entry) ||
+      !/\.js$/.test(manifest.render.entry)
+    ) {
+      errors.push('render.entry 必须是包内的 .js 普通脚本')
+    }
+  }
+  if (hasCapability && (typeof manifest.capability !== 'string' || !manifest.capability)) {
+    errors.push('capability 必须是非空字符串')
   }
   const fields = Array.isArray(manifest.fields) ? manifest.fields : []
   if (!Array.isArray(manifest.fields)) errors.push('fields 必须是数组')
@@ -258,14 +290,23 @@ export function validateManifest(manifest) {
     }
   }
   validateLineMenu(manifest.lineMenu, errors)
-  if (manifest.kind === 'declarative') {
-    if (manifest.main !== undefined) errors.push('声明式插件不能有 main')
-    if (typeof manifest.capability !== 'string' || !manifest.capability) {
-      errors.push('声明式插件必须声明 capability')
-    }
-  }
   if (manifest.permissions !== undefined && !Array.isArray(manifest.permissions)) {
     errors.push('permissions 必须是数组')
+  } else {
+    const seen = new Set()
+    for (const p of manifest.permissions ?? []) {
+      if (seen.has(p)) errors.push(`权限「${p}」重复声明`)
+      seen.add(p)
+      if (!PERMISSIONS.includes(p)) {
+        errors.push(`未知权限:${p}`)
+        continue
+      }
+      if (!hasMain && !hasCapability) {
+        errors.push(`render-only 插件没有系统能力,不该声明权限「${p}」`)
+      } else if (mainMode === 'restricted' && !RESTRICTED_PERMISSIONS.includes(p)) {
+        errors.push(`受限 main 没有「${p}」对应的能力`)
+      }
+    }
   }
   return { ok: errors.length === 0, errors }
 }
@@ -280,7 +321,9 @@ export function validateEnvelope(raw) {
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad()
   if (raw.format !== 'imk-plugin') errors.push('format 必须是 imk-plugin')
-  if (raw.formatVersion !== 1) errors.push('formatVersion 必须是 1')
+  if (raw.formatVersion !== FORMAT.formatVersion) {
+    errors.push(`formatVersion 必须是 ${FORMAT.formatVersion}`)
+  }
 
   const manifest = raw.manifest
   const m = validateManifest(manifest)
@@ -327,10 +370,12 @@ export function validateEnvelope(raw) {
   }
   if (errors.length > 0) return bad()
 
-  if (manifest.kind === 'script' || manifest.kind === 'sandboxed') {
-    const main = manifest.main ?? 'main.js'
-    if (!names.includes(main)) errors.push(`入口文件 ${main} 不在包里`)
-    else if (files[main].size > LIMITS.mainBytes) errors.push('入口文件超过大小上限')
+  const entries = []
+  if (manifest.main) entries.push({ label: 'main', file: manifest.main.entry })
+  if (manifest.render) entries.push({ label: 'render', file: manifest.render.entry })
+  for (const { label, file } of entries) {
+    if (!names.includes(file)) errors.push(`${label} 入口 ${file} 不在包里`)
+    else if (files[file].size > LIMITS.entryBytes) errors.push(`${label} 入口超过大小上限`)
   }
   if (manifest.icon && !names.includes(manifest.icon)) errors.push(`图标 ${manifest.icon} 不在包里`)
 
@@ -349,10 +394,8 @@ export function validateEnvelope(raw) {
       files,
       data,
       integrity: computed,
-      mainSha256:
-        manifest.kind === 'script' || manifest.kind === 'sandboxed'
-          ? (files[manifest.main ?? 'main.js']?.sha256 ?? null)
-          : null,
+      mainSha256: manifest.main ? (files[manifest.main.entry]?.sha256 ?? null) : null,
+      renderSha256: manifest.render ? (files[manifest.render.entry]?.sha256 ?? null) : null,
       size
     }
   }

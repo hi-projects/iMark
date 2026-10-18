@@ -8,7 +8,6 @@ import VaultPicker from './components/VaultPicker.vue'
 import EditorPane from './components/EditorPane.vue'
 import StatusBar from './components/StatusBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
-import PluginDock from './components/PluginDock.vue'
 import LineMenu from './components/LineMenu.vue'
 import LineActionDialog from './components/LineActionDialog.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -30,6 +29,7 @@ import {
   exportHtmlFile,
   newFile,
   openFileByPath,
+  openFileFromSystem,
   openFileViaDialog,
   saveBeforeClose,
   saveCurrentFile,
@@ -47,8 +47,10 @@ import {
 import { openMarketSettings } from './services/pluginService'
 import { initEditorSettings } from './services/editorSettings'
 import { isInside } from './utils/paths'
+import { api } from './services/api'
 
 let offMenu: (() => void) | null = null
+let offOpenFile: (() => void) | null = null
 
 async function handleMenuCommand(id: MenuCommandId): Promise<void> {
   // 仓库选择界面下没有编辑器实例,文件/格式类命令忽略(与 Obsidian 无仓库时一致)
@@ -132,7 +134,7 @@ onMounted(async () => {
   window.addEventListener('dragover', e => e.preventDefault())
   window.addEventListener('drop', e => e.preventDefault())
   try {
-    const settings = await window.api.getSettings()
+    const settings = await api.getSettings()
     applyTheme(settings.theme)
     initOutlineVisible(settings.outline ?? true)
     initExplorerVisible(settings.explorer ?? true)
@@ -157,12 +159,18 @@ onMounted(async () => {
   } catch {
     applyTheme('light')
   }
-  offMenu = window.api.onMenuCommand(id => void handleMenuCommand(id))
-  window.api.onSaveBeforeClose(() => void saveBeforeClose())
+  offMenu = api.onMenuCommand(id => void handleMenuCommand(id))
+  api.onSaveBeforeClose(() => void saveBeforeClose())
+  // 运行中系统又递来一个文件(第二个实例的 argv)
+  offOpenFile = api.onOpenFile(path => void openFileFromSystem(path))
+  // 启动参数里带的那个文件,等上面这一整套初始化完成后再取 —— 顺序天然正确
+  const pending = await api.takePendingOpenFile()
+  if (pending) await openFileFromSystem(pending)
 })
 
 onBeforeUnmount(() => {
   offMenu?.()
+  offOpenFile?.()
 })
 </script>
 
@@ -171,13 +179,9 @@ onBeforeUnmount(() => {
   <div v-else class="app-shell">
     <div class="app-body">
       <FileExplorer />
-      <!-- 插件停靠:没有插件要停在这一侧时整块不占位(见组件里的 v-if) -->
-      <PluginDock side="left" />
       <EditorPane />
       <OutlineSidebar />
-      <PluginDock side="right" />
     </div>
-    <PluginDock side="bottom" />
     <StatusBar />
     <QuickSwitcher />
     <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->

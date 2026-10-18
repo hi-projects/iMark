@@ -1,15 +1,17 @@
 /**
- * 行首「+」菜单 + 表格插入端到端验证(Quick Edit 插件)。
+ * 行首「+」菜单 + 表格插入端到端验证(Advanced Table,插件 id 仍是 quick-edit)。
  *
  * 这条链路横跨四个进程边界:CodeMirror 装饰(渲染层) → 插件贡献点(descriptor,主进程)
  * → 插件运行时(主进程里的用户代码) → 回到渲染层改文档。任何一段接错,现象都是
  * 「点了 + 什么都没发生」,所以这里不看中间态,只钉**最终可见的结果**:
- * DOM 里的行、磁盘上的文件、光标落点(靠往那儿打字来验)。
+ * DOM 里的行、磁盘上的文件、焦点落点(靠往那儿打字来验)。
  *
  * 覆盖:
  *   1 全新 userData:内置包自动补装、默认启用,按钮只在光标行
  *   2 点「+」→ 菜单出现,里面有「表格」
- *   3 点「表格」→ 对话框只有行数/列数 → 改成 4 行 2 列 → 确定 → 文档与磁盘都是 4×2
+ *   3 点「表格」→ 对话框只有行数/列数 → 改成 4 行 2 列 → 确定 → 文档与磁盘都是 4×2;
+ *     表格以真 <table> 渲染,焦点直接落在第一个表头单元格里
+ *   3b 在渲染态直接输入:打字 → Tab 换格 → 保存时自动提交 → 回车换行
  *   4 取消 / Esc 不产生任何改动(反向断言)
  *   5 失败路径:插件被停用时点确定,文档一个字符都不变(且要吭声)
  *   6 重新初始化宿主 + 重载渲染层后照旧可用(盯 descriptor 从磁盘重建的那条路)
@@ -27,6 +29,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { integrityInput } from '../src/shared/pluginPackage'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
@@ -65,6 +68,7 @@ const sep = (cols: number): string => row(...(Array(cols).fill(' --- ') as strin
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
+registerPluginScheme()
 
 /**
  * 一个只声明 template 条目的临时脚本插件。
@@ -89,8 +93,7 @@ function templatePackage(): unknown {
     name: '临时模板',
     description: '验证 template 条目不经过插件往返。',
     version: '1.0.0',
-    kind: 'script',
-    main: 'main.js',
+    main: { mode: 'node', entry: 'main.js' },
     permissions: [],
     fields: [],
     actions: [],
@@ -235,19 +238,66 @@ async function main(): Promise<void> {
     await sleep(160)
   }
 
-  /** 合成输入偶尔整段丢,落空了就重新聚焦再打(丢了以后报出来的是看着像产品 bug 的假失败) */
-  async function type(text: string): Promise<void> {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await focusEditor()
-      for (const ch of text) {
-        wc.sendInputEvent({ type: 'char', keyCode: ch })
-        await sleep(20)
-      }
-      await sleep(240)
-      const doc = await evalJs<string>(`document.querySelector('.cm-content')?.textContent ?? ''`)
-      if (doc.includes(text)) return
-      console.log(`    (第 ${attempt} 次输入没落进去:${JSON.stringify(text)})`)
+  /**
+   * 往**当前焦点**里打字(不碰 .cm-content)。
+   *
+   * 表格单元格是 contenteditable,焦点本来就该在那儿;老版本这里会先
+   * `.cm-content.focus()`,等于把焦点从单元格抢回编辑器 —— 在渲染态下那是
+   * 一个**看不见的光标**,打出来的字只会落进隐藏的源码。
+   */
+  async function typeFocused(text: string): Promise<void> {
+    if (!win.isVisible()) win.show()
+    if (!win.isFocused()) win.focus()
+    await sleep(80)
+    for (const ch of text) {
+      wc.sendInputEvent({ type: 'char', keyCode: ch })
+      await sleep(20)
     }
+    await sleep(220)
+  }
+
+  /** 当前焦点如果是渲染表格里的单元格,返回它的行列与可编辑态 */
+  const activeTableCell = (): Promise<{
+    row: number
+    col: number
+    editable: string
+  } | null> =>
+    evalJs(`
+      (() => {
+        const el = document.activeElement
+        const cell = el && el.closest ? el.closest('th,td') : null
+        if (!cell || !cell.closest('.cm-md-table-widget')) return null
+        return {
+          row: Number(cell.dataset.row),
+          col: Number(cell.dataset.col),
+          editable: cell.getAttribute('contenteditable') ?? ''
+        }
+      })()`)
+
+  async function waitForActiveCell(ms = 5000): Promise<{ row: number; col: number; editable: string } | null> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      const cell = await activeTableCell()
+      if (cell) return cell
+      await sleep(80)
+    }
+    return null
+  }
+
+  /** 真鼠标点一下某个渲染表格单元格的中心(和用户的手一样) */
+  async function clickTableCell(row: number, col: number): Promise<boolean> {
+    const spot = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const cell = document.querySelector('.cm-md-table-widget th[data-row="${row}"][data-col="${col}"], .cm-md-table-widget td[data-row="${row}"][data-col="${col}"]')
+        if (!cell) return null
+        const r = cell.getBoundingClientRect()
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
+      })()`)
+    if (!spot) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    await sleep(300)
+    return true
   }
 
   const click = (sel: string): Promise<boolean> =>
@@ -262,17 +312,6 @@ async function main(): Promise<void> {
         .findIndex(el => el.querySelector('.line-plus'))
       return i < 0 ? -1 : i + 1
     })()`)
-
-  /**
-   * 每行的文字。**必须把「+」摘掉**:它是这一行 DOM 里的一员,
-   * 不摘的话光标所在那行的 textContent 会多出一个 `+`。
-   */
-  const domLines = (): Promise<string[]> =>
-    evalJs<string[]>(`[...document.querySelectorAll('.cm-content .cm-line')].map(el => {
-      const c = el.cloneNode(true)
-      c.querySelectorAll('.line-plus').forEach(w => w.remove())
-      return c.textContent
-    })`)
 
   const menuLabels = (): Promise<string[]> =>
     evalJs<string[]>(`[...document.querySelectorAll('.line-menu-item')].map(el => el.textContent.trim())`)
@@ -367,10 +406,12 @@ async function main(): Promise<void> {
 
   // ---------- 1. 全新 userData:内置包补装 + 默认启用 ----------
 
-  console.log('\n【1】全新 userData:Quick Edit 自动补装且默认启用,按钮只在光标行')
-  const plugins = await evalJs<
-    { descriptor: { id: string }; state: { enabled: boolean }; source?: string }[]
-  >(`window.api.listPlugins()`)
+  console.log('\n【1】全新 userData:Advanced Table 自动补装且默认启用,按钮只在光标行')
+  const plugins = (await getPluginHost()!.list()) as unknown as {
+    descriptor: { id: string }
+    state: { enabled: boolean }
+    source?: string
+  }[]
   const quick = plugins.find(p => p.descriptor.id === 'quick-edit')
   check('插件列表里有 quick-edit(内置包已补装)', !!quick, JSON.stringify(plugins.map(p => p.descriptor.id)))
   check('它是默认启用的', quick?.state.enabled === true, JSON.stringify(quick?.state))
@@ -428,26 +469,108 @@ async function main(): Promise<void> {
     JSON.stringify(got.filter(l => l.startsWith('|')))
   )
   check('分隔行不带冒号(即默认左对齐)', got.includes(sep(2)))
-
-  const shown = await domLines()
+  // 设置页的「插件日志」是宿主日志文件的尾巴:操作摘要必须和插件自己 log() 的行
+  // 一起出现在这里,不能只在磁盘上的日志文件里看得到
+  const quickView = (await getPluginHost()!.list()).find(v => v.descriptor.id === 'quick-edit')
   check(
-    'DOM 里也看得到这张表(WYSIWYG 没把它吃掉)',
-    JSON.stringify(shown.slice(0, want.length)) === JSON.stringify(want),
-    JSON.stringify(shown.slice(0, 10))
+    '这次插入也进了设置页的插件日志',
+    quickView?.logs?.some(
+      l =>
+        l.level === 'operation' &&
+        l.message.includes('表格 · 成功') &&
+        l.message.includes('已插入 4 × 2 表格')
+    ) === true,
+    JSON.stringify(quickView?.logs?.slice(-3))
+  )
+
+  const rendered = await evalJs<{
+    tables: number
+    sourceRows: number
+    th: number
+    td: number
+    voids: number
+  }>(`
+    (() => {
+      const t = document.querySelector('.cm-content .cm-md-table-widget table')
+      return {
+        tables: document.querySelectorAll('.cm-content .cm-md-table-widget table').length,
+        sourceRows: document.querySelectorAll('.cm-content .cm-line.cm-md-table').length,
+        th: t ? t.querySelectorAll('th').length : 0,
+        td: t ? t.querySelectorAll('td').length : 0,
+        voids: document.querySelectorAll('.cm-content .cm-line.cm-md-table-void').length
+      }
+    })()`)
+  check(
+    '表格以真 <table> 渲染出来(不再铺 Markdown 源码)',
+    rendered.tables === 1 && rendered.sourceRows === 0,
+    JSON.stringify(rendered)
+  )
+  check('4 行 2 列 = 2 个表头 + 6 个数据格', rendered.th === 2 && rendered.td === 6, JSON.stringify(rendered))
+  // 4 行 = 表头 + 分隔行 + 3 行内容,共 5 行源码;表头那一行承载 widget,剩下 4 行折叠
+  check('其余 4 行折叠成零高度的 void 行', rendered.voids === 4, JSON.stringify(rendered))
+
+  console.log('\n【3b】插入后焦点就在第一个表头单元格里 —— 在渲染态直接输入')
+  const firstCell = await waitForActiveCell()
+  check(
+    '焦点落在第一个表头单元格(contenteditable)',
+    firstCell?.row === 0 && firstCell?.col === 0 && firstCell?.editable === 'plaintext-only',
+    JSON.stringify(firstCell)
   )
   check(
-    '表格行按表格样式渲染(而不是一整段正文)',
-    await evalJs<boolean>(`document.querySelectorAll('.cm-content .cm-line.cm-md-table').length >= 5`)
+    '表格仍然渲染着(没有退回源码态)',
+    (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-table-widget table').length`)) === 1
   )
 
-  console.log('\n【3b】光标落在第一个表头单元格里 —— 直接打字验证')
-  await type('X')
+  await typeFocused('X')
+  await key('Tab')
+  const secondCell = await waitForActiveCell(2000)
+  check('Tab 把焦点移到第二格', secondCell?.row === 0 && secondCell?.col === 1, JSON.stringify(secondCell))
+  await typeFocused('Y')
+  // 不按回车:直接保存。第二格的 Y 还只在 contenteditable 里,保存路径必须先把它刷回文档
   const afterTyping = await readSource()
   check(
-    '打出来的字符进了第一个表头单元格',
-    afterTyping[1] === row(' X    ', BLANK_CELL),
+    '打字进的是表头单元格,Tab 后第二格也在保存时提交了',
+    afterTyping[1] === '| X | Y |',
     JSON.stringify(afterTyping.slice(1, 3))
   )
+  check(
+    '保存没有把表格翻回源码',
+    (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-table-widget table').length`)) === 1
+  )
+
+  await key('Enter')
+  const moved = await waitForActiveCell(2000)
+  check('回车提交并移到下一行同一列', moved?.row === 1 && moved?.col === 1, JSON.stringify(moved))
+
+  // Tab 走到最后一格再按一次:自动补一行(不补的话渲染态下就再也加不了行了)
+  for (let i = 0; i < 5; i++) await key('Tab')
+  const appended = await waitForActiveCell(2000)
+  check('在最后一格按 Tab 自动加一行并落在新行第一格', appended?.row === 4 && appended?.col === 0, JSON.stringify(appended))
+  const afterAppend = await readSource()
+  check(
+    '新行写进了文档(整行序列化,空格子补成 `|  |  |`)',
+    afterAppend.includes('|  |  |'),
+    JSON.stringify(afterAppend)
+  )
+  check(
+    '加行后表格仍然是渲染态',
+    (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-table-widget table').length`)) === 1
+  )
+
+  // 点击:必须留在渲染态就地编辑,而不是整张表翻回 Markdown(这次改动的核心要求)
+  await key('Escape')
+  check('点击得到表头第一格', await clickTableCell(0, 0))
+  const clicked = await activeTableCell()
+  check(
+    '点击后进入单元格编辑态(没有变回语法格式)',
+    clicked?.row === 0 && clicked?.col === 0 && clicked?.editable === 'plaintext-only',
+    JSON.stringify(clicked)
+  )
+  check(
+    '点击后表格还在渲染',
+    (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-table-widget table').length`)) === 1
+  )
+  await key('Escape')
 
   // ---------- 3c. 下一行是正文(用户实际踩到的那个场景) ----------
 
@@ -465,12 +588,21 @@ async function main(): Promise<void> {
   )
   const swallowed = await evalJs<boolean>(`
     [...document.querySelectorAll('.cm-content .cm-line')]
-      .some(el => el.textContent.includes('正文') && el.className.includes('cm-md-table'))`)
+      .some(el => el.textContent.includes('正文') && el.className.split(/\s+/).includes('cm-md-table'))`)
   check('「正文」没有被吸进表格(表格行数仍是 3)', !swallowed)
+  const besideRendered = await evalJs<{ tables: number; th: number; td: number }>(`
+    (() => {
+      const t = document.querySelector('.cm-content .cm-md-table-widget table')
+      return {
+        tables: document.querySelectorAll('.cm-content .cm-md-table-widget table').length,
+        th: t ? t.querySelectorAll('th').length : 0,
+        td: t ? t.querySelectorAll('td').length : 0
+      }
+    })()`)
   check(
-    '表格行数就是 3 行(表头 + 分隔 + 1 行内容)',
-    (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-line.cm-md-table').length`)) === 3,
-    String(await evalJs<number>(`document.querySelectorAll('.cm-content .cm-line.cm-md-table').length`))
+    '表格渲染成真表格:2 个表头 + 1 行内容',
+    besideRendered.tables === 1 && besideRendered.th === 2 && besideRendered.td === 2,
+    JSON.stringify(besideRendered)
   )
 
   // ---------- 3d. 光标停在已有表格上:插入点落到整张表之下 ----------
@@ -515,6 +647,596 @@ async function main(): Promise<void> {
     `找到 ${tableCount} 张表(DOM 共 ${await evalJs<number>(`document.querySelectorAll('.cm-content .cm-line').length`)} 行)`
   )
 
+  // ---------- 3e. 结构控件:插行 / 插列 / 删行 / 删列 / 删整表 ----------
+
+  console.log('\n【3e】表格四周的控件:插行、插列、删行、删列、删整表')
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+
+  const tableInfo = (): Promise<{ th: number; td: number; tr: number; controls: boolean }> =>
+    evalJs(`
+      (() => {
+        const t = document.querySelector('.cm-md-table-widget table')
+        return {
+          th: t ? t.querySelectorAll('th').length : 0,
+          td: t ? t.querySelectorAll('td').length : 0,
+          tr: t ? t.querySelectorAll('tr').length : 0,
+          controls: !!document.querySelector('.cm-md-table-widget [data-act="add-row"]')
+        }
+      })()`)
+
+  const clickCtl = (selector: string): Promise<boolean> =>
+    evalJs<boolean>(`
+      (() => {
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return false
+        el.click()
+        return true
+      })()`)
+
+  const renderedTableCount = (): Promise<number> =>
+    evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-table-widget table').length`)
+
+  let tableMeta = await tableInfo()
+  check('控件出现了(行/列插入 + 与删除 ×)', tableMeta.controls)
+  check('初始是 2 列、表头 + 1 行内容', tableMeta.th === 2 && tableMeta.td === 2 && tableMeta.tr === 2, JSON.stringify(tableMeta))
+
+  check('点表头下方的 + 插入一行', await clickCtl('[data-act="add-row"][data-after="0"]'))
+  const rowCell = await waitForActiveCell(2000)
+  check('新行插在表头下方,焦点落在它的第一格', rowCell?.row === 1 && rowCell?.col === 0, JSON.stringify(rowCell))
+  tableMeta = await tableInfo()
+  check('渲染表多了一行', tableMeta.tr === 3 && tableMeta.td === 4, JSON.stringify(tableMeta))
+  let structureSource = await readSource()
+  check('源码里多了整行空格子 `|  |  |`', structureSource.includes('|  |  |'), JSON.stringify(structureSource))
+
+  check('点最右侧的 + 插入一列', await clickCtl('[data-act="add-col"][data-before="2"]'))
+  const colCell = await waitForActiveCell(2000)
+  check('新列的表头格拿到焦点', colCell?.row === 0 && colCell?.col === 2, JSON.stringify(colCell))
+  tableMeta = await tableInfo()
+  check('渲染表变成 3 列', tableMeta.th === 3 && tableMeta.td === 6, JSON.stringify(tableMeta))
+  structureSource = await readSource()
+  check(
+    '分隔行跟着变成 3 列',
+    structureSource.includes('| --- | --- | --- |'),
+    JSON.stringify(structureSource)
+  )
+  check(
+    '每行都多了一格',
+    structureSource.includes('| A | B |  |'),
+    JSON.stringify(structureSource)
+  )
+
+  check('点第二行左侧的 × 删除该行', await clickCtl('[data-act="delete-row"][data-row="1"]'))
+  await sleep(300)
+  tableMeta = await tableInfo()
+  check('行数回到 2(表头 + 1 行内容)', tableMeta.tr === 2 && tableMeta.td === 3, JSON.stringify(tableMeta))
+  structureSource = await readSource()
+  check('空行从源码里消失', !structureSource.includes('|  |  |'), JSON.stringify(structureSource))
+
+  check('点第三列顶部的 × 删除该列', await clickCtl('[data-act="delete-col"][data-col="2"]'))
+  await sleep(300)
+  tableMeta = await tableInfo()
+  check('列数回到 2', tableMeta.th === 2 && tableMeta.td === 2, JSON.stringify(tableMeta))
+  structureSource = await readSource()
+  check(
+    '分隔行也回到 2 列',
+    structureSource.includes('| --- | --- |') && !structureSource.includes('| --- | --- | --- |'),
+    JSON.stringify(structureSource)
+  )
+
+  check('点右上角的 × 删除整张表', await clickCtl('[data-act="delete-table"]'))
+  await sleep(400)
+  check('渲染表消失', (await renderedTableCount()) === 0)
+  structureSource = await readSource()
+  check(
+    '源码里的表格行都没了,表格外的正文还在',
+    !structureSource.some(l => l.trim().startsWith('|')) &&
+      structureSource.some(l => l.includes('开头')) &&
+      structureSource.some(l => l.includes('末尾')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3f. 选中整行 / 整列 / 整表 + Delete / Backspace ----------
+
+  console.log('\n【3f】按住左键拖动选中行/列、点整表把手,再按 Delete / Backspace 删除')
+  const TABLE_2x2 = '开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n末尾\n'
+  await loadDoc(TABLE_2x2)
+  await sleep(500)
+
+  const frameFocused = (): Promise<boolean> =>
+    evalJs<boolean>(
+      `document.activeElement?.classList?.contains('cm-md-table-frame') === true`
+    )
+  const selectedCount = (): Promise<number> =>
+    evalJs<number>(`document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`)
+
+  /**
+   * 真鼠标按住左键,从一条数据行竖着拖到另一条(行参数是 tbody 里的下标)。
+   * x 保持不变、y 取目标行靠下的位置:位移以纵向为主,才会判定为"选行"。
+   */
+  const dragRows = async (fromBody: number, toBody: number): Promise<boolean> => {
+    const coords = await evalJs<{ ax: number; ay: number; bx: number; by: number } | null>(`
+      (() => {
+        const rows = [...document.querySelectorAll('.cm-md-table-widget tbody tr')]
+        const a = rows[${fromBody}]?.querySelector('td')
+        const b = rows[${toBody}]?.querySelector('td')
+        if (!a || !b) return null
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
+        return {
+          ax: Math.round(ra.left + 10), ay: Math.round(ra.top + ra.height / 2),
+          bx: Math.round(ra.left + 10),
+          // 同一行内也要有纵向位移(但别越到下一行):取该格底部往上 3px
+          by: Math.round(rb.bottom - 3)
+        }
+      })()`)
+    if (!coords) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: coords.ax, y: coords.ay, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseMove', x: coords.bx, y: coords.by })
+    await sleep(80)
+    wc.sendInputEvent({ type: 'mouseUp', x: coords.bx, y: coords.by, button: 'left', clickCount: 1 })
+    await sleep(350)
+    return true
+  }
+
+  /** 真鼠标按住左键,从一列表头横着拖到另一列(列参数是 thead 里的下标) */
+  const dragCols = async (fromCol: number, toCol: number): Promise<boolean> => {
+    const coords = await evalJs<{ ax: number; ay: number; bx: number; by: number } | null>(`
+      (() => {
+        const cells = [...document.querySelectorAll('.cm-md-table-widget thead th')]
+        const a = cells[${fromCol}], b = cells[${toCol}]
+        if (!a || !b) return null
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
+        return {
+          ax: Math.round(ra.left + 10), ay: Math.round(ra.top + ra.height / 2),
+          // 同一列内也要有横向位移:拖到该格右侧靠里 10px
+          bx: Math.round(rb.right - 10), by: Math.round(ra.top + ra.height / 2)
+        }
+      })()`)
+    if (!coords) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: coords.ax, y: coords.ay, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseMove', x: coords.bx, y: coords.by })
+    await sleep(80)
+    wc.sendInputEvent({ type: 'mouseUp', x: coords.bx, y: coords.by, button: 'left', clickCount: 1 })
+    await sleep(350)
+    return true
+  }
+
+  check(
+    '行选中按钮已经去掉',
+    (await evalJs<number>(`document.querySelectorAll('[data-act="select-row"]').length`)) === 0
+  )
+  check('按住左键从第一行拖到第二行', await dragRows(0, 1))
+  check('两行共 4 个格子全部高亮', (await selectedCount()) === 4, String(await selectedCount()))
+  check('拖完焦点交给表格 frame(能按 Delete)', await frameFocused())
+  await key('Delete')
+  await sleep(400)
+  tableMeta = await tableInfo()
+  check(
+    '两行一起被删掉(只剩表头)',
+    tableMeta.tr === 1 && tableMeta.th === 2 && tableMeta.td === 0,
+    JSON.stringify(tableMeta)
+  )
+  structureSource = await readSource()
+  check(
+    '两行内容从源码里消失',
+    !structureSource.includes('| 1 | 2 |') && !structureSource.includes('| 3 | 4 |'),
+    JSON.stringify(structureSource)
+  )
+
+  await loadDoc(TABLE_2x2)
+  await sleep(500)
+  check('列选中也不再有按钮', (await evalJs<number>(`document.querySelectorAll('[data-act="select-col"]').length`)) === 0)
+  check('在第一列表头上按住左键横着拖一下', await dragCols(0, 0))
+  check('整列三个格子高亮(表头 + 2 行)', (await selectedCount()) === 3, String(await selectedCount()))
+  await key('Delete')
+  await sleep(400)
+  tableMeta = await tableInfo()
+  check('整列被删掉(只剩 1 列)', tableMeta.th === 1 && tableMeta.td === 2, JSON.stringify(tableMeta))
+  structureSource = await readSource()
+  check(
+    '第二列顶上来了(B / 2 / 4 还在,A / 1 / 3 被删掉)',
+    structureSource.some(l => l.trim() === '| B |') &&
+      structureSource.some(l => l.trim() === '| 2 |') &&
+      structureSource.some(l => l.trim() === '| 4 |') &&
+      !structureSource.some(l => l.trim() === '| A |') &&
+      !structureSource.some(l => l.trim() === '| 1 |') &&
+      !structureSource.some(l => l.trim() === '| 3 |'),
+    JSON.stringify(structureSource)
+  )
+
+  check('点左上角的整表选择把手', await clickCtl('[data-act="select-table"]'))
+  check('整张表都高亮', (await selectedCount()) === 3, String(await selectedCount()))
+  check(
+    '整表选区样式落在 frame 上',
+    await evalJs<boolean>(`!!document.querySelector('.cm-md-table-frame.is-selected')`)
+  )
+  await key('Backspace')
+  await sleep(400)
+  check('整张表被 Backspace 删掉', (await renderedTableCount()) === 0)
+  structureSource = await readSource()
+  check(
+    '源码里没有表格行,正文完好',
+    !structureSource.some(l => l.trim().startsWith('|')) &&
+      structureSource.some(l => l.includes('开头')) &&
+      structureSource.some(l => l.includes('末尾')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3g. 删除表头:下一条数据行接替表头 ----------
+
+  console.log('\n【3g】删除表头行:下一条数据行接替表头,表格保持合法')
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n末尾\n')
+  await sleep(400)
+  check('点表头行左侧的 ×', await clickCtl('[data-act="delete-row"][data-row="0"]'))
+  await sleep(300)
+  const promoted = await evalJs<string[][]>(`
+    [...document.querySelectorAll('.cm-md-table-widget thead th')].map(el => [el.textContent.trim()])`)
+  check(
+    '原来的第一条数据成了新表头',
+    JSON.stringify(promoted) === JSON.stringify([['1'], ['2']]),
+    JSON.stringify(promoted)
+  )
+  structureSource = await readSource()
+  check(
+    '表头 A/B 行消失,1/2 与 3/4 都还在',
+    !structureSource.includes('| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |') &&
+      structureSource.some(l => l.trim() === '| 3 | 4 |'),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3h. 结构删除可以撤销 ----------
+
+  console.log('\n【3h】删行之后 Ctrl+Z 能撤销')
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(400)
+  const bodyRows = (): Promise<number> =>
+    evalJs<number>(`document.querySelectorAll('.cm-md-table-widget tbody tr').length`)
+  check('初始有 1 行内容', (await bodyRows()) === 1, String(await bodyRows()))
+  check('在行内按住左键拖一下选中这一行', await dragRows(0, 0))
+  check(
+    '这一行两个格子高亮',
+    (await evalJs<number>(`document.querySelectorAll('.cm-md-table-selected').length`)) === 2,
+    String(await evalJs<number>(`document.querySelectorAll('.cm-md-table-selected').length`))
+  )
+  await key('Delete')
+  await sleep(300)
+  check('行被删掉', (await bodyRows()) === 0, String(await bodyRows()))
+  await key('z', ['control'])
+  await sleep(400)
+  check('Ctrl+Z 把行撤了回来', (await bodyRows()) === 1, String(await bodyRows()))
+  structureSource = await readSource()
+  check('源码里 `| 1 | 2 |` 也回来了', structureSource.some(l => l.trim() === '| 1 | 2 |'), JSON.stringify(structureSource))
+
+  // ---------- 3i. 表格上一行行尾按 Delete:先选中整表,再按一次才删 ----------
+
+  console.log('\n【3i】表格上一行行尾按 Delete:第一次选中整表,第二次才删')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  await key('End') // 光标到「开头」行尾 —— 紧贴表格的上一行
+  await sleep(150)
+  await key('Delete')
+  await sleep(400)
+  check('第一次 Delete 后表格仍然渲染着', (await renderedTableCount()) === 1)
+  const wholeSelected = await evalJs<number>(
+    `document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`
+  )
+  check('整张表被选中(4 个格子高亮)', wholeSelected === 4, String(wholeSelected))
+  check('焦点交给表格 frame', await frameFocused())
+  structureSource = await readSource()
+  check(
+    '第一次按键没有改动源码(没有删掉表格与正文间的换行)',
+    structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |'),
+    JSON.stringify(structureSource)
+  )
+  await key('Delete')
+  await sleep(400)
+  check('第二次 Delete 删掉整张表', (await renderedTableCount()) === 0)
+  structureSource = await readSource()
+  check(
+    '源码里没有表格行,正文完好',
+    !structureSource.some(l => l.trim().startsWith('|')) &&
+      structureSource.some(l => l.includes('开头')) &&
+      structureSource.some(l => l.includes('末尾')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3j. 表格上一行行尾按回车:新增一行,光标留在新行 ----------
+
+  console.log('\n【3j】表格上一行行尾按回车:新增一行,光标不进入表格')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const linesBefore = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  await key('End')
+  await key('Enter')
+  await sleep(500)
+  check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  check(
+    '没有单元格被带进编辑态',
+    !(await evalJs<boolean>(
+      `!!document.querySelector('.cm-md-table-widget [contenteditable]')`
+    ))
+  )
+  check(
+    '焦点还在编辑器里',
+    await evalJs<boolean>(`document.activeElement?.classList?.contains('cm-content') === true`)
+  )
+  check(
+    '光标没有落进表格',
+    !(await evalJs<boolean>(`(() => {
+      const s = document.getSelection()
+      if (!s || !s.anchorNode) return false
+      const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+      return !!el?.closest?.('.cm-md-table-widget')
+    })()`))
+  )
+  const linesAfter = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  check('确实多了一个空行', linesAfter === linesBefore + 1, `${linesBefore} → ${linesAfter}`)
+
+  // ---------- 3k. 光标与表格之间隔着空行:Delete 也能先选中整表 ----------
+
+  console.log('\n【3k】光标与表格之间隔着空行:Delete 仍然先选中整表')
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  await key('End') // 光标在「开头」行尾,中间隔着一行空行,再下面是表格
+  await key('Delete')
+  await sleep(400)
+  check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  const selectedAcrossBlank = await evalJs<number>(
+    `document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`
+  )
+  check(
+    '隔着空行也选中整表(4 个格子高亮)',
+    selectedAcrossBlank === 4,
+    String(selectedAcrossBlank)
+  )
+  check('焦点交给表格 frame', await frameFocused())
+  structureSource = await readSource()
+  check(
+    '第一次按键没有改动源码',
+    structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |'),
+    JSON.stringify(structureSource)
+  )
+  await key('Delete')
+  await sleep(400)
+  check('第二次 Delete 删掉整张表', (await renderedTableCount()) === 0)
+  structureSource = await readSource()
+  check(
+    '源码里没有表格行,正文完好',
+    !structureSource.some(l => l.trim().startsWith('|')) &&
+      structureSource.some(l => l.includes('开头')) &&
+      structureSource.some(l => l.includes('末尾')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3l. 方向键想进入渲染表格:光标被挡在外面 ----------
+
+  console.log('\n【3l】方向键想进入渲染表格:光标被挡在外面')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  await key('End')
+  await key('ArrowDown') // 想走到表格那一行(源码是隐藏的)
+  await sleep(400)
+  const caretInfo = await evalJs<{ inWidget: boolean; lineText: string }>(`(() => {
+    const s = document.getSelection()
+    if (!s || !s.anchorNode) return { inWidget: false, lineText: '' }
+    const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+    const line = el?.closest?.('.cm-line')
+    return { inWidget: !!el?.closest?.('.cm-md-table-widget'), lineText: line ? line.textContent : '' }
+  })()`)
+  console.log('    caret after ArrowDown:', JSON.stringify(caretInfo))
+  check('光标没有停在表格的隐藏源码里', !caretInfo.inWidget)
+  await typeFocused('X')
+  await sleep(400)
+  check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  structureSource = await readSource()
+  check(
+    'X 落在正文里,表格源码一个字符都没动',
+    structureSource.some(l => l.includes('X') && !l.trim().startsWith('|')) &&
+      structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |') &&
+      !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
+    JSON.stringify(structureSource)
+  )
+  await key('Delete')
+  await sleep(300)
+  const selectedAfterArrow = await evalJs<number>(
+    `document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`
+  )
+  check(
+    '在箭头落点(上一行行尾)按 Delete:先选中整表',
+    selectedAfterArrow === 4,
+    String(selectedAfterArrow)
+  )
+
+  // ---------- 3m. 表格正下方那一行输入:自动补空行,不会变成表格行 ----------
+
+  console.log('\n【3m】点击表格下方空行不增行;输入时自动分成段落')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const linesBeforeClick = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  const blankSpot = await evalJs<{ x: number; y: number } | null>(`
+    (() => {
+      const host = document.querySelector('.cm-content .cm-md-table-host')
+      let el = host ? host.nextElementSibling : null
+      while (el && el.classList.contains('cm-md-table-void')) el = el.nextElementSibling
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: Math.round(r.left + 20), y: Math.round(r.top + r.height / 2) }
+    })()`)
+  check('找到了表格正下方的空行', !!blankSpot, JSON.stringify(blankSpot))
+  if (blankSpot) {
+    wc.sendInputEvent({ type: 'mouseDown', x: blankSpot.x, y: blankSpot.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: blankSpot.x, y: blankSpot.y, button: 'left', clickCount: 1 })
+  }
+  await sleep(400)
+  const linesAfterClick = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  check(
+    '只是点击空白处,不会凭空多一行',
+    linesAfterClick === linesBeforeClick,
+    `${linesBeforeClick} → ${linesAfterClick}`
+  )
+  const spacerInfo = await evalJs<{ spacer: boolean; h: number; padTop: number }>(`
+    (() => {
+      const el = document.querySelector('.cm-content .cm-md-table-spacer')
+      const f = document.querySelector('.cm-md-table-frame')
+      return {
+        spacer: !!el,
+        h: el ? el.getBoundingClientRect().height : -1,
+        padTop: f ? parseFloat(getComputedStyle(f).paddingTop) : -1
+      }
+    })()`)
+  check(
+    '表格紧邻空行折成零高度,间距由 --md-table-gap 的 padding 提供',
+    spacerInfo.spacer && spacerInfo.h < 1 && spacerInfo.padTop > 0,
+    JSON.stringify(spacerInfo)
+  )
+  await typeFocused('X')
+  await sleep(450)
+  check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  structureSource = await readSource()
+  check(
+    '输入后表格与文字之间保留空行,X 在普通段落里',
+    structureSource.some(
+      (l, i) => l.includes('X') && !l.trim().startsWith('|') && structureSource[i - 1] === ''
+    ) &&
+      structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |') &&
+      !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
+    JSON.stringify(structureSource)
+  )
+  const tableRowsAfterX = await evalJs<number>(
+    `document.querySelectorAll('.cm-md-table-widget tbody tr').length`
+  )
+  check(
+    '表格行数没有增加(X 没被吸进表格)',
+    tableRowsAfterX === 1,
+    String(tableRowsAfterX)
+  )
+
+  // ---------- 3n. 输入法在表格下方空行输入 ----------
+
+  console.log('\n【3n】输入法在表格下方空行输入:自动分成段落,不进表格')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const imeBlank = await evalJs<{ x: number; y: number } | null>(`
+    (() => {
+      const host = document.querySelector('.cm-content .cm-md-table-host')
+      let el = host ? host.nextElementSibling : null
+      while (el && el.classList.contains('cm-md-table-void')) el = el.nextElementSibling
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: Math.round(r.left + 20), y: Math.round(r.top + r.height / 2) }
+    })()`)
+  if (imeBlank) {
+    wc.sendInputEvent({ type: 'mouseDown', x: imeBlank.x, y: imeBlank.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: imeBlank.x, y: imeBlank.y, button: 'left', clickCount: 1 })
+  }
+  await sleep(300)
+  try {
+    wc.debugger.attach('1.3')
+    await wc.debugger.sendCommand('Input.imeSetComposition', {
+      text: 'shu',
+      selectionStart: 3,
+      selectionEnd: 3
+    })
+    await sleep(350)
+    console.log(
+      '    during ime:',
+      JSON.stringify(
+        await evalJs(`({
+          scroll: document.querySelector('.cm-scroller').scrollTop,
+          rows: document.querySelectorAll('.cm-md-table-widget tbody tr').length
+        })`)
+      )
+    )
+    await wc.debugger.sendCommand('Input.insertText', { text: '输入文字' })
+  } catch (err) {
+    console.log('    ime debugger err:', String(err))
+  } finally {
+    try {
+      wc.debugger.detach()
+    } catch {
+      /* 没 attach 成功 */
+    }
+  }
+  await sleep(500)
+  const imeRows = await evalJs<number>(
+    `document.querySelectorAll('.cm-md-table-widget tbody tr').length`
+  )
+  check('输入法提交后表格行数没有增加', imeRows === 1, String(imeRows))
+  structureSource = await readSource()
+  check(
+    '输入法文字是独立段落',
+    // CDP 的 imeSetComposition 不会像真实输入法那样清掉组合串,所以只认"包含"
+    structureSource.some(l => l.includes('输入文字') && !l.trim().startsWith('|')) &&
+      !structureSource.some(l => l.trim().startsWith('|') && l.includes('输入文字')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3o. 点击表格隐藏行/底部空白:光标不会停进源码 ----------
+
+  console.log('\n【3o】点击表格隐藏行/底部空白:光标不会停进隐藏源码')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const linesBeforeVoidClick = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  const voidSpot = await evalJs<{ x: number; y: number } | null>(`
+    (() => {
+      const voids = [...document.querySelectorAll('.cm-content .cm-md-table-void')]
+      const el = voids[voids.length - 1]
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: Math.round(r.left + 40), y: Math.round(r.top + 1) }
+    })()`)
+  check('找到了表格底部隐藏行', !!voidSpot, JSON.stringify(voidSpot))
+  if (voidSpot) {
+    wc.sendInputEvent({ type: 'mouseDown', x: voidSpot.x, y: voidSpot.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: voidSpot.x, y: voidSpot.y, button: 'left', clickCount: 1 })
+  }
+  await sleep(350)
+  const linesAfterVoidClick = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  check('点击隐藏行/底部空白不会改文档', linesAfterVoidClick === linesBeforeVoidClick, `${linesBeforeVoidClick} → ${linesAfterVoidClick}`)
+  check(
+    '光标没有停进表格隐藏源码',
+    !(await evalJs<boolean>(`(() => {
+      const s = document.getSelection()
+      if (!s || !s.anchorNode) return false
+      const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+      return !!el?.closest?.('.cm-md-table-widget')
+    })()`))
+  )
+  await typeFocused('X')
+  await sleep(400)
+  structureSource = await readSource()
+  check(
+    '随后输入仍是普通段落,表格行数不变',
+    structureSource.some(l => l.includes('X') && !l.trim().startsWith('|')) &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |') &&
+      !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
+    JSON.stringify(structureSource)
+  )
+
   // ---------- 4. 取消 / Esc 什么都不做 ----------
 
   console.log('\n【4】取消与 Esc:文档一个字符都不动')
@@ -546,7 +1268,7 @@ async function main(): Promise<void> {
   console.log('\n【5】失败路径:对话框开着的时候插件被停用,确定后文档一个字符都不变')
   await loadDoc(START)
   check('点开菜单', await openMenuAndPick('表格'))
-  await evalJs(`window.api.savePlugin('quick-edit', { enabled: false })`)
+  await getPluginHost()!.save('quick-edit', { enabled: false })
   await sleep(400)
   check('填 5 行 2 列', await setNumbers(5, 2))
   check('点得到「确定」', await click('.line-dialog-primary'))
@@ -561,7 +1283,12 @@ async function main(): Promise<void> {
   const alerts = await evalJs<string[]>(`window.__alerts`)
   check('而且不再是会掐断操作的模态 alert', alerts.length === 0, JSON.stringify(alerts))
 
-  check('重新启用插件', await evalJs<boolean>(`window.api.savePlugin('quick-edit', { enabled: true }).then(() => true)`))
+  check(
+    '重新启用插件',
+    await getPluginHost()!
+      .save('quick-edit', { enabled: true })
+      .then(() => true)
+  )
   await sleep(500)
 
   // ---------- 6. 重新初始化宿主(模拟重启) ----------
@@ -598,7 +1325,7 @@ async function main(): Promise<void> {
 
   await loadDoc(START)
   await sleep(500)
-  const twoPluginLabels = await evalJs<boolean>(`window.api.listPlugins().then(l => l.length >= 3)`)
+  const twoPluginLabels = (await getPluginHost()!.list()).length >= 3
   check('临时插件已装好', await twoPluginLabels)
   const merged = await openMenu()
   check(
@@ -643,9 +1370,9 @@ async function main(): Promise<void> {
     JSON.stringify(bodyCls)
   )
 
-  const tmpPlugin = await evalJs<{ state: { failures: number; lastMessage: string } }>(
-    `window.api.listPlugins().then(l => l.find(p => p.descriptor.id === 'tmp-template'))`
-  )
+  const tmpPlugin = (await getPluginHost()!.list()).find(
+    p => p.descriptor.id === 'tmp-template'
+  ) as { state: { failures: number; lastMessage: string } } | undefined
   check(
     '临时插件的 runAction 确实没被调用(没有失败计数)',
     (tmpPlugin?.state.failures ?? 0) === 0,
@@ -657,14 +1384,14 @@ async function main(): Promise<void> {
 
   // ---------- 8. 停用 ----------
 
-  console.log('\n【8】在插件页关掉 Quick Edit → 按钮消失')
+  console.log('\n【8】在插件页关掉 Advanced Table → 按钮消失')
   await loadDoc(START)
   check('关之前按钮在', (await plusLine()) === 1)
-  await evalJs(`window.api.savePlugin('quick-edit', { enabled: false })`)
+  await getPluginHost()!.save('quick-edit', { enabled: false })
   await sleep(600)
   check('停用后按钮没了', (await plusLine()) === -1, `按钮在第 ${await plusLine()} 行`)
   check('连菜单也打不开', !(await click('.line-plus')))
-  await evalJs(`window.api.savePlugin('quick-edit', { enabled: true })`)
+  await getPluginHost()!.save('quick-edit', { enabled: true })
   await sleep(600)
   check('重新启用后按钮回来', (await plusLine()) === 1)
 
@@ -679,10 +1406,15 @@ async function main(): Promise<void> {
   check('没有插件时编辑器里没有「+」', (await plusLine()) === -1, `按钮在第 ${await plusLine()} 行`)
   check('文档照常可编辑,只是没有 +', (await evalJs<number>(`document.querySelectorAll('.cm-content .cm-line').length`)) === 4)
 
-  // 观感只能靠看:截一张落进仓库的 .verify-ud/shots/(已 gitignore)
+  // 观感只能靠看:截一张落进仓库的 .verify-ud/shots/(已 gitignore)。
+  // 截图失败不该把已经全部通过的断言判成崩溃。
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })
-  await writeFile(join(shots, 'quick-edit.png'), (await wc.capturePage()).toPNG())
+  try {
+    await writeFile(join(shots, 'quick-edit.png'), (await wc.capturePage()).toPNG())
+  } catch (err) {
+    console.warn(`[verify] 截图失败(不影响断言):${err instanceof Error ? err.message : String(err)}`)
+  }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)
   app.exit(fail === 0 ? 0 : 1)

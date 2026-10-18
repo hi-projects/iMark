@@ -33,9 +33,9 @@ import { commandAvailable } from '@shared/plugins'
 import { pluginById } from './pluginService'
 import { fuzzyScore } from './vaultService'
 import { pushNotice } from './notice'
-import { appStore, editorHolder } from '../stores/app'
-import { insertBlockBelow } from '../editor/commands'
+import { appStore } from '../stores/app'
 import { openFileByPath } from './fileService'
+import { api } from './api'
 
 /**
  * 界面贡献点的渲染层侧。
@@ -199,7 +199,7 @@ export function statusTitle(entry: StatusEntry): string {
  */
 export async function invokeContrib(invoke: PluginContribInvoke): Promise<void> {
   try {
-    const result = await window.api.runPluginContrib(invoke)
+    const result = await api.runPluginContrib(invoke)
     if (!result.ok) {
       pushNotice(result.message || '执行失败', {
         title: pluginById(invoke.pluginId)?.descriptor.name ?? '插件',
@@ -225,25 +225,13 @@ export function initPluginUi(): () => void {
     pluginUiStore.contribs = snap.contribs
     pluginUiStore.context = snap.context
   }
-  const offContribs = window.api.onPluginContribs(apply)
-  const offNotice = window.api.onPluginNotice(notice => {
+  const offContribs = api.onPluginContribs(apply)
+  const offNotice = api.onPluginNotice(notice => {
     pushNotice(notice.message, { title: notice.pluginName, level: notice.level })
   })
-  const offCommand = window.api.onPluginCommand(({ pluginId, itemId }) => {
+  const offCommand = api.onPluginCommand(({ pluginId, itemId }) => {
     // 从菜单/快捷键进来的命令:光标上下文由渲染层现取(主进程不知道光标在哪)
     void invokeContrib({ pluginId, itemId, from: 'command' })
-  })
-  /**
-   * 插件要求往当前文档插入内容(沙箱插件的 editor.insert)。
-   *
-   * 位置由**宿主**决定(当前光标所在行的下面),插件只给文本 —— 这与行首菜单
-   * 那条路完全一致:插件拿不到文档,也决定不了往哪儿写。
-   */
-  const offInsert = window.api.onPluginEditorInsert(({ text, cursorOffset }) => {
-    const view = editorHolder.view
-    if (!view) return
-    const line = view.state.doc.lineAt(view.state.selection.main.head).number
-    insertBlockBelow(view, line, text, cursorOffset)
   })
   /**
    * 插件改了某个文件:如果那正是编辑器里开着的这一份,重新加载。
@@ -251,11 +239,11 @@ export function initPluginUi(): () => void {
    * `force` 是有意的:插件写之前已经让编辑器落过盘了(见 ops 的 vault.write),
    * 这里再弹一次"要不要放弃更改"只会让人以为出了什么错。
    */
-  const offExternal = window.api.onFileExternalChange(path => {
+  const offExternal = api.onFileExternalChange(path => {
     if (path !== appStore.filePath) return
     void openFileByPath(path, { force: true })
   })
-  void window.api
+  void api
     .getPluginContribs()
     .then(apply)
     .catch(() => undefined)
@@ -263,7 +251,6 @@ export function initPluginUi(): () => void {
     offContribs()
     offNotice()
     offCommand()
-    offInsert()
     offExternal()
   }
 }

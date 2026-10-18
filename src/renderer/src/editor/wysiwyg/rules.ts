@@ -1,8 +1,20 @@
 import { Decoration, type WidgetType } from '@codemirror/view'
 import type { EditorSelection, Range, Text } from '@codemirror/state'
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common'
-import { CheckboxWidget, HrWidget, ImageWidget, MathWidget, TableWidget, type TableAlign } from './widgets'
+import {
+  CheckboxWidget,
+  HrWidget,
+  ImageWidget,
+  MathWidget,
+  MermaidWidget,
+  TableWidget,
+  type TableAlign,
+  type TableCellSpec,
+  type TableRowSpec,
+  type TableSpec
+} from './widgets'
 import { touches, touchesLines } from './selection'
+import { currentMermaidTheme } from '../../services/mermaid'
 import { resolveImageSrc } from '../../utils/text'
 
 export interface LinkInfo {
@@ -75,6 +87,11 @@ function lineUntouched(ctx: RuleContext, pos: number): boolean {
   return !touchesLines(ctx.sel, ctx.doc, line.from, line.to)
 }
 
+/** 只含空白 / `>` 的行视为空行(引用块里的空行看起来就是一根 `>`) */
+function isBlankLineText(text: string): boolean {
+  return /^[\s>]*$/.test(text)
+}
+
 /** 从 pos 起吞掉连续空格(隐藏 "# " 时必须连同后随空格,否则残留可见空隙) */
 function endOfTrailingSpaces(doc: Text, from: number): number {
   let end = from
@@ -97,31 +114,78 @@ function addLineRange(ctx: RuleContext, from: number, to: number, cls: string): 
 
 // ---------- 表格 ----------
 
-interface TableSpec {
-  source: string
-  head: string[]
-  body: string[][]
-  align: TableAlign[]
-}
-
-/** 一行里的所有单元格原文(不含两侧的 `|`) */
-function readCells(doc: Text, row: SyntaxNode): string[] {
-  const cells: string[] = []
-  for (const cell of row.getChildren('TableCell')) cells.push(doc.sliceString(cell.from, cell.to))
-  return cells
+/** 单元格原文里的 `\|` 还原成 `|`(其余转义原样保留,交给 renderInline 处理) */
+function unescapeCell(raw: string): string {
+  let out = ''
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '\\' && raw[i + 1] === '|') {
+      out += '|'
+      i++
+    } else {
+      out += raw[i]
+    }
+  }
+  return out
 }
 
 /**
- * 从语法树读出 widget 需要的一切。
+ * 按**未转义的竖线**把一行切成单元格。
  *
- * 单元格边界一律取自解析器,不自己按 `|` 切 —— 转义竖线 `\|` 只有解析器认得出;
- * 而行内代码里的裸 `|`(`` `x|y` ``)按 GFM 规范**本来就该拆成两格**
- * (规范要求连代码跨度里的竖线也得转义),markdown-it 的拆法与此完全一致。
+ * 不用语法树的 TableCell 节点,两个原因:
+ *   - **空格子不产生 TableCell 节点**(lezer 对 `|     |     |` 只给出 TableDelimiter),
+ *     而「+」插出来的新表整张都是空格子;
+ *   - 单元格编辑需要**文档位置**,节点只覆盖 trim 过的内容,空格子的位置根本无从谈起。
+ *
+ * 行内代码里的裸 `|`(`` `x|y` ``)在这里也会被切开 —— 这正是 GFM 的要求
+ * (连代码跨度里的竖线也必须转义),markdown-it 的拆法与此完全一致。
+ */
+function scanRow(doc: Text, from: number, to: number): TableCellSpec[] {
+  const text = doc.sliceString(from, to)
+  const pipes: number[] = []
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') i++ // 被转义的下一个字符不参与分列
+    else if (text[i] === '|') pipes.push(i)
+  }
+
+  const segments: Array<{ start: number; end: number }> = []
+  let start = 0
+  for (const pipe of pipes) {
+    segments.push({ start, end: pipe })
+    start = pipe + 1
+  }
+  segments.push({ start, end: text.length })
+  /*
+   * 首尾竖线各切出一个空段 —— 那是分隔符,不是格。
+   *
+   * 不能用 `pipes[0] === 0` / `pipes[last] === length-1` 判:解析器的行节点会把
+   * 行尾空白也包进来(`| a | b |   `),照那个判会多出一个"空白单元格",
+   * 列数也会凭空 +1。这里看的是**竖线两侧的内容**是否只有空白。
+   */
+  if (pipes.length > 0) {
+    if (text.slice(0, pipes[0]).trim() === '') segments.shift()
+    if (text.slice(pipes[pipes.length - 1] + 1).trim() === '') segments.pop()
+  }
+
+  return segments.map(seg => {
+    const raw = text.slice(seg.start, seg.end)
+    const lead = raw.length - raw.trimStart().length
+    const trail = raw.length - raw.trimEnd().length
+    const cellFrom = from + seg.start + lead
+    const cellTo = Math.max(cellFrom, from + seg.end - trail)
+    return { text: unescapeCell(raw.trim()), from: cellFrom, to: cellTo }
+  })
+}
+
+/**
+ * 从语法树读出 widget 需要的一切:单元格原文、每行/每格的文档位置、对齐方式。
+ *
+ * 行边界取自解析器(TableHeader / TableRow),所以引用块、缩进里的表格也能正确
+ * 定位 —— 行节点的 from/to 天然把 `> ` 这类容器前缀排除在外,整行重写时不会碰它们。
  */
 function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
   const header = table.getChild('TableHeader')
   if (!header) return null
-  const head = readCells(doc, header)
+  const headCells = scanRow(doc, header.from, header.to)
 
   // 对齐:只有 `Table` 的直接子节点里那个 TableDelimiter 才是整条分隔行
   // (TableHeader / TableRow 内部的 TableDelimiter 是单元格之间的竖线)
@@ -139,26 +203,103 @@ function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
   }
 
   /*
-   * 列数取两者中的较大者,不能只看表头 —— **空格子不产生 TableCell 节点**:
-   * lezer 对 `|     |     |` 只给出 TableDelimiter,一个 TableCell 都没有。
-   * 而「+」菜单插出来的新表格整张都是空格子,只看 head 会把最常见的那张表
-   * 判成"没有列",于是它永远渲染不出来。
+   * 列数取表头与分隔行的较大者。表头可能是空格子(一个 TableCell 节点都没有),
+   * 但分隔行一定写全了列数,所以把两边都算上就不会把「+」插出来的空表判成没有列。
    */
-  const columns = Math.max(head.length, align.length)
+  const columns = Math.max(headCells.length, align.length)
   if (columns === 0) return null
-  while (head.length < columns) head.push('')
+  while (headCells.length < columns) {
+    headCells.push({ text: '', from: header.to, to: header.to })
+  }
   while (align.length < columns) align.push(null)
 
   // 列数向表头看齐:缺的补空、多的丢掉 —— 与 GFM 规范、与 markdown-it 的导出一致
-  const body: string[][] = []
+  const body: TableRowSpec[] = []
   for (const row of table.getChildren('TableRow')) {
-    const cells = readCells(doc, row)
-    const line: string[] = []
-    for (let i = 0; i < columns; i++) line.push(cells[i] ?? '')
-    body.push(line)
+    body.push({
+      from: row.from,
+      to: row.to,
+      raw: doc.sliceString(row.from, row.to),
+      cells: scanRow(doc, row.from, row.to)
+    })
   }
 
-  return { source: doc.sliceString(table.from, table.to), head, body, align }
+  return {
+    from: table.from,
+    to: table.to,
+    columns,
+    align,
+    head: {
+      from: header.from,
+      to: header.to,
+      raw: doc.sliceString(header.from, header.to),
+      cells: headCells
+    },
+    body,
+    // 分隔行本身也要留位置:插入/删除列时得把这一行按新的列数重写,
+    // 否则表头改了、分隔行还是旧列数,表格会直接散架
+    delimiter: delim
+      ? { from: delim.from, to: delim.to }
+      : { from: header.to, to: header.to }
+  }
+}
+
+// ---------- 围栏代码块 ----------
+
+/** 围栏的 info string 里的语言名(```mermaid 或 ```mermaid title=... 都取 mermaid) */
+function fenceLanguage(doc: Text, code: SyntaxNode): string {
+  const info = code.getChild('CodeInfo')
+  if (!info) return ''
+  const first = doc.sliceString(info.from, info.to).trim().split(/\s+/)[0]
+  return first ? first.toLowerCase() : ''
+}
+
+/**
+ * 从语法树里取出围栏内容。
+ *
+ * 用 CodeText 子节点而不是首尾行号切片:引用块/列表里的围栏,行首还有 `> ` / `- `
+ * 这些容器标记,节点切片的范围只覆盖真正的代码文本,拼起来天然把标记排除在外。
+ */
+function readFencedSource(doc: Text, code: SyntaxNode): string {
+  let content = ''
+  for (let child = code.firstChild; child; child = child.nextSibling) {
+    if (child.name === 'CodeText') content += doc.sliceString(child.from, child.to)
+  }
+  // 顶层缩进围栏:CommonMark 要求去掉围栏本身的缩进(最多 3 空格)。lezer 的
+  // CodeText 不代劳,而导出的 markdown-it 会 —— 这里的对齐是为了让编辑器与导出
+  // 看到同一段源码。容器前缀(> / -)的情况 lezer 已按 basePos 处理,不再动。
+  const open = code.firstChild
+  if (open?.name === 'CodeMark') {
+    const line = doc.lineAt(open.from)
+    const prefix = doc.sliceString(line.from, open.from)
+    if (prefix.length > 0 && /^ *$/.test(prefix)) {
+      content = content
+        .split('\n')
+        .map(text => {
+          let i = 0
+          while (i < prefix.length && text[i] === ' ') i++
+          return text.slice(i)
+        })
+        .join('\n')
+    }
+  }
+  return content
+}
+
+/** 源码态:整块等宽 + 隐藏围栏标记(渲染态与源码态共用同一套外观) */
+function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
+  addLineRange(ctx, code.from, code.to, 'cm-md-code')
+  const first = code.firstChild
+  const last = code.lastChild
+  if (first?.name === 'CodeMark' && lineUntouched(ctx, first.from)) {
+    hide(ctx, first.from, endOfTrailingSpaces(ctx.doc, first.to))
+  }
+  const info = code.getChild('CodeInfo')
+  if (info) ctx.decos.push({ from: info.from, to: info.to, value: markDeco('cm-md-codeinfo') })
+  // 闭合围栏(未闭合时 last === first,跳过)
+  if (last?.name === 'CodeMark' && last.from !== first?.from && lineUntouched(ctx, last.from)) {
+    hide(ctx, last.from, endOfTrailingSpaces(ctx.doc, last.to))
+  }
 }
 
 // ---------- 节点 → 装饰规则分发表(唯一落点) ----------
@@ -249,19 +390,31 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
 
     // ----- 代码块 -----
     case 'FencedCode': {
-      addLineRange(ctx, node.from, node.to, 'cm-md-code')
-      const n = node.node
-      const first = n.firstChild
-      const last = n.lastChild
-      if (first?.name === 'CodeMark' && lineUntouched(ctx, first.from)) {
-        hide(ctx, first.from, endOfTrailingSpaces(ctx.doc, first.to))
+      const code = node.node
+      if (fenceLanguage(ctx.doc, code) === 'mermaid') {
+        const firstLine = ctx.doc.lineAt(node.from)
+        const lastLine = ctx.doc.lineAt(node.to)
+        /*
+         * 与表格同一套跨行手法:首行换成承载整张图的 widget,其余行清空并折叠。
+         * 首行必须完整落在视口里才能渲染 —— 否则 widget 根本没被画出来,而后面
+         * 几行照样被清空,屏幕上就是一块空白。
+         */
+        const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
+        if (firstLineVisible && !touchesLines(ctx.sel, ctx.doc, node.from, node.to)) {
+          const widget = new MermaidWidget(readFencedSource(ctx.doc, code), currentMermaidTheme())
+          hideWithWidget(ctx, firstLine.from, firstLine.to, widget)
+          for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
+            const line = ctx.doc.line(n)
+            hide(ctx, line.from, line.to)
+            addLine(ctx, line.from, 'cm-md-mermaid-void')
+          }
+          return false
+        }
+        // 光标在代码块内 / 首行滚出视口:退回源码态,和普通代码块长得一样
+        styleFencedCode(ctx, code)
+        return false
       }
-      const info = n.getChild('CodeInfo')
-      if (info) ctx.decos.push({ from: info.from, to: info.to, value: markDeco('cm-md-codeinfo') })
-      // 闭合围栏(未闭合时 last === first,跳过)
-      if (last?.name === 'CodeMark' && last.from !== first?.from && lineUntouched(ctx, last.from)) {
-        hide(ctx, last.from, endOfTrailingSpaces(ctx.doc, last.to))
-      }
+      styleFencedCode(ctx, code)
       return false
     }
     case 'CodeBlock': {
@@ -270,15 +423,23 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     }
 
     // ----- 引用 -----
-    case 'BlockQuote': {
+    case 'Blockquote': {
       // 嵌套引用由最外层一次性覆盖所有行
-      if (node.node.parent?.name === 'BlockQuote') return
+      if (node.node.parent?.name === 'Blockquote') return
       addLineRange(ctx, node.from, node.to, 'cm-md-quote')
       return
     }
     case 'QuoteMark': {
       if (lineUntouched(ctx, node.from)) {
+        /*
+         * 连标记后的空格一起藏掉。竖线到正文的间距由引用行的 1em 左内边距保证
+         * (见 setup.ts 的 editorTheme),不靠源码里的这个空格 —— 否则隐藏态
+         * 的间距会变成 1em + 一个空格,和光标在行上时的观感对不上。
+         */
         hide(ctx, node.from, endOfTrailingSpaces(ctx.doc, node.to))
+      } else {
+        // 光标在这行时标记显形(源码态);弱化成灰色,和 Obsidian 一样不抢正文
+        ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-quotemark') })
       }
       return
     }
@@ -397,7 +558,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       return false
     }
 
-    // ----- 表格(光标在表内:等宽源码;光标在表外:整块渲染成真表格) -----
+    // ----- 表格(整块渲染成真表格,单元格就地编辑) -----
     case 'Table': {
       const spec = readTable(ctx.doc, node.node)
       const firstLine = ctx.doc.lineAt(node.from)
@@ -406,22 +567,48 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        * widget 挂在首行上,而后续行的文本会被清空。首行若在视口外,CM 根本不会渲染它,
        * 那块 widget 就无从谈起,清空过的后续行却照旧是空的 —— 屏幕上是一块**空白**。
        * 表格比公式高得多,"表头滚出去了、数据行还在视野里"是很常见的状态。
+       *
+       * 光标在表内**不再**退回源码态:点击由 widget 自己接住(单元格就地输入),
+       * 插入表格时 widget 也会把焦点放进光标所在的那一格(见 TableWidget 的 autoFocus)。
+       * 只有表头滚出视口这种 widget 根本画不出来的情况才退回等宽源码。
        */
       const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
-      if (!spec || !firstLineVisible || touchesLines(ctx.sel, ctx.doc, node.from, node.to)) {
+      // 整张表被一个非空选区覆盖时切回源码:这样"表格边界按 Delete 先选中整表"
+      // 在兜底路径(表格还没渲染成 widget)下也看得见选中的是什么
+      const fullySelected = ctx.sel.ranges.some(
+        r => !r.empty && r.from <= node.from && r.to >= node.to
+      )
+      if (!spec || !firstLineVisible || fullySelected) {
         addLineRange(ctx, node.from, node.to, 'cm-md-table')
         return false
       }
       // 首行换成 widget(它自带整张表),其余行清空并折叠高度
-      hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec.source, spec.head, spec.body, spec.align))
+      // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行
+      addLine(ctx, firstLine.from, 'cm-md-table-host')
+      hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec))
       const lastLine = ctx.doc.lineAt(node.to)
       for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
         const line = ctx.doc.line(n)
         hide(ctx, line.from, line.to)
         addLine(ctx, line.from, 'cm-md-table-void')
       }
-      // 不下钻:表格内的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
-      // 而且源码态下今天也没有任何单元格内高亮,分支之间保持一致
+      /*
+       * 表格紧邻的空行只承担 Markdown 分隔作用。把它们折成零高度,视觉上的间距
+       * 交给 widget 的上下 padding(--md-table-gap):这两条空行不会再变成
+       * 可点击、带「+」的独立行,间距又能纯用样式调。
+       */
+      for (let n = firstLine.number - 1; n >= 1 && isBlankLineText(ctx.doc.line(n).text); n--) {
+        addLine(ctx, ctx.doc.line(n).from, 'cm-md-table-spacer')
+      }
+      for (
+        let n = lastLine.number + 1;
+        n <= ctx.doc.lines && isBlankLineText(ctx.doc.line(n).text);
+        n++
+      ) {
+        addLine(ctx, ctx.doc.line(n).from, 'cm-md-table-spacer')
+      }
+      // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
+      // 行内高亮由 widget 内部的 renderInline 负责
       return false
     }
 

@@ -3,36 +3,19 @@
  * 按钮借用 plugins.css 的 .plugin-btn / .plugin-icon-btn(那套早已是全应用通用的),
  * 这里只放样式文件列表与说明折叠区自己的部分。 */
 
-/* 按钮行:两个按钮 + 重新读取图标 + 右对齐的目录路径 */
+/* 按钮行:两个带文案的按钮 + 两个图标按钮(打开目录、重新读取)。
+   面板宽度跟着窗口走(90vw),窄到装不下时换行,而不是把按钮挤扁或让整块面板
+   长出横向滚动条 —— 按钮的宽度是文案撑的,本来也压不下去 */
 .userstyle-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0 2px;
 }
 
-/* 目录路径本身就是「打开文件夹」的入口,所以它是个按钮 —— 但长得像一行路径 */
-.userstyle-dir {
-  margin-left: auto;
-  overflow: hidden;
-  padding: 2px 6px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.userstyle-dir:hover {
-  background: var(--bg-toolbar-btn-hover);
-  color: var(--text-secondary);
-}
-
-/* 「重新读取」是中性操作,不该跟着 .plugin-icon-btn 的 hover 变红(红是删东西的颜色) */
+/* 这两个都是中性操作,不该跟着 .plugin-icon-btn 的 hover 变红(红是删东西的颜色) */
+.userstyle-open-dir:hover,
 .userstyle-refresh:hover {
   color: var(--accent);
 }
@@ -95,11 +78,6 @@
   cursor: inherit;
 }
 
-/* 「不使用自定义样式」那一行没有图标,颜色也压一档,免得和真文件混在一起 */
-.userstyle-item-dim {
-  color: var(--text-tertiary);
-}
-
 /* 读失败的行左侧一道红边。用 inset 阴影而不是 border-left,免得整行往右挪 2px */
 .userstyle-item-bad {
   box-shadow: inset 2px 0 0 var(--danger);
@@ -121,13 +99,23 @@
   color: var(--danger);
 }
 
-/* 大小与删除按钮一起推到右边 */
-.userstyle-item-size {
+/* 行尾的元信息(目录的文件数 / 跳过的文件数 / 失败原因)——
+   整体推到右边,内部自己排:每个元素各自 margin-left:auto 的话,富余的宽度会被
+   它们平分,位置就跟着内容乱跳了 */
+.userstyle-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 0 0 auto;
   margin-left: auto;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-tertiary);
+}
+
+/* 「N 个读不动」:黄色 —— 不是坏掉(其余文件照常生效),但也不是无事发生 */
+.userstyle-item-warn {
+  color: var(--warn);
 }
 
 /* ---------- 「可以改哪些东西?」折叠区 ---------- */

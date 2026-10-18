@@ -13,12 +13,15 @@
  *    绝不出现「升级失败导致插件彻底没了」。
  */
 
-import { existsSync } from 'node:fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { rm, rename } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { IPC } from '@shared/ipc-channels'
 import type { ImkApi, PluginContext, PluginRuntime } from '@shared/pluginApi'
 import {
   descriptorFromManifest,
+  type PluginMainMode,
   type PluginManifest,
   type PluginPermission
 } from '@shared/pluginPackage'
@@ -38,13 +41,17 @@ import {
   type PluginEventMap,
   type PluginField,
   type PluginInstallInfo,
+  type PluginLogEntry,
+  type PluginLogLevel,
   type PluginNotice,
   type PluginNoticeLevel,
+  type PluginOperation,
   type PluginSource,
   type PluginState,
   type PluginTarget,
   type PluginView
 } from '@shared/plugins'
+import { dataRoot } from '../dataDir'
 import { setKeybindingDropReporter, setPluginCommands } from '../menu'
 import { getSettings, getSettingsSync, onSettingsChanged, saveSettings } from '../settings'
 import { deleteSecretsByPrefix, secretHints, setSecret } from '../secrets'
@@ -68,29 +75,124 @@ import {
 import { readDevSource, watchDevSource } from './dev'
 import { builtinPlugins } from './registry'
 import { forgetScriptRuntime, loadScriptRuntime } from './script'
-import { forgetLimits } from './gate'
+import { forgetLimits, invokeOp } from './gate'
 import type { OpContext } from './ops'
 import type { PluginHello } from '@shared/pluginRpc'
 import {
-  createSandboxRuntime,
-  disposeSandboxRuntime,
-  hasSandboxRuntime,
-  installSandboxIpc,
-  sandboxPluginRuntime,
-  unregisterSandboxRuntime,
-  type SandboxRuntime
-} from './sandbox'
-import { clearPluginStorage, closePluginWindow, setDockRect, setPluginRoot } from './windows'
-import { askRenderer, installRendererBridge } from './rendererBridge'
+  createRestrictedRuntime,
+  disposeRestrictedRuntime,
+  hasRestrictedRuntime,
+  installRestrictedIpc,
+  restrictedPluginRuntime,
+  unregisterRestrictedRuntime,
+  type RestrictedRuntime
+} from './restrictedRuntime'
+import { clearPluginStorage, closeRestrictedPage, setPluginRoot } from './restrictedPage'
+import { installRendererBridge } from './rendererBridge'
+import {
+  createRenderRuntime,
+  initRenderLayer,
+  injectRenderLayer,
+  isRenderLayerLoaded,
+  markAllRenderLayersUnloaded,
+  sendToRenderLayer,
+  unloadRenderLayer
+} from './renderLayer'
 
 /** 让渲染层保存脏文档的等待上限:超时就按磁盘现状继续,不阻塞同步 */
 const FLUSH_TIMEOUT = 2000
-/** 单次插件调用的超时:插件卡住不能把宿主一起拖住 */
+/** 生命周期调用(onEnable/onDisable/onConfigChange)的超时:插件卡住不能把宿主一起拖住 */
 const CALL_TIMEOUT = 10_000
+/**
+ * 用户主动发起的动作(runAction)的超时。
+ *
+ * 动作可能真的在跑 git / 网络(例如 git-sync 的「测试连接」一次 `ls-remote` 允许 30 秒),
+ * 10 秒会把正常的慢操作误判成宿主超时。仍然有上限,避免一个坏动作永远占着界面。
+ */
+const ACTION_TIMEOUT = 120_000
 /** 连续失败多少次就熔断 */
 const MAX_FAILURES = 3
-/** 每个插件保留的日志行数 */
+/** 每个插件在内存里保留的日志条数(磁盘文件另存完整历史) */
 const MAX_LOGS = 50
+/** 设置页「调试」模块保留几条最近操作 */
+const MAX_RECENT_OPS = 3
+
+/** 完整插件日志:数据根/logs/plugins/<id>.log(插件 id 已由清单校验为安全文件名) */
+function pluginLogFile(id: string): string {
+  return join(dataRoot(), 'logs', 'plugins', `${id}.log`)
+}
+
+/** 最近 3 条操作的持久化副本;完整版仍在 .log 文件里 */
+function pluginRecentFile(id: string): string {
+  return join(dataRoot(), 'logs', 'plugins', `${id}.recent.json`)
+}
+
+function isPluginOperation(v: unknown): v is PluginOperation {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    typeof o.action === 'string' &&
+    (o.status === 'ok' || o.status === 'partial' || o.status === 'error') &&
+    typeof o.message === 'string' &&
+    (o.detail === undefined || typeof o.detail === 'string')
+  )
+}
+
+/** 读回上次留下的最近操作;文件不存在/损坏/被手改都当空的 */
+function readRecentOps(id: string): PluginOperation[] {
+  try {
+    const parsed = JSON.parse(readFileSync(pluginRecentFile(id), 'utf8')) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(isPluginOperation).slice(0, MAX_RECENT_OPS)
+  } catch {
+    return []
+  }
+}
+
+/** 日志行的时间戳(本地时间) */
+function logStamp(at = Date.now()): string {
+  const d = new Date(at)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** 插件给的级别只有四档;未知值按 info 收下,日志不该因为错别字丢掉 */
+function asLogLevel(level: string): PluginLogLevel {
+  return level === 'debug' || level === 'info' || level === 'warn' || level === 'error'
+    ? level
+    : 'info'
+}
+
+/**
+ * 当前正在执行的动作(node main)。
+ *
+ * **不能**用 `entry.currentAction` 给操作归属:它是整个插件共享的一个字段。
+ * 后台同步与用户动作并发时,后台那一轮结束时 `currentAction` 还是用户动作的名字,
+ * 日志就会把「推送失败」记成「测试全部远端」(2026-10-18 实测)。
+ *
+ * AsyncLocalStorage 让标签跟着**异步调用链**走:动作里发起的 setState(即使经过
+ * await/定时器)都带着自己的标签,onEnable 里创建的定时器则没有标签 —— 记成后台任务。
+ */
+const actionScope = new AsyncLocalStorage<{ action: string }>()
+
+/**
+ * 一次状态写入该记在谁名下。
+ *
+ * - `explicit`:调用方明确知道是哪个动作(宿主在 runAction 的兜底里传);
+ * - `scoped`:`actionScope` 里的标签(node main 的异步调用链);
+ * - `currentAction`:restricted 的 setState 经 IPC 过来,跨不过 AsyncLocalStorage,
+ *   只能沿用原来的共享字段(这类插件的并发归属仍有局限);
+ * - 都没有 = 后台任务。
+ */
+export function operationLabelFor(
+  explicit: string | null,
+  scoped: string | null,
+  current: string | null,
+  mainMode: PluginMainMode | null
+): string {
+  return explicit ?? scoped ?? (mainMode === 'node' ? null : current) ?? '后台任务'
+}
 /** 错误详情截断长度(一次堆栈可能有几十 KB,不能原样进 IPC 与界面) */
 const MAX_DETAIL = 4096
 /**
@@ -111,6 +213,7 @@ export interface InstallMeta {
   version: string
   integrity: string
   mainSha256: string | null
+  renderSha256: string | null
   publisher: string | null
   source: PluginSource
   registryUrl: string | null
@@ -124,7 +227,7 @@ interface Entry {
   /** 外部插件才有清单;内置核心插件为 null */
   manifest: PluginManifest | null
   dir: string | null
-  /** 来自 `--plugin-dev=<目录>`:代码取自作者指定的目录,不落进 userData */
+  /** 来自 `--plugin-dev=<目录>`:代码取自作者指定的目录,不落进插件安装目录 */
   dev: boolean
   meta: PluginInstallInfo | null
   /** 先占位、加载成功后再填 —— 脚本插件的工厂需要拿到 api,而 api 又需要 entry 本身 */
@@ -138,7 +241,11 @@ interface Entry {
   disabledByHost: boolean
   /** 安装/升级期间暂挂:不跑任何生命周期,也不接受动作 */
   suspended: boolean
-  logs: string[]
+  logs: PluginLogEntry[]
+  /** 最近几次已结束的操作(新的在前,最多 MAX_RECENT_OPS 条) */
+  recentOps: PluginOperation[]
+  /** 正在执行的动作名;由 runAction 设置,用来给操作记录一个可读的来源 */
+  currentAction: string | null
   loadError?: string
   /**
    * 插件通过 API 注册的界面贡献点(命令/状态栏/右键菜单)。
@@ -153,26 +260,27 @@ interface Entry {
   /** 通知限流用的时间窗口(近 1 分钟内发出的时间戳) */
   noticeTimes: number[]
   /**
-   * 注入界面里的点击回执(挂载 id → 处理函数)。
-   *
-   * 挂在 entry 上而不是 API 闭包里:停用插件时要跟着一起清干净 ——
-   * 留着的话,那个挂载 id 的下一个主人会莫名其妙地接到上一家的点击。
+   * node main 的 render → main 消息监听器。
+   * restricted main 走隐藏页的 bridge,不用这个表。
    */
-  uiClicks: Map<string, (name: string) => unknown>
+  renderListeners: Set<(channel: string, data: unknown) => void>
   /**
    * **已生效**的权限 = 用户装的时候同意的 ∩ 清单现在声明的。
    *
-   * 这个交集是沙箱的前提:`InstalledRecord.grantedPermissions` 记的是用户实际同意过的,
-   * 而清单是**插件自己说了算、且可以随升级变化**的。只看清单,一个升级版就能凭空拿到
-   * 新权限(用户从没确认过);只看记录,插件把权限从清单里删掉之后旧授权还在。
-   * 两者取交集才是"用户同意过、且插件现在仍然要的"。
+   * restricted main 的权限是真门禁:`InstalledRecord.grantedPermissions` 记的是用户
+   * 实际同意过的,而清单是**插件自己说了算、且可以随升级变化**的。只看清单,一个升级版
+   * 就能凭空拿到新权限;只看记录,插件把权限从清单里删掉之后旧授权还在。
    *
-   * `source:'local'`(手动拷进插件目录)没有确认流程,视为 granted = declared,
-   * 界面上明确标注「手动安装,未经确认」—— 那是用户在为自己的选择负责。
+   * node main 的权限是告知 + API 塑形(它本来就有完整 Node);capability 的权限用于
+   * 安装披露。`source:'local'`/dev 没有确认流程,视为 granted = declared。
    */
   grants: PluginPermission[]
-  /** 沙箱插件的运行时(trusted 插件为 null) */
-  sandbox: SandboxRuntime | null
+  /** restricted main 的隐藏页运行时(其它层为 null) */
+  restricted: RestrictedRuntime | null
+  /** main 层模式;没有 main 层时为 null */
+  mainMode: PluginMainMode | null
+  /** 是否有 render 层 */
+  hasRender: boolean
   /** 用户是否为这个插件放开了「允许访问本机地址」 */
   allowLocalNet: boolean
   /**
@@ -185,6 +293,40 @@ interface Entry {
    * 「每隔一段时间重复推送两次」这种要从头查起才能定位的问题。
    */
   enabledRun: boolean
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 把 main 层与 render 层组合成一个 `PluginRuntime`。
+ *
+ * 顺序是刻意的:
+ *   - 启用:main 先起,render 才可能向 main 发消息;
+ *   - 停用:render 先收,避免 render 在 main 已销毁后继续发消息;
+ *   - 动作:**有 main 走 main**,main 没实现就返回"未实现",不回退到 render ——
+ *     一个动作只有一个权威执行者。需要 render 处理的动作由 main 主动转发。
+ */
+function createCompositeRuntime(main: PluginRuntime, render: PluginRuntime): PluginRuntime {
+  return {
+    async onEnable(ctx) {
+      await main.onEnable?.(ctx)
+      await render.onEnable?.(ctx)
+    },
+    async onDisable(ctx) {
+      await render.onDisable?.(ctx)
+      await main.onDisable?.(ctx)
+    },
+    async onConfigChange(config, ctx) {
+      await main.onConfigChange?.(config, ctx)
+      await render.onConfigChange?.(config, ctx)
+    },
+    async runAction(actionId, ctx, targetId, payload) {
+      if (main.runAction) return main.runAction(actionId, ctx, targetId, payload)
+      return { ok: false, message: `插件的 main 层没有实现动作:${actionId}` }
+    }
+  }
 }
 
 let host: PluginHost | null = null
@@ -216,10 +358,10 @@ export class PluginHost {
     const settings = await getSettings()
     await cleanupOldDirs()
 
-    // 沙箱的通道先装上:插件窗口一建起来就可能开口说话,晚一步那次调用就是
+    // restricted 的通道先装上:隐藏页一建起来就可能开口说话,晚一步那次调用就是
     // "没有处理器"的静默失败(页面那边表现为一个永远不返回的 Promise)
     installRendererBridge()
-    installSandboxIpc({
+    installRestrictedIpc({
       opContext: pluginId => {
         const entry = this.entries.get(pluginId)
         // 只给启用中的插件受理 —— 页面的生命周期与启用态是一回事,
@@ -229,14 +371,16 @@ export class PluginHost {
       },
       onGone: (pluginId, reason) => {
         const entry = this.entries.get(pluginId)
-        entry?.logs.push(`[warn] 插件页面结束了:${reason}(下次调用会尝试重建)`)
-      },
-      // 停靠面板的展开/收起:状态归渲染层,这里只把插件的 show/hide 翻成一句话
-      setPanelCollapsed: (pluginId, collapsed) => {
-        void askRenderer('panel.collapse', pluginId, { collapsed }).catch(err => {
-          this.entries.get(pluginId)?.logs.push(`[warn] 面板展开/收起失败:${(err as Error).message}`)
-        })
+        if (entry) {
+          this.emitLog(entry, 'warn', `插件页面结束了:${reason}(下次调用会尝试重建)`)
+        }
       }
+    })
+
+    // 渲染层每次报到(首次启动 + 页面重载)都重新注入所有已启用的 render 层。
+    // 页面重载后渲染层里的插件会话全没了 —— 不重注入就等于插件悄悄消失。
+    initRenderLayer(() => {
+      void this.loadRenderLayersOnReady()
     })
 
     // 换了仓库/主题要告诉插件。挂在 saveSettings 上而不是某一条 IPC 上:
@@ -291,13 +435,17 @@ export class PluginHost {
         disabledByHost: false,
         suspended: false,
         logs: [],
+        recentOps: readRecentOps(plugin.descriptor.id),
+        currentAction: null,
         contrib: new ContribRegistry(),
         listeners: new Map(),
         enabledRun: false,
         noticeTimes: [],
-        uiClicks: new Map(),
+        renderListeners: new Set(),
         grants: [],
-        sandbox: null,
+        restricted: null,
+        mainMode: null,
+        hasRender: false,
         allowLocalNet: false
       })
     }
@@ -308,7 +456,7 @@ export class PluginHost {
         await provision(this)
       } catch (err) {
         // 兜底包补装失败不该拦住整个应用:用户仍然可以照常写作
-        console.error('[iMark] 内置插件补装失败:', err)
+        console.error('[iMark] 插件补装失败:', err)
       }
     }
 
@@ -327,11 +475,14 @@ export class PluginHost {
     // 是因为摘除动作发生在 buildAppMenu() 里 —— 启动那一次(宿主还没机会接上)
     // 同样得能说出来,否则开局就撞车的插件永远等不到这句话。
     setKeybindingDropReporter(d => {
-      this.entries
-        .get(d.pluginId)
-        ?.logs.push(
-          `[warn] 快捷键 ${d.keybinding} 已被「${d.takenBy}」占用,命令「${d.commandId}」不再绑定快捷键(仍可从命令面板执行)`
+      const entry = this.entries.get(d.pluginId)
+      if (entry) {
+        this.emitLog(
+          entry,
+          'warn',
+          `快捷键 ${d.keybinding} 已被「${d.takenBy}」占用,命令「${d.commandId}」不再绑定快捷键(仍可从命令面板执行)`
         )
+      }
     })
     await this.broadcast()
   }
@@ -343,7 +494,7 @@ export class PluginHost {
    *
    * **不绕过任何校验**:清单照样过 validateManifest,加载失败照样登记成坏插件
    * (在设置页里可见、可读错误),权限照样注入强制。唯一的区别是代码取自作者
-   * 指定的目录而不是 userData,且应用从不"安装"它。
+   * 指定的目录而不是安装目录,且应用从不"安装"它。
    */
   private async enableDevSources(dirs: readonly string[]): Promise<void> {
     for (const dir of dirs) {
@@ -379,9 +530,9 @@ export class PluginHost {
     const previous = this.entries.get(id)
     if (previous && !previous.dev) {
       // 同一个 id 既装着又从开发目录加载:开发目录赢,但必须说出来 ——
-      // 否则"我改的代码没生效"会变成一场对着 userData 里那份旧代码的徒劳排查
+      // 否则"我改的代码没生效"会变成一场对着已安装那份旧代码的徒劳排查
       console.warn(
-        `[iMark] 开发插件 ${id} 覆盖了已安装的那一份(代码取自 ${dir},不是 userData)`
+        `[iMark] 开发插件 ${id} 覆盖了已安装的那一份(代码取自 ${dir},不是安装目录)`
       )
     }
     // 启用态要在摘除**之前**取,而且要一直记着。
@@ -444,26 +595,25 @@ export class PluginHost {
         config: entry.config,
         secrets: secretValues,
         state: { ...entry.state },
-        ...(entry.manifest ? { kind: entry.manifest.kind } : {}),
+        ...(entry.mainMode ? { mainMode: entry.mainMode } : {}),
+        ...(entry.hasRender ? { hasRender: true } : {}),
+        ...(entry.manifest?.capability ? { capability: entry.manifest.capability } : {}),
         ...(entry.meta ? { source: entry.meta.source, installed: entry.meta } : {}),
-        // 沙箱插件显示**已生效**的权限(用户同意的 ∩ 清单声明的)—— 那才是它真正拿得到的。
-        // 脚本插件显示的仍是清单声明:对它而言权限是"告知",界面上该如实呈现作者说了什么。
+        // restricted 显示**已生效**的权限(用户同意的 ∩ 清单声明的)—— 那才是它真正拿得到的。
+        // node/capability 显示的仍是清单声明:对它们而言权限是"告知/披露"。
         ...(entry.manifest?.permissions
-          ? { permissions: entry.sandbox ? entry.grants : entry.manifest.permissions }
+          ? { permissions: entry.mainMode === 'restricted' ? entry.grants : entry.manifest.permissions }
           : {}),
         ...(entry.dev ? { dev: true } : {}),
-        ...(entry.sandbox ? { allowLocalNet: entry.allowLocalNet } : {}),
-        // 停靠信息要下发给渲染层:它才知道该给哪个插件留一块侧栏
-        ...(entry.manifest?.ui?.dock
-          ? {
-              dock: entry.manifest.ui.dock,
-              dockWidth: entry.manifest.ui.width ?? 320,
-              dockHeight: entry.manifest.ui.height ?? 220
-            }
-          : {}),
+        ...(entry.mainMode === 'restricted' ? { allowLocalNet: entry.allowLocalNet } : {}),
         ...(entry.failures > 0 ? { failures: entry.failures } : {}),
         ...(entry.disabledByHost ? { disabledByHost: true } : {}),
-        ...(entry.logs.length > 0 ? { logs: [...entry.logs] } : {}),
+        ...(entry.logs.length > 0
+          ? { logs: entry.logs.map(line => ({ ...line })) }
+          : {}),
+        ...(entry.recentOps.length > 0
+          ? { recentOps: entry.recentOps.map(op => ({ ...op })) }
+          : {}),
         ...(entry.loadError ? { loadError: entry.loadError } : {})
       }
       out.push(view)
@@ -524,33 +674,6 @@ export class PluginHost {
     await this.broadcast()
   }
 
-  /** 设置界面里的「打开窗口」:沙箱插件自己开的窗口/面板,由用户按需唤出 */
-  openWindow(id: string): void {
-    this.entries.get(id)?.sandbox?.windowOpen()
-  }
-
-  /** 渲染层报来的停靠槽位 —— 交给窗口层把原生视图摆过去 */
-  handleDockRect(rect: { pluginId: string; x: number; y: number; width: number; height: number; visible: boolean }): void {
-    setDockRect(rect.pluginId, rect)
-  }
-
-  /**
-   * 注入界面里的点击。
-   *
-   * 走的还是 `safeCall`:一个在点击回调里抛异常的插件,与它在别处抛异常是同一件事 ——
-   * 计数、熔断、写日志,一条都不该少。
-   */
-  async handleUiClick(click: { pluginId: string; mountId: string; name: string }): Promise<void> {
-    const entry = this.entries.get(click.pluginId)
-    if (!entry || !entry.state.enabled) return
-    const handler = entry.uiClicks.get(click.mountId)
-    if (!handler) {
-      entry.logs.push(`[warn] 界面里的「${click.name}」被点了,但没有接住它的 onClick(${click.mountId})`)
-      return
-    }
-    await this.safeCall(entry, `ui.onClick(${click.name})`, () => handler(click.name))
-  }
-
   async setSecretValue(
     id: string,
     fieldKey: string,
@@ -590,6 +713,13 @@ export class PluginHost {
       : actions.some(a => a.id === actionId) || (lineMenu ?? []).some(i => i.action === actionId)
     if (!known) return { ok: false, message: `未知动作:${actionId}` }
 
+    // 操作记录里显示按钮名,而不是内部 id(targetActions 与 lineMenu 也要算上)
+    const actionLabel = targetId
+      ? (targetActions ?? []).find(a => a.id === actionId)?.label ?? actionId
+      : actions.find(a => a.id === actionId)?.label ??
+        (lineMenu ?? []).find(i => i.action === actionId)?.label ??
+        actionId
+
     // 界面上只有「状态卡」一处显示结果,所以动作跑完必须把结果写进状态;
     // 插件自己没写(没调用 setState)的话,这里兜底写一次,避免结果无处可见。
     const beforeRunAt = entry.state.lastRunAt
@@ -598,31 +728,161 @@ export class PluginHost {
       ok: false,
       message: '插件没有响应'
     }
-    const succeeded = await this.safeCall(entry, `动作 ${actionId}`, async () => {
-      result = (await entry.runtime.runAction?.(actionId, ctx, targetId, payload)) ?? {
-        ok: false,
-        message: `插件未实现动作:${actionId}`
+    entry.currentAction = actionLabel
+    try {
+      // 把动作体放进异步作用域:插件在动作里调用的 setState(哪怕经过 await)
+      // 都按这个动作记账,不会被并发跑完的后台任务顶替。
+      const succeeded = await actionScope.run({ action: actionLabel }, () =>
+        this.safeCall(
+          entry,
+          `动作 ${actionId}`,
+          async () => {
+            result = (await entry.runtime.runAction?.(actionId, ctx, targetId, payload)) ?? {
+              ok: false,
+              message: `插件未实现动作:${actionId}`
+            }
+          },
+          ACTION_TIMEOUT
+        )
+      )
+      if (!succeeded) {
+        // 失败与熔断的兜底**刻意不带 editor**:渲染层拿不到插入指令,文档就一个字符都不会变
+        result = {
+          ok: false,
+          message: entry.state.lastMessage,
+          ...(entry.state.lastDetail ? { detail: entry.state.lastDetail } : {})
+        }
       }
+      if (entry.state.lastRunAt === beforeRunAt && (result.message || result.detail)) {
+        // 插件可以明确给一个状态(如「已排队」= running);没给才按 ok 推断
+        const status =
+          result.status === 'running' ||
+          result.status === 'partial' ||
+          result.status === 'idle' ||
+          result.status === 'ok' ||
+          result.status === 'error'
+            ? result.status
+            : result.ok
+              ? 'ok'
+              : 'error'
+        this.applyState(
+          entry,
+          {
+            status,
+            lastRunAt: Date.now(),
+            lastMessage: result.message,
+            ...(result.detail !== undefined ? { lastDetail: result.detail } : {})
+          },
+          actionLabel
+        )
+      }
+      await this.broadcast()
+      return result
+    } finally {
+      entry.currentAction = null
+    }
+  }
+
+  // ---------- render 层 ----------
+
+  /**
+   * 渲染层就绪 / 重新就绪:重新注入所有已启用的 render 层。
+   *
+   * 每个插件单独 `safeCall` —— 一个插件注入失败不该连累其他插件;
+   * 页面重载后的旧会话已经不存在,所以先把"已加载"标记整体清掉。
+   */
+  private renderLayersLoading = false
+
+  private async loadRenderLayersOnReady(): Promise<void> {
+    // 同一次就绪只跑一遍:并发进来会把同一个插件注入两次(两个会话、两遍 onEnable)
+    if (this.renderLayersLoading) return
+    this.renderLayersLoading = true
+    try {
+      markAllRenderLayersUnloaded()
+      for (const entry of this.entries.values()) {
+        if (!entry.manifest?.render) continue
+        if (!entry.state.enabled || entry.disabledByHost || entry.suspended || entry.loadError) continue
+        await this.safeCall(entry, '加载 render 层', () =>
+          injectRenderLayer({
+            id: entry.id,
+            dir: entry.dir ?? '',
+            manifest: entry.manifest as PluginManifest,
+            config: entry.config
+          })
+        )
+      }
+      await this.broadcast()
+    } finally {
+      this.renderLayersLoading = false
+    }
+  }
+
+  /** render → main 的一条消息(IPC 收到;失败只记日志,消息不重发) */
+  async handleRenderMessage(o: unknown): Promise<void> {
+    const msg = o as { pluginId?: unknown; channel?: unknown; data?: unknown } | null
+    const id = typeof msg?.pluginId === 'string' ? msg.pluginId : ''
+    const entry = this.entries.get(id)
+    if (!entry || !entry.manifest?.render || !entry.state.enabled) return
+    const channel = typeof msg?.channel === 'string' ? msg.channel : ''
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(channel)) {
+      this.logLine(entry, 'warn', 'render 层发来的消息通道名非法,已丢弃')
+      return
+    }
+    let size = 0
+    try {
+      size = JSON.stringify(msg?.data ?? null).length
+    } catch {
+      this.logLine(entry, 'warn', 'render 层发来的消息不是可 JSON 化的数据,已丢弃')
+      return
+    }
+    if (size > 256 * 1024) {
+      this.logLine(entry, 'warn', 'render 层发来的消息超过 256 KiB,已丢弃')
+      return
+    }
+    const data = msg?.data ?? null
+    if (entry.mainMode === 'restricted' && entry.restricted) {
+      try {
+        await entry.restricted.call('renderMessage', [channel, data], CALL_TIMEOUT)
+      } catch (err) {
+        this.logLine(entry, 'warn', `render 的消息没有送达受限 main:${errorMessage(err)}`)
+      }
+      return
+    }
+    if (entry.mainMode === 'node') {
+      if (entry.renderListeners.size === 0) {
+        this.logLine(entry, 'warn', 'render 层发来一条消息,但 node main 没有注册 render.onMessage')
+        return
+      }
+      for (const handler of [...entry.renderListeners]) {
+        await this.safeCall(entry, `render.onMessage(${channel})`, () => handler(channel, data))
+      }
+      return
+    }
+    this.logLine(entry, 'warn', 'render 层发来一条消息,但这个插件没有 main 层,消息被丢弃')
+  }
+
+  /** render 层更新状态卡 —— 走与插件 API 相同的 `state.set` 校验与广播 */
+  async applyRenderState(o: unknown): Promise<void> {
+    const msg = o as { pluginId?: unknown; patch?: unknown } | null
+    const id = typeof msg?.pluginId === 'string' ? msg.pluginId : ''
+    const entry = this.entries.get(id)
+    if (!entry || !entry.manifest?.render || !entry.state.enabled) return
+    await invokeOp(this.opContextFor(entry), 'state.set', msg?.patch, {
+      source: 'render',
+      audit: line => this.logFromPlugin(entry, line)
     })
-    if (!succeeded) {
-      // 失败与熔断的兜底**刻意不带 editor**:渲染层拿不到插入指令,文档就一个字符都不会变
-      result = {
-        ok: false,
-        message: entry.state.lastMessage,
-        ...(entry.state.lastDetail ? { detail: entry.state.lastDetail } : {})
-      }
-    }
-    if (entry.state.lastRunAt === beforeRunAt && (result.message || result.detail)) {
-      entry.state = {
-        ...entry.state,
-        status: result.ok ? 'ok' : 'error',
-        lastRunAt: Date.now(),
-        lastMessage: result.message,
-        ...(result.detail !== undefined ? { lastDetail: result.detail } : {})
-      }
-    }
-    await this.broadcast()
-    return result
+  }
+
+  /** render 层写一行日志(与插件 API 的 log 同义) */
+  logRenderLayer(o: unknown): void {
+    const msg = o as { pluginId?: unknown; level?: unknown; message?: unknown } | null
+    const id = typeof msg?.pluginId === 'string' ? msg.pluginId : ''
+    const entry = this.entries.get(id)
+    if (!entry || !entry.manifest?.render) return
+    const level = ['debug', 'info', 'warn', 'error'].includes(String(msg?.level))
+      ? (msg?.level as 'debug' | 'info' | 'warn' | 'error')
+      : 'info'
+    this.logLine(entry, level, String(msg?.message ?? '').slice(0, 2000))
   }
 
   // ---------- 安装 / 升级 / 卸载 ----------
@@ -655,12 +915,16 @@ export class PluginHost {
       throw err instanceof Error ? err : new Error(String(err))
     }
 
+    const installedManifest = await readPluginManifest(id)
     const record: InstalledRecord = {
       id,
       version: meta.version,
-      kind: (await readPluginManifest(id))?.kind ?? 'script',
+      mainMode: installedManifest?.main?.mode ?? null,
+      hasRender: Boolean(installedManifest?.render),
+      capability: installedManifest?.capability ?? null,
       integrity: meta.integrity,
       mainSha256: meta.mainSha256,
+      renderSha256: meta.renderSha256,
       publisher: meta.publisher,
       source: meta.source,
       registryUrl: meta.registryUrl,
@@ -701,8 +965,8 @@ export class PluginHost {
    * 就必须跟着走,宁可让用户重填一次。
    */
   async uninstall(id: string, options: { removeConfig: boolean }): Promise<void> {
-    // 开发模式的插件不占 userData 里的任何位置,「卸载」它没有意义;而它**可能**
-    // 顶着与某个已安装插件相同的 id —— 那种情况下照常执行会把 userData 里那份
+    // 开发模式的插件不占安装目录里的任何位置,「卸载」它没有意义;而它**可能**
+    // 顶着与某个已安装插件相同的 id —— 那种情况下照常执行会把安装目录里那份
     // 真正装着的插件删掉,而界面上还在跑的是开发目录那一份,没人会想到发生了这件事。
     if (this.entries.get(id)?.dev) {
       throw new Error('这是以开发模式(--plugin-dev)加载的插件,不在已安装列表里,无需卸载')
@@ -713,7 +977,7 @@ export class PluginHost {
     // 用前缀删除而不是逐个 secretKeysOf:认证方式切换留下的 #password 槽位也要一起清掉
     await deleteSecretsByPrefix(`${id}:`)
     // 沙箱插件还会在磁盘上留下两样东西:它的**分区数据**(localStorage / IndexedDB /
-    // 缓存,落在 userData/Partitions/imk-plugin-<id>/)与窗口几何。卸载就该清干净 ——
+    // 缓存,落在 profile 的 Partitions/imk-plugin-<id>/)与窗口几何。卸载就该清干净 ——
     // 留着的话,同一个 id 被别的作者重新发布时,新的插件能读到上一家的残留。
     await clearPluginStorage(id)
 
@@ -797,10 +1061,10 @@ export class PluginHost {
     if (entry.enabledRun) return
     entry.enabledRun = true
     void reason
-    if (entry.sandbox) {
-      // 沙箱插件的生命周期跑在**它自己的页面**里,所以得先把页面拉起来。
+    if (entry.restricted) {
+      // restricted main 的生命周期跑在**隐藏执行页**里,所以得先把页面拉起来。
       // 页面起不来(入口不在包里、CSP 拦了…)算一次失败,与其它失败一起计数熔断。
-      const started = await this.safeCall(entry, '启动插件页面', () => entry.sandbox?.start())
+      const started = await this.safeCall(entry, '启动插件页面', () => entry.restricted?.start())
       if (!started) return
       this.sendHello(entry)
     }
@@ -814,12 +1078,12 @@ export class PluginHost {
     entry.enabledRun = false
     void reason
     await this.safeCall(entry, 'onDisable', () => entry.runtime.onDisable?.(this.contextFor(entry)))
-    if (entry.sandbox) {
-      // 顺序:先让它说完再见(onDisable 已经跑完),再关窗。
+    if (entry.restricted) {
+      // 顺序:先让它说完再见(onDisable 已经跑完),再关页面。
       // 定时器与挂起的调用在 dispose 里清干净 —— 停用之后不该还有任何回调进来
-      disposeSandboxRuntime(id)
+      disposeRestrictedRuntime(id)
       forgetLimits(id)
-      await closePluginWindow(id, reason)
+      await closeRestrictedPage(id, reason)
     }
     // 停用 = 这次运行注册的一切都作废。
     //
@@ -834,7 +1098,7 @@ export class PluginHost {
     // 它每次都是从 manifest 重新算出来的,与运行时无关。
     entry.listeners.clear()
     entry.contrib.resetApi()
-    entry.uiClicks.clear()
+    entry.renderListeners.clear()
   }
 
   // ---------- 内部 ----------
@@ -872,39 +1136,59 @@ export class PluginHost {
       disabledByHost: false,
       suspended: false,
       logs: [],
+      recentOps: readRecentOps(id),
+      currentAction: null,
       contrib: new ContribRegistry(),
       listeners: new Map(),
       noticeTimes: [],
-      uiClicks: new Map(),
+      renderListeners: new Set(),
       enabledRun: false,
-      grants: effectiveGrantsOf(manifest, record),
-      sandbox: null,
+      grants: effectiveGrantsOf(manifest, record, dirOverride !== undefined),
+      restricted: null,
+      mainMode: manifest.main?.mode ?? null,
+      hasRender: Boolean(manifest.render),
       allowLocalNet: this.storedFor(id)?.allowLocalNet === true
     }
 
     this.entries.set(id, entry)
-    entry.api = this.apiFor(entry)
     try {
-      if (manifest.kind === 'sandboxed') {
-        // 沙箱插件的"运行时"是它自己的页面:这里只造一个把四个生命周期方法
-        // 桥过去的适配器,页面还没起(enable 时才建窗)
-        const runtime = createSandboxRuntime({
+      // node main 与 capability 需要主进程侧的 imk 对象;restricted 由 preload 塑形。
+      if (entry.mainMode === 'node' || manifest.capability) {
+        entry.api = this.apiFor(entry)
+      }
+
+      let mainRuntime: PluginRuntime | null = null
+      if (entry.mainMode === 'node') {
+        mainRuntime = loadScriptRuntime(entry.dir as string, manifest, entry.api as ImkApi)
+      } else if (entry.mainMode === 'restricted') {
+        const runtime = createRestrictedRuntime({
           pluginId: id,
           name: manifest.name,
           dir: entry.dir as string,
-          main: manifest.main ?? 'main.js',
-          ui: manifest.ui ?? null,
-          permissions: entry.grants
+          entry: manifest.main?.entry ?? 'main.js',
+          permissions: entry.grants,
+          hasRender: entry.hasRender
         })
-        entry.sandbox = runtime
-        entry.runtime = sandboxPluginRuntime(runtime, CALL_TIMEOUT)
+        entry.restricted = runtime
+        mainRuntime = restrictedPluginRuntime(runtime, CALL_TIMEOUT, ACTION_TIMEOUT)
         setPluginRoot(id, entry.dir as string, manifest.name)
-      } else {
-        entry.runtime =
-          manifest.kind === 'script'
-            ? loadScriptRuntime(entry.dir as string, manifest, entry.api)
-            : createCapabilityRuntime(manifest, entry.api)
+      } else if (manifest.capability) {
+        mainRuntime = createCapabilityRuntime(manifest, entry.api as ImkApi)
       }
+
+      const renderRuntime = manifest.render
+        ? createRenderRuntime({
+            id,
+            dir: entry.dir as string,
+            manifest,
+            getConfig: () => entry.config
+          })
+        : null
+
+      entry.runtime =
+        mainRuntime && renderRuntime
+          ? createCompositeRuntime(mainRuntime, renderRuntime)
+          : (mainRuntime ?? renderRuntime ?? {})
     } catch (err) {
       this.entries.delete(id)
       throw err
@@ -935,23 +1219,28 @@ export class PluginHost {
         enabled: false,
         status: 'error',
         lastRunAt: Date.now(),
-        lastMessage: '插件加载失败',
-        lastDetail: message.slice(0, MAX_DETAIL)
+        lastMessage: '插件加载失败'
       },
       failures: 0,
       disabledByHost: false,
       suspended: false,
       logs: [],
+      recentOps: readRecentOps(id),
+      currentAction: null,
       contrib: new ContribRegistry(),
       listeners: new Map(),
       noticeTimes: [],
-      uiClicks: new Map(),
+      renderListeners: new Set(),
       enabledRun: false,
-      grants: effectiveGrantsOf(manifest, record),
-      sandbox: null,
+      grants: effectiveGrantsOf(manifest, record, dirOverride !== undefined),
+      restricted: null,
+      mainMode: manifest.main?.mode ?? null,
+      hasRender: Boolean(manifest.render),
       allowLocalNet: this.storedFor(id)?.allowLocalNet === true,
       loadError: message
     })
+    const broken = this.entries.get(id)
+    if (broken) this.emitLog(broken, 'error', `加载失败:${message.slice(0, MAX_DETAIL)}`)
   }
 
   /**
@@ -981,9 +1270,11 @@ export class PluginHost {
         // 连同熔断的账一起接回来:回滚不该顺手豁免掉之前已经攒下的失败次数
         restored.failures = entry.failures
         restored.disabledByHost = entry.disabledByHost
-        restored.state.status = 'error'
-        restored.state.lastMessage = '插件升级失败,已恢复到上一个版本'
-        restored.state.lastRunAt = Date.now()
+        this.applyState(restored, {
+          status: 'error',
+          lastMessage: '插件升级失败，已恢复到上一个版本',
+          lastRunAt: Date.now()
+        })
         if (meta) restored.meta = meta
       }
       if (enabled) await this.enable(id, 'rollback')
@@ -999,9 +1290,9 @@ export class PluginHost {
     if (entry.state.enabled) await this.disable(id, 'unregister')
     // 窗口必须在**目录被动过之前**关掉:升级会先把插件目录 rename 走,
     // 页面还开着的话再点一下就是 404,半旧半新的状态最难查
-    if (entry.sandbox || hasSandboxRuntime(id)) {
-      await closePluginWindow(id, 'unregister')
-      unregisterSandboxRuntime(id)
+    if (entry.restricted || hasRestrictedRuntime(id)) {
+      await closeRestrictedPage(id, 'unregister')
+      unregisterRestrictedRuntime(id)
     }
     this.entries.delete(id)
     if (entry.dir) forgetScriptRuntime(entry.dir)
@@ -1028,8 +1319,7 @@ export class PluginHost {
       pluginId: entry.id,
       getConfig: <T,>() => entry.config as T,
       setState: patch => {
-        entry.state = { ...entry.state, ...patch }
-        void this.broadcast()
+        this.applyState(entry, patch)
       },
       flushDocument: () => this.flushDocument(),
       isEnabled: () => entry.state.enabled,
@@ -1040,11 +1330,11 @@ export class PluginHost {
   /**
    * 造一次能力调用的现场。
    *
-   * trusted 与沙箱两条路用的是**同一个**构造:差别只在 `api.ts` 那边直接调用
+   * node main 与沙箱两条路用的是**同一个**构造:差别只在 `api.ts` 那边直接调用
    * (`invokeOp` 出来的薄壳),沙箱这边经 IPC。能力的实现只有一份(ops.ts)。
    */
   private opContextFor(entry: Entry): OpContext {
-    const runtime = entry.sandbox
+    const runtime = entry.restricted
     return {
       pluginId: entry.id,
       pluginName: entry.descriptor.name,
@@ -1055,19 +1345,28 @@ export class PluginHost {
       log: (level, message) => this.logLine(entry, level, message),
       notify: (message, level) => this.notify(entry, message, level),
       setState: patch => {
-        entry.state = { ...entry.state, ...patch }
-        void this.broadcast()
+        this.applyState(entry, patch)
       },
       flushDocument: () => this.flushDocument(),
-      isSandbox: runtime !== null,
-      askRenderer: (op, args) => askRenderer(op, entry.id, args),
-      insertIntoEditor: (text, cursorOffset) => this.insertIntoEditor(entry, text, cursorOffset),
+      // **不能**用 entry.restricted !== null 判断:页面启动失败时对象可能还在,
+      // 而能力形态是由清单决定的。用错了会让 restricted 误走 node 的 git 白名单豁免。
+      isRestricted: entry.mainMode === 'restricted',
+      hasRender: entry.hasRender,
+      sendToRenderLayer: (channel, data) => {
+        if (!entry.hasRender) {
+          throw new Error('这个插件没有 render 层,消息无处投递')
+        }
+        if (!isRenderLayerLoaded(entry.id)) {
+          throw new Error('render 层还没就绪,消息暂时无法投递')
+        }
+        sendToRenderLayer(entry.id, channel, data)
+      },
       notifyFileChanged: filePath => {
         const win = getMainWindow()
         if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.FileExternalChange, filePath)
       },
       registerCommand: cmd => {
-        const result = entry.contrib.addCommand(cmd, () => this.invokeSandboxContrib(entry, cmd.id))
+        const result = entry.contrib.addCommand(cmd, () => this.invokeRestrictedContrib(entry, cmd.id))
         if (!result.ok) return result.errors
         this.scheduleBroadcast()
         return []
@@ -1079,67 +1378,42 @@ export class PluginHost {
       setStatusItem: item => {
         const { problems } = entry.contrib.setStatusItem(
           item,
-          item ? () => this.invokeSandboxContrib(entry, item.id) : undefined
+          item ? () => this.invokeRestrictedContrib(entry, item.id) : undefined
         )
         if (problems.length === 0) this.scheduleBroadcast()
         return problems
       },
       addMenuItem: item => {
         const { problems } = entry.contrib.addMenuItem(item, () =>
-          this.invokeSandboxContrib(entry, item.id)
+          this.invokeRestrictedContrib(entry, item.id)
         )
         if (problems.length === 0) this.scheduleBroadcast()
         return problems
       },
       schedule: {
         every: (ms, name) => {
-          if (!runtime) throw new Error('这个插件不是沙箱插件,请直接用自己的定时器')
+          if (!runtime) throw new Error('node main 请直接用自己的定时器')
           runtime.scheduleEvery(ms, name)
         },
         clear: name => runtime?.scheduleClear(name)
-      },
-      window: {
-        open: () => {
-          if (!runtime) return
-          runtime.windowOpen()
-        },
-        close: () => runtime?.windowClose(),
-        show: () => runtime?.windowShow(),
-        hide: () => runtime?.windowHide(),
-        setTitle: title => runtime?.windowSetTitle(title)
       },
       validateSecretTarget: (fieldKey, targetId) => this.assertSecretTarget(entry, fieldKey, targetId)
     }
   }
 
   /**
-   * 沙箱插件的条目被执行:桥回它的页面,由作者在那边的 `runAction` 或
+   * restricted main 的条目被执行:桥回隐藏页,由作者在那边的 `runAction` 或
    * `commands.register(cmd, run)` 里处理(见 preload/plugin.ts)。
    */
-  private async invokeSandboxContrib(entry: Entry, itemId: string): Promise<unknown> {
-    const runtime = entry.sandbox
+  private async invokeRestrictedContrib(entry: Entry, itemId: string): Promise<unknown> {
+    const runtime = entry.restricted
     if (!runtime) throw new Error('插件不在')
     return runtime.call('runAction', [itemId, null, null], CALL_TIMEOUT)
   }
 
-  /** 往当前文档里插入内容(由渲染层执行;插件只出文本) */
-  private insertIntoEditor(entry: Entry, text: string, cursorOffset?: number): Promise<boolean> {
-    const win = getMainWindow()
-    if (!win || win.webContents.isDestroyed()) {
-      entry.logs.push('[warn] 没有编辑器窗口,这次 editor.insert 没有落地')
-      return Promise.resolve(false)
-    }
-    if (!hasEditor()) {
-      entry.logs.push('[warn] 当前没有打开的文档,这次 editor.insert 没有落地')
-      return Promise.resolve(false)
-    }
-    win.webContents.send(IPC.PluginEditorInsert, { text, cursorOffset })
-    return Promise.resolve(true)
-  }
-
-  /** 页面起来后补一份"我是谁、现在什么样"(沙箱插件的一切都以它开场) */
+  /** 页面起来后补一份"我是谁、现在什么样"(restricted 的一切都以它开场) */
   private sendHello(entry: Entry): void {
-    const runtime = entry.sandbox
+    const runtime = entry.restricted
     if (!runtime) return
     const settings = getSettingsSync()
     runtime.send('hello', {
@@ -1150,19 +1424,131 @@ export class PluginHost {
       theme: settings?.theme ?? 'dark',
       vaultPath: settings?.vaultPath ?? null,
       config: entry.config,
-      hasWindow: entry.manifest?.ui !== undefined
+      mode: 'restricted',
+      hasRender: entry.hasRender
     } satisfies PluginHello)
   }
 
-  /** 写插件日志(两条路共用:trusted 的 api.log 与沙箱的 log op) */
-  private logLine(entry: Entry, level: string, message: string): void {
-    const line = `[${level}] ${message}`
-    entry.logs.push(line)
-    if (entry.logs.length > MAX_LOGS) entry.logs.splice(0, entry.logs.length - MAX_LOGS)
-    console.log(`[plugin:${entry.id}] ${line}`)
+  /**
+   * 统一的状态写入。
+   *
+   * 状态只保存一段文本(lastMessage):明细不再挂回状态,而是进操作日志 ——
+   * 否则设置页会先显示摘要、再显示一条几乎一样的明细。lastDetail 仍然接收,
+   * 但只用于日志与「摘要为空」时的兜底。
+   */
+  private applyState(entry: Entry, patch: Partial<PluginState>, actionOverride?: string): void {
+    const prev = entry.state
+    // 收尾的 patch(lastRunAt)必须自带结果文本;没有就留空,绝不继承上一轮的 ——
+    // 并发时那正是把两个操作的正文缝在一起的入口。
+    const summary = (
+      patch.lastMessage ??
+      (patch.lastRunAt != null ? '' : prev.lastMessage) ??
+      ''
+    ).trim()
+    const detail = patch.lastDetail
+    entry.state = {
+      ...prev,
+      ...patch,
+      lastMessage: summary || detail || '',
+      lastDetail: undefined
+    }
+    if (
+      patch.lastRunAt != null &&
+      patch.lastRunAt !== prev.lastRunAt &&
+      entry.state.status !== 'running'
+    ) {
+      const status =
+        entry.state.status === 'partial' ? 'partial' : entry.state.status === 'ok' ? 'ok' : 'error'
+      this.recordOperation(entry, {
+        at: patch.lastRunAt,
+        action: operationLabelFor(
+          actionOverride ?? null,
+          actionScope.getStore()?.action ?? null,
+          entry.currentAction,
+          entry.mainMode
+        ),
+        status,
+        message: entry.state.lastMessage,
+        ...(detail && detail !== entry.state.lastMessage ? { detail } : {})
+      })
+    }
+    void this.broadcast()
   }
 
-  /** 造注入给 trusted 插件的 API(含密钥作用域校验) */
+  /** 记一条操作结果:内存里留最近 3 条(并落一份 JSON),完整版走统一日志 */
+  private recordOperation(entry: Entry, op: PluginOperation): void {
+    entry.recentOps.unshift(op)
+    if (entry.recentOps.length > MAX_RECENT_OPS) entry.recentOps.length = MAX_RECENT_OPS
+    const label = op.status === 'ok' ? '成功' : op.status === 'partial' ? '部分失败' : '失败'
+    const body = [op.message, op.detail].filter(Boolean).join('\n\n')
+    // 与插件自己 log() 的行走同一个入口:内存尾巴与磁盘日志由此天然一致。
+    // 多行明细保留换行 —— 设置页逐条渲染,不再把它压成一行字符串。
+    this.emitLog(entry, 'operation', `${op.action} · ${label}${body ? `\n${body}` : ''}`, op.at)
+    try {
+      const file = pluginRecentFile(entry.id)
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify(entry.recentOps), 'utf8')
+    } catch (err) {
+      console.error('[iMark] 写最近操作记录失败:', err)
+    }
+  }
+
+  /**
+   * 写一条日志:**内存尾巴 + 主进程控制台 + 磁盘文件**,三条路只此一个入口。
+   *
+   * 所有来源(插件 log、宿主操作摘要、宿主警告/审计)都必须走这里 —— 否则就会
+   * 出现「磁盘上有、设置页没有」或「设置页有、磁盘没有」这类对不上的现象。
+   * 内存与磁盘用的是同一份字段,只是磁盘多一个时间戳前缀。
+   */
+  private emitLog(entry: Entry, level: PluginLogLevel, message: string, at = Date.now()): void {
+    const text = message.replace(/\r\n/g, '\n').trimEnd()
+    entry.logs.push({ at, level, message: text })
+    if (entry.logs.length > MAX_LOGS) entry.logs.splice(0, entry.logs.length - MAX_LOGS)
+    const label = level === 'operation' ? '操作' : level
+    console.log(`[plugin:${entry.id}] [${label}] ${text}`)
+    this.appendPluginLog(entry, label, text, at)
+  }
+
+  /** 追加一条到插件日志文件;日志写不进去绝不能反过来影响插件 */
+  private appendPluginLog(entry: Entry, label: string, text: string, at: number): void {
+    try {
+      const file = pluginLogFile(entry.id)
+      mkdirSync(dirname(file), { recursive: true })
+      appendFileSync(file, `${logStamp(at)} [${label}] ${text}\n`, 'utf8')
+    } catch (err) {
+      console.error('[iMark] 写插件日志失败:', err)
+    }
+  }
+
+  /** 打开完整日志前先保证文件存在(设置页的小图标用它) */
+  ensureLogFile(id: string): string {
+    // 只接受已登记插件:这个 id 会拼进文件路径,不能拿渲染层传来的任意字符串
+    if (!this.entries.has(id)) throw new Error(`未知插件：${id}`)
+    const file = pluginLogFile(id)
+    mkdirSync(dirname(file), { recursive: true })
+    appendFileSync(file, '', 'utf8')
+    return file
+  }
+
+  /**
+   * 写插件日志(级别与正文分开的来源:沙箱 log op、render 层日志、能力审计)。
+   * 不认识的级别按 info 收下 —— 日志不该因为一个错别字而丢掉。
+   */
+  private logLine(entry: Entry, level: string, message: string): void {
+    this.emitLog(entry, asLogLevel(level), message)
+  }
+
+  /**
+   * node main 的 `api.log` 与宿主审计送来的是**整行**(已经带 `[level]` 前缀)。
+   * 拆出级别再走统一入口,否则宿主会再包一层,变成 `[warn] [info] ...`。
+   */
+  private logFromPlugin(entry: Entry, line: string): void {
+    const m = /^\[(debug|info|warn|error)\]\s*([\s\S]*)$/.exec(line)
+    if (m) this.emitLog(entry, m[1] as PluginLogLevel, m[2]!)
+    else this.emitLog(entry, 'warn', line)
+  }
+
+  /** 造注入给 node main 插件的 API(含密钥作用域校验) */
   private apiFor(entry: Entry): ImkApi {
     return createImkApi(this.contextFor(entry), {
       pluginId: entry.id,
@@ -1173,10 +1559,31 @@ export class PluginHost {
       permissions: entry.grants,
       opContext: this.opContextFor(entry),
       validateSecretTarget: (fieldKey, targetId) => this.assertSecretTarget(entry, fieldKey, targetId),
-      log: line => this.logLine(entry, 'warn', line),
+      log: line => this.logFromPlugin(entry, line),
       contrib: entry.contrib,
       listeners: entry.listeners,
-      uiClicks: entry.uiClicks,
+      render: entry.hasRender
+        ? {
+            send: async (channel: string, data: unknown): Promise<void> => {
+              const result = await invokeOp(
+                this.opContextFor(entry),
+                'render.send',
+                { channel, data },
+                {
+                  source: 'node',
+                  audit: line => this.logFromPlugin(entry, line)
+                }
+              )
+              if (!result.ok) throw new Error(`[${result.error.code}] ${result.error.message}`)
+            },
+            onMessage: (handler: (channel: string, data: unknown) => void): (() => void) => {
+              entry.renderListeners.add(handler)
+              return () => {
+                entry.renderListeners.delete(handler)
+              }
+            }
+          }
+        : null,
       // 贡献点变了要立刻让界面看到 —— 命令刚注册完就该出现在面板里。
       // 走 schedule 而不是 broadcast:插件常在 onEnable 里连着注册十几条,
       // 每一条都推一次整份快照是没有意义的。
@@ -1208,7 +1615,12 @@ export class PluginHost {
    * 包住每一次「宿主 → 插件」的调用。
    * 没有它,一个坏 main.js 的 onEnable 抛异常就会让整个应用起不来。
    */
-  private async safeCall(entry: Entry, label: string, fn: () => unknown): Promise<boolean> {
+  private async safeCall(
+    entry: Entry,
+    label: string,
+    fn: () => unknown,
+    timeoutMs = CALL_TIMEOUT
+  ): Promise<boolean> {
     if (entry.suspended || entry.loadError) return false
     let timer: ReturnType<typeof setTimeout> | null = null
     try {
@@ -1216,8 +1628,8 @@ export class PluginHost {
         Promise.resolve().then(fn),
         new Promise((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`${label} 超时(超过 ${CALL_TIMEOUT / 1000} 秒)`)),
-            CALL_TIMEOUT
+            () => reject(new Error(`${label} 超时(超过 ${Math.round(timeoutMs / 1000)} 秒)`)),
+            timeoutMs
           )
         })
       ])
@@ -1227,13 +1639,12 @@ export class PluginHost {
       const message = err instanceof Error ? err.message : String(err)
       const stack = err instanceof Error && err.stack ? err.stack : message
       entry.failures += 1
-      entry.state = {
-        ...entry.state,
+      this.applyState(entry, {
         status: 'error',
         lastRunAt: Date.now(),
         lastMessage: `${label} 失败`,
         lastDetail: stack.slice(0, MAX_DETAIL)
-      }
+      })
       console.error(`[iMark] 插件 ${entry.id} ${label} 失败:`, err)
       if (entry.failures >= MAX_FAILURES) {
         entry.disabledByHost = true
@@ -1243,10 +1654,14 @@ export class PluginHost {
         entry.enabledRun = false
         // 熔断也要关窗:一个已经"连续失败被停用"的插件,它的窗口还挂在屏幕上
         // 是最说不通的状态(而且那个页面还在跑着没人管的代码)
-        if (entry.sandbox) {
-          disposeSandboxRuntime(entry.id)
-          void closePluginWindow(entry.id, 'circuit-breaker')
+        if (entry.restricted) {
+          disposeRestrictedRuntime(entry.id)
+          void closeRestrictedPage(entry.id, 'circuit-breaker')
         }
+        // render 层还可能活在主窗口里:扩展/会话也必须收掉,
+        // 否则界面上会留着一个"已停用"插件的装饰与行为(熔断路径不经过 disable())
+        if (entry.hasRender) void unloadRenderLayer(entry.id)
+        entry.renderListeners.clear()
         entry.state = {
           ...entry.state,
           enabled: false,
@@ -1454,9 +1869,9 @@ export class PluginHost {
     // 沙箱插件用自己的事件通道(它是页面里的回调,不是主进程里的闭包)。
     // 事件名的映射表是**显式**的:没有映射的事件就是"沙箱插件不支持它",
     // 而不是"看着像支持、实际永远收不到"(preload 那边会对未知事件名报警告)。
-    if (entry.sandbox) {
-      const mapped = SANDBOX_EVENT_MAP[event]
-      if (mapped) entry.sandbox.send(mapped.type, mapped.payload(payload))
+    if (entry.restricted) {
+      const mapped = RESTRICTED_EVENT_MAP[event]
+      if (mapped) entry.restricted.send(mapped.type, mapped.payload(payload))
       return
     }
     const handlers = entry.listeners.get(event)
@@ -1478,8 +1893,10 @@ export class PluginHost {
     const now = Date.now()
     entry.noticeTimes = entry.noticeTimes.filter(t => now - t < NOTICE_WINDOW_MS)
     if (entry.noticeTimes.length >= NOTICE_PER_WINDOW) {
-      entry.logs.push(
-        `[warn] 一分钟内通知超过 ${NOTICE_PER_WINDOW} 条,这一条被丢弃(通知是给用户看的,不是日志)`
+      this.emitLog(
+        entry,
+        'warn',
+        `一分钟内通知超过 ${NOTICE_PER_WINDOW} 条,这一条被丢弃(通知是给用户看的,不是日志)`
       )
       return false
     }
@@ -1489,7 +1906,7 @@ export class PluginHost {
     if (!win || win.webContents.isDestroyed()) {
       // 没有窗口时通知没地方可画。最常见的是插件在 onEnable 里就发了一条 ——
       // 那时应用可能还没建窗。留一句日志,免得作者对着一个不出现的通知反复猜
-      entry.logs.push('[warn] 界面还没就绪,这条通知被丢掉了')
+      this.emitLog(entry, 'warn', '界面还没就绪,这条通知被丢掉了')
       return false
     }
     const notice: PluginNotice = {
@@ -1512,7 +1929,7 @@ export class PluginHost {
  * "一个隐藏页面被高频叫醒"这件事不会发生:它的粒度是"用户在写字",不是"每一次按键"。
  * 页面上认不出的事件名会由 preload 报一条警告(写错了不该是静默的)。
  */
-const SANDBOX_EVENT_MAP: Partial<{
+const RESTRICTED_EVENT_MAP: Partial<{
   [E in PluginEvent]: {
     type: 'config' | 'theme' | 'vault' | 'doc-saved' | 'file-open' | 'doc-changed'
     payload(p: PluginEventMap[E]): unknown
@@ -1534,24 +1951,32 @@ function metaOf(record: InstalledRecord | null): PluginInstallInfo | null {
     installedAt: record.installedAt,
     integrity: record.integrity,
     publisher: record.publisher,
-    source: record.source
+    source: record.source,
+    mainMode: record.mainMode,
+    hasRender: record.hasRender,
+    capability: record.capability,
+    mainSha256: record.mainSha256,
+    renderSha256: record.renderSha256
   }
 }
 
 /**
- * 有效权限 = 用户同意的 ∩ 清单声明的(见 Entry.grants 的说明)。
- *
- * `source: 'local'` 没有安装确认流程(用户自己拷进插件目录的),视为全给 ——
- * 但界面上会标注「手动安装,未经确认」,那是他本人做的选择。
+ * 有效权限规则(见 Entry.grants 的说明):
+ * - 无 main(capability):清单声明即能力所需权限,用于安装披露;
+ * - node main:清单声明;权限是告知 + API 塑形,不做交集;
+ * - restricted main:dev/local 视为 granted = declared;market/bundled 取
+ *   「用户同意过的 ∩ 清单现在声明的」—— 那才是它真正拿得到的。
  */
 function effectiveGrantsOf(
   manifest: PluginManifest | null,
-  record: InstalledRecord | null
+  record: InstalledRecord | null,
+  isDev = false
 ): PluginPermission[] {
-  const declared = manifest?.permissions ?? []
+  const declared = [...(manifest?.permissions ?? [])]
   if (declared.length === 0) return []
-  if (!record) return []
-  if (record.source === 'local') return [...declared]
+  if (!manifest?.main) return declared
+  if (manifest.main.mode === 'node') return declared
+  if (isDev || !record || record.source === 'local') return declared
   const granted = record.grantedPermissions ?? []
   return declared.filter(p => granted.includes(p))
 }
@@ -1604,21 +2029,16 @@ export function normalizeConfig(
         out[field.key] = (list as unknown[])
           .filter(t => t && typeof t === 'object')
           .map((t, i) => {
-            const o = t as Partial<PluginTarget> & { branch?: unknown }
-            // 旧版本只有一个 branch:两个分支都填它(本地分支现在是必填);
-            // 更旧的 name(远端名)已废弃;旧的 username 只会是被预填的 'oauth2',视为空
-            const legacy = typeof o.branch === 'string' ? o.branch : ''
-            const localBranch = typeof o.localBranch === 'string' ? o.localBranch : ''
-            const rawUser = typeof o.username === 'string' ? o.username : ''
+            const o = t as Partial<PluginTarget>
             const auth: PluginTarget['auth'] =
               o.auth === 'password' || o.auth === 'ssh' || o.auth === 'token' ? o.auth : 'token'
             return {
               id: typeof o.id === 'string' && o.id ? o.id : `t${Date.now().toString(36)}${i}`,
               url: typeof o.url === 'string' ? o.url : '',
-              remoteBranch: typeof o.remoteBranch === 'string' ? o.remoteBranch : legacy,
-              localBranch: localBranch || legacy,
+              remoteBranch: typeof o.remoteBranch === 'string' ? o.remoteBranch : '',
+              localBranch: typeof o.localBranch === 'string' ? o.localBranch : '',
               auth,
-              username: rawUser === 'oauth2' ? '' : rawUser
+              username: typeof o.username === 'string' ? o.username : ''
             } satisfies PluginTarget
           })
         break

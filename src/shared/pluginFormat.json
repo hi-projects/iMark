@@ -8,44 +8,53 @@
     "改这个文件之前先读一遍 src/shared/pluginPackage.ts 顶部的说明。"
   ],
 
+  "_formatVersion": [
+    "信封格式版本。应用、打包器、服务端都从这里读,不再各写一份。"
+  ],
+  "formatVersion": 1,
+
   "_manifestKeyOrder": [
     "integrity = sha256(JSON.stringify({manifest, files})),而 JSON.stringify 保留键的插入顺序。",
     "所以「清单对象按什么顺序重建」直接决定 integrity 的值:打包端与校验端顺序对不上,",
     "算出来的 integrity 就对不上,包会被自己的校验拒掉。",
-    "validateManifest() 按这个顺序重建清单,打包器也必须按这个顺序。",
-    "**在末尾追加新键是安全的**(既有包算出的 integrity 不变);插在中间会改掉所有既有包的 integrity。"
+    "validateManifest() 按这个顺序重建清单,打包器也必须按这个顺序。"
   ],
   "manifestKeyOrder": [
     "id",
     "name",
     "description",
     "version",
-    "kind",
-    "fields",
-    "actions",
+    "main",
+    "render",
+    "capability",
+    "permissions",
     "author",
     "homepage",
-    "capability",
-    "main",
-    "permissions",
-    "icon",
     "engines",
+    "icon",
+    "fields",
+    "actions",
     "targetActions",
     "targetFieldKey",
     "lineMenu",
     "commands",
     "statusBar",
-    "menus",
-    "ui"
+    "menus"
   ],
+
+  "_layerKeyOrder": [
+    "main / render 是嵌套对象,嵌套键序同样是 integrity 的一部分。",
+    "三处(canonicalManifest、build-plugins.mjs、server)都按这里的顺序重建。"
+  ],
+  "mainKeyOrder": ["mode", "entry"],
+  "renderKeyOrder": ["entry"],
 
   "_arrayKeys": [
     "重建清单时,这些键在缺失时补空数组而不是省略 —— 宿主代码读 manifest.fields /",
     "manifest.actions 时不必到处写 ?? [],键在不在两种情况下形状一致。",
     "",
     "**只有「宿主无条件读」的键才能进这个表。**commands / statusBar / menus 都是可选的,",
-    "放进来的后果是:所有既有包重算一次会凭空多出三个空数组,integrity 全变 ——",
-    "而那些包早就发布出去了,客户端会一致认为它们「被篡改过」。"
+    "放进来的后果是所有包会凭空多出三个空数组、integrity 全变。"
   ],
   "arrayKeys": ["fields", "actions"],
 
@@ -54,7 +63,8 @@
     "服务端比客户端严 → 作者发不出本来能装的包(发布直接失败);",
     "服务端比客户端松 → 包收下了但谁也装不上(更糟,问题拖到用户那里才暴露)。",
     "两者必须同时改。",
-    "html/htm 是沙箱插件(见 pluginPackage.ts 的 kind)的界面入口,必须能进包。"
+    "",
+    "插件没有自有 HTML 页面(界面由 render 层直接操作 DOM),所以 html/htm 不在白名单里。"
   ],
   "allowedExtensions": [
     "js",
@@ -64,8 +74,6 @@
     "md",
     "txt",
     "css",
-    "html",
-    "htm",
     "svg",
     "png",
     "jpg",
@@ -78,16 +86,13 @@
 
   "_textExtensions": [
     "上面这些里,能当纯文本直接显示给用户看的(「查看源码」用)。",
-    "含代码的文本一律要在这里 —— 确认框承诺「显示的就是将要运行的字节」,",
-    "沙箱插件的界面代码若看不了,这个承诺就落空了。",
-    "其余是二进制,渲染层不往界面上送。"
+    "含代码的文本一律要在这里 —— 确认框承诺「显示的就是将要运行的字节」。"
   ],
-  "textExtensions": ["js", "mjs", "cjs", "json", "md", "txt", "css", "html", "htm"],
+  "textExtensions": ["js", "mjs", "cjs", "json", "md", "txt", "css"],
 
   "_reservedSegment": [
     "包内路径里禁止出现的路径段。宿主将来要往插件目录里放自己的保留资源",
-    "(主题令牌、执行器页面等),如果包内能有同名文件,就能把它影子掉。",
-    "现在只是拒绝,不用等真的有这些资源再补。"
+    "(主题令牌、执行器页面等),如果包内能有同名文件,就能把它影子掉。"
   ],
   "reservedSegment": "__imark"
 }

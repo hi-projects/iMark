@@ -36,6 +36,7 @@ import {
   currentDocPath,
   setCurrentDocPath
 } from '../src/main/window'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 let pass = 0
 let fail = 0
@@ -64,14 +65,16 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
   }
 ])
+registerPluginScheme()
 
 // ---------------------------------------------------------------- A 纯函数
 
 function pureChecks(): void {
   console.log('\n[A] 共享格式数据(扩展名 / 保留段 / 键序)')
 
-  check('html 进白名单(沙箱插件的界面入口)', isSafeRelPath('ui/index.html'))
-  check('htm 进白名单', isSafeRelPath('ui/index.htm'))
+  // 插件没有自有 HTML 页面(界面由 render 层直接操作 DOM),html/htm 从白名单移除
+  check('html 不再进白名单', !isSafeRelPath('ui/index.html'))
+  check('htm 不再进白名单', !isSafeRelPath('ui/index.htm'))
   check('woff2 进白名单', isSafeRelPath('ui/font.woff2'))
   check('webp 进白名单', isSafeRelPath('assets/a.webp'))
   check('__imark 首段被拒', !isSafeRelPath('__imark/ui.css'))
@@ -88,15 +91,14 @@ function pureChecks(): void {
     name: 'x',
     id: 'x',
     description: '',
-    kind: 'script',
     actions: [],
     fields: [],
-    main: 'main.js'
+    main: { mode: 'node', entry: 'main.js' }
   })
   const keys = Object.keys(rebuilt).join(',')
   check(
-    'canonicalManifest 键序稳定(与既有包一致)',
-    keys === 'id,name,description,version,kind,fields,actions,main,lineMenu',
+    'canonicalManifest 键序稳定(v2)',
+    keys === 'id,name,description,version,main,fields,actions,lineMenu',
     keys
   )
   check('缺失的 actions 补空数组', Array.isArray(rebuilt.actions))
@@ -116,7 +118,6 @@ function pureChecks(): void {
     name: 'x',
     description: '',
     version: '1.0.0',
-    kind: 'declarative',
     capability: 'webhook',
     permissions: ['network', 'secrets'],
     fields: [{ key: 'targets', kind: 'targets', label: 't', default: [] }],
@@ -133,7 +134,6 @@ function pureChecks(): void {
     name: 'y',
     description: '',
     version: '1.0.0',
-    kind: 'declarative',
     capability: 'webhook',
     permissions: [],
     fields: [{ key: 'targets', kind: 'targets', label: 't', default: [] }],
@@ -162,12 +162,11 @@ async function writeDevPlugin(dir: string, message: string): Promise<void> {
         name: '开发探针',
         description: 'harness 用',
         version: '1.0.0',
-        kind: 'script',
+        main: { mode: 'node', entry: 'main.js' },
         // 刻意**不声明** vault:read —— 用来验它真的被挡住了
         permissions: [],
         fields: [],
-        actions: [],
-        main: 'main.js'
+        actions: []
       },
       null,
       2

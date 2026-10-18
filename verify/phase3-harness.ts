@@ -20,16 +20,16 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
-import { registerPluginScheme, pluginWindowOf, pluginWindowTitle } from '../src/main/plugins/windows'
+import {
+  registerPluginScheme,
+  pluginWebContentsOf
+} from '../src/main/plugins/restrictedPage'
 import { getPluginHost, initPluginHost } from '../src/main/plugins/host'
 import { pluginDir, setRecord, getRecord } from '../src/main/plugins/installed'
 import { invokeOp } from '../src/main/plugins/gate'
 import { setNetFetchImpl, resolveVaultPath, opPermissions } from '../src/main/plugins/ops'
 import {
   validateManifest,
-  SANDBOX_ONLY_PERMISSIONS,
-  CODE_ONLY_PERMISSIONS,
-  hasMainEntry
 } from '../src/shared/pluginPackage'
 import type { OpContext } from '../src/main/plugins/ops'
 
@@ -71,7 +71,7 @@ interface Fixture {
   source?: 'local' | 'market'
 }
 
-/** 在磁盘上造一个已安装的沙箱插件(磁盘是权威:有目录 + 合法清单就算装上了) */
+/** 在磁盘上造一个已安装的 restricted 插件(磁盘是权威:有目录 + 合法清单就算装上了) */
 async function makePlugin(fx: Fixture): Promise<void> {
   const dir = pluginDir(fx.id)
   await mkdir(dir, { recursive: true })
@@ -80,31 +80,22 @@ async function makePlugin(fx: Fixture): Promise<void> {
     name: `验收插件 ${fx.id}`,
     description: '验收用',
     version: '1.0.0',
-    kind: 'sandboxed',
-    main: 'main.js',
+    main: { mode: 'restricted', entry: 'main.js' },
     permissions: fx.permissions,
     fields: [],
     actions: [{ id: 'report', label: '报告' }]
   }
-  if (fx.ui) manifest.ui = fx.ui
   await writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')
   await writeFile(join(dir, 'main.js'), fx.main, 'utf8')
-  if (fx.ui) {
-    await mkdir(join(dir, fx.ui.entry.split('/').slice(0, -1).join('/') || '.'), { recursive: true })
-    await writeFile(
-      join(dir, fx.ui.entry),
-      `<!doctype html><html><head><meta charset="utf-8"><title>ui</title>
-       <link rel="stylesheet" href="/__imark/ui.css"></head>
-       <body><h1 id="t">插件窗口</h1><script src="/main.js"></script></body></html>`,
-      'utf8'
-    )
-  }
   await setRecord({
     id: fx.id,
     version: '1.0.0',
-    kind: 'sandboxed',
+    mainMode: 'restricted',
+    hasRender: false,
+    capability: null,
     integrity: 'x'.repeat(64),
     mainSha256: null,
+    renderSha256: null,
     publisher: null,
     source: fx.source ?? 'local',
     registryUrl: null,
@@ -176,12 +167,6 @@ async function main(): Promise<void> {
   }
 
   await makePlugin({ id: 'sbx-basic', permissions: ['vault:read', 'network'], main: SIMPLE_MAIN })
-  await makePlugin({
-    id: 'sbx-ui',
-    permissions: ['ui'],
-    main: SIMPLE_MAIN,
-    ui: { entry: 'ui/index.html', width: 420, height: 320 }
-  })
   await makePlugin({ id: 'sbx-throws', permissions: [], main: THROWING_MAIN })
   // 从市场装的:有"用户同意过哪些权限"的快照,才是 effective = granted ∩ declared 的场景
   await makePlugin({
@@ -215,7 +200,6 @@ async function main(): Promise<void> {
         marketUrl: '',
         plugins: {
           'sbx-basic': { enabled: true, config: {} },
-          'sbx-ui': { enabled: true, config: {} },
           'sbx-throws': { enabled: true, config: {} },
           'sbx-readonly': { enabled: true, config: {} },
           'sbx-local': { enabled: true, config: {} },
@@ -238,39 +222,30 @@ async function main(): Promise<void> {
   const opContextOf = (h: typeof current, id: string): OpContext =>
     (h as unknown as { opContextFor(e: unknown): OpContext }).opContextFor(entriesOf(h).get(id))
   const opAs = (id: string, op: string, args?: unknown) =>
-    invokeOp(opContextOf(current, id), op, args, { source: 'sandbox' })
+    invokeOp(opContextOf(current, id), op, args, { source: 'restricted' })
 
   // ---------- A 生命周期 ----------
 
   console.log('\n[A] 生命周期')
-  check('纯后台插件建出了隐藏窗口', await until(() => pluginWindowOf('sbx-basic') !== null))
-  check('纯后台插件的窗口不进任务栏', pluginWindowOf('sbx-basic')?.isVisible() === false)
-
-  const uiWin = pluginWindowOf('sbx-ui')
-  check('带界面的插件也建出了窗口', await until(() => pluginWindowOf('sbx-ui') !== null))
+  check('restricted 插件建出了隐藏执行页', await until(() => pluginWebContentsOf('sbx-basic') !== null))
+  const basicPage = pluginWebContentsOf('sbx-basic')
+  const basicWin = basicPage ? BrowserWindow.fromWebContents(basicPage) : null
+  check('执行页是隐藏的', basicWin ? basicWin.isVisible() === false : false)
   check(
-    '带界面的插件加载的是作者写的 HTML',
-    uiWin ? uiWin.webContents.getURL().endsWith('/ui/index.html') : false,
-    uiWin?.webContents.getURL()
+    '页面就是宿主的执行器页面',
+    basicPage ? basicPage.getURL().includes('__imark/exec.html') : false,
+    basicPage?.getURL()
   )
-  check('窗口标题标出了这是插件(防钓鱼)', /iMark 插件$/.test(pluginWindowTitle('sbx-ui')))
-  check('界面插件的初始尺寸来自清单', uiWin ? uiWin.getBounds().width === 420 : false, String(uiWin?.getBounds().width))
-  const shown = uiWin
-    ? await uiWin.webContents
-        .executeJavaScript('document.getElementById("t") ? document.getElementById("t").textContent : "(没有标题元素)"')
-        .catch((e: Error) => `err:${e.message}`)
-    : '(没有窗口)'
-  check('作者页面的 DOM 真的渲染了', shown === '插件窗口', String(shown))
 
-  // 停用 → 关窗
-  await current.save('sbx-ui', { enabled: false })
-  const closed = await until(() => pluginWindowOf('sbx-ui') === null, 2500)
-  check('停用后窗口在 2 秒内消失', closed)
+  // 停用 → 关页
+  await current.save('sbx-basic', { enabled: false })
+  const closed = await until(() => pluginWebContentsOf('sbx-basic') === null, 2500)
+  check('停用后执行页在 2 秒内消失', closed)
 
   // 卸载 → 分区数据被清
   await current.uninstall('sbx-basic', { removeConfig: true })
   await sleep(500)
-  check('卸载后插件窗口消失', pluginWindowOf('sbx-basic') === null)
+  check('卸载后执行页消失', pluginWebContentsOf('sbx-basic') === null)
 
   /**
    * 分区数据的清理**断言的是效果,不是目录**。
@@ -312,7 +287,7 @@ async function main(): Promise<void> {
     throwsView?.disabledByHost === true,
     `failures=${throwsView?.failures} disabledByHost=${throwsView?.disabledByHost}`
   )
-  check('熔断后窗口被强关', await until(() => pluginWindowOf('sbx-throws') === null, 2500))
+  check('熔断后执行页被强关', await until(() => pluginWebContentsOf('sbx-throws') === null, 2500))
 
   const record = await getRecord('sbx-throws')
   check('熔断不写进 installed.json(那是安装信息,不是运行态)', record !== null)
@@ -459,51 +434,57 @@ async function main(): Promise<void> {
   check('git.run 拒绝能变成任意命令执行的参数(-c)', evilArg.ok === false && evilArg.error.code === 'E_BAD_ARGS')
   const evilSub = await opAs('sbx-git', 'git.run', { args: ['daemon'] })
   check('git.run 拒绝白名单之外的子命令', evilSub.ok === false && evilSub.error.code === 'E_BAD_ARGS')
+  // env 只对脚本插件开放:对沙箱来说它和 -c 是同一个口子(GIT_SSH_COMMAND 之类)
+  const evilEnv = await opAs('sbx-git', 'git.run', { args: ['status'], env: { GIT_SSH_COMMAND: 'calc' } })
+  check(
+    'git.run 拒绝沙箱插件传 env(它能用来挂执行外部程序的钩子)',
+    evilEnv.ok === false && evilEnv.error.code === 'E_BAD_ARGS',
+    JSON.stringify(evilEnv)
+  )
 
   const g = opPermissions()
   check('能力表里每一项都标了权限或 null', Object.values(g).every(v => v === null || typeof v === 'string'))
   check('能力表覆盖了清单里出现的权限词', Object.values(g).some(v => v === 'vault:read'))
 
-  const kinds = [
-    validateManifest({ id: 'xx', name: 'x', description: '', version: '1.0.0', kind: 'quantum', fields: [], actions: [] }),
-    validateManifest({
-      id: 'xx',
-      name: 'x',
-      description: '',
-      version: '1.0.0',
-      kind: 'sandboxed',
-      main: 'main.js',
-      ui: { entry: 'ui/i.html' },
-      fields: [],
-      actions: []
-    })
-  ]
+  const badMode = validateManifest({
+    id: 'xx', name: 'x', description: '', version: '1.0.0',
+    main: { mode: 'quantum', entry: 'main.js' }, fields: [], actions: []
+  })
   check(
-    '不认识的 kind 明确拒绝(旧版应用据这条拒绝沙箱包)',
-    kinds[0]?.ok === false && kinds[0].errors.some(e => e.includes('kind')),
-    JSON.stringify(kinds[0]?.errors)
+    '未知 main.mode 明确拒绝',
+    badMode.ok === false && badMode.errors.some(e => e.includes('main.mode')),
+    JSON.stringify(badMode.errors)
+  )
+  const oldShape = validateManifest({
+    id: 'xx', name: 'x', description: '', version: '1.0.0',
+    kind: 'script', main: 'main.js', fields: [], actions: []
+  })
+  check(
+    '字符串 main(旧形态)被拒绝',
+    oldShape.ok === false && oldShape.errors.some(e => e.includes('main 必须是对象')),
+    JSON.stringify(oldShape.errors)
+  )
+  const renderPerm = validateManifest({
+    id: 'xx', name: 'x', description: '', version: '1.0.0',
+    render: { entry: 'render.js' }, permissions: ['vault:read'], fields: [], actions: []
+  })
+  check(
+    'render-only 声明系统权限 → 拒绝',
+    renderPerm.ok === false && renderPerm.errors.some(e => e.includes('render-only')),
+    JSON.stringify(renderPerm.errors)
+  )
+  const restrictedShell = validateManifest({
+    id: 'xx', name: 'x', description: '', version: '1.0.0',
+    main: { mode: 'restricted', entry: 'main.js' }, permissions: ['shell'], fields: [], actions: []
+  })
+  check(
+    'restricted main 声明 shell → 拒绝',
+    restrictedShell.ok === false && restrictedShell.errors.some(e => e.includes('shell')),
+    JSON.stringify(restrictedShell.errors)
   )
   check(
-    '声明了 ui 却没申请 ui 权限 → 拒绝',
-    kinds[1]?.ok === false && kinds[1].errors.some(e => e.includes('ui')),
-    JSON.stringify(kinds[1]?.errors)
-  )
-  check('沙箱专属权限出现在 script 清单里 → 拒绝', (() => {
-    const r = validateManifest({
-      id: 'xx', name: 'x', description: '', version: '1.0.0', kind: 'script', main: 'main.js',
-      permissions: ['ui'], fields: [], actions: []
-    })
-    return r.ok === false && r.errors.some(e => e.includes('ui'))
-  })())
-  // 权限词表的三个口径:哪些只给沙箱、哪些只给带代码的形态、哪些谁都能声明。
-  // 这一条是**接口**,不是实现细节 —— 词表一变,这里的断言就该跟着变(它是故意的路障)
-  check(
-    '沙箱专属词只有 ui(编辑器扩展点对两种带代码的形态都开放)',
-    SANDBOX_ONLY_PERMISSIONS.length === 1 && SANDBOX_ONLY_PERMISSIONS[0] === 'ui'
-  )
-  check(
-    '编辑器词只给带代码的形态',
-    CODE_ONLY_PERMISSIONS.join(',') === 'editor:read,editor:write' && hasMainEntry('sandboxed') && !hasMainEntry('declarative')
+    '没有任何层 → 拒绝',
+    validateManifest({ id: 'xx', name: 'x', description: '', version: '1.0.0', fields: [], actions: [] }).ok === false
   )
 
   const resolved = await resolveVaultPath('', 'dir')

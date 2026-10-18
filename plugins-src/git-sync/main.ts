@@ -44,11 +44,15 @@ interface GitSyncConfig {
   writeReadme: boolean
 }
 
-/** 状态与失败信息里用的短标签:取地址最后一段(如 rl);取不到就用整条地址 */
-function repoLabel(url: string): string {
-  const cleaned = url.trim().replace(/\/+$/, '').replace(/\.git$/i, '')
-  const parts = cleaned.split(/[/\\]/).filter(Boolean)
-  return parts.length > 0 ? parts[parts.length - 1] : url.trim()
+/**
+ * 状态与失败信息里对某个远端的称呼:第几个(与设置页里的行序一致)。
+ *
+ * 不用地址末段当标签:仓库名可能很短(如 rl),也可能几个远端同名,用户还得回头
+ * 对着地址认是哪一行。序号是唯一与界面一一对应的说法。
+ */
+function targetLabel(all: readonly PluginTarget[], target: Pick<PluginTarget, 'id'>): string {
+  const index = all.findIndex(t => t.id === target.id)
+  return index >= 0 ? `第 ${index + 1} 个远端` : '远端'
 }
 
 function stamp(): string {
@@ -74,13 +78,13 @@ function classifyPushError(stderr: string): string {
     return '远端已有本地没有的提交，推送被拒。请在仓库目录自行处理（如 git pull --rebase）后重试。'
   }
   if (/authentication failed|could not read username|403|401|invalid credentials/.test(text)) {
-    return '认证失败:请检查访问令牌是否有效、是否有该仓库的写权限。'
+    return '认证失败：请检查访问令牌是否有效、是否有该仓库的写权限。'
   }
   if (/could not resolve host|unable to access|connection|timed out/.test(text)) {
-    return '无法连接远端:请检查网络与仓库地址。'
+    return '无法连接远端：请检查网络与仓库地址。'
   }
   if (/repository not found|does not exist/.test(text)) {
-    return '远端仓库不存在或无权访问:请检查地址与令牌权限。'
+    return '远端仓库不存在或无权访问：请检查地址与令牌权限。'
   }
   return ''
 }
@@ -138,8 +142,9 @@ class GitSyncPlugin {
 
   async runAction(actionId: string, _ctx: unknown, targetId?: string): Promise<PluginActionResult> {
     if (actionId === 'sync-now') return this.sync('manual')
+    if (actionId === 'test-all') return this.testConnection()
     if (actionId === 'test-connection') return this.testConnection(targetId)
-    return { ok: false, message: `未知动作:${actionId}` }
+    return { ok: false, message: `未知动作：${actionId}` }
   }
 
   // ---------- 定时 ----------
@@ -183,7 +188,13 @@ class GitSyncPlugin {
       // 手动点击不该被静默丢掉:排一次队,当前这轮结束后补跑
       if (trigger === 'manual') {
         this.queuedRerun = true
-        return { ok: true, message: '正在同步中，已排队:本轮结束后立即执行' }
+        // 这不是「成功完成」,而是「已接受、还在进行中」:
+        // 显式给 running,宿主的兜底才不会把状态徽标写成「成功」
+        return {
+          ok: true,
+          status: 'running',
+          message: '正在同步中，已排队：本轮结束后立即执行'
+        }
       }
       return { ok: false, message: '正在同步中，已跳过本次触发' }
     }
@@ -194,7 +205,9 @@ class GitSyncPlugin {
     const signal = this.abort.signal
 
     const cfg = this.imk.getConfig<GitSyncConfig>()
-    const targets = (cfg.targets ?? []).filter(t => t.url.trim().length > 0)
+    // 全量清单留着算「第几个远端」:过滤掉没填地址的行之后,下标就和界面上的行号对不上了
+    const allTargets = cfg.targets ?? []
+    const targets = allTargets.filter(t => t.url.trim().length > 0)
 
     const fail = (message: string, detail?: string): PluginActionResult => {
       this.imk.setState({
@@ -215,7 +228,7 @@ class GitSyncPlugin {
       const noLocalBranch = targets.find(t => !t.localBranch.trim())
       if (noLocalBranch) {
         return fail(
-          `远端「${repoLabel(noLocalBranch.url)}」没填本地分支`,
+          `${targetLabel(allTargets, noLocalBranch)}没填本地分支`,
           '本地分支是必填项（要推送的那条本地分支，如 main）；远程分支留空则与本地同名。'
         )
       }
@@ -226,13 +239,13 @@ class GitSyncPlugin {
         const isPassword = t.auth === 'password'
         if (isPassword && !t.username.trim()) {
           return fail(
-            `远端「${repoLabel(t.url)}」选了账号密码认证，但没填账号`,
+            `${targetLabel(allTargets, t)}选了账号密码认证，但没填账号`,
             '把账号填上后重试。'
           )
         }
         if (!(await this.secrets.get('targets', secretSlot(t)))) {
           return fail(
-            `远端「${repoLabel(t.url)}」选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
+            `${targetLabel(allTargets, t)}选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
             '在对应远端那一行填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
           )
         }
@@ -252,22 +265,41 @@ class GitSyncPlugin {
 
       const committed = await this.commitLocal(vaultPath, cfg, signal)
       // 无论有没有新提交都推一次:上一次推送失败(离线/被拒)时也能补上
-      const { pushed, failed } = await this.pushAll(vaultPath, targets, signal)
+      const { pushed, failed } = await this.pushAll(vaultPath, targets, allTargets, signal)
 
       if (failed.length > 0) {
-        const message = `推送失败（${failed.length}/${targets.length}）`
-        return fail(message, failed.join('\n'))
+        // 多远端时状态正文就是逐远端的结果;整体成败由徽标承担。
+        // 失败原因仍进 lastDetail —— 宿主只把它写进操作日志,不挂在状态卡上。
+        const failedLabels = new Set(failed.map(f => f.label))
+        const message = targets
+          .map(t => {
+            const label = targetLabel(allTargets, t)
+            return failedLabels.has(label) ? `${label}：推送失败` : `${label}：推送成功`
+          })
+          .join('\n')
+        const detail = failed.map(f => `${f.label}：${f.detail}`).join('\n')
+        this.imk.setState({
+          status: pushed.length > 0 ? 'partial' : 'error',
+          lastRunAt: Date.now(),
+          lastMessage: message,
+          lastDetail: detail
+        })
+        return { ok: false, message: `推送失败（${failed.length}/${targets.length}）`, detail }
       }
 
       const head = await this.headShort(vaultPath, signal)
-      const message = committed
-        ? `已提交并推送到 ${pushed.length} 个远端${head ? `（提交 ${head}）` : ''}`
-        : `无改动:远端已是 ${head || '最新'}`
+      const message =
+        targets.length > 1
+          ? targets.map(t => `${targetLabel(allTargets, t)}：推送成功`).join('\n')
+          : committed
+            ? `已提交并推送到 ${pushed.length} 个远端${head ? `（提交 ${head}）` : ''}`
+            : `无改动：远端已是 ${head || '最新'}`
       this.imk.setState({
         status: 'ok',
         lastRunAt: Date.now(),
         lastMessage: message,
-        lastDetail: undefined
+        // 多远端的状态正文只有逐行结果,提交号作为明细进操作日志
+        lastDetail: targets.length > 1 && head ? `提交 ${head}` : undefined
       })
       return { ok: true, message }
     } catch (err) {
@@ -290,7 +322,7 @@ class GitSyncPlugin {
     signal: AbortSignal
   ): Promise<boolean> {
     const add = await this.git.run(['add', '-A'], { cwd: vaultPath, signal })
-    if (!add.ok) throw new Error(`git add 失败:${this.git.summarize(add.stderr || add.stdout, 3)}`)
+    if (!add.ok) throw new Error(`git add 失败：${this.git.summarize(add.stderr || add.stdout, 3)}`)
 
     const status = await this.git.run(['status', '--porcelain'], { cwd: vaultPath, signal })
     if (status.stdout.trim().length === 0) return false
@@ -302,7 +334,7 @@ class GitSyncPlugin {
       signal
     })
     if (!commit.ok) {
-      throw new Error(`提交失败:${this.git.summarize(commit.stderr || commit.stdout, 3)}`)
+      throw new Error(`提交失败：${this.git.summarize(commit.stderr || commit.stdout, 3)}`)
     }
     return true
   }
@@ -311,14 +343,16 @@ class GitSyncPlugin {
   private async pushAll(
     vaultPath: string,
     targets: PluginTarget[],
+    allTargets: readonly PluginTarget[],
     signal: AbortSignal
-  ): Promise<{ pushed: string[]; failed: string[] }> {
+  ): Promise<{ pushed: string[]; failed: { label: string; detail: string }[] }> {
     const pushed: string[] = []
-    const failed: string[] = []
+    const failed: { label: string; detail: string }[] = []
     for (const target of targets) {
       const result = await this.pushTarget(vaultPath, target, signal)
-      if (result.ok) pushed.push(repoLabel(target.url))
-      else failed.push(`${repoLabel(target.url)}:${result.detail}`)
+      const label = targetLabel(allTargets, target)
+      if (result.ok) pushed.push(label)
+      else failed.push({ label, detail: result.detail })
     }
     return { pushed, failed }
   }
@@ -343,7 +377,7 @@ class GitSyncPlugin {
       if (!init.ok) {
         // 老版本 git 不支持 -b
         init = await this.git.run(['init'], { cwd: vaultPath, signal })
-        if (!init.ok) throw new Error(`初始化仓库失败:${this.git.summarize(init.stderr, 3)}`)
+        if (!init.ok) throw new Error(`初始化仓库失败：${this.git.summarize(init.stderr, 3)}`)
         await this.git.run(['symbolic-ref', 'HEAD', `refs/heads/${wantBranch}`], {
           cwd: vaultPath,
           signal
@@ -442,7 +476,9 @@ class GitSyncPlugin {
   /** 测试连接:带 targetId 时只测那一个远端(界面上每个远端后面有自己的「测试连接」) */
   private async testConnection(targetId?: string): Promise<PluginActionResult> {
     const cfg = this.imk.getConfig<GitSyncConfig>()
-    const configured = (cfg.targets ?? []).filter(t => t.url.trim().length > 0)
+    // 序号按界面上的全量行序算,不按过滤后的下标(见 sync 里的同名注释)
+    const allTargets = cfg.targets ?? []
+    const configured = allTargets.filter(t => t.url.trim().length > 0)
     const targets = targetId ? configured.filter(t => t.id === targetId) : configured
     if (targets.length === 0) {
       return { ok: false, message: targetId ? '该远端已不存在（可能刚被删除）' : '尚未配置远端仓库' }
@@ -455,12 +491,15 @@ class GitSyncPlugin {
     this.imk.setState({
       status: 'running',
       lastMessage:
-        targets.length === 1 ? `${repoLabel(targets[0].url)}:正在测试连接…` : '正在测试连接…',
+        targets.length === 1
+          ? `${targetLabel(allTargets, targets[0])}：正在测试连接…`
+          : '正在测试连接…',
       lastDetail: undefined
     })
 
     const lines: string[] = []
-    let allOk = true
+    const reasons: string[] = []
+    let okCount = 0
     for (const target of targets) {
       const cred = await this.credentialFor(target)
       const branch = target.remoteBranch.trim() || target.localBranch.trim()
@@ -474,25 +513,34 @@ class GitSyncPlugin {
         ],
         { cwd, timeoutMs: 30_000, env: this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? '') }
       )
-      const name = repoLabel(target.url)
+      const name = targetLabel(allTargets, target)
       if (r.ok) {
+        okCount += 1
         const found = r.stdout.trim().length > 0
-        lines.push(`${name}:连接成功${found ? '' : `（远端还没有 ${branch} 分支，首次推送时创建）`}`)
-      } else {
-        allOk = false
         lines.push(
-          `${name}:${classifyPushError(r.stderr) || this.git.summarize(r.stderr || r.stdout, 3) || '连接失败'}`
+          `${name}：连接测试通过${found ? '' : `（远端还没有 ${branch} 分支，首次推送时创建）`}`
         )
+      } else {
+        const reason =
+          classifyPushError(r.stderr) || this.git.summarize(r.stderr || r.stdout, 3) || '连接失败'
+        lines.push(`${name}：连接测试失败`)
+        reasons.push(`${name}：${reason}`)
       }
     }
-    const message = allOk ? '连接测试通过' : '连接测试失败'
+    const allOk = okCount === targets.length
+    const overall = allOk ? '成功' : okCount > 0 ? '部分失败' : '失败'
+    // 状态只保存一段文本:单远端就是那一行,多远端逐行罗列。
+    // 整体成败由状态徽标承担 —— 不再在正文里重复一遍「部分失败」。
+    // 失败原因放进 lastDetail —— 宿主会把它写进操作日志,也不挂在状态卡上。
+    const message = targets.length === 1 ? lines[0]! : lines.join('\n')
+    const detail = reasons.length > 0 ? reasons.join('\n') : undefined
     this.imk.setState({
-      status: allOk ? 'ok' : 'error',
+      status: allOk ? 'ok' : okCount > 0 ? 'partial' : 'error',
       lastRunAt: Date.now(),
-      lastMessage: targets.length === 1 ? `${repoLabel(targets[0].url)}:${message}` : message,
-      lastDetail: lines.join('\n')
+      lastMessage: message,
+      lastDetail: detail
     })
-    return { ok: allOk, message, detail: lines.join('\n') }
+    return { ok: allOk, message: targets.length === 1 ? lines[0]! : overall, detail }
   }
 }
 

@@ -20,6 +20,9 @@ import { loadSettings } from '../src/main/settings'
 import { getPluginHost, initPluginHost } from '../src/main/plugins/host'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
+import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
+
+registerPluginScheme()
 
 const run = promisify(execFile)
 

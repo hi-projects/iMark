@@ -64,12 +64,38 @@ function mainWebContents(): WebContents | null {
  * **必须有这条握手**,不能只看"窗口对象建好了" —— 中间隔着整个页面加载:
  * `createMainWindow()` 返回时页面还没跑起来,那时候 `send()` 出去的消息**会被静默丢掉**
  * (没有监听器),而插件那边只看到一句超时。实测踩过:插件在 onEnable 里挂界面,
- * 报的是 `ui.mount 超时`,而界面其实一个字节都没发出去。
+ * 报的是 `render.prepare 超时`,而界面其实一个字节都没发出去。
  */
 let rendererReady = false
 
+/** 渲染层每次报到(含页面重载后的再报到)都会通知这些回调 */
+type ReadyListener = () => void
+const readyListeners = new Set<ReadyListener>()
+
+/**
+ * 渲染层就绪 / **重新就绪**时做什么。
+ *
+ * 页面重载后渲染层里的插件会话全部消失,所以 render 层需要重新注入 ——
+ * 这条回调就是那个时机(见 main/plugins/renderLayer.ts)。
+ */
+export function onRendererReady(cb: ReadyListener): () => void {
+  readyListeners.add(cb)
+  return () => readyListeners.delete(cb)
+}
+
+export function isRendererReady(): boolean {
+  return rendererReady
+}
+
 export function markRendererReady(): void {
   rendererReady = true
+  for (const cb of [...readyListeners]) {
+    try {
+      cb()
+    } catch (err) {
+      console.error('[iMark] 渲染层就绪回调出错:', err)
+    }
+  }
 }
 
 /** 主窗口关了/重载了:下一次还要重新等它报到 */
@@ -96,7 +122,12 @@ async function waitForRenderer(ms = 3000): Promise<WebContents | null> {
 }
 
 /** 请渲染层替某个插件做一件事。失败一律抛成异常,由能力表那边归一成错误码 */
-export async function askRenderer(op: RendererOpName, pluginId: string, args: unknown): Promise<unknown> {
+export async function askRenderer(
+  op: RendererOpName,
+  pluginId: string,
+  args: unknown,
+  timeoutMs = REPLY_TIMEOUT
+): Promise<unknown> {
   const wc = await waitForRenderer()
   if (!wc) throw new Error('主界面还没就绪(窗口未创建、未加载完,或已关闭)')
   const id = nextId++
@@ -104,7 +135,7 @@ export async function askRenderer(op: RendererOpName, pluginId: string, args: un
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`${op} 超时:界面没有回执(可能正忙或已重载)`))
-    }, REPLY_TIMEOUT)
+    }, timeoutMs)
     pending.set(id, { resolve, reject, timer })
     wc.send(IPC.PluginHostRequest, { id, pluginId, op, args } satisfies RendererOpRequest)
   })

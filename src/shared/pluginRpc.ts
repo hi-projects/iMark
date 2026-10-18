@@ -129,8 +129,10 @@ export interface PluginHello {
   vaultPath: string | null
   /** 当前配置(已按字段表归一化);之后变更走 `config` 事件 */
   config: Record<string, unknown>
-  /** 有没有自己的窗口(纯后台插件为 false —— 作者据此决定要不要画界面) */
-  hasWindow: boolean
+  /** main 层模式(restricted 页面永远看到 'restricted') */
+  mode: 'restricted' | 'node'
+  /** 有没有 render 层(有的话可以经 imark.render 发消息) */
+  hasRender: boolean
 }
 
 /** `tick`:宿主调度器到点了(见 ops 的 schedule.every) */
@@ -149,8 +151,11 @@ export interface PluginTick {
  */
 export interface PluginBridgeCall {
   id: number
-  /** PluginRuntime 上的方法名 */
-  method: 'onEnable' | 'onDisable' | 'onConfigChange' | 'runAction'
+  /**
+   * PluginRuntime 上的方法名;`renderMessage` 是同插件的 render 层发来的消息
+   * (restricted main 用它接 render 的消息,不走生命周期)。
+   */
+  method: 'onEnable' | 'onDisable' | 'onConfigChange' | 'runAction' | 'renderMessage'
   args: unknown[]
 }
 

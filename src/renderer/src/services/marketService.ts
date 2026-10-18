@@ -25,10 +25,11 @@ import type {
 } from '@shared/market'
 import { isNewerVersion } from '@shared/pluginPackage'
 import { plain, pluginStore, settingsNav } from './pluginService'
+import { api } from './api'
 
 export const marketStore = reactive<{
   installed: MarketInstalledData | null
-  /** 已装上、且应用自带兜底副本的 id(用于区分「自带」与「自己装的」) */
+  /** 已装上、且内置兜底副本的 id(用于区分「内置」与「自己装的」) */
   bundled: string[]
   /** 等待用户确认的安装;非 null 时确认框显示 */
   pending: PendingInstall | null
@@ -51,7 +52,9 @@ export const marketStore = reactive<{
 })
 
 function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+  const text = err instanceof Error ? err.message : String(err)
+  // Electron 会把主进程抛出的错误包成「Error: 原文」;界面上只留原文
+  return text.replace(/^Error:\s*/, '')
 }
 
 /** 已安装视图同时刷两份:市场页的(含 bundled 标记)与全局插件列表的 */
@@ -62,13 +65,13 @@ function applyPlugins(list: MarketInstalledData['plugins']): void {
 
 export async function refreshInstalled(): Promise<void> {
   try {
-    const data = await window.api.listMarketInstalled()
+    const data = await api.listMarketInstalled()
     marketStore.installed = data
     marketStore.bundled = data.bundled
     pluginStore.list = data.plugins
     marketStore.error = ''
   } catch (err) {
-    marketStore.error = `读取已安装插件失败:${message(err)}`
+    marketStore.error = `读取已安装插件失败：${message(err)}`
   }
 }
 
@@ -80,7 +83,7 @@ export async function pickPackage(): Promise<boolean> {
   if (marketStore.busy) return false
   marketStore.busy = true
   try {
-    const pending = await window.api.pickMarketPackage()
+    const pending = await api.pickMarketPackage()
     if (!pending) return false
     marketStore.pending = pending
     marketStore.error = ''
@@ -98,7 +101,7 @@ export async function packDirectory(): Promise<boolean> {
   if (marketStore.busy) return false
   marketStore.busy = true
   try {
-    const pending = await window.api.packMarketDir()
+    const pending = await api.packMarketDir()
     if (!pending) return false
     marketStore.pending = pending
     marketStore.error = ''
@@ -117,14 +120,14 @@ export async function confirmInstall(): Promise<void> {
   if (!pending) return
   marketStore.busy = true
   try {
-    const list = await window.api.installMarketPending(pending.token)
+    const list = await api.installMarketPending(pending.token)
     marketStore.pending = null
     applyPlugins(list)
     marketStore.error = ''
   } catch (err) {
     // 令牌可能已被消耗(主进程那边一次性),所以无论如何都关掉确认框
     marketStore.pending = null
-    marketStore.error = `安装失败:${message(err)}`
+    marketStore.error = `安装失败：${message(err)}`
   } finally {
     marketStore.busy = false
     marketStore.progress = null
@@ -140,7 +143,7 @@ export async function cancelInstall(): Promise<void> {
   marketStore.pending = null
   if (!token) return
   try {
-    await window.api.dropMarketPending(token)
+    await api.dropMarketPending(token)
   } catch {
     /* 令牌过期/已被丢掉都无所谓,静默 */
   }
@@ -156,24 +159,24 @@ export async function uninstallPlugin(id: string, removeConfig: boolean): Promis
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyPlugins(await window.api.uninstallPlugin(id, { removeConfig }))
+    applyPlugins(await api.uninstallPlugin(id, { removeConfig }))
     marketStore.error = ''
   } catch (err) {
-    marketStore.error = `卸载失败:${message(err)}`
+    marketStore.error = `卸载失败：${message(err)}`
   } finally {
     marketStore.busy = false
   }
 }
 
-/** 把应用自带的兜底插件装回来(离线可用,不联网) */
+/** 把内置的兜底插件装回来(离线可用,不联网) */
 export async function restoreBundled(): Promise<void> {
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyPlugins(await window.api.restoreBundledPlugins())
+    applyPlugins(await api.restoreBundledPlugins())
     marketStore.error = ''
   } catch (err) {
-    marketStore.error = `恢复自带插件失败:${message(err)}`
+    marketStore.error = `恢复内置插件失败：${message(err)}`
   } finally {
     marketStore.busy = false
   }
@@ -181,7 +184,7 @@ export async function restoreBundled(): Promise<void> {
 
 /** 由 main.ts 在挂载后调用;返回取消订阅函数 */
 export function initMarketService(): () => void {
-  const off = window.api.onMarketProgress(p => {
+  const off = api.onMarketProgress(p => {
     marketStore.progress = p.phase === 'done' || p.phase === 'error' ? null : p
   })
   return off
@@ -246,7 +249,7 @@ function resetRemote(): void {
 
 export async function loadAuth(): Promise<void> {
   try {
-    remoteStore.auth = await window.api.marketAuthStatus()
+    remoteStore.auth = await api.marketAuthStatus()
     marketStore.error = ''
   } catch (err) {
     failRemote(err)
@@ -256,9 +259,9 @@ export async function loadAuth(): Promise<void> {
 export async function setRegistry(url: string): Promise<boolean> {
   marketStore.loading = true
   try {
-    await window.api.setMarketRegistry(url)
+    await api.setMarketRegistry(url)
     resetRemote()
-    remoteStore.auth = await window.api.marketAuthStatus()
+    remoteStore.auth = await api.marketAuthStatus()
     marketStore.error = ''
     return true
   } catch (err) {
@@ -273,7 +276,7 @@ export async function setRegistry(url: string): Promise<boolean> {
 export async function testRegistry(url: string): Promise<string | null> {
   marketStore.loading = true
   try {
-    const text = await window.api.testMarketRegistry(url)
+    const text = await api.testMarketRegistry(url)
     marketStore.error = ''
     return text
   } catch (err) {
@@ -286,14 +289,14 @@ export async function testRegistry(url: string): Promise<string | null> {
 
 export async function loginMarket(username: string, password: string): Promise<boolean> {
   return withBusy(async () => {
-    remoteStore.auth = await window.api.marketLogin(username, password)
+    remoteStore.auth = await api.marketLogin(username, password)
     marketStore.error = ''
   })
 }
 
 export async function registerMarket(username: string, password: string): Promise<boolean> {
   return withBusy(async () => {
-    remoteStore.auth = await window.api.marketRegister(username, password)
+    remoteStore.auth = await api.marketRegister(username, password)
     marketStore.error = ''
   })
 }
@@ -301,7 +304,7 @@ export async function registerMarket(username: string, password: string): Promis
 /** 关掉「明文 http」提示。只影响当前这个地址,换一个地址会重新提示 */
 export async function acknowledgePlainHttp(): Promise<void> {
   try {
-    await window.api.acknowledgeMarketPlainHttp()
+    await api.acknowledgeMarketPlainHttp()
     await loadAuth()
   } catch {
     /* 记不住也无所谓:最坏情况是下次再提示一遍 */
@@ -310,7 +313,7 @@ export async function acknowledgePlainHttp(): Promise<void> {
 
 export async function logoutMarket(): Promise<void> {
   await withBusy(async () => {
-    remoteStore.auth = await window.api.marketLogout()
+    remoteStore.auth = await api.marketLogout()
     remoteStore.publishPreview = null
     remoteStore.publishDir = null
     remoteStore.lastPublished = null
@@ -341,8 +344,15 @@ async function withBusy(fn: () => Promise<void>): Promise<boolean> {
 export async function searchMarket(): Promise<void> {
   const nav = settingsNav.market
   await withBusy(async () => {
-    remoteStore.result = await window.api.searchMarket(
-      plain({ q: nav.query, page: nav.page, pageSize: 20, sort: nav.sort, kind: null })
+    remoteStore.result = await api.searchMarket(
+      plain({
+        q: nav.query,
+        page: nav.page,
+        pageSize: 20,
+        sort: nav.sort,
+        mainMode: null,
+        hasRender: null
+      })
     )
     marketStore.error = ''
   })
@@ -352,7 +362,7 @@ export async function openDetail(id: string): Promise<void> {
   settingsNav.market.detailId = id
   remoteStore.detail = null
   await withBusy(async () => {
-    remoteStore.detail = await window.api.marketDetail(id)
+    remoteStore.detail = await api.marketDetail(id)
     marketStore.error = ''
   })
 }
@@ -374,7 +384,7 @@ export async function openSource(version: string | null): Promise<void> {
   if (!id) return
   remoteStore.source = null
   await withBusy(async () => {
-    remoteStore.source = await window.api.marketSource(id, version)
+    remoteStore.source = await api.marketSource(id, version)
     marketStore.error = ''
   })
 }
@@ -391,7 +401,7 @@ export async function loadIcon(id: string): Promise<string | null> {
   if (id in remoteStore.icons) return remoteStore.icons[id] as string | null
   remoteStore.icons[id] = null // 先占位:并发调用时只有一个真的发出去
   try {
-    remoteStore.icons[id] = await window.api.marketIcon(id)
+    remoteStore.icons[id] = await api.marketIcon(id)
   } catch {
     remoteStore.icons[id] = null
   }
@@ -402,7 +412,7 @@ export async function loadIcon(id: string): Promise<string | null> {
 
 export async function checkUpdates(force = false): Promise<void> {
   try {
-    remoteStore.updates = await window.api.checkMarketUpdates(force)
+    remoteStore.updates = await api.checkMarketUpdates(force)
   } catch {
     // 更新检查是**背景动作**,失败不该在界面上留下任何东西 —— 见 updates.ts
     remoteStore.updates = []
@@ -417,7 +427,7 @@ export async function checkUpdates(force = false): Promise<void> {
  */
 export async function installFromMarket(id: string, version: string | null): Promise<boolean> {
   return withBusy(async () => {
-    marketStore.pending = await window.api.installFromMarket(id, version)
+    marketStore.pending = await api.installFromMarket(id, version)
     marketStore.error = ''
   })
 }
@@ -426,7 +436,7 @@ export async function installFromMarket(id: string, version: string | null): Pro
 
 export async function previewPublish(): Promise<boolean> {
   return withBusy(async () => {
-    const picked = await window.api.previewMarketPublish()
+    const picked = await api.previewMarketPublish()
     if (!picked) return // 用户取消
     remoteStore.publishDir = picked.dir
     remoteStore.publishPreview = picked.preview
@@ -439,7 +449,7 @@ export async function publishNow(): Promise<boolean> {
   const dir = remoteStore.publishDir
   if (!dir) return false
   const ok = await withBusy(async () => {
-    remoteStore.lastPublished = await window.api.publishToMarket(dir)
+    remoteStore.lastPublished = await api.publishToMarket(dir)
     marketStore.error = ''
   })
   if (ok) {
@@ -476,19 +486,25 @@ export function hasUpdate(id: string, remoteVersion: string): boolean {
   return isNewerVersion(remoteVersion, local)
 }
 
-/** 已安装插件的来源标签 */
+/**
+ * 已安装插件的来源标签。
+ *
+ * 随应用发布的那份统一叫「内置插件」(而不是「应用自带」),用来标明**来源**;
+ * 日志里只说「插件」,因为那条消息讲的是升级这件事,不是来源。
+ */
 export function sourceLabel(source: string | undefined, bundled: boolean): string {
   switch (source) {
+    // 'bundled'(随应用发布的兜底包)与 'builtin'(内置核心插件)不再分家:对用户来说
+    // 都是「应用自己带的那份」,后者目前也没有生产者(registry.ts 的 builtinPlugins 是空的)
     case 'bundled':
-      return '应用自带'
+    case 'builtin':
+      return '内置插件'
     case 'market':
-      return '来自市场'
+      return '市场插件'
     case 'local':
       return '本地安装'
-    case 'builtin':
-      return '内置'
     default:
-      return bundled ? '应用自带' : '未知来源'
+      return bundled ? '内置插件' : '未知来源'
   }
 }
 

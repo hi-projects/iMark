@@ -1,9 +1,8 @@
 import { app, BrowserWindow, dialog, shell } from 'electron'
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '@shared/ipc-channels'
 import type { Settings, Theme } from '@shared/types'
-import iconPath from '../../build/icon.png?asset'
+import { appIconPng } from './appIcon'
 
 /**
  * 窗口图标(任务栏 / Alt+Tab / 窗口列表里那个)。
@@ -12,24 +11,14 @@ import iconPath from '../../build/icon.png?asset'
  * 不给的话窗口的 `_NET_WM_ICON` 属性就是空的(xprop 实测 `not found`),
  * 那些地方显示的是 Electron 的默认图标 —— 和应用网格里的 iMark 图标对不上。
  *
- * 首选 electron-vite 的 `?asset`:文件被复制进产物目录,再随 `files: [out/**]`
- * 一并进 asar —— **打包后唯一保证命中的就是它**(那时 `app.getAppPath()` 指向
- * app.asar,而 `build/` 不在 files 里)。后两条覆盖不经过 electron-vite 的形态:
- * 直接从源码目录跑(仓库里的 `build/icon.png`)与 electron-builder 打包后
- * (图标进 resources)。都不存在就返回 undefined,让 Electron 用默认图标 ——
- * 总好过递一个不存在的路径。
+ * 路径解析(`?asset` / 源码目录 / resources)见 appIcon.ts。
  */
 function windowIcon(): string | undefined {
-  const candidates = [
-    iconPath,
-    join(app.getAppPath(), 'build', 'icon.png'),
-    join(process.resourcesPath ?? '', 'icon.png')
-  ]
-  return candidates.find(p => existsSync(p))
+  return appIconPng()
 }
 
 /** 各主题的窗口底色,用于首帧(渲染完成前)避免白闪 */
-const WINDOW_BG: Record<Theme, string> = { light: '#ffffff', dark: '#0d1117', black: '#000000' }
+const WINDOW_BG: Record<Theme, string> = { light: '#ffffff', dark: '#262626' }
 
 /** 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸 */
 const PICKER_SIZE = { width: 820, height: 550 }

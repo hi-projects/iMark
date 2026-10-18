@@ -1,7 +1,34 @@
 import type { PluginConfigEntry } from './plugins'
 
-/** light 亮色 / dark 深灰 / black 纯黑(OLED) */
-export type Theme = 'light' | 'dark' | 'black'
+/** light 亮色 / dark 深色(底色对齐 Obsidian Minimal,文字保持 iMark 默认) */
+export type Theme = 'light' | 'dark'
+
+/**
+ * 「设为默认 Markdown 编辑器」的当前状态(设置 → 系统)。
+ *
+ * 刻意不是单个 boolean:Windows 8 起,应用**不能**把自己的关联静默设成默认
+ * (UserChoice 有哈希保护,写不进去)。所以这里要分别回答三件事 ——
+ * 这个平台能不能由应用代劳、现在默认的是谁、iMark 是不是它。
+ */
+export interface DefaultEditorStatus {
+  /** 当前平台是否支持由应用发起注册(目前只有 Windows 做了实现) */
+  supported: boolean
+  /** iMark 是否已经是 .md 的默认打开程序 */
+  isDefault: boolean
+  /** 当前 .md 的默认程序(ProgID 或 `Applications\xxx.exe`;查不到为 null) */
+  current: string | null
+  /** 注册 / 查询失败时的说明;成功时没有 */
+  error?: string
+}
+
+/**
+ * 自动保存方式(与 VS Code 的 `files.autoSave` 对齐):
+ * - `off`:只能手动保存;
+ * - `afterDelay`:停止输入一段时间后写盘(延迟可短到 1 秒);
+ * - `onFocusChange`:编辑器失去焦点时写盘;
+ * - `onWindowChange`:切换到其他窗口时写盘。
+ */
+export type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange'
 
 export interface Settings {
   theme: Theme
@@ -13,13 +40,15 @@ export interface Settings {
   vaultPath: string | null
   /** 上次打开的仓库内文件 */
   lastFile: string | null
-  /** 定时保存:按固定间隔把改动写回文件(设置面板「编辑器」页) */
-  autoSave: boolean
+  /** 自动保存方式(设置面板「编辑器」页) */
+  autoSaveMode: AutoSaveMode
   /**
-   * 定时保存间隔(秒)。只对**已经落过盘**的文件生效 ——
-   * 未命名文档不会自动弹「另存为」,那会打断正在打字的人。
+   * `afterDelay` 模式下,停止输入多久后写盘(秒)。
+   *
+   * 只对**已经落过盘**的文件生效 —— 未命名文档不会自动弹「另存为」,
+   * 那会打断正在打字的人。
    */
-  autoSaveInterval: number
+  autoSaveDelay: number
   /** 编辑器软换行(长行折行显示) */
   lineWrapping: boolean
   /** 编辑器正文字号(px) */
@@ -37,7 +66,7 @@ export interface Settings {
   userStyle: string | null
   /**
    * 插件配置:插件 id → { 是否启用, 非密配置 }。
-   * 密钥(token 等)不在这里,单独加密存于 userData/secrets.json。
+   * 密钥(token 等)不在这里,单独加密存于数据根下的 secrets.json(即 ~/.imark/secrets.json)。
    */
   plugins: Record<string, PluginConfigEntry>
   /**

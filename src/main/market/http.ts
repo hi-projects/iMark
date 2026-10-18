@@ -74,7 +74,7 @@ function describeNetworkError(url: string, err: unknown): MarketError {
   switch (code) {
     case 'ECONNREFUSED':
     case 'ERR_CONNECTION_REFUSED':
-      return new MarketError('offline', `连不上 ${host}:服务没有启动,或者地址填错了`)
+      return new MarketError('offline', `无法连接插件市场： ${host}`)
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
     case 'ERR_NAME_NOT_RESOLVED':

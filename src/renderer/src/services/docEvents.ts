@@ -1,5 +1,6 @@
 import { watch } from 'vue'
 import { appStore } from '../stores/app'
+import { api } from './api'
 
 /**
  * 把渲染层才知道的两件事告诉主进程:编辑器里有没有文档、文档内容变没变。
@@ -25,7 +26,7 @@ let timer: ReturnType<typeof setTimeout> | null = null
 
 function sendNow(): void {
   timer = null
-  window.api.notifyDocChanged({
+  api.notifyDocChanged({
     dirty: appStore.dirty,
     words: appStore.words,
     chars: appStore.chars
@@ -48,7 +49,7 @@ export function initDocEvents(): void {
   // 编辑器开着吗 —— 与"有文件路径"是两件事(未命名文档没有路径)
   watch(
     () => appStore.view,
-    view => window.api.setEditorPresence(view === 'editor'),
+    view => api.setEditorPresence(view === 'editor'),
     { immediate: true }
   )
 

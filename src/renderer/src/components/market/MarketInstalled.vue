@@ -2,13 +2,14 @@
 /**
  * 市场 · 已安装 —— 插件的落地页,也是离线时唯一有内容的页。
  *
- * 这里刻意让「来源」一眼可见:应用自带 / 来自市场 / 本地安装三种来源的风险完全不同
- * (自带的是随应用一起发布的,本地安装的可能是自己随手打的包),
- * 用户要能分辨自己到底装了谁的东西。
+ * 每行两枚徽标各答一个问题:**形态**(脚本 / 沙箱 / 无代码)决定它能碰你多少东西,
+ * **来源**(内置 / 市场 / 本地)决定这东西是谁给你的 —— 三种来源的风险完全不同
+ * (内置的是随应用一起发布的,本地安装的可能是自己随手打的包)。
+ * 权限则逐条列在名字下面,不再另起一个「权限」标题。
  */
 
 import { computed, ref } from 'vue'
-import { AlertTriangle, Download, Package, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, Download, Package, RefreshCw, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import {
   checkUpdates,
   copyText,
@@ -25,6 +26,8 @@ import {
 } from '../../services/marketService'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import { selectPluginSettings } from '../../services/pluginService'
+import { pluginStatusMessage, pluginStatusTone } from '../../services/pluginStatus'
+import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
 
 const plugins = computed(() => marketStore.installed?.plugins ?? [])
@@ -112,9 +115,9 @@ async function refreshAll(): Promise<void> {
         :disabled="installing || marketStore.busy"
         @click="restore()"
       >
-        {{ installing ? '正在装回…' : `装回自带插件(${missingBundled.length})` }}
+        {{ installing ? '正在装回…' : `装回内置插件（${missingBundled.length}）` }}
       </button>
-      <button class="plugin-icon-btn" title="刷新(含检查更新)" @click="refreshAll()">
+      <button class="plugin-icon-btn" title="刷新（含检查更新）" @click="refreshAll()">
         <RefreshCw :size="14" />
       </button>
     </div>
@@ -129,7 +132,7 @@ async function refreshAll(): Promise<void> {
         </div>
         <p v-if="u.newPermissions.length > 0" class="market-update-warn">
           <AlertTriangle :size="12" />
-          新版本要求新增权限:{{ newPermText(u.newPermissions) }} —— 安装前会再确认一次。
+          新版本{{ u.mainMode === 'node' ? '声明新增权限' : '要求新增权限' }}：{{ newPermText(u.newPermissions) }} —— 安装前会再确认一次。
         </p>
         <div class="market-row-actions">
           <button
@@ -152,7 +155,7 @@ async function refreshAll(): Promise<void> {
     </ul>
 
     <p class="market-hint">
-      「从目录安装」会把选中的目录打包成插件包再安装,适合自己写的插件 ——
+      「从目录安装」会把选中的目录打包成插件包再安装，适合自己写的插件 ——
       目录里要有 <code class="market-mono">manifest.json</code>。
     </p>
 
@@ -166,28 +169,32 @@ async function refreshAll(): Promise<void> {
         <div class="market-row-main">
           <span
             class="plugin-status-dot"
-            :class="`plugin-status-${p.state.status}`"
-            :title="p.state.lastMessage || '待运行'"
+            :class="`plugin-status-${pluginStatusTone(p.state)}`"
+            :title="pluginStatusMessage(p.state)"
           />
           <div class="market-row-title">
             <div class="market-row-name">
               <b>{{ p.descriptor.name }}</b>
               <span class="market-mono market-dim">v{{ p.descriptor.version }}</span>
+              <!-- 层在前、来源在后:层决定「它能碰我什么」,来源决定「这东西是谁给我的」 -->
+              <span
+                v-for="s in shapeLabels(shapeOf(p))"
+                :key="s.label"
+                class="market-badge"
+                :class="`market-shape-${s.tone}`"
+                >{{ s.label }}</span
+              >
               <span v-if="p.dev" class="market-badge market-badge-bad">开发模式</span>
               <span v-else class="market-badge">{{ sourceLabel(p.source, marketStore.bundled.includes(p.descriptor.id)) }}</span>
-              <span v-if="p.kind === 'script'" class="market-badge market-badge-code">含代码</span>
-              <span v-else-if="p.kind === 'declarative'" class="market-badge market-badge-safe">
-                不含代码
-              </span>
               <span v-if="p.disabledByHost" class="market-badge market-badge-bad">
-                已被停用(连续失败)
+                已被停用（连续失败）
               </span>
               <span v-else-if="(p.failures ?? 0) > 0" class="market-badge market-badge-warn">
                 失败 {{ p.failures }} 次
               </span>
             </div>
             <div class="market-row-sub">
-              <span v-if="p.dev">代码来自 --plugin-dev 指定的目录,重启应用后不再加载</span>
+              <span v-if="p.dev">代码来自 --plugin-dev 指定的目录，重启应用后不再加载</span>
               <span v-if="p.installed?.publisher">发布者 {{ p.installed.publisher }}</span>
               <span v-if="p.installed">安装于 {{ formatTime(p.installed.installedAt) }}</span>
               <button
@@ -198,6 +205,28 @@ async function refreshAll(): Promise<void> {
               >
                 {{ copiedId === p.descriptor.id ? '已复制' : `sha256 ${p.installed.integrity.slice(0, 12)}…` }}
               </button>
+            </div>
+            <!--
+              权限逐条摆出来 —— 这里是「受限插件能碰我什么」的落点(插件设置页不再重复列一份)。
+              不写「权限」两个字:盾牌图标 + 每枚胶囊自带的说明(title)已经说清楚了,
+              再顶一行标题只会让这一块显得跟上面的名称/元信息不是一回事。
+
+              **只列受限层**:它的每一项都是真门禁(没声明就不存在)。node main 本来就有
+              完整 Node,清单里的权限只是作者声明,列在这里会被读成「只被允许做这几件事」;
+              那份声明留在安装确认框与详情页,那里写明了「完整 Node,以下为告知」。
+            -->
+            <div v-if="p.permissions?.length && p.mainMode !== 'node'" class="market-row-perms">
+              <span class="market-row-perms-icon" title="已授予的权限">
+                <ShieldCheck :size="12" />
+              </span>
+              <span
+                v-for="perm in p.permissions"
+                :key="perm"
+                class="market-row-perm"
+                :title="PERMISSION_INFO[perm]?.description ?? ''"
+              >
+                {{ PERMISSION_INFO[perm]?.label ?? perm }}
+              </span>
             </div>
           </div>
           <div class="market-row-actions">
@@ -220,12 +249,12 @@ async function refreshAll(): Promise<void> {
         <div v-if="uninstallId === p.descriptor.id" class="market-row-confirm">
           <p class="market-hint">
             卸载会停止并删除这个插件的程序文件。<b>已保存的密钥一定会被删除</b>
-            (插件 id 可能被其他人重新使用,凭据不能留给下一个同名插件);
-            配置默认保留,方便你以后重新装回来时不用重填其余字段。
+            （插件 id 可能被其他人重新使用，凭据不能留给下一个同名插件）；
+            配置默认保留，方便你以后重新装回来时不用重填其余字段。
           </p>
           <label class="market-ack">
             <input v-model="dropConfig" type="checkbox" />
-            <span>连同配置一起删除(不可恢复)</span>
+            <span>连同配置一起删除（不可恢复）</span>
           </label>
           <div class="market-row-confirm-actions">
             <button class="plugin-btn" @click="uninstallId = null">取消</button>

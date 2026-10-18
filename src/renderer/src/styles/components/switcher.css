@@ -79,11 +79,11 @@
 }
 
 .switcher-item-active {
-  background: var(--bg-selection);
+  background: var(--bg-active);
 }
 
 .switcher-item-active .switcher-name {
-  color: var(--accent);
+  color: var(--active-text);
 }
 
 /* 命令条目的来源徽标。**不能复用 .switcher-rel** —— 那一类是给路径用的,

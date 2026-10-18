@@ -41,7 +41,7 @@ function withCapability<T extends { capability?: string | null }>(
 /** 每个需要地址的接口都先过这里,好让「没配置市场地址」是一句人话而不是一个 URL 错误 */
 async function base(): Promise<string> {
   const registry = await getRegistryUrl()
-  if (!registry) throw new Error('还没有设置插件市场地址 —— 在「发布插件」页填一个,或先用仓库里的 server/ 起一个本机市场')
+  if (!registry) throw new Error('还没有设置插件市场地址 —— 在「发布插件」页填一个，或先用仓库里的 server/ 起一个本机市场')
   return registry
 }
 
@@ -55,7 +55,8 @@ export async function search(query: MarketQuery): Promise<MarketSearchResult> {
     pageSize: String(query.pageSize),
     sort: query.sort
   })
-  if (query.kind) params.set('kind', query.kind)
+  if (query.mainMode) params.set('mainMode', query.mainMode)
+  if (query.hasRender !== null) params.set('render', String(query.hasRender))
   const result = await getJson<MarketSearchResult>(
     resolveUrl(registry, `/api/v1/search?${params.toString()}`)
   )

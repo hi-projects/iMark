@@ -1,5 +1,5 @@
 /**
- * `ImkApi` 的主进程实现 —— 宿主注入给 **trusted 插件**(kind:'script')的那一个对象。
+ * `ImkApi` 的主进程实现 —— 宿主注入给 **node main**(main.mode:'node')的那一个对象。
  *
  * 三条纪律:
  * 1. 每个命名空间都 Object.freeze,整个对象也 freeze。插件改不动 API 对象本身,
@@ -11,13 +11,13 @@
  *    既有写法是 `await imk.vault.read(…)` 然后 catch)、以及把接口形状保持成
  *    `@shared/pluginApi` 里声明的那样。
  *
- * 逐次调用再过一遍 `invokeOp` 是**纵深防御 + 统一审计**:trusted 插件本来就有完整
+ * 逐次调用再过一遍 `invokeOp` 是**纵深防御 + 统一审计**:node main 本来就有完整
  * Node 能力,这层挡不住存心作恶的插件;它挡的是参数写错、路径跑出仓库这类误用,
  * 并让"哪一步被拒"留在插件日志里。
  *
  * 一个刻意的例外:**界面贡献点**(命令/状态栏/右键菜单)不走 op。它们的第二个参数
- * 是一个**本地闭包**(作者写的 onClick),过不了序列化边界;沙箱那条路上传的是
- * 一个 id,由宿主桥回页面(见 host.ts 的 invokeSandboxContrib)。校验本身仍然是
+ * 是一个**本地闭包**(作者写的 onClick),过不了序列化边界;restricted 那条路上传的是
+ * 一个 id,由宿主桥回隐藏页(见 host.ts 的 invokeRestrictedContrib)。校验本身仍然是
  * 共用的一份(contrib.ts),所以两条路不会漂移。
  */
 
@@ -27,6 +27,8 @@ import type {
   ImkCommandContext,
   ImkCommandsApi,
   ImkGitApi,
+  ImkGitOptions,
+  ImkLayerChannel,
   ImkLogLevel,
   ImkNoticeLevel,
   ImkSecretsApi,
@@ -67,14 +69,10 @@ export interface ApiDeps {
   contrib: ContribRegistry
   /** 该插件的宿主事件订阅表 */
   listeners: Map<PluginEvent, Set<(payload: unknown) => void>>
-  /** 注入界面里的点击回执,按挂载 id 存;停用时由宿主清掉 */
-  uiClicks: Map<string, (name: string) => unknown>
+  /** 与 render 层的消息通道;没有 render 层时为 null */
+  render: ImkLayerChannel | null
   /** 贡献点变了:让宿主重算快照并下发 */
   contribChanged(): void
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
 }
 
 function formatArgs(args: unknown[]): string {
@@ -93,10 +91,15 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
    * `try { await imk.vault.exists(p) } catch {}`,改形状等于把既有插件全部改一遍。
    * 消息里带上错误码,作者至少能看懂是哪一类问题。
    */
-  const call = async <T>(op: string, args?: unknown): Promise<T> => {
+  const call = async <T>(
+    op: string,
+    args?: unknown,
+    callOpts?: { signal?: AbortSignal }
+  ): Promise<T> => {
     const result = await invokeOp(opCtx, op, args, {
-      source: 'trusted',
-      audit: line => deps.log(line)
+      source: 'node',
+      audit: line => deps.log(line),
+      signal: callOpts?.signal
     })
     if (result.ok) return result.value as T
     throw new Error(`[${result.error.code}] ${result.error.message}`)
@@ -130,12 +133,16 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
   const git: ImkGitApi | undefined = deps.permissions.includes('git')
     ? Object.freeze({
         available: (): Promise<boolean> => call<boolean>('git.available'),
-        run: (args: string[], opts: { cwd: string; timeoutMs?: number }) =>
-          call<Awaited<ReturnType<ImkGitApi['run']>>>('git.run', {
-            args,
-            cwd: opts?.cwd,
-            timeoutMs: opts?.timeoutMs
-          }),
+        // env / signal 都要**原样送到 op**:前者是凭据进子进程的唯一通道(credentialEnv),
+        // 后者让插件停用时的 abort 真的能杀掉 git 进程 —— 这两样曾经在这里被默默丢掉,
+        // 表现为"填了令牌也认证失败"和"取消之后 git 还在跑"(过不了类型检查?不会,
+        // 它们本来就在 ImkGitOptions 里;是这一层把对象重新拼了一遍才漏的)
+        run: (args: string[], opts: ImkGitOptions) =>
+          call<Awaited<ReturnType<ImkGitApi['run']>>>(
+            'git.run',
+            { args, cwd: opts?.cwd, timeoutMs: opts?.timeoutMs, env: opts?.env },
+            { signal: opts?.signal }
+          ),
         // 下面四个是**纯字符串处理**,不碰任何用户数据也没有权限含义,所以直接实现
         // (它们不走 op 表):走一趟 RPC 只会让 `imk.git.redact(x)` 从同步变成异步,
         // 而既有插件的调用点全是同步写法。
@@ -167,32 +174,6 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
       )
       if (problems.length > 0) log('warn', `状态栏条目被拒:${problems.join(';')}`)
       else deps.contribChanged()
-    },
-    // 下面这几个都走能力表(表里有信任形态的校验、参数校验与体积上限),
-    // 结果不返回值 —— 它们是"说了就做"的界面动作,失败进日志
-    mount: (options: { id: string; html: string; side?: string; title?: string }): void => {
-      void call('ui.mount', options).catch(err => log('warn', `挂载界面失败:${messageOf(err)}`))
-    },
-    update: (id: string, html: string): void => {
-      void call('ui.update', { id, html }).catch(err => log('warn', `更新界面失败:${messageOf(err)}`))
-    },
-    remove: (id: string): void => {
-      void call('ui.remove', { id }).catch(err => log('warn', `摘掉界面失败:${messageOf(err)}`))
-    },
-    injectStyles: (css: string): void => {
-      void call('ui.injectStyles', { css }).catch(err => log('warn', `注入样式失败:${messageOf(err)}`))
-    },
-    /**
-     * 注入界面里的点击回执。
-     *
-     * 注册表挂在 entry 上(由宿主给),而不是这张闭包里:停用插件时要跟着一起清干净 ——
-     * 留着的话,那个 id 的下一个主人会莫名其妙地接到上一家的点击。
-     */
-    onClick: (mountId: string, handler: (name: string) => unknown): (() => void) => {
-      deps.uiClicks.set(mountId, handler)
-      return () => {
-        if (deps.uiClicks.get(mountId) === handler) deps.uiClicks.delete(mountId)
-      }
     }
   })
 
@@ -289,7 +270,8 @@ export function createImkApi(ctx: PluginContext, deps: ApiDeps): ImkApi {
     on,
     ...(vault ? { vault } : {}),
     ...(secrets ? { secrets } : {}),
-    ...(git ? { git } : {})
+    ...(git ? { git } : {}),
+    ...(deps.render ? { render: deps.render } : {})
   }
 
   return Object.freeze(api)

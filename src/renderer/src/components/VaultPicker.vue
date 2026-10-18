@@ -10,6 +10,7 @@ import {
   openVaultViaDialog,
   setSkipVaultPicker
 } from '../services/vaultService'
+import { api } from '../services/api'
 
 const creating = ref(false)
 const newName = ref('')
@@ -39,7 +40,7 @@ async function startCreate(): Promise<void> {
 }
 
 async function pickParentDir(): Promise<void> {
-  const dir = await window.api.selectVaultDialog()
+  const dir = await api.selectVaultDialog()
   if (dir) parentDir.value = dir
 }
 
@@ -48,7 +49,7 @@ async function confirmCreate(): Promise<void> {
   if (!name) return
   let parent = parentDir.value
   if (!parent) {
-    parent = await window.api.selectVaultDialog()
+    parent = await api.selectVaultDialog()
     if (!parent) return
     parentDir.value = parent
   }

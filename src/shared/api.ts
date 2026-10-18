@@ -13,18 +13,18 @@ import type {
   PublishResult
 } from './market'
 import type {
-  DockSlotRect,
   PluginActionPayload,
   PluginActionResult,
   PluginContribInvoke,
   PluginContribsSnapshot,
   PluginNotice,
-  PluginUiClick,
+  PluginState,
+  RenderHalfMessage,
   RendererOpReply,
   RendererOpRequest,
   PluginView
 } from './plugins'
-import type { ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
+import type { DefaultEditorStatus, ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
 
 /** preload 通过 contextBridge 暴露到 window.api 的接口 */
@@ -33,6 +33,11 @@ export interface WindowApi {
   saveFileDialog(o: SaveDialogOptions): Promise<string | null>
   readFile(path: string): Promise<ReadResult>
   writeFile(path: string, content: string): Promise<void>
+  /**
+   * 把剪贴板图片存到 `docPath` 旁的 `assets/` 目录,返回相对文档目录的引用路径
+   * (如 `assets/image-20261019-143012-ab12cd34.png`)。文档没有路径时调用方应先提示保存。
+   */
+  saveImageAsset(docPath: string, mime: string, data: Uint8Array): Promise<string>
   confirmDiscard(fileName: string): Promise<'save' | 'discard' | 'cancel'>
   getSettings(): Promise<Settings>
   saveSettings(s: Partial<Settings>): Promise<Settings>
@@ -49,6 +54,18 @@ export interface WindowApi {
   getPathForFile(file: File): string
   onMenuCommand(cb: (id: MenuCommandId) => void): () => void
   onSaveBeforeClose(cb: () => void): () => void
+  // ---------- 系统集成 ----------
+  /**
+   * 取走启动参数里带的文件(双击 .md 启动时那一个)。只交付一次;没有则 null。
+   * 必须等渲染层初始化完再调 —— 这也是它设计成「拉」而不是「推」的原因。
+   */
+  takePendingOpenFile(): Promise<string | null>
+  /** 运行中系统又递来一个文件(第二个实例的 argv,见 second-instance) */
+  onOpenFile(cb: (path: string) => void): () => void
+  /** 设置 → 系统:现在 .md 的默认程序是谁、iMark 是不是它 */
+  defaultEditorStatus(): Promise<DefaultEditorStatus>
+  /** 设置 → 系统:注册进「打开方式」并打开系统默认应用设置(最后一步只能由用户点) */
+  setDefaultEditor(): Promise<DefaultEditorStatus>
   selectVaultDialog(): Promise<string | null>
   listVault(path: string): Promise<VaultNode>
   createFile(path: string, content?: string): Promise<void>
@@ -66,10 +83,10 @@ export interface WindowApi {
     targetId: string | null,
     value: string | null
   ): Promise<PluginView[]>
-  /** 沙箱插件:放开/收回「允许访问本机地址」(默认拒) */
+  /** restricted main:放开/收回「允许访问本机地址」(默认拒) */
   setPluginNetAccess(id: string, allow: boolean): Promise<PluginView[]>
-  /** 沙箱插件:唤出它自己的窗口 */
-  openPluginWindow(id: string): Promise<void>
+  /** 用系统默认程序打开某个插件的完整日志文件(不存在则先创建) */
+  openPluginLog(id: string): Promise<void>
   /**
    * targetId 只在 descriptor.targetActions 的动作上出现(对目标列表的某一行执行);
    * payload 只在行首菜单的动作上出现(对话框里填的值 + 触发那一行的快照)。
@@ -90,22 +107,29 @@ export interface WindowApi {
   runPluginContrib(invoke: PluginContribInvoke): Promise<PluginActionResult>
   onPluginContribs(cb: (snapshot: PluginContribsSnapshot) => void): () => void
   onPluginNotice(cb: (notice: PluginNotice) => void): () => void
-  /**
-   * 插件要求往当前文档里插入内容(沙箱插件的 `editor.insert`)。
-   * 位置由宿主决定(当前光标所在行的下面),插件只给文本。
-   */
-  onPluginEditorInsert(cb: (o: { text: string; cursorOffset?: number }) => void): () => void
   /** 某个文件被插件改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
   onFileExternalChange(cb: (filePath: string) => void): () => void
-  // ---------- 编辑器扩展点与界面注入 ----------
-  /** 主→渲染:替插件做一件事(读/改文档、加装饰、挂界面)。**必须**回执,否则主进程那边会超时 */
+  // ---------- render 层 ----------
+  /**
+   * render 层 → main 层的一条消息(主进程中转;没有 main 层时主进程只记一条日志)。
+   * 页面上传不了函数/循环引用 —— 数据必须可以 JSON 化。
+   */
+  sendRenderMessage(pluginId: string, channel: string, data: unknown): void
+  /** main 层 → render 层的消息(主进程推过来;渲染层按 pluginId 分发给对应的插件) */
+  onRenderMessage(cb: (message: RenderHalfMessage) => void): () => void
+  /** render 层更新自己的状态卡(与插件 API 的 setState 同义,主进程会再校验一次) */
+  notifyRenderState(pluginId: string, patch: Partial<PluginState>): void
+  /** render 层写一行日志(进该插件的日志缓冲与主进程控制台) */
+  notifyRenderLog(
+    pluginId: string,
+    level: 'debug' | 'info' | 'warn' | 'error',
+    message: string
+  ): void
+  // ---------- render 层生命周期 ----------
+  /** 主→渲染:render.prepare/enable/config/runAction/unload。**必须**回执,否则主进程那边会超时 */
   onPluginHostRequest(cb: (req: RendererOpRequest) => void): () => void
   replyHostRequest(reply: RendererOpReply): void
-  /** 注入的界面里有人点了带 `data-imk-click` 的元素 */
-  notifyPluginUiClick(click: PluginUiClick): void
-  /** 停靠面板的槽位位置变了(主进程据此摆原生视图) */
-  notifyPluginDockRect(rect: DockSlotRect): void
-  /** 界面这边准备好了 —— 主进程收到之后才会开始发编辑器/界面请求 */
+  /** 界面这边准备好了 —— 主进程收到之后才会开始发 render.prepare */
   notifyPluginUiReady(): void
   /** 「插件」菜单(含快捷键)点了某条命令 */
   onPluginCommand(cb: (o: { pluginId: string; itemId: string }) => void): () => void
@@ -177,7 +201,10 @@ export interface WindowApi {
   marketSource(id: string, version: string | null): Promise<MarketSource>
 
   // ---------- 自定义样式(~/.imark/css) ----------
-  /** 读样式目录里的全部 .css(含内容)。**永不 reject**:坏文件在返回值里逐条标出 */
+  /**
+   * 读样式目录里的全部候选项(单个 .css 与样式目录,都带内容)。
+   * **永不 reject**:坏项在返回值里逐条标出。
+   */
   listUserStyles(): Promise<UserStyleState>
   /**
    * 在文件管理器里打开样式目录(不存在则先创建)。
@@ -186,9 +213,9 @@ export interface WindowApi {
   openUserStylesDir(): Promise<void>
   /** 挑一个 .css 复制进样式目录;用户取消返回 null。内容重复的不复制,只在 outcome 里报出来 */
   importUserStyle(): Promise<UserStyleImportResult | null>
-  /** 挑一个文件夹,把它顶层的 .css 全部复制进来;用户取消返回 null */
+  /** 挑一个文件夹,整棵复制成样式目录(之后是一个可勾选的目录项);用户取消返回 null */
   importUserStylesFromDir(): Promise<UserStyleImportResult | null>
-  /** 把一个样式文件移到回收站;返回最新清单 */
+  /** 把一个样式项(文件或目录)移到回收站;返回最新清单 */
   removeUserStyle(name: string): Promise<UserStyleState>
   /** 目录内容变化时主进程推来的整份清单(渲染层自己与已注入的做 diff) */
   onUserStylesChanged(cb: (state: UserStyleState) => void): () => void

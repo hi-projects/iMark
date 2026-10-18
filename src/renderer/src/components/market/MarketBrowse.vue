@@ -22,6 +22,7 @@ import {
   searchMarket
 } from '../../services/marketService'
 import { settingsNav } from '../../services/pluginService'
+import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
 
 const nav = settingsNav.market
@@ -59,7 +60,7 @@ function openDetail(id: string): void {
 }
 
 function authorLine(entry: { author: string | null; publisher: string }): string {
-  return entry.author ? `${entry.author}(由 ${entry.publisher} 发布)` : `${entry.publisher} 发布`
+  return entry.author ? `${entry.author}（由 ${entry.publisher} 发布）` : `${entry.publisher} 发布`
 }
 
 /**
@@ -142,15 +143,20 @@ onMounted(async () => {
               <b>{{ item.name }}</b>
               <span class="market-mono market-dim">{{ item.id }}</span>
               <span class="market-badge market-mono">v{{ item.version }}</span>
-              <span v-if="item.kind === 'script'" class="market-badge market-badge-code">含代码</span>
-              <!-- 声明式插件也明写出来:让「不用信任任何代码」这件事在列表里就能一眼看到,
-                   而不是要用户点进详情才发现自己装的是哪一种 -->
-              <span v-else class="market-badge market-badge-safe">不含代码</span>
+              <!-- 层徽标:main 模式 / render / 无代码能力。未知形态明确标出来,
+                   绝不退化成“不含代码” -->
+              <span
+                v-for="s in shapeLabels(shapeOf(item))"
+                :key="s.label"
+                class="market-badge"
+                :class="`market-shape-${s.tone}`"
+                >{{ s.label }}</span
+              >
               <span v-if="localVersion(item.id)" class="market-badge market-badge-ok">
                 {{ hasUpdate(item.id, item.version) ? '可更新' : '已安装' }}
               </span>
             </div>
-            <p class="market-card-desc">{{ item.description || '(这个插件还没有写说明)' }}</p>
+            <p class="market-card-desc">{{ item.description || '（这个插件还没有写说明）' }}</p>
             <div class="market-row-sub">
               <span>{{ authorLine(item) }}</span>
               <span>{{ item.downloads }} 次下载</span>
@@ -176,7 +182,7 @@ onMounted(async () => {
 
       <div v-if="totalPages > 1" class="market-pager">
         <button class="plugin-btn" :disabled="nav.page <= 1" @click="goPage(-1)">上一页</button>
-        <span class="market-dim">第 {{ nav.page }} / {{ totalPages }} 页(共 {{ result.total }} 个)</span>
+        <span class="market-dim">第 {{ nav.page }} 页（共 {{ totalPages }} 页，{{ result.total }} 个）</span>
         <button class="plugin-btn" :disabled="nav.page >= totalPages" @click="goPage(1)">下一页</button>
       </div>
     </template>

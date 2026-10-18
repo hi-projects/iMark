@@ -10,7 +10,7 @@
  *
  * 分层(导入顺序即层叠顺序):
  *   1. 第三方样式(KaTeX,编辑器公式与导出共用)
- *   2. tokens —— 设计令牌:CSS 变量,三档主题(亮/暗/纯黑)都在这里
+ *   2. tokens —— 设计令牌:CSS 变量,两档主题(亮/深色)都在这里
  *   3. base   —— 全局 reset 与基础排版
  *   4. shell  —— 应用外壳:三栏布局、侧栏(文件列表/大纲)、状态栏
  *   5. editor —— CodeMirror 外观与所见即所得样式(标题/强调/代码/公式/widget)
@@ -36,7 +36,6 @@ import './components/plugins.css'
 import './components/market.css'
 import './components/lineMenu.css'
 import './components/toast.css'
-import './components/plugindock.css'
 // 放最后:它要盖掉 .plugin-icon-btn:hover 的红色(hover 变红是给「删除」用的,
 // 「重新读取」是中性操作)
 import './components/userstyle.css'

@@ -30,7 +30,10 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
-import { registerPluginScheme, pluginWindowOf } from '../src/main/plugins/windows'
+import {
+  registerPluginScheme,
+  pluginWebContentsOf
+} from '../src/main/plugins/restrictedPage'
 import { initPluginHost } from '../src/main/plugins/host'
 import { pluginDir, setRecord } from '../src/main/plugins/installed'
 
@@ -106,8 +109,7 @@ async function main(): Promise<void> {
         name: '节流实测',
         description: '验收用',
         version: '1.0.0',
-        kind: 'sandboxed',
-        main: 'main.js',
+        main: { mode: 'restricted', entry: 'main.js' },
         permissions: [],
         fields: [],
         actions: [{ id: 'report', label: '报告' }]
@@ -121,9 +123,12 @@ async function main(): Promise<void> {
   await setRecord({
     id: 'sbx-throttle',
     version: '1.0.0',
-    kind: 'sandboxed',
+    mainMode: 'restricted',
+    hasRender: false,
+    capability: null,
     integrity: 'x'.repeat(64),
     mainSha256: null,
+    renderSha256: null,
     publisher: null,
     source: 'local',
     registryUrl: null,
@@ -169,8 +174,9 @@ async function main(): Promise<void> {
   }
 
   const elapsedMs = Date.now() - t0
-  const win = pluginWindowOf('sbx-throttle')
-  check('窗口全程是隐藏的', win ? win.isVisible() === false : false)
+  const page = pluginWebContentsOf('sbx-throttle')
+  const bw = page ? BrowserWindow.fromWebContents(page) : null
+  check('执行页全程是隐藏的', bw ? bw.isVisible() === false : false)
 
   const result = await host.runAction('sbx-throttle', 'report')
   const counts = JSON.parse(result.message) as { hostTicks: number; selfTicks: number; lastLate: number; hidden: string }

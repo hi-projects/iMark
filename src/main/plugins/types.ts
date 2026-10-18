@@ -5,8 +5,9 @@
  * 「插件是什么」与「插件怎么被加载」被拆开了:
  *   - `PluginRuntime`  —— 插件能做什么(四个生命周期方法),定义在 shared/pluginApi.ts
  *   - `MainPlugin`     —— 宿主眼里一个可注册的插件(标识 + 描述符 + 运行时 + 来源)
- * 脚本插件(script.ts)与声明式插件(declarative.ts)各自是薄适配器,产出同一个
- * `PluginRuntime`,宿主从此只认运行时,不再关心它从哪来。
+ * node main(script.ts)、restricted main(restrictedRuntime.ts)、render 层(renderLayer.ts)
+ * 与声明式能力各自是薄适配器,产出同一个 `PluginRuntime`,宿主从此只认运行时,
+ * 不再关心它从哪来。
  */
 
 import type { PluginRuntime } from '@shared/pluginApi'

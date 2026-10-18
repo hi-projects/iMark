@@ -3,6 +3,7 @@ import type { PluginActionPayload, PluginActionResult, PluginView } from '@share
 import { appStore, editorHolder, openSettings } from '../stores/app'
 import { saveCurrentFile } from './fileService'
 import { notifyError } from './notice'
+import { api } from './api'
 
 /** 市场页内部的子导航:三个页签 + 列表页的搜索条件 */
 export interface MarketNav {
@@ -16,7 +17,7 @@ export interface MarketNav {
 
 /** 设置面板当前选中项:外观、编辑器、某个插件的配置,或插件市场(与设置面板共享,便于从状态栏/菜单直达) */
 export const settingsNav = reactive<{
-  page: 'appearance' | 'editor' | 'plugin' | 'market'
+  page: 'appearance' | 'editor' | 'system' | 'plugin' | 'market'
   pluginId: string | null
   /**
    * 市场内部的子导航放在这里,而不是继续往 page 联合里塞 ——
@@ -40,12 +41,12 @@ export function selectPluginSettings(pluginId: string): void {
 /**
  * 打开设置面板并定位到插件市场(菜单项与左栏入口用)。
  *
- * 默认落在「浏览市场」页签 —— 入口的名字就叫这个,点进去却停在别的页签
- * 会让人以为点错了。调用方想直接去某一页(如插件设置里的「在市场里管理」)
- * 就把 tab 传进来。
+ * 固定落在「浏览市场」页签 —— 入口的名字就叫这个,点进去却停在别的页签
+ * 会让人以为点错了。(曾经还收一个 tab 参数,是给插件设置页的「在市场里管理」
+ * 用的;那个入口撤掉之后,就没有谁需要跳到别的页签了。)
  */
-export function openMarketSettings(tab: MarketNav['tab'] = 'browse'): void {
-  settingsNav.market.tab = tab
+export function openMarketSettings(): void {
+  settingsNav.market.tab = 'browse'
   settingsNav.market.detailId = null
   settingsNav.page = 'market'
   openSettings()
@@ -109,7 +110,7 @@ export function plain<T>(value: T): T {
 
 export async function refreshPlugins(): Promise<void> {
   try {
-    pluginStore.list = await window.api.listPlugins()
+    pluginStore.list = await api.listPlugins()
   } catch (err) {
     fail(err, '读取插件')
   }
@@ -122,18 +123,9 @@ export async function refreshPlugins(): Promise<void> {
  */
 export async function setPluginNetAccess(id: string, allow: boolean): Promise<void> {
   try {
-    pluginStore.list = await window.api.setPluginNetAccess(id, allow)
+    pluginStore.list = await api.setPluginNetAccess(id, allow)
   } catch (err) {
     fail(err, '保存网络访问设置')
-  }
-}
-
-/** 沙箱插件:唤出它自己的窗口 */
-export async function openPluginWindow(id: string): Promise<void> {
-  try {
-    await window.api.openPluginWindow(id)
-  } catch (err) {
-    fail(err, '打开插件窗口')
   }
 }
 
@@ -145,7 +137,7 @@ export async function savePlugin(
     const payload: { enabled?: boolean; config?: Record<string, unknown> } = {}
     if (patch.enabled !== undefined) payload.enabled = patch.enabled
     if (patch.config !== undefined) payload.config = plain(patch.config)
-    pluginStore.list = await window.api.savePlugin(id, payload)
+    pluginStore.list = await api.savePlugin(id, payload)
   } catch (err) {
     fail(err, '保存插件配置')
   }
@@ -158,7 +150,7 @@ export async function setPluginSecret(
   value: string | null
 ): Promise<void> {
   try {
-    pluginStore.list = await window.api.setPluginSecret(id, fieldKey, targetId, value)
+    pluginStore.list = await api.setPluginSecret(id, fieldKey, targetId, value)
   } catch (err) {
     fail(err, value === null ? '清除密钥' : '保存密钥')
   }
@@ -174,13 +166,13 @@ export async function runPluginAction(
   if (pluginStore.busy) return { ok: false, message: '已有动作正在执行' }
   pluginStore.busy = key
   try {
-    const result = await window.api.runPluginAction(
+    const result = await api.runPluginAction(
       id,
       action,
       targetId,
       payload ? plain(payload) : undefined
     )
-    pluginStore.list = await window.api.listPlugins()
+    pluginStore.list = await api.listPlugins()
     return result
   } catch (err) {
     fail(err, '执行插件动作')
@@ -203,16 +195,16 @@ async function flushCurrentDocument(): Promise<void> {
       if (text !== appStore.savedContent) await saveCurrentFile()
     }
   } finally {
-    window.api.notifyPluginFlushed()
+    api.notifyPluginFlushed()
   }
 }
 
 /** 由 main.ts 在挂载后调用;返回取消订阅函数 */
 export function initPluginService(): () => void {
-  const offStatus = window.api.onPluginStatus(list => {
+  const offStatus = api.onPluginStatus(list => {
     pluginStore.list = list
   })
-  const offFlush = window.api.onPluginFlushDoc(() => {
+  const offFlush = api.onPluginFlushDoc(() => {
     void flushCurrentDocument()
   })
   void refreshPlugins()

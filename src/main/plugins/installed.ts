@@ -1,7 +1,7 @@
 /**
  * 已安装插件的磁盘布局与登记表。
  *
- * userData/plugins/
+ * 数据根/plugins/(正常运行时是 ~/.imark/plugins,见 main/dataDir.ts)
  *   installed.json     登记表(只存**来源**信息,启用态与配置仍在 settings.plugins)
  *   .staging/          解包暂存区(安装/升级时先解到这里,再整体 rename 就位)
  *   <id>/              插件目录 —— **磁盘是权威**
@@ -15,12 +15,12 @@
  * 反过来,记录存在但目录没了,就以目录为准把记录清掉。
  */
 
-import { app } from 'electron'
 import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
+import { dataRoot } from '../dataDir'
 import {
   validateManifest,
-  type PluginKind,
+  type PluginMainMode,
   type PluginManifest,
   type PluginPermission
 } from '@shared/pluginPackage'
@@ -31,11 +31,18 @@ import { writeFileAtomic } from '../files'
 export interface InstalledRecord {
   id: string
   version: string
-  kind: PluginKind
+  /** main 层模式;没有 main 层时为 null */
+  mainMode: PluginMainMode | null
+  /** 是否有 render 层 */
+  hasRender: boolean
+  /** 无代码插件绑定的宿主内置能力 */
+  capability: string | null
   /** 整包 integrity */
   integrity: string
-  /** 入口文件的 sha256(script 插件才有),便于比对「跑的是不是这一份代码」 */
+  /** main 入口的 sha256,便于比对「跑的是不是这一份代码」 */
   mainSha256: string | null
+  /** render 入口的 sha256(没有 render 层时为 null) */
+  renderSha256: string | null
   publisher: string | null
   source: PluginSource
   /** 从哪个市场装的(便于升级时知道去哪儿问新版本) */
@@ -50,7 +57,7 @@ interface InstalledFile {
 }
 
 export function pluginsRoot(): string {
-  return join(app.getPath('userData'), 'plugins')
+  return join(dataRoot(), 'plugins')
 }
 
 export function pluginDir(id: string): string {
@@ -76,7 +83,10 @@ export async function loadInstalled(): Promise<InstalledFile> {
   try {
     const parsed = JSON.parse(await readFile(installedPath(), 'utf8')) as Partial<InstalledFile>
     const plugins =
-      parsed.plugins && typeof parsed.plugins === 'object' && !Array.isArray(parsed.plugins)
+      parsed.version === 1 &&
+      parsed.plugins &&
+      typeof parsed.plugins === 'object' &&
+      !Array.isArray(parsed.plugins)
         ? (parsed.plugins as Record<string, InstalledRecord>)
         : {}
     cache = { version: 1, plugins }

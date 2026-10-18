@@ -1,5 +1,5 @@
 /**
- * 沙箱插件页面的 preload —— **作者看到的 `window.imark` 就是这里造出来的**。
+ * restricted main 页面的 preload —— **作者看到的 `window.imark` 就是这里造出来的**。
  *
  * 三条纪律(违反任意一条都会以很难查的方式坏掉):
  *
@@ -43,6 +43,8 @@ const pluginPerms = argValue('--imark-plugin-perms=')
   .map(s => s.trim())
   .filter(Boolean)
 const hasPerm = (p: string): boolean => pluginPerms.includes(p)
+/** 宿主是否有 render 层(页面据此决定注入 imark.render) */
+const hasRender = argValue('--imark-plugin-has-render=') === '1'
 
 // 主题:令牌由 webFrame.insertCSS 注入 —— **不经过文档 fetch,CSP 的 style-src 拦不到它**。
 // 另有一条同源的 /__imark/ui.css 供显式 <link>(见 windows.ts 的说明)。
@@ -162,12 +164,33 @@ interface PluginImpl {
 
 let impl: PluginImpl = {}
 
+/**
+ * render 层发来的消息(经主进程中转)。
+ *
+ * 与 `window.imark.on(...)` 的宿主事件不同:这条通道只服务于**同一插件的另一层**,
+ * 所以它不需要权限 —— 消息里不携带任何能力,能力仍然由 main 层走能力表申请。
+ */
+type RenderHandler = (channel: string, data: unknown) => void
+const renderHandlers = new Set<RenderHandler>()
+
 ipcRenderer.on(RPC_BRIDGE, (_e, msg: PluginBridgeCall) => {
   void (async () => {
     const reply = (r: PluginBridgeReply): void => {
       ipcRenderer.send(RPC_BRIDGE, { id: msg.id, reply: r })
     }
     try {
+      if (msg.method === 'renderMessage') {
+        const [channel, data] = msg.args as [string, unknown]
+        for (const handler of [...renderHandlers]) {
+          try {
+            handler(channel, data)
+          } catch (err) {
+            console.warn('[imark] render.onMessage 处理失败:', err)
+          }
+        }
+        reply({ ok: true, value: null })
+        return
+      }
       if (msg.method === 'runAction') {
         const [actionId, targetId, payload] = msg.args as [string, string | null, unknown]
         if (impl.runAction) {
@@ -240,16 +263,6 @@ function runLocalContrib(id: string): boolean {
   return true
 }
 
-const windowApi = hasPerm('ui')
-  ? Object.freeze({
-      open: (): void => callQuiet('window.open'),
-      close: (): void => callQuiet('window.close'),
-      show: (): void => callQuiet('window.show'),
-      hide: (): void => callQuiet('window.hide'),
-      setTitle: (title: string): void => callQuiet('window.setTitle', { title: String(title) })
-    })
-  : undefined
-
 const vaultApi = hasPerm('vault:read')
   ? Object.freeze({
       path: (): Promise<string | null> => call('vault.path'),
@@ -305,10 +318,22 @@ const gitApi = hasPerm('git')
     })
   : undefined
 
-const editorApi = hasPerm('editor:write')
+/**
+ * 与 render 层的消息(main 层用它和 render 层对话)。
+ *
+ * 不要权限:传的是数据,不是能力。真正的系统能力仍然经 `call(...)` 走闸门。
+ * 没有 render 层的插件调用 `send` 会收到结构化错误。
+ */
+const render = hasRender
   ? Object.freeze({
-      insert: (text: string, cursorOffset?: number): Promise<boolean> =>
-        call('editor.insert', { text, cursorOffset })
+      send: (channel: string, data: unknown): Promise<void> =>
+        call<null>('render.send', { channel, data }).then(() => undefined),
+      onMessage: (handler: RenderHandler): (() => void) => {
+        renderHandlers.add(handler)
+        return () => {
+          renderHandlers.delete(handler)
+        }
+      }
     })
   : undefined
 
@@ -326,9 +351,7 @@ const api = {
     handle(next: PluginImpl): void {
       impl = next ?? {}
       callQuiet('plugin.ready')
-    },
-    /** 条目被点击时,宿主会桥回来找这里注册的执行体(见 runLocalContrib) */
-    hasWindow: hasPerm('ui')
+    }
   }),
   log(level: 'debug' | 'info' | 'warn' | 'error', ...args: unknown[]): void {
     callQuiet('log', { level, parts: args.map(safe) })
@@ -359,12 +382,12 @@ const api = {
     every: (ms: number, name: string): void => callQuiet('schedule.every', { ms, name }),
     clear: (name: string): void => callQuiet('schedule.clear', { name })
   }),
-  ...(windowApi ? { window: windowApi } : {}),
+  /** 与同一插件的 render 层通信(见上文 render 的说明) */
+  ...(render ? { render } : {}),
   ...(vaultApi ? { vault: vaultApi } : {}),
   ...(secretsApi ? { secrets: secretsApi } : {}),
   ...(netApi ? { net: netApi } : {}),
-  ...(gitApi ? { git: gitApi } : {}),
-  ...(editorApi ? { editor: editorApi } : {})
+  ...(gitApi ? { git: gitApi } : {})
 }
 
 /** 参数过一遍 JSON,跨 contextBridge 时不会因为函数/循环引用直接抛 */

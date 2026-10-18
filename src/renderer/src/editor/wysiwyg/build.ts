@@ -2,7 +2,9 @@ import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/l
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import type { ChangeDesc, Range } from '@codemirror/state'
 import { applyRule, type LinkInfo, type RuleContext } from './rules'
+import { caretOutsideRenderedTable, keepCaretOutOfTables } from './widgets'
 import { getDocDir } from '../../stores/app'
+import { api } from '../../services/api'
 
 const MAX_RETRY = 20
 
@@ -14,9 +16,35 @@ export class WysiwygPlugin {
   private pendingRetry = false
   private retryScheduled = false
   private retryCount = 0
+  private guardScheduled = false
+  private themeObserver: MutationObserver | null = null
 
   constructor(readonly view: EditorView) {
     this.rebuild()
+    this.scheduleCaretGuard()
+    /*
+     * 主题切换只改 <html data-theme> 上的 CSS 变量,不会产生编辑器事务。
+     * 表格/公式/图片全靠 CSS 变量就能跟着变,但 Mermaid 的配色是渲染时烘进 SVG 的 ——
+     * 不重建装饰就永远是旧主题。观察属性变化,借 pendingRetry 走一次完整重建;
+     * MermaidWidget.eq() 里带了 theme,旧 widget 会被新主题的替换掉。
+     */
+    this.themeObserver = new MutationObserver(() => {
+      this.pendingRetry = true
+      try {
+        this.view.dispatch({})
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
+    this.themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    })
+  }
+
+  destroy(): void {
+    this.themeObserver?.disconnect()
+    this.themeObserver = null
   }
 
   update(update: ViewUpdate): void {
@@ -33,7 +61,26 @@ export class WysiwygPlugin {
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
       this.rebuild()
+      this.scheduleCaretGuard()
     }
+  }
+
+  /**
+   * 微任务时机纠正"光标落在渲染表格隐藏源码里"的状态。
+   * 必须排在 rebuild 之后 —— 新建表格的 autoFocus 也是微任务，先让它把焦点
+   * 放进单元格；这里再检查时选区通常已经被挪到表格外，不会抢走插入后的焦点。
+   */
+  private scheduleCaretGuard(): void {
+    if (this.guardScheduled) return
+    this.guardScheduled = true
+    queueMicrotask(() => {
+      this.guardScheduled = false
+      try {
+        keepCaretOutOfTables(this.view)
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
   }
 
   /** 组合期间的临时态:平移装饰范围,并丢掉因变更而跨行的 replace(CM 禁止插件提供跨行 replace) */
@@ -133,16 +180,33 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
     }),
   eventHandlers: {
     mousedown(event, view) {
-      if (!(event.ctrlKey || event.metaKey)) return
-      const plugin = view.plugin(wysiwygViewPlugin)
-      if (!plugin) return
-      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
-      if (pos == null) return
-      const link = plugin.links.find(l => pos >= l.from && pos <= l.to)
-      if (link) {
-        event.preventDefault()
-        void window.api.openExternal(link.url)
+      if (event.button !== 0) return false
+      const target = event.target instanceof Element ? event.target : null
+      if (!event.ctrlKey && !event.metaKey) {
+        // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码里的点击一律挪出去
+        if (target?.closest?.('.cm-md-table-widget')) return false
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+        if (pos != null) {
+          const safe = caretOutsideRenderedTable(view, pos, event.clientY)
+          if (safe != null) {
+            event.preventDefault()
+            view.dispatch({ selection: { anchor: safe } })
+            view.focus()
+            return true
+          }
+        }
+        return false
       }
+      // Ctrl/Cmd + 点击链接
+      const plugin = view.plugin(wysiwygViewPlugin)
+      if (!plugin) return false
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+      if (pos == null) return false
+      const link = plugin.links.find(l => pos >= l.from && pos <= l.to)
+      if (!link) return false
+      event.preventDefault()
+      void api.openExternal(link.url)
+      return true
     }
   }
 })

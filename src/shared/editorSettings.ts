@@ -2,12 +2,17 @@
  * 编辑器偏好(设置面板「编辑器」页)的取值范围与默认值。
  *
  * 三处要读同一组数:主进程写盘前夹取、渲染层输入框的约束、页面上的「恢复默认」。
- * 各写各的话,改了一处另两处就开始悄悄跑偏 —— 比如输入框放行 1 秒而定时器按 5 秒跑。
+ * 各写各的话,改了一处另两处就开始悄悄跑偏 —— 比如输入框放行 1 秒而定时器按 30 秒跑。
  */
 
-/** 定时保存间隔(秒)。下限是 5 秒:再短就不是「定时」而是持续写盘了 */
-export const AUTO_SAVE_INTERVAL_MIN = 5
-export const AUTO_SAVE_INTERVAL_MAX = 3600
+/**
+ * 定时保存的延迟(秒):停止输入这么久之后才写盘。
+ *
+ * 只有下限 1 秒 —— 这就是原来的「实时保存」:它和长延迟的定时保存是同一件事,
+ * 只是等待时间短,连续输入会在停下来后归并成一次写。上限刻意不设:
+ * 用户想设多久都行,计时器由 services/autoSave 分段续约,不会被 setTimeout 的溢出截断。
+ */
+export const AUTO_SAVE_DELAY_MIN = 1
 
 /** 正文字号(px)。正文一动,标题/代码块按 em 跟着缩 */
 export const EDITOR_FONT_SIZE_MIN = 12
@@ -15,9 +20,13 @@ export const EDITOR_FONT_SIZE_MAX = 24
 
 /** 「恢复默认」的落点,也是 settings.json 里缺字段时的兜底 */
 export const EDITOR_DEFAULTS = {
-  /** 默认不开:定时保存会真的往磁盘上写,得由用户自己点头 */
-  autoSave: false,
-  autoSaveInterval: 30,
+  /** 默认不自动写盘:那会真的动磁盘,得由用户自己点头 */
+  autoSaveMode: 'off',
+  /**
+   * 默认 1 秒:用户选中「定时保存」时,先得到接近实时保存的行为 ——
+   * 想少写几次盘的人再自己调长。
+   */
+  autoSaveDelay: 1,
   lineWrapping: true,
   editorFontSize: 16
 } as const
@@ -27,17 +36,26 @@ function clampNum(v: unknown, min: number, max: number, fallback: number): numbe
   return Math.min(max, Math.max(min, n))
 }
 
-/** 夹到合法区间;非数字落回默认值(输入框被清空、settings.json 被手改成字符串都走这里) */
-export function clampInterval(sec: unknown): number {
-  return clampNum(sec, AUTO_SAVE_INTERVAL_MIN, AUTO_SAVE_INTERVAL_MAX, EDITOR_DEFAULTS.autoSaveInterval)
+/** 只防「秒 × 1000」溢出,不是业务上限(约 28.5 万年) */
+const DELAY_TECHNICAL_MAX = Math.floor(Number.MAX_SAFE_INTEGER / 1000)
+
+/**
+ * 夹到合法区间;非数字落回默认值(输入框被清空、settings.json 被手改成字符串都走这里)。
+ * 不设上限:延迟按秒存,计时器自己会分段等待,不需要为了 setTimeout 去限制用户。
+ */
+export function clampAutoSaveDelay(sec: unknown, fallback: number = EDITOR_DEFAULTS.autoSaveDelay): number {
+  if (typeof sec !== 'number' || !Number.isFinite(sec)) return fallback
+  return Math.min(DELAY_TECHNICAL_MAX, Math.max(AUTO_SAVE_DELAY_MIN, Math.round(sec)))
 }
 
 export function clampFontSize(px: unknown): number {
   return clampNum(px, EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX, EDITOR_DEFAULTS.editorFontSize)
 }
 
-/** 「每 30 秒」/「每 5 分钟」:整分钟就说分钟,别让人自己换算 300 */
-export function intervalLabel(sec: number): string {
-  if (sec % 60 === 0 && sec >= 60) return `每 ${sec / 60} 分钟`
-  return `每 ${sec} 秒`
+/** 「1 秒」/「5 分钟」/「2 小时」:能整除就说大单位,别让人自己换算 300 */
+export function delayLabel(sec: number): string {
+  if (sec % 86400 === 0 && sec >= 86400) return `${sec / 86400} 天`
+  if (sec % 3600 === 0 && sec >= 3600) return `${sec / 3600} 小时`
+  if (sec % 60 === 0 && sec >= 60) return `${sec / 60} 分钟`
+  return `${sec} 秒`
 }

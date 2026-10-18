@@ -1,13 +1,14 @@
 /**
- * 用户自定义样式服务:把 `~/.imark/css` 里的**选中的那一个**注入成 `<style>`。
+ * 用户自定义样式服务:把 `~/.imark/css` 里**选中的那一项**注入成 `<style>`。
  *
- * **只注入一个。** 多个文件同时生效时,「谁赢」要靠文件名顺序去推,用户看到的
- * 是一份说不清的叠加结果;而样式本来就是「我此刻想要哪一种」—— 单选是个比级联
- * 更好回答的问题。代价是想要 A+B 的人得自己合成一份,这一点由示例文件说清楚。
+ * **只注入一项。** 候选可以是单个 .css,也可以是一个目录(目录里所有 .css 由主进程
+ * 递归收齐、拼成一份送过来,这里一视同仁)。多项同时生效时「谁赢」要靠文件名顺序去
+ * 推,用户看到的是一份说不清的叠加结果;而样式本来就是「我此刻想要哪一种」——
+ * 单选是个比级联更好回答的问题。
  *
  * 「选中哪个」是**设置项**(`settings.userStyle`),不是目录里的状态:文件随时可以
- * 增删改名,而选择不该跟着名字漂。选中的文件不在了就什么都不生效 —— 不自动改选
- * 别人(那会莫名其妙地换掉你的外观),把同名文件放回来它就又生效了。
+ * 增删改名,而选择不该跟着名字漂。选中项不在了就什么都不生效 —— 不自动改选别人
+ * (那会莫名其妙地换掉你的外观),把同名的东西放回来它就又生效了。
  *
  * 注入走 `styles/registry.ts` 的注册表:它把 `<style>` 追加到 head 末尾,
  * 所以自定义样式在同特异性下必然赢过内置样式。
@@ -21,20 +22,22 @@
  */
 
 import { reactive } from 'vue'
-import type { UserStyleFile, UserStyleImportOutcome, UserStyleState } from '@shared/userStyles'
+import type { UserStyleImportOutcome, UserStyleItem, UserStyleState } from '@shared/userStyles'
 import { registerStyle, unregisterStyle } from '../styles'
+import { api } from './api'
 
 /** 注入 id 前缀,与将来可能出现的其他样式来源(插件等)区分开 */
 const ID_PREFIX = 'user:'
 
 export const styleStore = reactive<{
   dir: string
-  files: UserStyleFile[]
-  /** 当前生效的文件名;null = 不使用自定义样式 */
+  /** 候选项:单个 .css 与样式目录混在一起,按名字排序 */
+  items: UserStyleItem[]
+  /** 当前生效项的名字(文件全名或目录名);null = 不使用自定义样式 */
   active: string | null
-  /** 整份清单都没读上来(比如目录权限);单个文件的问题在各行的 error 上 */
+  /** 整份清单都没读上来(比如目录权限);单项的问题在各自的 error 上 */
   error: string
-}>({ dir: '', files: [], active: null, error: '' })
+}>({ dir: '', items: [], active: null, error: '' })
 
 /** 当前真正注入在页面上的东西。模块级普通变量:它不进模板,不必是响应式 */
 let appliedId: string | null = null
@@ -43,18 +46,19 @@ let appliedText: string | null = null
 /**
  * 让页面上生效的样式与 `styleStore` 一致。
  *
- * 选中的文件读不出来(被删了、过大、被独占锁住)时**什么都不注入** —— 保留上一次
- * 的样式等于对用户撒谎:界面写着「读取失败」,页面却还在按那份样式渲染。
+ * 选中项读不出来(被删了、过大、被独占锁住,或目录里一个能用的 .css 都没有)时
+ * **什么都不注入** —— 保留上一次的样式等于对用户撒谎:界面写着「读取失败」,
+ * 页面却还在按那份样式渲染。
  */
 function applyActiveStyle(): void {
   const selected = styleStore.active
-    ? styleStore.files.find(f => f.name === styleStore.active)
+    ? styleStore.items.find(f => f.name === styleStore.active)
     : undefined
   const next = selected && selected.css !== null ? selected : undefined
   const nextId = next ? ID_PREFIX + next.name : null
 
   if (nextId === appliedId) {
-    // 还是同一个文件:内容变了才重新注入(在外部编辑器里保存一次就会走到这)
+    // 还是同一项:内容变了才重新注入(在外部编辑器里保存一次就会走到这)
     if (next && next.css !== appliedText) {
       registerStyle(nextId as string, next.css as string)
       appliedText = next.css
@@ -70,17 +74,17 @@ function applyActiveStyle(): void {
 
 function setUserStyles(state: UserStyleState): void {
   styleStore.dir = state.dir
-  styleStore.files = state.files
+  styleStore.items = state.items
   styleStore.error = ''
   applyActiveStyle()
 }
 
 function fail(err: unknown, action: string): string {
-  return `${action}失败:${err instanceof Error ? err.message : String(err)}`
+  return `${action}失败：${err instanceof Error ? err.message : String(err)}`
 }
 
 /**
- * 选中一个样式(null = 不使用)。先改本地再落盘:选择要立刻看见效果,
+ * 选中一项样式(null = 不使用)。先改本地再落盘:选择要立刻看见效果,
  * 不该等一次 IPC 往返。写盘失败只提示,不回滚 —— 下次启动最多是选回旧的。
  */
 export async function selectUserStyle(name: string | null): Promise<void> {
@@ -88,7 +92,7 @@ export async function selectUserStyle(name: string | null): Promise<void> {
   styleStore.active = name
   applyActiveStyle()
   try {
-    await window.api.saveSettings({ userStyle: name })
+    await api.saveSettings({ userStyle: name })
   } catch (err) {
     styleStore.error = fail(err, '保存样式选择')
   }
@@ -97,8 +101,8 @@ export async function selectUserStyle(name: string | null): Promise<void> {
 async function load(): Promise<void> {
   try {
     const [settings, state] = await Promise.all([
-      window.api.getSettings(),
-      window.api.listUserStyles()
+      api.getSettings(),
+      api.listUserStyles()
     ])
     styleStore.active = settings.userStyle ?? null
     setUserStyles(state)
@@ -111,7 +115,7 @@ async function load(): Promise<void> {
 
 export async function refreshUserStyles(): Promise<void> {
   try {
-    setUserStyles(await window.api.listUserStyles())
+    setUserStyles(await api.listUserStyles())
   } catch (err) {
     styleStore.error = fail(err, '读取样式文件')
   }
@@ -119,7 +123,7 @@ export async function refreshUserStyles(): Promise<void> {
 
 export async function openUserStylesDir(): Promise<void> {
   try {
-    await window.api.openUserStylesDir()
+    await api.openUserStylesDir()
   } catch (err) {
     styleStore.error = fail(err, '打开样式文件夹')
   }
@@ -138,22 +142,22 @@ export function describeImport(outcome: UserStyleImportOutcome): string {
   }
   for (const dup of outcome.duplicates) {
     const same = dup.sameAs.map(n => `「${n}」`).join('、')
-    parts.push(`「${dup.name}」与已有的 ${same} 内容相同,没有重复导入`)
+    parts.push(`「${dup.name}」与已有的 ${same} 内容相同，没有重复导入`)
   }
   for (const bad of outcome.failed) {
-    parts.push(`「${bad.name}」导入失败:${bad.error}`)
+    parts.push(`「${bad.name}」导入失败：${bad.error}`)
   }
-  return parts.length > 0 ? parts.join(';') : '这个文件夹里没有 .css 文件'
+  return parts.length > 0 ? parts.join('；') : '这个文件夹里没有 .css 文件'
 }
 
 /** 导入一个文件;用户取消返回 null */
 export async function importUserStyle(): Promise<string | null> {
-  return runImport(() => window.api.importUserStyle())
+  return runImport(() => api.importUserStyle())
 }
 
-/** 导入一个文件夹(顶层的 .css);用户取消返回 null */
+/** 导入一个文件夹(整个拷成样式目录);用户取消返回 null */
 export async function importUserStylesFromDir(): Promise<string | null> {
-  return runImport(() => window.api.importUserStylesFromDir())
+  return runImport(() => api.importUserStylesFromDir())
 }
 
 async function runImport(call: () => Promise<{ state: UserStyleState; outcome: UserStyleImportOutcome } | null>): Promise<string | null> {
@@ -170,7 +174,7 @@ async function runImport(call: () => Promise<{ state: UserStyleState; outcome: U
 
 export async function removeUserStyle(name: string): Promise<void> {
   try {
-    setUserStyles(await window.api.removeUserStyle(name))
+    setUserStyles(await api.removeUserStyle(name))
   } catch (err) {
     styleStore.error = fail(err, '删除样式')
   }
@@ -179,7 +183,7 @@ export async function removeUserStyle(name: string): Promise<void> {
 /** 由 main.ts 在挂载后调用;返回取消订阅函数 */
 export function initUserStyleService(): () => void {
   // 订阅先挂上:目录变化是随时可能发生的,漏掉一次就要等下一次事件
-  const off = window.api.onUserStylesChanged(setUserStyles)
+  const off = api.onUserStylesChanged(setUserStyles)
   void load()
   return off
 }

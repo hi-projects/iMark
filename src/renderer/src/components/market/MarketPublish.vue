@@ -29,6 +29,7 @@ import {
   setRegistry,
   testRegistry
 } from '../../services/marketService'
+import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
 
 const auth = computed(() => remoteStore.auth)
@@ -126,28 +127,28 @@ onMounted(async () => {
       </div>
       <p v-if="testResult" class="market-hint market-hint-ok">{{ testResult }}</p>
       <p class="market-hint">
-        留空表示不使用市场。仓库里自带一个零依赖的自托管服务端,在项目目录跑
+        留空表示不使用市场。仓库里自带一个零依赖的自托管服务端，在项目目录跑
         <code class="market-mono">npm run market</code> 就能起一个。
       </p>
 
       <div v-if="auth?.plainHttp" class="market-alert market-alert-danger">
         <AlertTriangle :size="14" />
         <div>
-          <b>这个地址用的是明文 HTTP,而且不在本机。</b>
+          <b>这个地址用的是明文 HTTP，而且不在本机。</b>
           <p>
-            加密、插件包以及<b>你登录时输入的口令</b>都会以明文经过网络,
+            加密、插件包以及<b>你登录时输入的口令</b>都会以明文经过网络，
             同一网段上的任何人都能看到。自建服务请在前面加一层 HTTPS
-            (nginx / caddy 都行),或者只在可信网络里使用。
+            （nginx 或 caddy 都行），或者只在可信网络里使用。
           </p>
-          <button class="plugin-btn" @click="acknowledgePlainHttp()">我知道了,不再提示</button>
+          <button class="plugin-btn" @click="acknowledgePlainHttp()">我知道了，不再提示</button>
         </div>
       </div>
 
       <div v-if="auth && !auth.secureStorage" class="market-alert">
         <Info :size="14" />
         <div>
-          <b>系统的密钥库不可用,登录令牌会以明文存放在本机。</b>
-          <p>在 Linux 上通常意味着没有可用的 keyring 服务。令牌本身不会离开这台机器,但同机的其他程序可以读到它。</p>
+          <b>系统的密钥库不可用，登录令牌会以明文存放在本机。</b>
+          <p>在 Linux 上通常意味着没有可用的 keyring 服务。令牌本身不会离开这台机器，但同机的其他程序可以读到它。</p>
         </div>
       </div>
     </section>
@@ -158,7 +159,7 @@ onMounted(async () => {
 
       <p v-if="auth?.loggedIn" class="market-hint market-hint-ok">
         <Check :size="13" />
-        已以 <b>{{ auth.user ?? '(未知用户)' }}</b> 的身份登录 {{ auth.registry }}。
+        已以 <b>{{ auth.user ?? '（未知用户）' }}</b> 的身份登录 {{ auth.registry }}。
       </p>
 
       <div v-else class="market-toolbar">
@@ -173,7 +174,7 @@ onMounted(async () => {
           v-model="password"
           class="market-input"
           type="password"
-          placeholder="口令(至少 8 位)"
+          placeholder="口令（至少 8 位）"
           autocomplete="current-password"
           @keyup.enter="canSubmitAccount && doAuth('login')"
         />
@@ -190,8 +191,8 @@ onMounted(async () => {
       </div>
 
       <p v-else class="market-hint">
-        在自建服务端上,第一个注册的账号就是这个市场的管理员。
-        口令只用于换取令牌,主进程把它换成令牌之后,界面上的口令会被清掉。
+        在自建服务端上，第一个注册的账号就是这个市场的管理员。
+        口令只用于换取令牌，主进程把它换成令牌之后，界面上的口令会被清掉。
       </p>
     </section>
 
@@ -219,14 +220,19 @@ onMounted(async () => {
         <p class="market-detail-desc">
           {{ preview.name }}
           <span class="market-mono market-dim">{{ preview.id }}@{{ preview.version }}</span>
-          <span v-if="preview.kind === 'script'" class="market-badge market-badge-code">含代码</span>
-          <span v-else class="market-badge market-badge-safe">不含代码</span>
+          <span
+            v-for="s in shapeLabels(shapeOf(preview))"
+            :key="s.label"
+            class="market-badge"
+            :class="`market-shape-${s.tone}`"
+            >{{ s.label }}</span
+          >
         </p>
 
         <dl class="market-meta">
           <div>
             <dt>文件</dt>
-            <dd>{{ preview.fileCount }} 个,共 {{ formatBytes(preview.totalBytes) }}</dd>
+            <dd>{{ preview.fileCount }} 个，共 {{ formatBytes(preview.totalBytes) }}</dd>
           </div>
           <div>
             <dt>权限</dt>
@@ -236,8 +242,12 @@ onMounted(async () => {
             </dd>
           </div>
           <div>
-            <dt>入口 sha256</dt>
-            <dd class="market-mono">{{ preview.mainSha256 ?? '(无代码)' }}</dd>
+            <dt>main 入口 sha256</dt>
+            <dd class="market-mono">{{ preview.mainSha256 ?? '（无 main 层）' }}</dd>
+          </div>
+          <div>
+            <dt>render 入口 sha256</dt>
+            <dd class="market-mono">{{ preview.renderSha256 ?? '（无 render 层）' }}</dd>
           </div>
         </dl>
 
@@ -248,7 +258,7 @@ onMounted(async () => {
           </button>
         </div>
         <p class="market-hint">
-          这是整包的 sha256。发布后它也会显示在详情页,用户可以拿它来核对下载到的东西。
+          这是整包的 sha256。发布后它也会显示在详情页，用户可以拿它来核对下载到的东西。
         </p>
 
         <ul class="market-files">
@@ -264,10 +274,10 @@ onMounted(async () => {
           <div>
             <b>版本 {{ preview.version }} 已经发布过了。</b>
             <p>
-              已发布的版本<b>不可覆盖</b> —— 同一个版本号底下的字节如果能悄悄换人,
+              已发布的版本<b>不可覆盖</b> —— 同一个版本号底下的字节如果能悄悄换人，
               那个 sha256 就失去了意义。请把 <code class="market-mono">manifest.json</code>
-              里的版本号升一位(比如 {{ preview.version }} → 下一版)再发布。
-              <template v-if="preview.identical">当前的包与已发布的那个内容完全相同,这次发布没有意义。</template>
+              里的版本号升一位（比如 {{ preview.version }} → 下一版）再发布。
+              <template v-if="preview.identical">当前的包与已发布的那个内容完全相同，这次发布没有意义。</template>
             </p>
           </div>
         </div>
@@ -275,7 +285,7 @@ onMounted(async () => {
           <AlertTriangle :size="14" />
           <div>
             <b>插件 id「{{ preview.id }}」属于 {{ preview.existingOwner }}。</b>
-            <p>换一个 id,或者请服务端管理员把这个插件的所有权转移给你。</p>
+            <p>换一个 id，或者请服务端管理员把这个插件的所有权转移给你。</p>
           </div>
         </div>
         <div v-else-if="preview.existingOwner" class="market-alert">
@@ -311,12 +321,12 @@ onMounted(async () => {
       </div>
 
       <p class="market-hint">
-        目录里要有 <code class="market-mono">manifest.json</code>;脚本插件还要有已编译好的入口文件
-        (TypeScript 写的插件先编译再发)。<code class="market-mono">README.md</code> 会显示在详情页。
+        目录里要有 <code class="market-mono">manifest.json</code>；脚本插件还要有已编译好的入口文件
+        （TypeScript 写的插件先编译再发）。<code class="market-mono">README.md</code> 会显示在详情页。
       </p>
       <p class="market-hint">
         <FileCode2 :size="13" />
-        发布是可撤销的:在详情页里可以把某个版本「下架」。下架不等于删除,已装了这个版本的人不受影响。
+        发布是可撤销的：在详情页里可以把某个版本「下架」。下架不等于删除，已装了这个版本的人不受影响。
       </p>
     </section>
   </div>

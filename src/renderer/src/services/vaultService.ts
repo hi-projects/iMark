@@ -5,6 +5,7 @@ import { basename } from '../utils/text'
 import { openFileByPath, resetToEmpty, saveCurrentFile } from './fileService'
 import { isInside, joinPath, relativeTo, replaceName } from '../utils/paths'
 import { notifyError, pushNotice } from './notice'
+import { api } from './api'
 
 /** Windows 名称非法字符 */
 const INVALID_NAME = /[\\/:*?"<>|]/
@@ -71,7 +72,7 @@ function rebuildVaultFiles(): void {
 /** 打开仓库:列出文件树、记忆路径、自动展开第一层目录 */
 export async function loadVault(vaultPath: string, opts?: { silent?: boolean }): Promise<boolean> {
   try {
-    const tree = await window.api.listVault(vaultPath)
+    const tree = await api.listVault(vaultPath)
     if (!tree) throw new Error('无法读取该文件夹')
     appStore.vaultPath = vaultPath
     appStore.vaultName = tree.name
@@ -81,7 +82,7 @@ export async function loadVault(vaultPath: string, opts?: { silent?: boolean }):
       if (c.type === 'dir') appStore.expandedDirs.add(c.path)
     }
     rebuildVaultFiles()
-    await window.api.saveSettings({ vaultPath })
+    await api.saveSettings({ vaultPath })
     await rememberVault(vaultPath)
     return true
   } catch (err) {
@@ -106,14 +107,14 @@ async function rememberVault(vaultPath: string): Promise<void> {
     MAX_RECENT_VAULTS
   )
   appStore.vaults = next
-  await window.api.saveSettings({ vaults: next })
+  await api.saveSettings({ vaults: next })
 }
 
 /** 从最近列表移除(不删除磁盘内容) */
 export async function forgetVault(vaultPath: string): Promise<void> {
   const next = appStore.vaults.filter(v => v !== vaultPath)
   appStore.vaults = next
-  await window.api.saveSettings({ vaults: next })
+  await api.saveSettings({ vaults: next })
 }
 
 export function showVaultPicker(): void {
@@ -126,7 +127,7 @@ export function showVaultPicker(): void {
  */
 export async function requestVaultSwitch(): Promise<boolean> {
   if (appStore.dirty) {
-    const choice = await window.api.confirmDiscard(appStore.fileName)
+    const choice = await api.confirmDiscard(appStore.fileName)
     if (choice === 'cancel') return false
     if (choice === 'save') {
       const ok = await saveCurrentFile()
@@ -156,7 +157,7 @@ export async function enterEditorAndWait(): Promise<void> {
 }
 
 export async function setSkipVaultPicker(skip: boolean): Promise<void> {
-  await window.api.saveSettings({ skipVaultPicker: skip })
+  await api.saveSettings({ skipVaultPicker: skip })
 }
 
 /**
@@ -164,7 +165,7 @@ export async function setSkipVaultPicker(skip: boolean): Promise<void> {
  * 若该仓库有上次打开的文件且仍存在则恢复,否则清空编辑器。
  */
 export async function openVaultFromPicker(vaultPath: string): Promise<boolean> {
-  const settings = await window.api.getSettings()
+  const settings = await api.getSettings()
   const ok = await loadVault(vaultPath)
   if (!ok) return false
   await enterEditorAndWait()
@@ -178,7 +179,7 @@ export async function openVaultFromPicker(vaultPath: string): Promise<boolean> {
 
 /** 通过文件夹对话框打开仓库(选择界面 & 菜单入口) */
 export async function openVaultViaDialog(): Promise<boolean> {
-  const dir = await window.api.selectVaultDialog()
+  const dir = await api.selectVaultDialog()
   if (!dir) return false
   return openVaultFromPicker(dir)
 }
@@ -191,7 +192,7 @@ export async function createVaultAt(parentDir: string, name: string): Promise<bo
   }
   const target = joinPath(parentDir, name)
   try {
-    await window.api.createDir(target)
+    await api.createDir(target)
   } catch (err) {
     fail(err, '创建仓库')
     return false
@@ -202,7 +203,7 @@ export async function createVaultAt(parentDir: string, name: string): Promise<bo
 export async function refreshVault(): Promise<void> {
   if (!appStore.vaultPath) return
   try {
-    const tree = await window.api.listVault(appStore.vaultPath)
+    const tree = await api.listVault(appStore.vaultPath)
     appStore.vaultTree = tree
     rebuildVaultFiles()
   } catch (err) {
@@ -212,7 +213,7 @@ export async function refreshVault(): Promise<void> {
 
 /** 菜单/空状态入口:选择文件夹 → 加载(切换前由调用方负责脏确认) */
 export async function openVaultDialog(): Promise<void> {
-  const dir = await window.api.selectVaultDialog()
+  const dir = await api.selectVaultDialog()
   if (dir) await loadVault(dir)
 }
 
@@ -224,7 +225,7 @@ export async function createFile(parentPath: string, name: string): Promise<Vaul
   }
   const p = joinPath(parentPath, fileName)
   try {
-    await window.api.createFile(p)
+    await api.createFile(p)
   } catch (err) {
     fail(err, '新建文件')
     return null
@@ -239,7 +240,7 @@ export async function createDir(parentPath: string, name: string): Promise<boole
     return false
   }
   try {
-    await window.api.createDir(joinPath(parentPath, name))
+    await api.createDir(joinPath(parentPath, name))
   } catch (err) {
     fail(err, '新建文件夹')
     return false
@@ -259,7 +260,7 @@ export async function renamePath(node: VaultNode, newName: string): Promise<bool
   const to = replaceName(node.path, name)
   if (to === node.path) return true
   try {
-    await window.api.renamePath(node.path, to)
+    await api.renamePath(node.path, to)
   } catch (err) {
     fail(err, '重命名')
     return false
@@ -279,15 +280,15 @@ export async function renamePath(node: VaultNode, newName: string): Promise<bool
 function applyOpenFilePath(newPath: string): void {
   appStore.filePath = newPath
   appStore.fileName = basename(newPath)
-  void window.api.saveSettings({ lastFile: newPath })
+  void api.saveSettings({ lastFile: newPath })
 }
 
 /** 删除(回收站);若删除的是打开文件,内容保留但转为未保存的未命名状态 */
 export async function deleteNode(node: VaultNode): Promise<boolean> {
-  const ok = await window.api.confirmDelete(node.name, node.type === 'dir')
+  const ok = await api.confirmDelete(node.name, node.type === 'dir')
   if (!ok) return false
   try {
-    await window.api.trashPath(node.path)
+    await api.trashPath(node.path)
   } catch (err) {
     fail(err, '删除')
     return false
@@ -298,7 +299,7 @@ export async function deleteNode(node: VaultNode): Promise<boolean> {
     appStore.filePath = null
     appStore.fileName = '未命名'
     appStore.savedContent = ''
-    void window.api.saveSettings({ lastFile: null })
+    void api.saveSettings({ lastFile: null })
   }
   return true
 }
@@ -316,7 +317,7 @@ function findNode(root: VaultNode, target: string): VaultNode | null {
 export async function openVaultFile(path: string, opts?: { silent?: boolean }): Promise<void> {
   await openFileByPath(path, opts)
   if (appStore.filePath === path && appStore.vaultPath && isInside(appStore.vaultPath, path)) {
-    await window.api.saveSettings({ lastFile: path })
+    await api.saveSettings({ lastFile: path })
   }
 }
 

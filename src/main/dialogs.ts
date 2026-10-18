@@ -35,7 +35,7 @@ export async function showOpenCssDialog(win: BrowserWindow): Promise<string | nu
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
 }
 
-/** 挑一个文件夹,把里面顶层的 .css 全部导进来 */
+/** 挑一个文件夹,把它整个复制成 ~/.imark/css 下的一个样式目录 */
 export async function showOpenCssDirDialog(win: BrowserWindow): Promise<string | null> {
   const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]

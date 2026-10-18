@@ -32,8 +32,9 @@ function entryOf(id, pkg, latest) {
     version: latest.version,
     author: m.author ?? null,
     publisher: pkg.owner,
-    kind: m.kind,
-    // 声明式插件绑定的内置能力 id。客户端拿它去自己的能力注册表里查名字
+    mainMode: m.main?.mode ?? null,
+    hasRender: Boolean(m.render),
+    // 无代码插件绑定的内置能力 id。客户端拿它去自己的能力注册表里查名字
     // (客户端才是「这个名字叫什么、这个能力能干什么」的权威,服务端不重复一份)
     capability: m.capability ?? null,
     permissions: m.permissions ?? [],
@@ -68,7 +69,8 @@ export function register(router, app) {
 
   router.get('/api/v1/search', async ({ query, res }) => {
     const q = (query.get('q') ?? '').trim().toLowerCase()
-    const kind = query.get('kind')
+    const mainMode = query.get('mainMode')
+    const render = query.get('render')
     const sort = query.get('sort') ?? 'updated'
     const page = intParam(query, 'page', 1, 1, 10000)
     const pageSize = intParam(query, 'pageSize', 20, 1, 100)
@@ -78,7 +80,13 @@ export function register(router, app) {
     for (const [id, pkg] of Object.entries(data.packages)) {
       const latest = latestVersion(pkg)
       if (!latest) continue // 全部版本已下架 → 等于不存在
-      if (kind && latest.manifest.kind !== kind) continue
+      if (mainMode === 'none') {
+        if (latest.manifest.main) continue
+      } else if (mainMode && latest.manifest.main?.mode !== mainMode) {
+        continue
+      }
+      if (render === 'true' && !latest.manifest.render) continue
+      if (render === 'false' && latest.manifest.render) continue
       if (q) {
         const hay = `${id} ${latest.manifest.name} ${latest.manifest.description ?? ''} ${pkg.owner}`.toLowerCase()
         if (!hay.includes(q)) continue
@@ -118,7 +126,8 @@ export function register(router, app) {
           publishedAt: v.publishedAt,
           yanked: Boolean(v.yanked),
           size: v.size ?? null,
-          mainSha256: v.mainSha256 ?? null
+          mainSha256: v.mainSha256 ?? null,
+          renderSha256: v.renderSha256 ?? null
         }))
         .sort((a, b) => compareVersions(b.version, a.version)),
       readme: latest.readme ?? null
@@ -145,6 +154,7 @@ export function register(router, app) {
       publishedAt: v.publishedAt,
       yanked: Boolean(v.yanked),
       mainSha256: v.mainSha256 ?? null,
+      renderSha256: v.renderSha256 ?? null,
       manifest: v.manifest
     })
   })
@@ -255,6 +265,7 @@ export function register(router, app) {
           version,
           integrity: pkgValue.integrity,
           mainSha256: pkgValue.mainSha256,
+          renderSha256: pkgValue.renderSha256,
           size: pkgValue.size,
           manifest: pkgValue.manifest,
           readme: extractReadme(raw),

@@ -64,7 +64,7 @@ export function listCapabilities(): Capability[] {
  * 返回人类可读的问题列表(空数组 = 通过)。安装前与加载前都会调用。
  */
 export function checkAgainstCapability(manifest: PluginManifest): string[] {
-  if (manifest.kind !== 'declarative') return []
+  if (!manifest.capability) return []
   const problems: string[] = []
   const capability = manifest.capability ? getCapability(manifest.capability) : null
   if (!capability) {
