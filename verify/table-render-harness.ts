@@ -305,7 +305,7 @@ async function main(): Promise<void> {
       const style = btns.length ? getComputedStyle(btns[0]) : null
       return {
         buttons: btns.length,
-        expected: rows * 2 + cols + (cols + 1) + 2,
+        expected: rows * 2 + cols + (cols + 1) + 2 + 1,
         outside: btns.every(b => {
           const r = b.getBoundingClientRect()
           return r.right <= tr.left || r.left >= tr.right || r.bottom <= tr.top || r.top >= tr.bottom
@@ -318,7 +318,7 @@ async function main(): Promise<void> {
       }
     })()`)
   check(
-    '控件数量 = 每行 2 个(删行 × / 插行 +) + 每列 1 个(删列 ×) + 列间插入 + 整表选择/删除',
+    '控件数量 = 每行 2 个(删行 × / 插行 +) + 每列 1 个(删列 ×) + 列间插入 + 整表选择/删除/对齐',
     ctlInfo.buttons === ctlInfo.expected && ctlInfo.buttons > 0,
     JSON.stringify(ctlInfo)
   )
@@ -329,9 +329,9 @@ async function main(): Promise<void> {
   )
   check('控件全在表格外侧的留白里(不盖住任何单元格)', ctlInfo.outside, JSON.stringify(ctlInfo))
   check(
-    '鼠标不在表上时完全隐藏',
-    ctlInfo.opacity === 0 &&
-      ctlInfo.visibility === 'hidden' &&
+    '鼠标不在表上时:行列控件隐藏,整表选择/删除/对齐三枚常驻',
+    ctlInfo.opacity === 1 &&
+      ctlInfo.visibility === 'visible' &&
       (await shownCtl()).length === 0,
     JSON.stringify(ctlInfo)
   )
@@ -432,11 +432,11 @@ async function main(): Promise<void> {
     summarize(await shownCtl())
   )
 
-  // 4) 表格上沿附近:整表选择与删除(控件浮在顶边之上)
+  // 4) 表格上沿附近:整表三枚按钮本来就常驻,这里只核对行列控件照旧按需出现
   await moveTo(geom.tableLeft + 30, geom.tableTop + 3)
   check(
-    '靠近表格上沿:出现整表选择与垃圾桶',
-    summarize(await shownCtl()) === 'delete-col#0,delete-row@0,delete-table,select-table',
+    '靠近表格上沿:行列控件照旧按需出现(整表按钮不参与悬停显隐)',
+    summarize(await shownCtl()) === 'delete-col#0,delete-row@0',
     summarize(await shownCtl())
   )
 

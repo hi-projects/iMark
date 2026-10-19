@@ -46,6 +46,8 @@ if (!name) {
         'git-sync',
         'git-sync-auth',
         'editor-enter',
+        'cursor',
+        'session-restore',
         'image-paste',
         'autosave-modes',
         'layers',

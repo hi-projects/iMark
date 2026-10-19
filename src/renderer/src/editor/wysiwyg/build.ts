@@ -17,6 +17,10 @@ export class WysiwygPlugin {
   private retryScheduled = false
   private retryCount = 0
   private guardScheduled = false
+  /** 本次光标移动之前的落点(用于判断是朝表格上方还是下方走) */
+  private guardFromHead: number | null = null
+  /** 组合进行中(以 compositionstart/end 事件为准,比 view.composing 更早、更稳) */
+  private composing = false
   private themeObserver: MutationObserver | null = null
 
   constructor(readonly view: EditorView) {
@@ -54,15 +58,29 @@ export class WysiwygPlugin {
     // 严重时平移后的 replace 恰好跨行,还会触发 CM 的
     // "Decorations that replace line breaks may not be specified via plugins" 断言,
     // 把视图内部 DOM 结构搞坏。compositionend 后的下一次 update 再整体重建。
-    if (this.view.composing) {
+    //
+    // 用自己维护的 this.composing 而不是只看 view.composing:compositionstart 到
+    // 第一笔预编辑文字合进文档之间,CM 的 composing 还是 0(见 observers.compositionstart),
+    // 这段时间里任何一次选区 update 都不该重建 —— 重建会打断正在进行的组合。
+    if (this.composing || this.view.composing) {
       if (update.docChanged) this.remap(update.changes)
       return
     }
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
       this.rebuild()
-      this.scheduleCaretGuard()
+      // 把"移动之前"的光标位置交给护栏:从表格上面往下走、从下面往上走
+      // 都会落在隐藏源码/结构空行的边界上,护栏得知道该把光标送到表格的哪一侧。
+      this.scheduleCaretGuard(update.startState.selection.main.head)
     }
+  }
+
+  onCompositionStart(): void {
+    this.composing = true
+  }
+
+  onCompositionEnd(): void {
+    this.composing = false
   }
 
   /**
@@ -70,13 +88,18 @@ export class WysiwygPlugin {
    * 必须排在 rebuild 之后 —— 新建表格的 autoFocus 也是微任务，先让它把焦点
    * 放进单元格；这里再检查时选区通常已经被挪到表格外，不会抢走插入后的焦点。
    */
-  private scheduleCaretGuard(): void {
+  private scheduleCaretGuard(fromHead?: number): void {
+    // 一个微任务里可能连着跑好几轮 update;记住**最早**那个起点,
+    // 它才是这次光标移动真正的来处
+    if (fromHead !== undefined && this.guardFromHead === null) this.guardFromHead = fromHead
     if (this.guardScheduled) return
     this.guardScheduled = true
     queueMicrotask(() => {
       this.guardScheduled = false
+      const from = this.guardFromHead ?? undefined
+      this.guardFromHead = null
       try {
-        keepCaretOutOfTables(this.view)
+        keepCaretOutOfTables(this.view, from)
       } catch {
         /* 视图已销毁 */
       }
@@ -90,9 +113,16 @@ export class WysiwygPlugin {
     const atomic: Range<Decoration>[] = []
     const move = (set: DecorationSet, out: Range<Decoration>[]): void => {
       for (const iter = set.iter(); iter.value; iter.next()) {
+        /*
+         * 行装饰(Decoration.line)是零长度点。两端分别按 -1/+1 映射后,
+         * 零长度区间会被下面的判断当成"空区间"整体丢掉 —— 组合期间每敲一个字
+         * 都会走一次 remap,标题、表格宿主行、引用条这些行类装饰便会整片消失,
+         * 表格高度和整块版式当场跳动。点装饰只映射一次,保持 from === to。
+         */
+        const isPoint = iter.from === iter.to
         const from = changes.mapPos(iter.from, -1)
-        const to = changes.mapPos(iter.to, 1)
-        if (from >= to) continue
+        const to = isPoint ? from : changes.mapPos(iter.to, 1)
+        if (from > to) continue
         // replace 装饰(mark 以外的)不允许跨行,跨了就丢弃,避免触发 CM 断言
         const spec = iter.value.spec
         const isReplace = spec.widget !== undefined || spec.class === undefined
@@ -179,18 +209,34 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       return p ? p.atomicSet : Decoration.none
     }),
   eventHandlers: {
+    compositionstart(_event, view) {
+      view.plugin(wysiwygViewPlugin)?.onCompositionStart()
+      return false
+    },
+    compositionend(_event, view) {
+      view.plugin(wysiwygViewPlugin)?.onCompositionEnd()
+      return false
+    },
     mousedown(event, view) {
       if (event.button !== 0) return false
       const target = event.target instanceof Element ? event.target : null
       if (!event.ctrlKey && !event.metaKey) {
-        // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码里的点击一律挪出去
+        // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码或结构空行上的点击一律挪出去
         if (target?.closest?.('.cm-md-table-widget')) return false
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
         if (pos != null) {
-          const safe = caretOutsideRenderedTable(view, pos, event.clientY)
-          if (safe != null) {
+          const hit = caretOutsideRenderedTable(view, pos, event.clientY)
+          if (hit != null) {
             event.preventDefault()
-            view.dispatch({ selection: { anchor: safe } })
+            if (hit.insert) {
+              // 表格贴着文末:补出结构空行 + 正文行,点击才能真正落到表格后面
+              view.dispatch({
+                changes: { from: view.state.doc.length, insert: hit.insert },
+                selection: { anchor: hit.anchor }
+              })
+            } else {
+              view.dispatch({ selection: { anchor: hit.anchor } })
+            }
             view.focus()
             return true
           }

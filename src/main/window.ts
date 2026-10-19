@@ -188,7 +188,11 @@ export function hasEditor(): boolean {
 }
 
 /**
- * name 传 null 表示当前没有文档上下文(仓库选择页),标题只留应用名。
+ * name 传 null 表示当前没有打开的文档。
+ *
+ * 两种「没有文档」要分开看,区别就在 vaultName:
+ * - 仓库选择页:调用方连仓库名一起传 null,标题只留应用名;
+ * - 已进入编辑器但没打开页面:仓库名照常传,标题显示「仓库名 - iMark」。
  *
  * 注意别用「vaultName 为空」来代替这个判断 —— 从编辑器退回选择页时
  * (requestVaultSwitch)仓库名仍然是设着的,那样会漏掉。
@@ -196,7 +200,7 @@ export function hasEditor(): boolean {
 export function setWindowTitle(name: string | null, isDirty: boolean, vaultName?: string | null): void {
   currentVaultName = vaultName ?? null
   if (name === null) {
-    mainWindow?.setTitle('iMark')
+    mainWindow?.setTitle(currentVaultName ? `${currentVaultName} - iMark` : 'iMark')
     return
   }
   currentFileName = name

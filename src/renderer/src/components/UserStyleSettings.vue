@@ -202,7 +202,7 @@ function onRemove(name: string): void {
           <li><code>.cm-md-inlinecode</code> <code>.cm-md-code</code> <code>.cm-md-codeinfo</code> 代码</li>
           <li><code>.cm-md-link</code> <code>.cm-md-url</code> 链接文字、链接地址</li>
           <li>
-            <code>.cm-md-table-widget</code> 渲染态表格、<code>.cm-md-table-host</code> 表格宿主行、<code>.cm-md-table-spacer</code> 表格上下折起的空行、<code>.cm-md-table</code> 源码态表格
+            <code>.cm-md-table-widget</code> 渲染态表格、<code>.cm-md-table-host</code> 表格宿主行、<code>.cm-md-table-void</code> 表格折叠行、<code>.cm-md-table-gap</code> 表格上方/下方的结构空行、<code>.cm-md-table</code> 源码态表格
           </li>
           <li><code>.cm-md-quote</code> <code>.cm-md-listmark</code> <code>.cm-md-headermark</code> 引用、列表标记</li>
           <li><code>.cm-md-math</code> <code>.cm-md-checkbox</code> <code>.cm-md-hr</code> <code>.cm-md-image img</code> 公式、任务框、分隔线、图片</li>

@@ -38,6 +38,16 @@ interface AppState {
   theme: Theme
   filePath: string | null
   fileName: string
+  /**
+   * 编辑器里有没有文档。
+   *
+   * 与「有没有文件路径」是两件事:
+   * - 未命名的新文档没有路径,但它是一份文档(`hasDocument = true`);
+   * - 启动时若没有可恢复的页面,编辑器仍然挂着(命令行/拖放还要往里装文件),
+   *   但什么文档都没打开(`hasDocument = false`),此时标题栏与状态栏不该声称
+   *   正在编辑「未命名」。
+   */
+  hasDocument: boolean
   dirty: boolean
   eol: 'LF' | 'CRLF'
   /** 最近一次保存/打开时的内容快照,脏检查用字符串全等比较 */
@@ -89,6 +99,7 @@ export const appStore = reactive<AppState>({
   theme: 'light',
   filePath: null,
   fileName: '未命名',
+  hasDocument: false,
   dirty: false,
   eol: 'LF',
   savedContent: '',
@@ -137,15 +148,21 @@ export function initStoreWatchers(): void {
     }
   )
   watch(
-    () => [appStore.view, appStore.fileName, appStore.dirty, appStore.vaultName] as const,
-    () => {
-      // 仓库选择页没有文档上下文,标题只留应用名(传 null 而不是「未命名」)
-      const atPicker = appStore.view === 'picker'
-      api.setWindowTitle(
-        atPicker ? null : appStore.fileName,
+    () =>
+      [
+        appStore.view,
+        appStore.hasDocument,
+        appStore.fileName,
         appStore.dirty,
         appStore.vaultName
-      )
+      ] as const,
+    () => {
+      // 没有文档上下文时标题不该编一个「未命名」出来:
+      // - 仓库选择页:连仓库名都不显示,只留应用名;
+      // - 编辑器里但没打开页面:显示仓库名,告诉用户现在在哪个仓库里。
+      const atPicker = appStore.view === 'picker'
+      const documentName = atPicker || !appStore.hasDocument ? null : appStore.fileName
+      api.setWindowTitle(documentName, appStore.dirty, atPicker ? null : appStore.vaultName)
     },
     { immediate: true }
   )

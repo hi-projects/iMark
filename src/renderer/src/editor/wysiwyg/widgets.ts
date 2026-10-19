@@ -1,5 +1,5 @@
 import { WidgetType, type EditorView } from '@codemirror/view'
-import { ChangeSet, type Line, type Text, type Transaction, type TransactionSpec } from '@codemirror/state'
+import { type Line, type Text, type Transaction, type TransactionSpec } from '@codemirror/state'
 import { redo, undo } from '@codemirror/commands'
 import { syntaxTree } from '@codemirror/language'
 import katex from 'katex'
@@ -148,6 +148,18 @@ export interface TableSpec {
   body: TableRowSpec[]
   /** 表头下面那条分隔行(插/删列时必须同步重写) */
   delimiter: { from: number; to: number }
+  /**
+   * 渲染态下连表格一起"圈起来"的范围:表格上下紧邻的空行也算在内。
+   *
+   * Markdown 用这两条空行把表格与正文隔开(表格下面尤其不能少:GFM 会把紧贴
+   * 表格的非空行读成表格行),所以源码里必须留着它们。渲染态下它们被折成零高度,
+   * 由 frame 的 --md-table-gap 提供视觉间距;光标和点击也一律越过这段范围,
+   * 不会停在看不见的分隔行上。
+   *
+   * 没有相邻空行时就等于表格自身的 from/to。
+   */
+  protectFrom: number
+  protectTo: number
 }
 
 /**
@@ -160,7 +172,7 @@ type TableSelection =
   | { kind: 'col'; from: number; to: number }
   | null
 
-/** 围绕表格的浮动控件(插行/删行/插列/删列/选整表/删整表) */
+/** 围绕表格的浮动控件(插行/删行/插列/删列/选整表/删整表/整表对齐) */
 interface TableControls {
   selectTable: HTMLButtonElement
   deleteTable: HTMLButtonElement
@@ -170,6 +182,9 @@ interface TableControls {
   colDeletes: HTMLButtonElement[]
   /** 下标 = 在第几列之前插入(columns = 最右侧) */
   addCols: HTMLButtonElement[]
+  /** 整张表格的文字对齐;点开弹出 alignMenu */
+  alignTable: HTMLButtonElement
+  alignMenu: HTMLElement
 }
 
 /** widget DOM 与模型的对应关系;事件委托与「当前在编辑哪一格」都挂在这里 */
@@ -215,6 +230,45 @@ function allRows(model: TableSpec): TableRowSpec[] {
 
 function rowOf(model: TableSpec, index: number): TableRowSpec | undefined {
   return index === 0 ? model.head : model.body[index - 1]
+}
+
+/**
+ * 两份表格模型是不是同一张表(忽略绝对位置)。
+ *
+ * 在表格上方打字只会让整张表平移,行的源码内容一字未变;这时 DOM 可以继续用。
+ * 内容不一致才可能是复用池拿来了**另一张**表的 DOM,必须拒绝。
+ */
+function sameTableSource(a: TableSpec, b: TableSpec): boolean {
+  if (a.columns !== b.columns || a.align.length !== b.align.length) return false
+  if (a.align.some((align, i) => align !== b.align[i])) return false
+  const rowsA = allRows(a)
+  const rowsB = allRows(b)
+  if (rowsA.length !== rowsB.length) return false
+  return rowsA.every((row, r) => row.raw === rowsB[r].raw)
+}
+
+/**
+ * 两份表格模型是否**逐项完全一致**,包括所有绝对位置。
+ *
+ * 这是 widget 的 `eq` 判据:一致时 CM 会整块复用旧 tile(连 updateDOM 都不调)。
+ * 只有位置也完全相同,旧 DOM 里挂的 TableDomState 才和新模型等价 —— 少比一个
+ * 位置就会把旧模型留在原地,之后提交单元格会写到错误的偏移上。
+ */
+function sameTableModel(a: TableSpec, b: TableSpec): boolean {
+  if (a.from !== b.from || a.to !== b.to) return false
+  if (a.protectFrom !== b.protectFrom || a.protectTo !== b.protectTo) return false
+  if (a.delimiter.from !== b.delimiter.from || a.delimiter.to !== b.delimiter.to) return false
+  if (!sameTableSource(a, b)) return false
+  const rowsA = allRows(a)
+  const rowsB = allRows(b)
+  return rowsA.every((row, r) => {
+    const other = rowsB[r]
+    if (row.from !== other.from || row.to !== other.to) return false
+    if (row.cells.length !== other.cells.length) return false
+    return row.cells.every(
+      (cell, i) => cell.from === other.cells[i].from && cell.to === other.cells[i].to
+    )
+  })
 }
 
 /** 单元格里只允许单行:换行一律折成空格(Markdown 表格没法表示换行) */
@@ -452,6 +506,13 @@ function syncCells(state: TableDomState): void {
     buildStructure(state)
     return
   }
+  /*
+   * 对齐是**按列**的:同一列的所有行必须看到同一个"旧对齐"才能各自判断要不要重画。
+   * 若在逐格循环里立刻写回 state.aligns[c],第一行(表头)画完就把旧值覆盖了,
+   * 后面的正文行会以为对齐没变而跳过 —— 整表对齐时表头变了、正文没变。
+   * 所以先拿一份旧值做比较,循环结束后再整体更新。
+   */
+  const prevAligns = state.aligns
   for (let r = 0; r < shapes.length; r++) {
     for (let c = 0; c < shapes[r].cells.length; c++) {
       const el = state.rows[r][c]
@@ -459,12 +520,12 @@ function syncCells(state: TableDomState): void {
       if (state.active?.cell === el) continue
       const text = shapes[r].cells[c]?.text ?? ''
       const align = model.align[c] ?? null
-      if (state.rendered[r]?.[c] === text && state.aligns[c] === align) continue
+      if (state.rendered[r]?.[c] === text && prevAligns[c] === align) continue
       renderCell(el, text, align)
       state.rendered[r][c] = text
-      state.aligns[c] = align
     }
   }
+  state.aligns = model.align.slice()
   applySelectionClasses(state)
   // 内容变长/变短会改行高,控件的落点要跟着重新算
   scheduleLayout(state)
@@ -498,12 +559,12 @@ function autoFocus(state: TableDomState): void {
     const head = view.state.selection.main.head
     const model = state.model
     state.autoFocusPending = false
-    if (head < model.from || head > model.to) return
+    if (head < model.protectFrom || head > model.protectTo) return
     const loc = locateCell(model, head)
     // 表格前后各有一个可用落点时优先用**前面**那个:它不依赖表格后面有没有空行
     let safe = -1
-    if (model.from > 0) safe = model.from - 1
-    else if (model.to + 1 <= view.state.doc.length) safe = model.to + 1
+    if (model.protectFrom > 0) safe = model.protectFrom - 1
+    else if (model.protectTo < view.state.doc.length) safe = model.protectTo + 1
     if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
     if (loc) startEdit(state, loc.row, loc.col)
   }
@@ -544,15 +605,21 @@ function trashIcon(): SVGSVGElement {
   return svg
 }
 
+/**
+ * `pinned` = 常驻按钮(整表选择 / 删除 / 对齐):不参与悬停显隐,
+ * 表格渲染出来就一直可见。行/列的增删控件仍由 applyHoverControls 按需浮现。
+ */
 function controlButton(
   act: string,
   cls: string,
   glyph: string,
-  title: string
+  title: string,
+  pinned = false
 ): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = `cm-md-table-ctl ${cls}`
+  if (pinned) btn.classList.add('cm-md-table-ctl-pinned')
   btn.dataset.act = act
   btn.textContent = glyph
   btn.title = title
@@ -571,6 +638,58 @@ function bindControl(state: TableDomState, btn: HTMLButtonElement, action: () =>
   })
 }
 
+type TableAlignValue = Exclude<TableAlign, null>
+
+const ALIGN_OPTIONS: Array<{ align: TableAlignValue; label: string }> = [
+  { align: 'left', label: '左对齐' },
+  { align: 'center', label: '居中' },
+  { align: 'right', label: '右对齐' }
+]
+
+function isAlignMenuOpen(state: TableDomState): boolean {
+  return state.controls?.alignMenu.classList.contains('is-open') ?? false
+}
+
+/** 收起对齐菜单;返回收起之前它是否开着 */
+function closeAlignMenu(state: TableDomState): boolean {
+  const menu = state.controls?.alignMenu
+  if (!menu?.classList.contains('is-open')) return false
+  menu.classList.remove('is-open')
+  return true
+}
+
+/** 打开菜单前按模型刷新勾选:只有每一列都对得齐时,才认为整张表有一个统一对齐 */
+function syncAlignMenu(state: TableDomState): void {
+  const menu = state.controls?.alignMenu
+  if (!menu) return
+  const align = state.model.align
+  const shared = align.length > 0 && align.every(a => a === align[0]) ? align[0] : null
+  for (const item of menu.querySelectorAll<HTMLElement>('[data-align]')) {
+    const on = item.dataset.align === shared
+    item.classList.toggle('is-active', on)
+    item.setAttribute('aria-checked', String(on))
+  }
+}
+
+/**
+ * 整表对齐 = 把分隔行里**每一列**的对齐标记改成同一个值。
+ *
+ * GFM 的对齐是按列存在分隔行上的,没有"整张表对齐"这个语法;想统一整张表,
+ * 只能逐列重写 `:---` / `:---:` / `---:`。表头和数据行读的是同一份 model.align,
+ * 所以一次改动同时作用于表头与正文。已是该对齐时不派发,免得留下空的撤销步骤。
+ */
+function setTableAlign(state: TableDomState, align: TableAlignValue): void {
+  const model = state.model
+  if (model.align.length > 0 && model.align.every(a => a === align)) return
+  state.view.dispatch({
+    changes: {
+      from: model.delimiter.from,
+      to: model.delimiter.to,
+      insert: serializeDelimiter(Array.from({ length: model.columns }, () => align))
+    }
+  })
+}
+
 function buildControlLayer(state: TableDomState): void {
   const model = state.model
   const rows = allRows(model)
@@ -581,7 +700,8 @@ function buildControlLayer(state: TableDomState): void {
     'select-table',
     'cm-md-table-select',
     '▦',
-    '选中整张表格（按 Delete 删除）'
+    '选中整张表格（按 Delete 删除）',
+    true
   )
   bindControl(state, selectTable, () => selectStructure(state, { kind: 'table' }))
 
@@ -589,7 +709,8 @@ function buildControlLayer(state: TableDomState): void {
     'delete-table',
     'cm-md-table-del cm-md-table-trash',
     '',
-    '删除整张表格'
+    '删除整张表格',
+    true
   )
   deleteTableBtn.replaceChildren(trashIcon())
   bindControl(state, deleteTableBtn, () => deleteTable(state))
@@ -647,14 +768,69 @@ function buildControlLayer(state: TableDomState): void {
     addCols.push(add)
   }
 
-  layer.append(selectTable, deleteTableBtn, ...rowDeletes, ...addRows, ...colDeletes, ...addCols)
+  /*
+   * 整表对齐:按钮和「选择整表 / 删除整表」一起放在右上角,点开从按钮左侧展开菜单。
+   * 对齐是整张表的属性,所以入口不挂在某一格/某一行上。
+   */
+  const alignTable = controlButton(
+    'align-table',
+    'cm-md-table-align',
+    '≡',
+    '选择整张表格文字的对齐方式',
+    true
+  )
+  const alignMenu = document.createElement('div')
+  alignMenu.className = 'cm-md-table-align-menu'
+  alignMenu.setAttribute('role', 'menu')
+  alignMenu.setAttribute('aria-label', '整张表格文字对齐')
+  for (const { align, label } of ALIGN_OPTIONS) {
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'cm-md-table-align-option'
+    item.dataset.align = align
+    item.setAttribute('role', 'menuitemradio')
+    item.textContent = label
+    // 和控件按钮一样:按下别把焦点从 frame / 输入框上抢走
+    item.addEventListener('mousedown', e => e.preventDefault())
+    item.addEventListener('click', e => {
+      e.preventDefault()
+      e.stopPropagation()
+      setTableAlign(state, align)
+      closeAlignMenu(state)
+    })
+    alignMenu.appendChild(item)
+  }
+  bindControl(state, alignTable, () => {
+    const menu = state.controls?.alignMenu
+    if (!menu) return
+    if (isAlignMenuOpen(state)) {
+      closeAlignMenu(state)
+      return
+    }
+    syncAlignMenu(state)
+    menu.classList.add('is-open')
+    scheduleLayout(state)
+  })
+
+  layer.append(
+    selectTable,
+    deleteTableBtn,
+    alignTable,
+    alignMenu,
+    ...rowDeletes,
+    ...addRows,
+    ...colDeletes,
+    ...addCols
+  )
   state.controls = {
     selectTable,
     deleteTable: deleteTableBtn,
     rowDeletes,
     addRows,
     colDeletes,
-    addCols
+    addCols,
+    alignTable,
+    alignMenu
   }
   applySelectionClasses(state)
   // 重建后按上一次鼠标位置恢复"只在生效范围内显示"的状态
@@ -662,17 +838,14 @@ function buildControlLayer(state: TableDomState): void {
 }
 
 /**
- * 控件的按需显隐:
+ * 行/列控件的按需显隐(整表选择 / 删除 / 对齐三枚按钮常驻,不走这里):
  *   - 鼠标在哪一行/哪一列,只显示那一行/那一列的删除 ×;
- *   - 鼠标靠近某条行/列边界线(10px 内),才显示那条线对应的插入 +;
- *   - 鼠标在表格上方的留白里时,显示整表选择与删除。
+ *   - 鼠标靠近某条行/列边界线(10px 内),才显示那条线对应的插入 +。
  */
 function applyHoverControls(state: TableDomState): void {
   const ctl = state.controls
   if (!ctl) return
   const hideAll = (): void => {
-    ctl.selectTable.classList.remove('is-shown')
-    ctl.deleteTable.classList.remove('is-shown')
     for (const b of ctl.rowDeletes) b.classList.remove('is-shown')
     for (const b of ctl.addRows) b.classList.remove('is-shown')
     for (const b of ctl.colDeletes) b.classList.remove('is-shown')
@@ -732,10 +905,6 @@ function applyHoverControls(state: TableDomState): void {
     }
   })
 
-  // 表格上沿附近(含浮在上面的控件)= 整表操作的区域
-  const topStrip = y < tableRect.top + 10
-  ctl.selectTable.classList.toggle('is-shown', topStrip)
-  ctl.deleteTable.classList.toggle('is-shown', topStrip)
   ctl.rowDeletes.forEach((b, r) => b.classList.toggle('is-shown', hoverRow === r))
   ctl.colDeletes.forEach((b, c) => b.classList.toggle('is-shown', hoverCol === c))
   ctl.addRows.forEach((b, r) => b.classList.toggle('is-shown', nearRow === r))
@@ -746,12 +915,16 @@ function applyHoverControls(state: TableDomState): void {
  * 控件放在表格四周。顶部控件浮在表格顶边之上(负坐标),
  * 底边正好贴住表格上沿 —— 和表格之间没有空隙,鼠标移上去不会先掉出去。
  */
-/** 行删除 × 在左留白居中;整表选择 ▦ 再往左一点,避开最左的列插入 + */
+/** 行删除 × 在左留白居中 */
 const CTL_LEFT = 12
-const CTL_SELECT_X = 6
-/** 右侧留白里:行插入 + 的中心、整表删除垃圾桶的中心 */
+/** 右侧留白里行插入 + 的中心 */
 const CTL_RIGHT = 14
-const CTL_TRASH_X = 22
+/**
+ * 右上角整表按钮组:相对表格右边缘的横向偏移、组内纵向间距。
+ * 横向偏移 32 是为了让开行插入 + (中心 +14,占 6..22),两组按钮不会叠在一起。
+ */
+const CTL_GROUP_X = 32
+const CTL_GROUP_GAP = 20
 
 function layoutControls(state: TableDomState): void {
   const { frame, table, controls } = state
@@ -769,9 +942,15 @@ function layoutControls(state: TableDomState): void {
 
   // 顶部控件底边贴住表格上沿(控件高度 16 → 中心再上移 8),不占用上下留白
   const topY = tableRect.top - frameRect.top - 8
-  place(controls.selectTable, CTL_SELECT_X, topY)
-  // 垃圾桶比行插入 + 再靠外一点:它和列插入的「+」不是一回事,别让人点错
-  place(controls.deleteTable, tableRight + CTL_TRASH_X, topY)
+  // 整表级三枚按钮统一放在右上角,纵向排一列:选择 → 对齐 → 删除
+  const groupX = tableRight + CTL_GROUP_X
+  place(controls.selectTable, groupX, topY)
+  place(controls.alignTable, groupX, topY + CTL_GROUP_GAP)
+  place(controls.deleteTable, groupX, topY + CTL_GROUP_GAP * 2)
+
+  // 对齐菜单从按钮左侧展开;这里给的是菜单右上角坐标(见 .cm-md-table-align-menu)
+  controls.alignMenu.style.left = `${Math.round(groupX - 10)}px`
+  controls.alignMenu.style.top = `${Math.round(topY + CTL_GROUP_GAP - 10)}px`
 
   trs.forEach((tr, r) => {
     const rect = tr.getBoundingClientRect()
@@ -1058,11 +1237,17 @@ export class TableWidget extends WidgetType {
   }
 
   /**
-   * 刻意**不比来源文本**:内容变了必须让 CM 走 updateDOM 那条路把 DOM 就地刷新。
-   * eq 返回 true 时 CM 会整个复用旧 tile,连 updateDOM 都不会调用,模型就停在旧数据上。
+   * 只有**位置和内容逐项完全一致**时才认为相等(见 sameTableModel)。
+   *
+   * 相等时 CM 整块复用旧 tile,连 updateDOM 都不调用 —— 因为两个模型连绝对
+   * 偏移都相同,DOM 里挂的旧 TableDomState 依然正确,跳过更新不会让模型过期。
+   * 只要内容或任何一个位置变了就返回 false,走 updateDOM 就地刷新。
+   *
+   * 不能只比内容:在表格上方打字会让整张表平移,内容没变但偏移全变了,
+   * 复用旧状态会让之后的单元格提交写到错误的偏移上。
    */
-  eq(): boolean {
-    return false
+  eq(other: TableWidget): boolean {
+    return sameTableModel(this.spec, other.spec)
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -1124,10 +1309,14 @@ export class TableWidget extends WidgetType {
      * 直接拒绝(返回 false,CM 会给这张表新造 DOM)—— 否则两张表的 DOM 会互换,
      * 正在输入的那一格会被整块抽走。
      *
-     * 表首位置只有在**表格之前**插入/删除内容时才会变;单元格自己的提交
-     * 是整行重写,起点不动,所以正常编辑始终走复用这条路。
+     * 但位置变化**不等于换了一张表**:在表格上方打字时,整张表只是往后平移,
+     * 源码一字未改。以前这里一律拒绝,结果每敲一个字 CM 都要把整块表格 DOM
+     * (所有行/单元格/控件)重新造一遍 —— 表格越大,打字越卡。所以位置不同时
+     * 再比一次内容:完全一致就是同一张表平移了,接受它并更新位置。
+     * 内容不同才可能真的是别的表,仍然拒绝。
      */
-    if (state.tableFrom !== this.spec.from) return false
+    if (state.tableFrom !== this.spec.from && !sameTableSource(state.model, this.spec)) return false
+    state.tableFrom = this.spec.from
     state.view = view
     state.model = this.spec
     syncCells(state)
@@ -1162,12 +1351,18 @@ function bindTableEvents(state: TableDomState): void {
   })
   wrap.addEventListener('mouseleave', () => {
     state.hover = null
+    closeAlignMenu(state)
     applyHoverControls(state)
   })
 
   wrap.addEventListener('mousedown', (e: MouseEvent) => {
     if (e.button !== 0) return
     const target = e.target instanceof Element ? e.target : null
+    // 点到对齐菜单/对齐按钮以外的地方 → 收起菜单(按钮自身由 click 负责开合)
+    const keepAlignMenu =
+      !!target?.closest('.cm-md-table-align-menu') ||
+      !!target?.closest('[data-act="align-table"]')
+    if (!keepAlignMenu) closeAlignMenu(state)
     // 结构控件自己处理点击;别让它触发单元格编辑,也别让焦点从表格上跑掉
     if (target?.closest('[data-act]')) {
       e.preventDefault()
@@ -1304,6 +1499,11 @@ function bindTableEvents(state: TableDomState): void {
      * **看不见的**选区上。
      */
     e.stopPropagation()
+    // 菜单开着时 Esc 先只收菜单,和普通弹出菜单一致
+    if (e.key === 'Escape' && closeAlignMenu(state)) {
+      e.preventDefault()
+      return
+    }
     if (state.selection && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
       deleteSelection(state)
@@ -1354,15 +1554,14 @@ export function flushTableEdits(): void {
 }
 
 /**
- * 光标贴在表格**上一行行尾 / 下一行行首**时按 Delete / Backspace:
- * 第一次把整张表选中(渲染态直接整个高亮),第二次由表格自己的 keydown 删除。
+ * 光标在表格**上一行行尾**按回车:自己插入空行,光标停在上面那条。
  *
- * 不拦截的话,第一次按键会把表格与正文之间的换行删掉,Markdown 表格当场散架
- * (表头被并进上一行,整张表退回源码)。由 CM 的 keymap 在默认删除之前调用。
- */
-/**
- * 光标在表格**上一行行尾**按回车:自己插入一个空行(保留引用块/缩进前缀),
- * 光标留在新行上,绝不让表格的 autoFocus 把它带进单元格。
+ * 表格上方紧邻的空行是 Markdown 的结构行,渲染态下折成零高度、不接受光标
+ * (见 TableSpec.protectFrom)。表格上方还没有结构行时,只插一个换行的话,
+ * 光标刚落到的就是这条结构行,守卫会立刻把它送出表格 —— 用户按一次回车却
+ * "跳"到了别处;这时要一起插两条(可编辑行 + 结构行)。
+ * 已经有结构行时,光标落点不会挨着表格,照常只插一条。
+ * 引用块/缩进前缀照抄,新行仍留在同一个容器里。
  */
 export function enterAboveTable(view: EditorView): boolean {
   const sel = view.state.selection
@@ -1374,12 +1573,13 @@ export function enterAboveTable(view: EditorView): boolean {
   const next = view.state.doc.line(nextNo)
   for (const state of renderedTables) {
     const model = state.model
-    if (model.from < next.from || model.from > next.to) continue
-    // 复制上一行的容器前缀(引用块的 > 、缩进),新行仍留在同一个块里
+    if (model.protectFrom < next.from || model.protectFrom > next.to) continue
     const prefix = /^[\s>]*/.exec(line.text)?.[0] ?? ''
+    // 下一行本身就是表格上方的结构空行时,一条新行就够
+    const insert = model.protectFrom > model.from ? `\n${prefix}` : `\n${prefix}\n${prefix}`
     const pos = sel.main.head
     view.dispatch({
-      changes: { from: pos, insert: `\n${prefix}` },
+      changes: { from: pos, insert },
       selection: { anchor: pos + 1 + prefix.length },
       scrollIntoView: true
     })
@@ -1389,31 +1589,39 @@ export function enterAboveTable(view: EditorView): boolean {
 }
 
 /** 只含空白 / `>` 的行视为空行(引用块里的空行看起来就是一根 `>`) */
-function isBlankLine(text: string): boolean {
+export function isBlankLine(text: string): boolean {
   return /^[\s>]*$/.test(text)
 }
 
 /**
- * 沿一个方向找到第一条**非空**行。
- * 光标和表格之间隔着空行时(视觉上光标仍像"在表格上方"),也要能选中表格。
+ * 表格贴着文末、下面没有正文行时,算出让光标可以停靠的补行。
+ *
+ * 表格下面必须空一行(GFM 否则会把新行读成表格行),所以:
+ *   - 已经有一条结构空行(protectTo > to)时补一条换行即可;
+ *   - 表格行就是文末时,结构空行和正文行要一起补。
+ * 返回的 anchor 落在补出的**正文行**上,不会又落回结构空行。
  */
-function adjacentNonBlankLine(doc: Text, lineNumber: number, step: 1 | -1): Line | null {
-  for (let n = lineNumber + step; n >= 1 && n <= doc.lines; n += step) {
-    const line = doc.line(n)
-    if (!isBlankLine(line.text)) return line
-  }
-  return null
+function tailLineAfterTable(
+  model: TableSpec,
+  docLength: number
+): { anchor: number; insert: string } {
+  const insert = model.protectTo > model.to ? '\n' : '\n\n'
+  return { anchor: docLength + insert.length, insert }
 }
 
 /**
- * 渲染态表格的源码是隐藏的:CM 光标绝不能停在 [from, to] 里 —— 否则打字/删除
- * 会改到**看不见的**源码上，表格当场散架。视图每次选区/文档变化后调用本函数纠正。
+ * 渲染态表格的光标护栏。
  *
- * 表格 first line 的起点/终点都可能被方向键落到(atomic range 的边界)，
- * 视觉上就像“表格上一行”，但实际是表格自己的隐藏行。这里把光标挪到表格前面
- * 或后面去，用户看到的才是真正的正文行。
+ * [protectFrom, protectTo] 是整张表连同上下紧邻的结构空行(见 TableSpec):
+ *   - 隐藏源码行不能停光标,否则打字/删除会改到看不见的内容,表格当场散架;
+ *   - 结构空行被折成零高度(见 .cm-md-table-gap),光标停上去就"消失"了,
+ *     方向键也会卡住。
+ * 所以这里把这段范围当成一整块,按光标来向送到另一侧真正可见的正文行。
+ *
+ * 表格贴着文末、下面没有可落的行时,补一个换行让光标有地方可去 ——
+ * 否则用户永远走不到表格下面。
  */
-export function keepCaretOutOfTables(view: EditorView): void {
+export function keepCaretOutOfTables(view: EditorView, fromHead?: number): void {
   const sel = view.state.selection
   if (!sel.main.empty) return
   // 单元格正在编辑时,CM 选区只是备份:不要在表格里主动改文档
@@ -1425,55 +1633,42 @@ export function keepCaretOutOfTables(view: EditorView): void {
     // 刚插入的表格:autoFocus 正准备把焦点放进单元格,别在这里先把选区挪走
     if (state.autoFocusPending) continue
     const model = state.model
-    if (head < model.from || head > model.to) continue
-    const before = model.from > 0 ? model.from - 1 : -1
-    const after = model.to + 1 <= doc.length ? model.to + 1 : -1
-    // 光标落在表格开头(最常见的“上一行”错觉)时往前挪；落在里面/末尾时往后挪
-    const safe = head <= model.from ? (before >= 0 ? before : after) : after >= 0 ? after : before
+    if (head < model.protectFrom || head > model.protectTo) continue
+    const before = model.protectFrom > 0 ? model.protectFrom - 1 : -1
+    const after = model.protectTo < doc.length ? model.protectTo + 1 : -1
+    /*
+     * 往哪一侧挪,取决于光标**从哪边来**:
+     *   - 从表格上方往下(方向键/回车后继续下移):送到表格后面,否则永远翻不过表格;
+     *   - 从表格下方往上:送到表格前面;
+     *   - 其它情况(比如落在隐藏源码中间):维持旧的向后规则。
+     * 只看 head 是分不出上下的 —— 表格首行起点既可能是"从上面下来",
+     * 也可能是"从下面上去"的落点。
+     */
+    const fromAbove = fromHead !== undefined && fromHead < model.protectFrom
+    const fromBelow = fromHead !== undefined && fromHead > model.protectTo
+    const forward = fromBelow ? false : fromAbove ? true : head > model.protectFrom
+    if (forward && fromAbove && after < 0) {
+      // 表格在文末,下面一行都没有:补出结构空行 + 正文行,光标落到正文行
+      const tail = tailLineAfterTable(model, doc.length)
+      view.dispatch({
+        changes: { from: doc.length, insert: tail.insert },
+        selection: { anchor: tail.anchor }
+      })
+      return
+    }
+    const primary = forward ? after : before
+    const fallback = forward ? before : after
+    const safe = primary >= 0 ? primary : fallback
     if (safe >= 0 && safe !== head) view.dispatch({ selection: { anchor: safe } })
     return
-  }
-  /*
-   * 表格紧邻的空行(规则表已把它们折成零高度)也不该停光标:
-   * 它们只是 Markdown 分隔,视觉间距由 widget 的 --md-table-gap 提供。
-   */
-  for (const state of renderedTables) {
-    if (state.autoFocusPending) continue
-    const model = state.model
-    const first = doc.lineAt(model.from)
-    const last = doc.lineAt(model.to)
-    let topFirst = first.number
-    while (topFirst > 1 && isBlankLine(doc.line(topFirst - 1).text)) topFirst--
-    if (head >= doc.line(topFirst).from && head < first.from) {
-      const safe =
-        topFirst > 1
-          ? doc.line(topFirst - 1).to
-          : last.number < doc.lines
-            ? doc.line(last.number + 1).from
-            : -1
-      if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
-      return
-    }
-    let bottomLast = last.number
-    while (bottomLast < doc.lines && isBlankLine(doc.line(bottomLast + 1).text)) bottomLast++
-    if (head > last.to && head <= doc.line(bottomLast).to) {
-      const safe =
-        bottomLast < doc.lines
-          ? doc.line(bottomLast + 1).from
-          : topFirst > 1
-            ? doc.line(topFirst - 1).to
-            : -1
-      if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
-      return
-    }
   }
 }
 
 /**
- * 硬护栏:用户输入(打字/输入法组合/粘贴)如果要落进渲染态表格的隐藏源码,
- * 直接丢弃这次文字变更,只把光标挪到表格外。
+ * 硬护栏:用户输入(打字/输入法组合/粘贴)如果要落进渲染态表格的
+ * [protectFrom, protectTo] 范围,直接丢弃这次文字变更,只把光标挪到表格外。
  *
- * 光标守卫已经尽量不让光标停进去;但输入法组合(start→update→commit)有自己的
+ * 光标守卫已经不让光标停进去;但输入法组合(start→update→commit)有自己的
  * 时序,万一组合目标落在隐藏行上,等守卫下一次执行就晚了 —— 这里在事务层面兜底。
  * 只拦 `input` 类用户事件:表格自己的单元格提交、增删行列都是程序派发的
  * 事务(没有 userEvent),不会误伤。
@@ -1483,43 +1678,12 @@ export function tableInputFilter(tr: Transaction): TransactionSpec | readonly Tr
   const pass = tr as unknown as TransactionSpec
   if (!tr.docChanged || !tr.isUserEvent('input')) return pass
 
-  /*
-   * 表格正下方的空行:GFM 会把这里的第一笔输入吃成新的表格行。
-   * 不提前改文档(点一下不该多一行),而是在**真正输入时**把这次输入整体
-   * 挪到下面一行,并在表格与输入之间补一条空行 —— 文字和分隔行在同一个事务里,
-   * 一次 Ctrl+Z 就能一起撤销。
-   */
-  for (const state of renderedTables) {
-    if (state.autoFocusPending) continue
-    const model = state.model
-    const lastLine = tr.startState.doc.lineAt(model.to)
-    const nextNo = lastLine.number + 1
-    if (nextNo > tr.startState.doc.lines) continue
-    const next = tr.startState.doc.line(nextNo)
-    if (!isBlankLine(next.text)) continue
-    let inputAt = -1
-    tr.changes.iterChangedRanges(fromA => {
-      if (inputAt >= 0) return
-      if (tr.startState.doc.lineAt(fromA).number === nextNo) inputAt = fromA
-    })
-    if (inputAt < 0) continue
-    // 引用块/缩进前缀跟着复制,新行仍在同一个容器里
-    const prefix = /^[\s>]*/.exec(next.text)?.[0] ?? ''
-    // 插入点在新文档坐标里(用户输入之后),把输入内容顶到下一行
-    const sep = ChangeSet.of({ from: inputAt, insert: `\n${prefix}` }, tr.newDoc.length)
-    return {
-      changes: tr.changes.compose(sep),
-      selection: tr.selection ? tr.selection.map(sep) : undefined,
-      scrollIntoView: true
-    }
-  }
-
   let inside = false
   tr.changes.iterChangedRanges(fromA => {
     if (inside) return
     for (const state of renderedTables) {
       const model = state.model
-      if (fromA >= model.from && fromA <= model.to) {
+      if (fromA >= model.protectFrom && fromA <= model.protectTo) {
         inside = true
         return
       }
@@ -1532,40 +1696,45 @@ export function tableInputFilter(tr: Transaction): TransactionSpec | readonly Tr
   let safe = -1
   for (const state of renderedTables) {
     const model = state.model
-    if (head < model.from || head > model.to) continue
-    const before = model.from > 0 ? model.from - 1 : -1
-    const after = model.to + 1 <= docLen ? model.to + 1 : -1
-    safe = head <= model.from ? (before >= 0 ? before : after) : after >= 0 ? after : before
+    if (head < model.protectFrom || head > model.protectTo) continue
+    const before = model.protectFrom > 0 ? model.protectFrom - 1 : -1
+    const after = model.protectTo < docLen ? model.protectTo + 1 : -1
+    safe =
+      head <= model.protectFrom ? (before >= 0 ? before : after) : after >= 0 ? after : before
     break
   }
   return safe >= 0 ? { selection: { anchor: safe } } : []
 }
 
 /**
- * 鼠标点在渲染表格的隐藏源码区间时,返回表格外最近的落点(否则 null)。
+ * 鼠标点在渲染态表格的 [protectFrom, protectTo] 区间时,返回表格外最近的落点
+ * (否则 null)。insert 非空表示表格贴着文末、下方没有可落的行,
+ * 调用方需要在同一笔事务里插入它,点击才能真正落到表格后面。
  *
- * 隐藏的表头行/末尾行在文档里仍然是 CM 行,按坐标点击可能把光标放进去。
- * 这里在 CM 处理 mousedown 之前把它改成"点击表格上方/下方最近的正文行",
- * 所以那几行实际上点不进去。
+ * 隐藏的表头行/末尾行以及上下结构空行在文档里仍然是 CM 行,按坐标点击可能
+ * 把光标放进去;这里在 CM 处理 mousedown 之前把它改成表格外的正文行,
+ * 所以这些行实际上点不进去。
  */
 export function caretOutsideRenderedTable(
   view: EditorView,
   pos: number,
   clientY: number
-): number | null {
+): { anchor: number; insert: string } | null {
   const doc = view.state.doc
   for (const state of renderedTables) {
     const model = state.model
-    if (pos < model.from || pos > model.to) continue
-    const before = model.from > 0 ? model.from - 1 : -1
-    const after = model.to + 1 <= doc.length ? model.to + 1 : -1
+    if (pos < model.protectFrom || pos > model.protectTo) continue
+    const before = model.protectFrom > 0 ? model.protectFrom - 1 : -1
+    const after = model.protectTo < doc.length ? model.protectTo + 1 : -1
     // 点在表格可见区域上方 → 光标落到表格前;否则落到表格后
     const rect = state.table.getBoundingClientRect()
     const preferBefore = clientY <= rect.top
-    const first = preferBefore ? before : after
-    const second = preferBefore ? after : before
-    if (first >= 0) return first
-    if (second >= 0) return second
+    if (!preferBefore) {
+      if (after >= 0) return { anchor: after, insert: '' }
+      return tailLineAfterTable(model, doc.length)
+    }
+    if (before >= 0) return { anchor: before, insert: '' }
+    if (after >= 0) return { anchor: after, insert: '' }
   }
   return null
 }
@@ -1573,18 +1742,23 @@ export function caretOutsideRenderedTable(
 export function selectAdjacentTable(view: EditorView, side: 'after' | 'before'): boolean {
   const sel = view.state.selection
   if (!sel.main.empty) return false
-  const line = view.state.doc.lineAt(sel.main.head)
+  const doc = view.state.doc
+  const line = doc.lineAt(sel.main.head)
   if (side === 'after' ? sel.main.head !== line.to : sel.main.head !== line.from) return false
-  const target = adjacentNonBlankLine(view.state.doc, line.number, side === 'after' ? 1 : -1)
-  if (!target) return false
+
+  /*
+   * 只认**紧贴表格的那一行**:
+   *   - after(光标行行尾按 Delete):光标行的下一行就是表格受保护范围的第一行;
+   *   - before(光标行行首按 Backspace):光标行的上一行就是受保护范围的最后一行。
+   * 中间还隔着空行时把按键还给编辑器 —— 用户是在合并/删除那几行空行,不是想删表。
+   */
   for (const state of renderedTables) {
     if (state.selection?.kind === 'table') continue
     const model = state.model
-    // 上一行行尾按 Delete → 表的**表头行**在下一行;下一行行首按 Backspace → 表的**末行**在上一行
     const hit =
       side === 'after'
-        ? model.from >= target.from && model.from <= target.to
-        : model.to >= target.from && model.to <= target.to
+        ? doc.lineAt(model.protectFrom).number === line.number + 1
+        : doc.lineAt(model.protectTo).number === line.number - 1
     if (!hit) continue
     selectStructure(state, { kind: 'table' })
     state.frame.focus({ preventScroll: true })
@@ -1596,10 +1770,12 @@ export function selectAdjacentTable(view: EditorView, side: 'after' | 'before'):
    * 第二次 Delete 就会删掉这段选区。规则表会在选区覆盖整表时渲染成源码,
    * 所以这里的选中是看得见的。
    */
-  const table = tableNodeIn(view.state, target)
+  const adjacentNumber = line.number + (side === 'after' ? 1 : -1)
+  if (adjacentNumber < 1 || adjacentNumber > doc.lines) return false
+  const table = tableNodeIn(view.state, doc.line(adjacentNumber))
   if (table) {
-    const first = view.state.doc.lineAt(table.from)
-    const last = view.state.doc.lineAt(table.to)
+    const first = doc.lineAt(table.from)
+    const last = doc.lineAt(table.to)
     view.dispatch({ selection: { anchor: first.from, head: last.to }, scrollIntoView: true })
     return true
   }

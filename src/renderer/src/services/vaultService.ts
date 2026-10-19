@@ -2,7 +2,7 @@ import { nextTick } from 'vue'
 import type { VaultNode } from '@shared/types'
 import { appStore, type SwitcherMode, type VaultFileRef } from '../stores/app'
 import { basename } from '../utils/text'
-import { openFileByPath, resetToEmpty, saveCurrentFile } from './fileService'
+import { clearDocument, openFileByPath, saveCurrentFile } from './fileService'
 import { isInside, joinPath, relativeTo, replaceName } from '../utils/paths'
 import { notifyError, pushNotice } from './notice'
 import { api } from './api'
@@ -117,8 +117,15 @@ export async function forgetVault(vaultPath: string): Promise<void> {
   await api.saveSettings({ vaults: next })
 }
 
-export function showVaultPicker(): void {
+/**
+ * 回到仓库选择界面。
+ *
+ * 页面这时就不算打开了:把「上次打开的页面」一并清掉,持久化状态才与用户
+ * 眼前看到的一致 —— 否则在选择界面关掉应用,下次启动还会莫名其妙恢复一个文件。
+ */
+export async function showVaultPicker(): Promise<void> {
   appStore.view = 'picker'
+  await api.saveSettings({ lastFile: null })
 }
 
 /**
@@ -137,7 +144,7 @@ export async function requestVaultSwitch(): Promise<boolean> {
       appStore.dirty = false
     }
   }
-  showVaultPicker()
+  await showVaultPicker()
   return true
 }
 
@@ -161,19 +168,32 @@ export async function setSkipVaultPicker(skip: boolean): Promise<void> {
 }
 
 /**
+ * 进入编辑器后恢复「上次打开的那个页面」。
+ *
+ * 没有可恢复的页面(从来没打开过 / 新建了未命名文档 / 文件已被删掉)时,
+ * **什么都不打开**,而不是塞一份未命名文档进去 —— 那会让人以为有内容待保存。
+ */
+export async function restoreLastDocument(
+  vaultPath: string,
+  lastFile: string | null
+): Promise<void> {
+  if (lastFile && isInside(vaultPath, lastFile)) {
+    const restored = await openFileByPath(lastFile, { silent: true, force: true })
+    if (restored) return
+  }
+  await clearDocument()
+}
+
+/**
  * 从选择界面打开仓库:加载文件树并进入编辑器;
- * 若该仓库有上次打开的文件且仍存在则恢复,否则清空编辑器。
+ * 若该仓库有上次打开的文件且仍存在则恢复,否则什么都不打开。
  */
 export async function openVaultFromPicker(vaultPath: string): Promise<boolean> {
   const settings = await api.getSettings()
   const ok = await loadVault(vaultPath)
   if (!ok) return false
   await enterEditorAndWait()
-  if (settings.lastFile && isInside(vaultPath, settings.lastFile)) {
-    await openFileByPath(settings.lastFile, { silent: true, force: true })
-  } else {
-    await resetToEmpty()
-  }
+  await restoreLastDocument(vaultPath, settings.lastFile)
   return true
 }
 
@@ -313,12 +333,9 @@ function findNode(root: VaultNode, target: string): VaultNode | null {
   return null
 }
 
-/** 从仓库内打开文件(记录 lastFile) */
+/** 从仓库内打开文件(「上次打开的页面」由 openFileByPath 统一记录) */
 export async function openVaultFile(path: string, opts?: { silent?: boolean }): Promise<void> {
   await openFileByPath(path, opts)
-  if (appStore.filePath === path && appStore.vaultPath && isInside(appStore.vaultPath, path)) {
-    await api.saveSettings({ lastFile: path })
-  }
 }
 
 // ---------- 快速切换器 ----------

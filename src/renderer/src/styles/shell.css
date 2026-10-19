@@ -302,12 +302,38 @@
   color: var(--text-tertiary);
 }
 
+/* 编辑器与「没有打开文档」提示的共同容器:提示要盖在编辑区上,但不能挡住点击 */
+.editor-host {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 .editor-pane {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: var(--bg-editor);
+}
+
+.editor-empty-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  text-align: center;
+  /* 盖住底下的编辑器:行首「+」和光标都不该在一个「没有页面」的状态里露面 */
+  background: var(--bg-editor);
+  cursor: default;
+  user-select: none;
 }
 
 /* ---------- 状态栏 ---------- */

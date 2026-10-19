@@ -82,10 +82,23 @@ export function setWrappingPreference(on: boolean): void {
   wrapping = on
 }
 
+/**
+ * 空状态(没有打开任何文档)下编辑器应当是**只读**的:能显示、能拖放,但光标不闪、
+ * 打字也不会把一片空白悄悄变成「未命名」文档。开始一份文档只能来自明确动作
+ * (选中文件 / Ctrl+N / 拖入文件)。
+ */
+export interface EditorOptions {
+  editable?: boolean
+}
+
 /** 扩展组装:换行 / 历史 / markdown(GFM+嵌套语言) / WYSIWYG / 键位 */
-export function buildExtensions(onDocChange: (view: EditorView) => void): Extension[] {
+export function buildExtensions(
+  onDocChange: (view: EditorView) => void,
+  opts?: EditorOptions
+): Extension[] {
   return [
     wrapCompartment.of(wrapping ? EditorView.lineWrapping : []),
+    EditorView.editable.of(opts?.editable ?? true),
     // 用户输入绝不能落进渲染表格的隐藏源码(输入法组合也在这一层兜底)
     EditorState.transactionFilter.of(tr => tableInputFilter(tr)),
     drawSelection(),
@@ -131,18 +144,24 @@ export function buildExtensions(onDocChange: (view: EditorView) => void): Extens
 
 export function createEditor(
   parent: HTMLElement,
-  onDocChange: (view: EditorView) => void
+  onDocChange: (view: EditorView) => void,
+  opts?: EditorOptions
 ): EditorView {
   return new EditorView({
     parent,
-    state: EditorState.create({ doc: '', extensions: buildExtensions(onDocChange) })
+    state: EditorState.create({ doc: '', extensions: buildExtensions(onDocChange, opts) })
   })
 }
 
 /** 打开/新建文件时重建编辑器状态(干净的历史栈,旧文档内容不会出现在 undo 里) */
-export function loadDocument(view: EditorView, content: string, onDocChange: (view: EditorView) => void): void {
+export function loadDocument(
+  view: EditorView,
+  content: string,
+  onDocChange: (view: EditorView) => void,
+  opts?: EditorOptions
+): void {
   // 表格单元格里的最后几个字还只在 contenteditable 里:setState 会把那块 DOM 整个换掉,
   // 必须先刷回文档,否则切换文件/新建会静默吞掉正在输入的内容
   flushTableEdits()
-  view.setState(EditorState.create({ doc: content, extensions: buildExtensions(onDocChange) }))
+  view.setState(EditorState.create({ doc: content, extensions: buildExtensions(onDocChange, opts) }))
 }

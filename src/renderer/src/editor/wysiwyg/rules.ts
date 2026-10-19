@@ -8,6 +8,7 @@ import {
   MathWidget,
   MermaidWidget,
   TableWidget,
+  isBlankLine,
   type TableAlign,
   type TableCellSpec,
   type TableRowSpec,
@@ -85,11 +86,6 @@ function hideWithWidget(ctx: RuleContext, from: number, to: number, widget: Widg
 function lineUntouched(ctx: RuleContext, pos: number): boolean {
   const line = ctx.doc.lineAt(pos)
   return !touchesLines(ctx.sel, ctx.doc, line.from, line.to)
-}
-
-/** 只含空白 / `>` 的行视为空行(引用块里的空行看起来就是一根 `>`) */
-function isBlankLineText(text: string): boolean {
-  return /^[\s>]*$/.test(text)
 }
 
 /** 从 pos 起吞掉连续空格(隐藏 "# " 时必须连同后随空格,否则残留可见空隙) */
@@ -224,6 +220,16 @@ function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
     })
   }
 
+  /*
+   * 表格上下紧邻的空行是 Markdown 的结构行,渲染态下要跟表格一起藏起来
+   * (见 TableSpec.protectFrom/protectTo)。只认**紧邻**的一行:再往外是
+   * 用户自己写的空行,照常参与排版。
+   */
+  const first = doc.lineAt(table.from)
+  const last = doc.lineAt(table.to)
+  const above = first.number > 1 ? doc.line(first.number - 1) : null
+  const below = last.number < doc.lines ? doc.line(last.number + 1) : null
+
   return {
     from: table.from,
     to: table.to,
@@ -240,7 +246,9 @@ function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
     // 否则表头改了、分隔行还是旧列数,表格会直接散架
     delimiter: delim
       ? { from: delim.from, to: delim.to }
-      : { from: header.to, to: header.to }
+      : { from: header.to, to: header.to },
+    protectFrom: above && isBlankLine(above.text) ? above.from : table.from,
+    protectTo: below && isBlankLine(below.text) ? below.to : table.to
   }
 }
 
@@ -593,20 +601,13 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         addLine(ctx, line.from, 'cm-md-table-void')
       }
       /*
-       * 表格紧邻的空行只承担 Markdown 分隔作用。把它们折成零高度,视觉上的间距
-       * 交给 widget 的上下 padding(--md-table-gap):这两条空行不会再变成
-       * 可点击、带「+」的独立行,间距又能纯用样式调。
+       * 紧邻表格的分隔空行:源码里保留(GFM 需要它把表格与正文隔开),但排版上
+       * 折成零高度,视觉间距完全交给 widget 的 --md-table-gap*。
+       * 光标/点击由 keepCaretOutOfTables 与 caretOutsideRenderedTable 按
+       * TableSpec.protectFrom/protectTo 越过这段范围,用户不会停在看不见的行上。
        */
-      for (let n = firstLine.number - 1; n >= 1 && isBlankLineText(ctx.doc.line(n).text); n--) {
-        addLine(ctx, ctx.doc.line(n).from, 'cm-md-table-spacer')
-      }
-      for (
-        let n = lastLine.number + 1;
-        n <= ctx.doc.lines && isBlankLineText(ctx.doc.line(n).text);
-        n++
-      ) {
-        addLine(ctx, ctx.doc.line(n).from, 'cm-md-table-spacer')
-      }
+      if (spec.protectFrom < node.from) addLine(ctx, spec.protectFrom, 'cm-md-table-gap')
+      if (spec.protectTo > node.to) addLine(ctx, spec.protectTo, 'cm-md-table-gap')
       // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
       // 行内高亮由 widget 内部的 renderInline 负责
       return false

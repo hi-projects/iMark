@@ -605,9 +605,9 @@ async function main(): Promise<void> {
     JSON.stringify(besideRendered)
   )
 
-  // ---------- 3d. 光标停在已有表格上:插入点落到整张表之下 ----------
+  // ---------- 3d. 打开文档时光标落在表格源码里:插入点落到表格后的正文行 ----------
 
-  console.log('\n【3d】光标停在已有表格上点「+」:新表在整张表下方,老表一个字符都没少')
+  console.log('\n【3d】打开文档时光标落在表格源码里:护栏送到表格后,新表落在正文行下方')
   await loadDoc('| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   check('点「表格」', await openMenuAndPick('表格'))
   check('填 2 行 2 列', await setNumbers(2, 2))
@@ -615,9 +615,9 @@ async function main(): Promise<void> {
   await sleep(700)
   const twoTables = await readSource()
   check(
-    '落盘是两张各自完整的表(不是被拆散的一张)',
+    '两张表各自完整(结构空行不许停光标,光标落到「末尾」,新表在它下面)',
     JSON.stringify(twoTables) ===
-      JSON.stringify(['| A | B |', '| --- | --- |', '| 1 | 2 |', '', blank(2), sep(2), blank(2), '', '末尾']),
+      JSON.stringify(['| A | B |', '| --- | --- |', '| 1 | 2 |', '', '末尾', blank(2), sep(2), blank(2)]),
     JSON.stringify(twoTables)
   )
   // 光标走出表格,两张表都该渲染出来 —— 这才是"两张独立的表"的直接证据。
@@ -914,6 +914,7 @@ async function main(): Promise<void> {
   await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   await sleep(500)
   await focusEditor()
+  await key('Home', ['control'])
   await key('End') // 光标到「开头」行尾 —— 紧贴表格的上一行
   await sleep(150)
   await key('Delete')
@@ -952,6 +953,7 @@ async function main(): Promise<void> {
   const linesBefore = await evalJs<number>(
     `document.querySelectorAll('.cm-content .cm-line').length`
   )
+  await key('Home', ['control'])
   await key('End')
   await key('Enter')
   await sleep(500)
@@ -978,15 +980,47 @@ async function main(): Promise<void> {
   const linesAfter = await evalJs<number>(
     `document.querySelectorAll('.cm-content .cm-line').length`
   )
-  check('确实多了一个空行', linesAfter === linesBefore + 1, `${linesBefore} → ${linesAfter}`)
+  // 源码多两行:光标落点(可编辑)+ 表格上方的结构空行(零高度)
+  check('源码多了两行(可编辑行 + 结构空行)', linesAfter === linesBefore + 2, `${linesBefore} → ${linesAfter}`)
+  const enterCaretLine = await evalJs<{ text: string; cls: string }>(`(() => {
+    const s = document.getSelection()
+    if (!s || !s.anchorNode) return { text: '', cls: '' }
+    const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+    const line = el?.closest?.('.cm-line')
+    if (!line) return { text: '', cls: '' }
+    const copy = line.cloneNode(true)
+    copy.querySelectorAll('.line-plus').forEach(w => w.remove())
+    return { text: copy.textContent.trim(), cls: line.className }
+  })()`)
+  check(
+    '光标停在新行上,而不是表格的结构空行',
+    enterCaretLine.text === '' && !enterCaretLine.cls.includes('cm-md-table-gap'),
+    JSON.stringify(enterCaretLine)
+  )
 
-  // ---------- 3k. 光标与表格之间隔着空行:Delete 也能先选中整表 ----------
+  // ---------- 3k. 光标紧贴表格上方第一行:Delete 先选中整表 ----------
 
-  console.log('\n【3k】光标与表格之间隔着空行:Delete 仍然先选中整表')
+  console.log('\n【3k】光标紧贴表格上方第一行(中间只有隐藏的结构空行):Delete 先选中整表')
   await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   await sleep(500)
   await focusEditor()
-  await key('End') // 光标在「开头」行尾,中间隔着一行空行,再下面是表格
+  const blankAbove = await evalJs<{ h: number; cls: string } | null>(`
+    (() => {
+      const host = document.querySelector('.cm-content .cm-md-table-host')
+      const el = host && host.previousElementSibling
+      if (!el) return null
+      return { h: Math.round(el.getBoundingClientRect().height), cls: el.className }
+    })()`)
+  check(
+    '表格上方的结构空行折成零高度、不占行高',
+    !!blankAbove &&
+      blankAbove.h <= 1 &&
+      blankAbove.cls.includes('cm-md-table-gap') &&
+      !blankAbove.cls.includes('cm-md-table-void'),
+    JSON.stringify(blankAbove)
+  )
+  await key('Home', ['control'])
+  await key('End') // 光标在「开头」行尾,下一行就是表格上方的隐藏结构空行
   await key('Delete')
   await sleep(400)
   check('表格仍然渲染着', (await renderedTableCount()) === 1)
@@ -994,7 +1028,7 @@ async function main(): Promise<void> {
     `document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`
   )
   check(
-    '隔着空行也选中整表(4 个格子高亮)',
+    '紧贴隐藏结构空行也选中整表(4 个格子高亮)',
     selectedAcrossBlank === 4,
     String(selectedAcrossBlank)
   )
@@ -1018,13 +1052,14 @@ async function main(): Promise<void> {
     JSON.stringify(structureSource)
   )
 
-  // ---------- 3l. 方向键想进入渲染表格:光标被挡在外面 ----------
+  // ---------- 3l. 方向键越过渲染表格:不进入隐藏源码,能走到表格下面 ----------
 
-  console.log('\n【3l】方向键想进入渲染表格:光标被挡在外面')
+  console.log('\n【3l】方向键越过渲染表格:不进入隐藏源码,能走到表格下面')
   await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   await sleep(500)
   await focusEditor()
-  await key('End')
+  await key('Home', ['control'])
+  await key('End') // 光标在「开头」行尾 —— 紧贴表格的上一行
   await key('ArrowDown') // 想走到表格那一行(源码是隐藏的)
   await sleep(400)
   const caretInfo = await evalJs<{ inWidget: boolean; lineText: string }>(`(() => {
@@ -1032,36 +1067,62 @@ async function main(): Promise<void> {
     if (!s || !s.anchorNode) return { inWidget: false, lineText: '' }
     const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
     const line = el?.closest?.('.cm-line')
-    return { inWidget: !!el?.closest?.('.cm-md-table-widget'), lineText: line ? line.textContent : '' }
+    let text = ''
+    if (line) {
+      // 「+」按钮也挂在这一行里,先摘掉再取文本
+      const copy = line.cloneNode(true)
+      copy.querySelectorAll('.line-plus').forEach(w => w.remove())
+      text = copy.textContent.trim()
+    }
+    return { inWidget: !!el?.closest?.('.cm-md-table-widget'), lineText: text }
   })()`)
   console.log('    caret after ArrowDown:', JSON.stringify(caretInfo))
   check('光标没有停在表格的隐藏源码里', !caretInfo.inWidget)
+  check(
+    '↓ 越过整张表和结构空行,落到表格下方的正文行',
+    caretInfo.lineText.includes('末尾'),
+    JSON.stringify(caretInfo.lineText)
+  )
   await typeFocused('X')
   await sleep(400)
   check('表格仍然渲染着', (await renderedTableCount()) === 1)
   structureSource = await readSource()
   check(
-    'X 落在正文里,表格源码一个字符都没动',
-    structureSource.some(l => l.includes('X') && !l.trim().startsWith('|')) &&
+    'X 落在表格下面(与表格之间隔着一条空行),表格源码一个字符都没动',
+    structureSource.some(
+      (l, i) => l.includes('X') && !l.trim().startsWith('|') && structureSource[i - 1] === ''
+    ) &&
       structureSource.some(l => l.trim() === '| A | B |') &&
       structureSource.some(l => l.trim() === '| 1 | 2 |') &&
       !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
     JSON.stringify(structureSource)
   )
-  await key('Delete')
-  await sleep(300)
-  const selectedAfterArrow = await evalJs<number>(
-    `document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`
-  )
+  // 反向:从表格下面按 ↑,一次越过整张表回到上一行
+  await key('ArrowUp') // X 行 → 越过表格和结构空行 → 「开头」
+  await sleep(400)
+  const afterUp = await evalJs<{ inWidget: boolean; lineText: string }>(`(() => {
+    const s = document.getSelection()
+    if (!s || !s.anchorNode) return { inWidget: false, lineText: '' }
+    const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+    const line = el?.closest?.('.cm-line')
+    let text = ''
+    if (line) {
+      // 「+」按钮也挂在这一行里,先摘掉再取文本
+      const copy = line.cloneNode(true)
+      copy.querySelectorAll('.line-plus').forEach(w => w.remove())
+      text = copy.textContent.trim()
+    }
+    return { inWidget: !!el?.closest?.('.cm-md-table-widget'), lineText: text }
+  })()`)
   check(
-    '在箭头落点(上一行行尾)按 Delete:先选中整表',
-    selectedAfterArrow === 4,
-    String(selectedAfterArrow)
+    '↑ 从表格下方一次越过表格回到上一行',
+    !afterUp.inWidget && afterUp.lineText.includes('开头'),
+    JSON.stringify(afterUp)
   )
 
   // ---------- 3m. 表格正下方那一行输入:自动补空行,不会变成表格行 ----------
 
-  console.log('\n【3m】点击表格下方空行不增行;输入时自动分成段落')
+  console.log('\n【3m】点击表格下方:落到正文行,结构空行保持零高度')
   await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   await sleep(500)
   await focusEditor()
@@ -1091,24 +1152,95 @@ async function main(): Promise<void> {
     linesAfterClick === linesBeforeClick,
     `${linesBeforeClick} → ${linesAfterClick}`
   )
-  const spacerInfo = await evalJs<{ spacer: boolean; h: number; padTop: number }>(`
+  const adjacentInfo = await evalJs<{
+    spacers: number
+    gapH: number
+    gapCls: string
+    padTop: number
+    textTop: number
+    textCls: string
+  }>(`
     (() => {
-      const el = document.querySelector('.cm-content .cm-md-table-spacer')
+      const host = document.querySelector('.cm-content .cm-md-table-host')
+      let el = host ? host.nextElementSibling : null
+      while (el && el.classList.contains('cm-md-table-void')) el = el.nextElementSibling
+      const gap = el
+      const text = gap ? gap.nextElementSibling : null
       const f = document.querySelector('.cm-md-table-frame')
       return {
-        spacer: !!el,
-        h: el ? el.getBoundingClientRect().height : -1,
-        padTop: f ? parseFloat(getComputedStyle(f).paddingTop) : -1
+        spacers: document.querySelectorAll('.cm-content .cm-md-table-spacer').length,
+        gapH: gap ? Math.round(gap.getBoundingClientRect().height) : -1,
+        gapCls: gap ? gap.className : '',
+        padTop: f ? parseFloat(getComputedStyle(f).paddingTop) : -1,
+        textTop: text ? Math.round(text.getBoundingClientRect().top) : -1,
+        textCls: text ? text.className : ''
       }
     })()`)
   check(
-    '表格紧邻空行折成零高度,间距由 --md-table-gap 的 padding 提供',
-    spacerInfo.spacer && spacerInfo.h < 1 && spacerInfo.padTop > 0,
-    JSON.stringify(spacerInfo)
+    '表格下方紧邻的是零高度结构空行,再往下才是可编辑正文行',
+    adjacentInfo.spacers === 0 &&
+      adjacentInfo.gapH === 0 &&
+      adjacentInfo.gapCls.includes('cm-md-table-gap') &&
+      !adjacentInfo.textCls.includes('cm-md-table-gap'),
+    JSON.stringify(adjacentInfo)
   )
+  check('表格自身仍有 --md-table-gap 留白', adjacentInfo.padTop > 0, JSON.stringify(adjacentInfo))
   await typeFocused('X')
   await sleep(450)
   check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  const xVisual = await evalJs<{ top: number; text: string; gapH: number; gapCount: number }>(`
+    (() => {
+      const line = [...document.querySelectorAll('.cm-content .cm-line')]
+        .find(l => (l.textContent || '').includes('X'))
+      const gaps = [...document.querySelectorAll('.cm-content .cm-md-table-gap')]
+      return {
+        top: line ? Math.round(line.getBoundingClientRect().top) : -1,
+        text: line ? line.textContent : '',
+        gapCount: gaps.length,
+        gapH: gaps.length ? Math.round(gaps[0].getBoundingClientRect().height) : -1
+      }
+    })()`)
+  check(
+    '文字落在点击的正文行上(没有被顶到下一行)',
+    xVisual.text.includes('X') && xVisual.top === adjacentInfo.textTop,
+    JSON.stringify({ before: adjacentInfo.textTop, after: xVisual.top, line: xVisual.text })
+  )
+  check(
+    '结构空行仍是零高度,源码里仍保留(GFM 需要它)',
+    xVisual.gapCount === 1 && xVisual.gapH === 0,
+    JSON.stringify(xVisual)
+  )
+  // 零高的分隔行不能变成方向键的"隐形停靠点":上下都应直接越过整张表
+  const caretLineText = (): Promise<{ text: string; inWidget: boolean }> =>
+    evalJs(`(() => {
+      const s = document.getSelection()
+      if (!s || !s.anchorNode) return { text: '', inWidget: false }
+      const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+      const line = el?.closest?.('.cm-line')
+      let text = ''
+      if (line) {
+        const copy = line.cloneNode(true)
+        copy.querySelectorAll('.line-plus').forEach(w => w.remove())
+        text = copy.textContent.trim()
+      }
+      return { text, inWidget: !!el?.closest?.('.cm-md-table-widget') }
+    })()`)
+  await key('ArrowUp')
+  await sleep(250)
+  const upAcross = await caretLineText()
+  check(
+    '↑ 从表格下方文字越过整张表,没有停在零高的分隔行上',
+    upAcross.text.includes('开头') && !upAcross.inWidget,
+    JSON.stringify(upAcross)
+  )
+  await key('ArrowDown')
+  await sleep(250)
+  const downBack = await caretLineText()
+  check(
+    '↓ 越过整张表回到表格下方的文字行(跳过零高分隔行)',
+    downBack.text.includes('X') && !downBack.inWidget,
+    JSON.stringify(downBack)
+  )
   structureSource = await readSource()
   check(
     '输入后表格与文字之间保留空行,X 在普通段落里',
@@ -1131,63 +1263,206 @@ async function main(): Promise<void> {
 
   // ---------- 3n. 输入法在表格下方空行输入 ----------
 
-  console.log('\n【3n】输入法在表格下方空行输入:自动分成段落,不进表格')
-  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
-  await sleep(500)
-  await focusEditor()
-  const imeBlank = await evalJs<{ x: number; y: number } | null>(`
-    (() => {
+  console.log('\n【3n】输入法在表格下方正文行输入:组合期间版式不动')
+  type ImeState = {
+    text: string
+    lines: number
+    hostH: number
+    voids: number
+    voidH: number
+    top: number
+  }
+  /** 表格下方第一条正文行:DOM 文本(去掉行首「+」按钮)+ 文档行数 + 宿主/折叠行的几何 */
+  const imeLineState = (): Promise<ImeState> =>
+    evalJs(`(() => {
+      const all = [...document.querySelectorAll('.cm-content .cm-line')]
       const host = document.querySelector('.cm-content .cm-md-table-host')
       let el = host ? host.nextElementSibling : null
-      while (el && el.classList.contains('cm-md-table-void')) el = el.nextElementSibling
-      if (!el) return null
-      const r = el.getBoundingClientRect()
-      return { x: Math.round(r.left + 20), y: Math.round(r.top + r.height / 2) }
+      while (el && (el.classList.contains('cm-md-table-void') || el.classList.contains('cm-md-table-gap')))
+        el = el.nextElementSibling
+      const r = el ? el.getBoundingClientRect() : { top: -1 }
+      const voids = [...document.querySelectorAll('.cm-content .cm-md-table-void')]
+      const hr = host ? host.getBoundingClientRect() : { height: 0 }
+      return {
+        text: el ? el.textContent.replace(/^\\+/, '') : '',
+        lines: all.length,
+        hostH: Math.round(hr.height),
+        voids: voids.length,
+        voidH: voids.length ? Math.round(voids[0].getBoundingClientRect().height) : -1,
+        top: Math.round(r.top)
+      }
     })()`)
-  if (imeBlank) {
+
+  const imeDoc = '开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n'
+  let imeBefore: ImeState | null = null
+  let imeDuring: ImeState | null = null
+  let imeEvents: string[] = []
+  let imeCommitted = false
+  for (let attempt = 1; attempt <= 3 && !imeCommitted; attempt++) {
+    await loadDoc(imeDoc)
+    await sleep(500)
+    await focusEditor()
+    const imeBlank = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const host = document.querySelector('.cm-content .cm-md-table-host')
+        let el = host ? host.nextElementSibling : null
+        while (el && el.classList.contains('cm-md-table-void')) el = el.nextElementSibling
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: Math.round(r.left + 20), y: Math.round(r.top + r.height / 2) }
+      })()`)
+    if (attempt === 1) check('找到表格下方的点击位置', !!imeBlank, JSON.stringify(imeBlank))
+    if (!imeBlank) break
     wc.sendInputEvent({ type: 'mouseDown', x: imeBlank.x, y: imeBlank.y, button: 'left', clickCount: 1 })
     wc.sendInputEvent({ type: 'mouseUp', x: imeBlank.x, y: imeBlank.y, button: 'left', clickCount: 1 })
-  }
-  await sleep(300)
-  try {
-    wc.debugger.attach('1.3')
-    await wc.debugger.sendCommand('Input.imeSetComposition', {
-      text: 'shu',
-      selectionStart: 3,
-      selectionEnd: 3
-    })
-    await sleep(350)
-    console.log(
-      '    during ime:',
-      JSON.stringify(
-        await evalJs(`({
-          scroll: document.querySelector('.cm-scroller').scrollTop,
-          rows: document.querySelectorAll('.cm-md-table-widget tbody tr').length
-        })`)
-      )
-    )
-    await wc.debugger.sendCommand('Input.insertText', { text: '输入文字' })
-  } catch (err) {
-    console.log('    ime debugger err:', String(err))
-  } finally {
+    await sleep(300)
+
+    // 记录输入法事件:失败时能区分「产品没扛住组合」和「环境根本没派发组合事件」
+    await evalJs(`
+      (() => {
+        window.__imeEvents = []
+        // 重试会重新执行本段脚本,监听器只装一次,否则事件会被重复记录
+        if (window.__imeListenersReady) return true
+        window.__imeListenersReady = true
+        const push = e => window.__imeEvents.push(
+          e.type + (e.inputType ? ':' + e.inputType : '') + (e.data != null ? ':' + e.data : '')
+        )
+        for (const t of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input']) {
+          document.addEventListener(t, push, true)
+        }
+        return true
+      })()`)
+    imeBefore = await imeLineState()
     try {
-      wc.debugger.detach()
-    } catch {
-      /* 没 attach 成功 */
+      wc.debugger.attach('1.3')
+      const imeStep = async (text: string): Promise<void> => {
+        await wc.debugger.sendCommand('Input.imeSetComposition', {
+          text,
+          selectionStart: text.length,
+          selectionEnd: text.length
+        })
+        await sleep(350)
+      }
+      // 多步组合:每次都在上一次的预编辑串上改,而不是重新插入
+      await imeStep('n')
+      await imeStep('ni')
+      await imeStep('n')
+      await imeStep('ni')
+      /*
+       * 状态和事件一次取回,保证是同一个瞬间的快照。环境抖动(窗口瞬时失焦)
+       * 会让 Chromium 在第一步之后就把组合 end 掉,后面的预编辑变成多次独立提交 ——
+       * 那不是产品的连续组合,重载重试。
+       */
+      const snap = await evalJs<{ state: ImeState; events: string[] }>(`(() => {
+        const all = [...document.querySelectorAll('.cm-content .cm-line')]
+        const host = document.querySelector('.cm-content .cm-md-table-host')
+        let el = host ? host.nextElementSibling : null
+        while (el && (el.classList.contains('cm-md-table-void') || el.classList.contains('cm-md-table-gap')))
+          el = el.nextElementSibling
+        const r = el ? el.getBoundingClientRect() : { top: -1 }
+        const voids = [...document.querySelectorAll('.cm-content .cm-md-table-void')]
+        const hr = host ? host.getBoundingClientRect() : { height: 0 }
+        return {
+          events: window.__imeEvents || [],
+          state: {
+            text: el ? el.textContent.replace(/^\\+/, '') : '',
+            lines: all.length,
+            hostH: Math.round(hr.height),
+            voids: voids.length,
+            voidH: voids.length ? Math.round(voids[0].getBoundingClientRect().height) : -1,
+            top: Math.round(r.top)
+          }
+        }
+      })()`)
+      const started = snap.events.filter(e => e.startsWith('compositionstart')).length
+      const endedEarly = snap.events.some(e => e.startsWith('compositionend'))
+      imeEvents = snap.events
+      if (started !== 1 || endedEarly) {
+        console.log(`    (第 ${attempt} 次组合被环境打断:start=${started}, end=${endedEarly})`)
+        continue
+      }
+      imeDuring = snap.state
+      console.log('    during ime:', JSON.stringify(imeDuring))
+      await wc.debugger.sendCommand('Input.insertText', { text: '输入文字' })
+      imeCommitted = true
+    } catch (err) {
+      console.log('    ime debugger err:', String(err))
+    } finally {
+      try {
+        wc.debugger.detach()
+      } catch {
+        /* 没 attach 成功 */
+      }
     }
   }
   await sleep(500)
+  if (imeCommitted) imeEvents = await evalJs<string[]>(`window.__imeEvents || []`)
+  console.log('    ime events:', JSON.stringify(imeEvents))
+  check(
+    '组合事件按输入法时序送达',
+    imeCommitted &&
+      imeEvents.some(e => e.startsWith('compositionstart')) &&
+      imeEvents.some(e => e.startsWith('compositionend')),
+    JSON.stringify(imeEvents)
+  )
   const imeRows = await evalJs<number>(
     `document.querySelectorAll('.cm-md-table-widget tbody tr').length`
   )
   check('输入法提交后表格行数没有增加', imeRows === 1, String(imeRows))
+  check(
+    '组合期间文档行数不变(没有偷偷插行)',
+    imeDuring !== null && imeBefore !== null && imeDuring.lines === imeBefore.lines,
+    JSON.stringify({ before: imeBefore?.lines, during: imeDuring?.lines })
+  )
+  check(
+    '组合期间表格版式稳定(宿主高度不变、折叠行仍为 0 高)',
+    imeDuring !== null &&
+      imeBefore !== null &&
+      imeDuring.hostH === imeBefore.hostH &&
+      imeDuring.voids === imeBefore.voids &&
+      imeDuring.voidH === 0 &&
+      imeDuring.top === imeBefore.top,
+    JSON.stringify({ before: imeBefore, during: imeDuring })
+  )
+  check(
+    '组合文字原地替换、没有重复(落在表格下方正文行行首)',
+    imeDuring !== null && imeDuring.text === 'ni末尾',
+    JSON.stringify(imeDuring?.text)
+  )
   structureSource = await readSource()
   check(
     '输入法文字是独立段落',
-    // CDP 的 imeSetComposition 不会像真实输入法那样清掉组合串,所以只认"包含"
     structureSource.some(l => l.includes('输入文字') && !l.trim().startsWith('|')) &&
       !structureSource.some(l => l.trim().startsWith('|') && l.includes('输入文字')),
     JSON.stringify(structureSource)
+  )
+  const imeLine = structureSource.findIndex(l => l.includes('输入文字'))
+  check(
+    '表格与输入之间恰好一条空行',
+    imeLine > 1 &&
+      structureSource[imeLine].startsWith('输入文字') &&
+      structureSource[imeLine - 1] === '' &&
+      structureSource[imeLine - 2].trim().startsWith('|'),
+    JSON.stringify(structureSource)
+  )
+  const imeAfter = await evalJs<{ top: number; gapH: number; gapCount: number }>(`
+    (() => {
+      const line = [...document.querySelectorAll('.cm-content .cm-line')]
+        .find(l => (l.textContent || '').includes('输入文字'))
+      const gaps = [...document.querySelectorAll('.cm-content .cm-md-table-gap')]
+      return {
+        top: line ? Math.round(line.getBoundingClientRect().top) : -1,
+        gapCount: gaps.length,
+        gapH: gaps.length ? Math.round(gaps[0].getBoundingClientRect().height) : -1
+      }
+    })()`)
+  check(
+    '输入法提交后文字仍停在原来那一行(结构空行折成零高)',
+    imeBefore !== null &&
+      imeAfter.top === imeBefore.top &&
+      imeAfter.gapCount === 1 &&
+      imeAfter.gapH === 0,
+    JSON.stringify({ before: imeBefore?.top, after: imeAfter })
   )
 
   // ---------- 3o. 点击表格隐藏行/底部空白:光标不会停进源码 ----------
@@ -1235,6 +1510,275 @@ async function main(): Promise<void> {
       structureSource.some(l => l.trim() === '| 1 | 2 |') &&
       !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
     JSON.stringify(structureSource)
+  )
+
+  // ---------- 3p. 表格贴着文末:向下走会自动补出可编辑正文行 ----------
+
+  console.log('\n【3p】表格贴着文末:↓ 补出可编辑正文行,不会把光标塞回表格')
+  await loadDoc('开头\n| A | B |\n| --- | --- |\n| 1 | 2 |\n')
+  await sleep(500)
+  await focusEditor()
+  await key('Home', ['control'])
+  await key('End') // 「开头」行尾,表格紧贴其下
+  const linesBeforeTail = await evalJs<number>(
+    `document.querySelectorAll('.cm-content .cm-line').length`
+  )
+  await key('ArrowDown')
+  await sleep(450)
+  check('表格仍然渲染着', (await renderedTableCount()) === 1)
+  const tailCaret = await evalJs<{ text: string; cls: string; lines: number }>(`(() => {
+    const s = document.getSelection()
+    const all = document.querySelectorAll('.cm-content .cm-line')
+    if (!s || !s.anchorNode) return { text: '', cls: '', lines: all.length }
+    const el = s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement
+    const line = el?.closest?.('.cm-line')
+    if (!line) return { text: '', cls: '', lines: all.length }
+    const copy = line.cloneNode(true)
+    copy.querySelectorAll('.line-plus').forEach(w => w.remove())
+    return { text: copy.textContent.trim(), cls: line.className, lines: all.length }
+  })()`)
+  console.log('    caret below EOF table:', JSON.stringify(tailCaret))
+  check(
+    '光标落在补出的正文行上(不是表格/结构空行)',
+    tailCaret.text === '' &&
+      !tailCaret.cls.includes('cm-md-table-gap') &&
+      !tailCaret.cls.includes('cm-md-table-void'),
+    JSON.stringify(tailCaret)
+  )
+  check(
+    '源码里确实补出了新行',
+    tailCaret.lines === linesBeforeTail + 1,
+    `${linesBeforeTail} → ${tailCaret.lines}`
+  )
+  await typeFocused('X')
+  await sleep(400)
+  structureSource = await readSource()
+  check(
+    'X 在表格下方独立成段,表格仍完整',
+    structureSource.some(
+      (l, i) => l.includes('X') && !l.trim().startsWith('|') && structureSource[i - 1] === ''
+    ) &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |') &&
+      !structureSource.some(l => l.trim().startsWith('|') && l.includes('X')),
+    JSON.stringify(structureSource)
+  )
+
+  // ---------- 3q. 整表对齐按钮 ----------
+
+  console.log('\n【3q】表格左下角的对齐按钮:一次改掉整张表文字的对齐')
+  await loadDoc('开头\n\n| A | B |\n| :--- | ---: |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+
+  const cellAligns = (): Promise<{ head: string[]; body: string[] }> =>
+    evalJs(`
+      (() => {
+        const t = document.querySelector('.cm-md-table-widget table')
+        if (!t || !t.tHead?.rows[0]) return { head: [], body: [] }
+        const of = row => [...row.cells].map(c => c.style.textAlign || '')
+        return {
+          head: of(t.tHead.rows[0]),
+          body: [...(t.tBodies[0]?.rows ?? [])].flatMap(of)
+        }
+      })()`)
+
+  let aligns = await cellAligns()
+  check(
+    '初始对齐来自分隔行:第一列左、第二列右',
+    JSON.stringify(aligns.head) === JSON.stringify(['left', 'right']),
+    JSON.stringify(aligns)
+  )
+
+  /** 三个整表按钮(选择 / 删除 / 对齐)是不是都常驻可见(不依赖鼠标位置) */
+  const pinnedShown = (): Promise<boolean> =>
+    evalJs<boolean>(`
+      (() => {
+        const acts = ['select-table', 'delete-table', 'align-table']
+        return acts.every(act => {
+          const b = document.querySelector('[data-act="' + act + '"]')
+          if (!b) return false
+          const s = getComputedStyle(b)
+          return s.visibility === 'visible' && Number(s.opacity) === 1
+        })
+      })()`)
+
+  check('整表选择 / 删除 / 对齐三枚按钮常驻,不用先悬停', await pinnedShown())
+
+  check('点对齐按钮打开菜单', await click('[data-act="align-table"]'))
+  await sleep(150)
+  const alignMenu = await evalJs<{ open: boolean; labels: string[]; active: string[] } | null>(`
+    (() => {
+      const m = document.querySelector('.cm-md-table-align-menu')
+      if (!m) return null
+      return {
+        open: m.classList.contains('is-open'),
+        labels: [...m.querySelectorAll('.cm-md-table-align-option')].map(el => el.textContent.trim()),
+        active: [...m.querySelectorAll('.cm-md-table-align-option.is-active')].map(el => el.dataset.align)
+      }
+    })()`)
+  check(
+    '菜单开着,三项齐全',
+    alignMenu?.open === true && alignMenu.labels.length === 3,
+    JSON.stringify(alignMenu)
+  )
+  check(
+    '各列对齐不一致时,菜单不勾选任何一项',
+    alignMenu?.active.length === 0,
+    JSON.stringify(alignMenu?.active)
+  )
+
+  check('菜单里选「居中」', await click('.cm-md-table-align-option[data-align="center"]'))
+  await sleep(400)
+  structureSource = await readSource()
+  check(
+    '分隔行每一列都写成 :---:',
+    structureSource.includes('| :---: | :---: |'),
+    JSON.stringify(structureSource)
+  )
+  aligns = await cellAligns()
+  check(
+    '表头与正文的所有格子都居中了',
+    [...aligns.head, ...aligns.body].every(a => a === 'center'),
+    JSON.stringify(aligns)
+  )
+  check(
+    '单元格内容没有变动',
+    structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 | 2 |'),
+    JSON.stringify(structureSource)
+  )
+  check(
+    '选完菜单自动收起',
+    await evalJs<boolean>(`!document.querySelector('.cm-md-table-align-menu.is-open')`)
+  )
+
+  check('重新打开菜单', await click('[data-act="align-table"]'))
+  await sleep(150)
+  const activeAfterCenter = await evalJs<string[]>(
+    `[...document.querySelectorAll('.cm-md-table-align-option.is-active')].map(el => el.dataset.align)`
+  )
+  check(
+    '当前对齐(居中)被勾选',
+    JSON.stringify(activeAfterCenter) === JSON.stringify(['center']),
+    JSON.stringify(activeAfterCenter)
+  )
+
+  check('改选「右对齐」', await click('.cm-md-table-align-option[data-align="right"]'))
+  await sleep(400)
+  structureSource = await readSource()
+  check(
+    '分隔行每一列都写成 ---:',
+    structureSource.includes('| ---: | ---: |'),
+    JSON.stringify(structureSource)
+  )
+  aligns = await cellAligns()
+  check(
+    '所有格子右对齐',
+    [...aligns.head, ...aligns.body].every(a => a === 'right'),
+    JSON.stringify(aligns)
+  )
+
+  check('再打开菜单', await click('[data-act="align-table"]'))
+  await sleep(120)
+  await evalJs<boolean>(`(() => { document.querySelector('.cm-md-table-frame')?.focus(); return true })()`)
+  await key('Escape')
+  await sleep(150)
+  check(
+    'Esc 只收起菜单',
+    await evalJs<boolean>(`!document.querySelector('.cm-md-table-align-menu.is-open')`)
+  )
+  check('文档没有因为 Esc 变动', JSON.stringify(await readSource()) === JSON.stringify(structureSource))
+
+  wc.sendInputEvent({ type: 'mouseMove', x: 5, y: 5 })
+  await sleep(150)
+  check(
+    '鼠标离开表格后:三枚整表按钮仍然常驻,行列控件收起',
+    (await pinnedShown()) &&
+      (await evalJs<number>(
+        `document.querySelectorAll('.cm-md-table-ctl.is-shown').length`
+      )) === 0
+  )
+
+  // ---------- 3r. 只有紧贴表格的那一行才触发整表选中 ----------
+
+  console.log('\n【3r】光标与表格之间还隔着空行时,Delete / Backspace 不抢按键')
+
+  // 下方:表格 + 结构空行(隐藏) + 两条可见空行 + 末尾
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const belowLinesBefore = (await readSource()).length
+  await key('End', ['control']) // 文末的空行
+  await key('ArrowUp') // 末尾
+  await key('Home')
+  await key('Backspace')
+  await sleep(400)
+  check(
+    '下方隔两行时 Backspace 只是合并空行,不选表',
+    (await selectedCount()) === 0 && (await renderedTableCount()) === 1,
+    String(await selectedCount())
+  )
+  let belowLines = await readSource()
+  check(
+    '文档正常少一行,表格与正文都还在',
+    belowLines.length === belowLinesBefore - 1 &&
+      belowLines.some(l => l.includes('末尾')) &&
+      belowLines.some(l => l.trim() === '| 1 | 2 |'),
+    JSON.stringify(belowLines)
+  )
+
+  // 下方第一条可见行:紧贴结构空行 → 仍然先选中整表
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const belowAdjacentSource = await readSource()
+  await key('End', ['control'])
+  await key('ArrowUp') // 末尾
+  await key('ArrowUp') // 表格下方第一条可见空行
+  await key('Backspace')
+  await sleep(400)
+  check(
+    '下方第一行按 Backspace:先选中整表,文档不变',
+    (await selectedCount()) === 4 &&
+      JSON.stringify(await readSource()) === JSON.stringify(belowAdjacentSource),
+    String(await selectedCount())
+  )
+
+  // 上方:开头 + 一条可见空行 + 结构空行(隐藏) + 表格
+  await loadDoc('开头\n\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const aboveLinesBefore = (await readSource()).length
+  await key('Home', ['control'])
+  await key('End') // 开头行尾(上方第二条可见行)
+  await key('Delete')
+  await sleep(400)
+  check(
+    '上方隔一行时 Delete 只是合并行,不选表',
+    (await selectedCount()) === 0 && (await renderedTableCount()) === 1,
+    String(await selectedCount())
+  )
+  let aboveLines = await readSource()
+  check(
+    '文档正常少一行,表格完好',
+    aboveLines.length === aboveLinesBefore - 1 &&
+      aboveLines.some(l => l.trim() === '| 1 | 2 |'),
+    JSON.stringify(aboveLines)
+  )
+
+  // 上方第一条可见行:紧贴结构空行 → Delete 仍然先选中整表
+  await loadDoc('开头\n\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  const aboveAdjacentSource = await readSource()
+  await key('Home', ['control'])
+  await key('ArrowDown') // 表格上方第一条可见空行
+  await key('Delete')
+  await sleep(400)
+  check(
+    '上方第一行按 Delete:先选中整表,文档不变',
+    (await selectedCount()) === 4 &&
+      JSON.stringify(await readSource()) === JSON.stringify(aboveAdjacentSource),
+    String(await selectedCount())
   )
 
   // ---------- 4. 取消 / Esc 什么都不做 ----------

@@ -112,9 +112,12 @@ function statusClass(pluginId: string): Record<string, boolean> {
       <ChevronsUpDown :size="13" />
       <span class="status-vault-name">{{ appStore.vaultName }}</span>
     </button>
-    <span>字数 {{ appStore.words }}</span>
-    <span>字符 {{ appStore.chars }}</span>
-    <span>行数 {{ appStore.lines }}</span>
+    <!-- 没有打开页面时,0 字 0 行不是「统计结果」,是空状态;不显示反而诚实 -->
+    <template v-if="appStore.hasDocument">
+      <span>字数 {{ appStore.words }}</span>
+      <span>字符 {{ appStore.chars }}</span>
+      <span>行数 {{ appStore.lines }}</span>
+    </template>
     <span class="status-spacer"></span>
     <span
       v-if="appStore.autoSaveError"
@@ -131,7 +134,11 @@ function statusClass(pluginId: string): Record<string, boolean> {
     >
       已自动保存 {{ autoSaveClock }}
     </span>
-    <span class="status-file" :title="appStore.filePath ?? '未保存到磁盘'">{{ fileLabel }}</span>
+    <span
+      v-if="appStore.hasDocument"
+      class="status-file"
+      :title="appStore.filePath ?? '未保存到磁盘'"
+    >{{ fileLabel }}</span>
     <span class="status-actions">
       <!--
         插件状态条目:宿主不认识它们是什么(只认识一个 id 和一个动作)。

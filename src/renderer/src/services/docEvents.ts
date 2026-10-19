@@ -46,10 +46,12 @@ function scheduleSend(): void {
 
 /** 由 main.ts 在挂载后调用 */
 export function initDocEvents(): void {
-  // 编辑器开着吗 —— 与"有文件路径"是两件事(未命名文档没有路径)
+  // 有文档开着吗 —— 与"有文件路径"是两件事(未命名文档没有路径)。
+  // 进入编辑器但没打开任何页面时也算没有文档:这时插件命令(要求 `when: 'editor'`)
+  // 不该可用,否则点下去只会对着一片空白执行。
   watch(
-    () => appStore.view,
-    view => api.setEditorPresence(view === 'editor'),
+    () => appStore.view === 'editor' && appStore.hasDocument,
+    present => api.setEditorPresence(present),
     { immediate: true }
   )
 

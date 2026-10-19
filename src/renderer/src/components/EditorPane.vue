@@ -16,6 +16,9 @@ let dirtyTimer: ReturnType<typeof setTimeout> | undefined
 let outlineTimer: ReturnType<typeof setTimeout> | undefined
 
 function onDocChange(view: EditorView): void {
+  // 空状态下编辑器是只读的,用户输入到不了这里;真出现程序化写入(插件直接改文档)
+  // 说明编辑区已经有内容,那就按「有文档」处理,别让标题栏继续说没有页面。
+  if (!appStore.hasDocument) appStore.hasDocument = true
   // 实时保存的防抖从这里起算:只有真实输入才该触发写盘,
   // 打开/新建文档走的是 setState,不会经过这里
   noteDocChangeForAutoSave()
@@ -49,10 +52,13 @@ function onDrop(e: DragEvent): void {
 
 onMounted(() => {
   if (!container.value) return
-  const view = createEditor(container.value, v => editorHolder.onDocChange?.(v))
+  // 没有文档时以只读状态创建:光标不会先闪一下再被清掉,也堵住「随手一敲就新建」
+  const view = createEditor(container.value, v => editorHolder.onDocChange?.(v), {
+    editable: appStore.hasDocument
+  })
   editorHolder.view = view
   editorHolder.onDocChange = onDocChange
-  view.focus()
+  if (appStore.hasDocument) view.focus()
 })
 
 onBeforeUnmount(() => {
@@ -66,5 +72,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="container" class="editor-pane" @dragover="onDragOver" @drop="onDrop"></div>
+  <!-- 拖放挂在外层:空状态遮罩会接住鼠标,不能让它把拖入文件挡掉 -->
+  <div class="editor-host" @dragover="onDragOver" @drop="onDrop">
+    <div ref="container" class="editor-pane"></div>
+    <!--
+      空状态是一块不可穿透的占位面:盖住编辑器(连同行首「+」与光标),
+      点击不会聚焦、也不会在里面留下一个可输入的空白文档。
+    -->
+    <div v-if="!appStore.hasDocument" class="editor-empty-hint">
+      从左侧选择文件,或按 Ctrl+N 新建
+    </div>
+  </div>
 </template>

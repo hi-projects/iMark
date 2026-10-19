@@ -28,7 +28,6 @@ import { runFormatCommand } from './editor/commands'
 import {
   exportHtmlFile,
   newFile,
-  openFileByPath,
   openFileFromSystem,
   openFileViaDialog,
   saveBeforeClose,
@@ -42,11 +41,11 @@ import {
   openSwitcher,
   openVaultViaDialog,
   requestVaultSwitch,
+  restoreLastDocument,
   toggleSwitcher
 } from './services/vaultService'
 import { openMarketSettings } from './services/pluginService'
 import { initEditorSettings } from './services/editorSettings'
-import { isInside } from './utils/paths'
 import { api } from './services/api'
 
 let offMenu: (() => void) | null = null
@@ -149,11 +148,10 @@ onMounted(async () => {
     if (canResume) {
       const ok = await loadVault(settings.vaultPath!, { silent: true })
       if (ok) {
-        // 必须等 EditorPane 挂载完,否则 openFileByPath 拿不到编辑器实例
+        // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
         await enterEditorAndWait()
-        if (settings.lastFile && isInside(settings.vaultPath!, settings.lastFile)) {
-          await openFileByPath(settings.lastFile, { silent: true, force: true })
-        }
+        // 关闭前打开了页面就恢复它;没有就什么都不打开
+        await restoreLastDocument(settings.vaultPath!, settings.lastFile)
       }
     }
   } catch {

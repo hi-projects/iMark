@@ -182,7 +182,7 @@
 /*
  * 控件浮在表格四周,但**不占版式空间**:
  * 左右的 padding 用等量负 margin 抵消,表格与正文左对齐;
- * 上下**不留白** —— 表格顶边直接贴住上一行,不会多出一条"表格自己的空行",
+ * 上下只有表格自身的留白(文档里紧邻表格的空行是真正的空行,照常参与排版),
  * 上方的控件浮在表格顶边之外(负 top),需要时再出现。
  * 数值与 widgets.ts 里 layoutControls 的常量对应,改一边记得改另一边。
  */
@@ -288,8 +288,9 @@
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
-  /* 默认完全藏起来;由 applyHoverControls 按鼠标所在的行/列/边界
-     给对应的按钮加 is-shown。visibility 一起切,免得看不见的按钮先接住误点 */
+  /* 行列控件默认完全藏起来;由 applyHoverControls 按鼠标所在的行/列/边界
+     给对应的按钮加 is-shown。整表三枚按钮用 -pinned 覆盖成常驻(见下)。
+     visibility 一起切,免得看不见的按钮先接住误点 */
   opacity: 0;
   visibility: hidden;
   box-shadow: 0 1px 2px var(--shadow);
@@ -298,6 +299,12 @@
 
 .cm-md-table-ctl.is-shown,
 .cm-md-table-ctl:focus {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 整表选择 / 删除 / 对齐三枚按钮常驻:表格渲染出来就一直可见,不等悬停 */
+.cm-md-table-ctl.cm-md-table-ctl-pinned {
   opacity: 1;
   visibility: visible;
 }
@@ -326,6 +333,58 @@
   display: block;
 }
 
+/* 整表对齐:按钮在右上角按钮组里,菜单从按钮左侧展开 */
+.cm-md-table-align-menu {
+  position: absolute;
+  z-index: 3;
+  display: none;
+  min-width: 96px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-editor);
+  box-shadow: 0 6px 18px var(--shadow);
+  /* layoutControls 给的是菜单**右上角**坐标,这里把整个菜单摆到该点左侧 */
+  transform: translate(-100%, 0);
+  pointer-events: auto;
+}
+
+.cm-md-table-align-menu.is-open {
+  display: block;
+}
+
+.cm-md-table-align-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cm-md-table-align-option:hover {
+  background: var(--bg-selection);
+  color: var(--text-primary);
+}
+
+.cm-md-table-align-option.is-active {
+  color: var(--accent);
+}
+
+.cm-md-table-align-option.is-active::after {
+  content: '✓';
+}
+
 /* 选中整张表 / 一行 / 一列(按 Backspace / Delete 删除) */
 .cm-md-table-selected {
   background: var(--bg-selection) !important;
@@ -336,10 +395,16 @@
   outline-offset: -1px;
 }
 
-/* 多行表格的后续行为空并折叠高度 */
+/*
+ * 多行表格的后续行:源码藏在 widget 后面,折叠高度。
+ *
+ * .cm-md-table-gap 是表格上下紧邻的结构空行:GFM / markdown-it / Obsidian
+ * 会把紧贴表格的非空行读成表格行,这两条空行必须留在源码里;但它们不接受光标,
+ * 排版上也不该占一层行高 —— 表格与正文的视觉间距完全交给
+ * .cm-md-table-frame 的 --md-table-gap-top / --md-table-gap-bottom。
+ */
 .cm-md-table-void,
-/* 表格紧邻的空行:间距改由 widget 的 padding 提供,这里折成零高度 */
-.cm-md-table-spacer {
+.cm-md-table-gap {
   line-height: 0;
   font-size: 0;
   min-height: 0;

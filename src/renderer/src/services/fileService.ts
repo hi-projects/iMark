@@ -4,6 +4,7 @@ import { loadDocument } from '../editor/setup'
 import { flushTableEdits } from '../editor/wysiwyg/widgets'
 import { updateOutline } from '../editor/outline'
 import { basename, computeStats, stripMarkdownExt, toEol } from '../utils/text'
+import { isInside } from '../utils/paths'
 import { renderHtml } from './exportHtml'
 import { notifyError } from './notice'
 import { api } from './api'
@@ -25,43 +26,83 @@ async function confirmLoseChanges(): Promise<boolean> {
 
 /** 将新内容装载进编辑器并重置文件状态 */
 function applyDocument(view: EditorView, content: string, path: string | null, eol: 'LF' | 'CRLF'): void {
-  loadDocument(view, content, v => editorHolder.onDocChange?.(v))
   appStore.filePath = path
   appStore.fileName = path ? basename(path) : '未命名'
+  appStore.hasDocument = true
   appStore.eol = eol
   appStore.savedContent = content
   appStore.dirty = false
   Object.assign(appStore, computeStats(content))
+  // 打开/新建之后编辑器恢复可写,并把焦点交给它 —— 从文件树点开一份文档,
+  // 用户接下来的动作就是打字,不该再要求点一下编辑区
+  loadDocument(view, content, v => editorHolder.onDocChange?.(v), { editable: true })
   updateOutline(view)
+  view.focus()
+}
+
+/**
+ * 记住「关闭前打开的那个页面」。
+ *
+ * 仓库外的文件重启时恢复不了(恢复路径按仓库边界校验),所以按「没有页面」记 ——
+ * 留着一条永远恢复不了的路径只会让下次启动做出错误的判断。
+ *
+ * 未命名文档、清空到没有文档,都传 null:下次启动什么都不打开。
+ */
+async function rememberLastFile(path: string | null): Promise<void> {
+  const remember = path && appStore.vaultPath && isInside(appStore.vaultPath, path) ? path : null
+  await api.saveSettings({ lastFile: remember })
 }
 
 export async function newFile(): Promise<void> {
   const view = requireView()
   if (!view || !(await confirmLoseChanges())) return
   applyDocument(view, '', null, 'LF')
+  // 未命名文档没有可恢复的页面:别让下次启动把更早的那个文件又打开
+  await rememberLastFile(null)
 }
 
-/** 无条件清空为未命名(仓库切换等已由调用方确认过脏状态的场景) */
-export async function resetToEmpty(): Promise<void> {
-  const view = requireView()
-  if (!view) return
-  applyDocument(view, '', null, 'LF')
+/**
+ * 清空为「没有打开文档」。
+ *
+ * 与 newFile 的区别是**不算一份文档**:标题栏不写「未命名」,插件命令也没有
+ * 可编辑的对象。启动时没有可恢复的页面、或仓库切换后没有上次文件,都走这里。
+ */
+export async function clearDocument(): Promise<void> {
+  const view = editorHolder.view
+  appStore.filePath = null
+  appStore.fileName = '未命名'
+  appStore.hasDocument = false
+  appStore.eol = 'LF'
+  appStore.savedContent = ''
+  appStore.dirty = false
+  Object.assign(appStore, computeStats(''))
+  if (view) {
+    // 只读重建:空状态不是一份等输入的空文档,光标不该在这里闪
+    loadDocument(view, '', v => editorHolder.onDocChange?.(v), { editable: false })
+    view.contentDOM.blur()
+    updateOutline(view)
+  } else appStore.outline = []
+  await rememberLastFile(null)
 }
 
+/** 打开文件;返回是否真的打开成功(恢复上次页面时靠它决定要不要退回「没有文档」) */
 export async function openFileByPath(
   path: string,
   opts?: { silent?: boolean; force?: boolean }
-): Promise<void> {
+): Promise<boolean> {
   const view = requireView()
-  if (!view) return
-  if (!opts?.force && !(await confirmLoseChanges())) return
+  if (!view) return false
+  if (!opts?.force && !(await confirmLoseChanges())) return false
   try {
     const { content, eol } = await api.readFile(path)
     applyDocument(view, content, path, eol)
+    await rememberLastFile(path)
+    return true
   } catch (err) {
     if (!opts?.silent) {
       notifyError('打开文件', err)
     }
+    return false
   }
 }
 
@@ -111,6 +152,8 @@ export async function writeCurrentFileInPlace(path: string): Promise<void> {
 export async function saveCurrentFile(): Promise<boolean> {
   const view = requireView()
   if (!view) return false
+  // 没有打开文档时保存没有对象 —— 别为此弹出一个「另存为」把空文件落盘
+  if (!appStore.hasDocument) return false
   const path = appStore.filePath
   if (!path) return saveFileAs()
   try {
@@ -124,7 +167,7 @@ export async function saveCurrentFile(): Promise<boolean> {
 
 export async function saveFileAs(): Promise<boolean> {
   const view = requireView()
-  if (!view) return false
+  if (!view || !appStore.hasDocument) return false
   flushTableEdits()
   const target = await api.saveFileDialog({
     defaultPath: appStore.filePath ?? undefined,
@@ -143,16 +186,18 @@ export async function saveFileAs(): Promise<boolean> {
   api.notifyDocSaved(target)
   appStore.filePath = target
   appStore.fileName = basename(target)
+  appStore.hasDocument = true
   appStore.eol = 'LF'
   appStore.savedContent = text
   appStore.dirty = false
+  await rememberLastFile(target)
   return true
 }
 
 /** 关闭窗口前由主进程触发的保存流程,完成后必须通知主进程 */
 export async function saveBeforeClose(): Promise<void> {
-  // 仓库选择界面下没有编辑器实例,无需保存,直接放行关闭
-  if (!editorHolder.view) {
+  // 仓库选择界面下没有编辑器实例、或编辑器里没有文档时,无需保存,直接放行关闭
+  if (!editorHolder.view || !appStore.hasDocument) {
     api.notifySaveDone(true)
     return
   }

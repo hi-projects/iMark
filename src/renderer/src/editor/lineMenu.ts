@@ -61,6 +61,23 @@ class LinePlusWidget extends WidgetType {
   ignoreEvent(): boolean {
     return true
   }
+
+  /**
+   * 声明为「不参与坐标计算」的 widget。
+   *
+   * 按钮是绝对定位的装饰,视觉上藏在行首左侧的 padding 里、不占任何版式空间;
+   * 但 CodeMirror 仍把它当成行内节点,给光标算坐标时会从它身上取矩形。
+   * 最后一行是空行时,光标位置(文档末尾)正好等于按钮所在的 pos,点击末行
+   * 下方的空白会让 CM 以 `assoc: -1` 落点——按「位置之前的那块」找矩形,于是
+   * 找到按钮:光标变成 20×20、并左移到按钮所在的 padding 里(见 verify/cursor-harness.ts)。
+   *
+   * isHidden 是 CM 内部用来标记「不占据行内位置、不该被测量」的节点(BreakWidget
+   * 的 `<br>` 也是这么写的)。声明之后 coordsAtPos 会跳过它,改用同一位置的行内
+   * 内容/换行节点,光标在两种落点下保持一致。
+   */
+  get isHidden(): boolean {
+    return true
+  }
 }
 
 function buildDecorations(view: EditorView): DecorationSet {
