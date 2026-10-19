@@ -16,7 +16,9 @@ import {
   type EditorView,
   type ViewUpdate
 } from '@codemirror/view'
-import type { Extension } from '@codemirror/state'
+import { syntaxTree } from '@codemirror/language'
+import type { EditorState, Extension } from '@codemirror/state'
+import type { SyntaxNode } from '@lezer/common'
 import {
   closeLineMenu,
   lineMenuEntries,
@@ -80,10 +82,31 @@ class LinePlusWidget extends WidgetType {
   }
 }
 
+/**
+ * 某个位置是否落在引用里。
+ *
+ * 引用行用 margin-left: 1em 缩进、竖线画在正文栏左缘(见 editor.css),而「+」是相对
+ * .cm-line 绝对定位的 —— 在引用行上它会跟着右移 1em,正好挤在竖线与 `>` 之间。
+ * 所以引用行整行不画按钮。
+ *
+ * 传**行首位置**而不是光标:光标贴在行尾时,位置正好落在 Blockquote 节点的右边界上,
+ * resolveInner 的 side 有可能把它解析到节点外面去。
+ */
+function inBlockquote(state: EditorState, pos: number): boolean {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1)
+  while (node) {
+    if (node.name === 'Blockquote') return true
+    node = node.parent
+  }
+  return false
+}
+
 function buildDecorations(view: EditorView): DecorationSet {
   // 没有插件贡献菜单条目时不画按钮 —— 免得点了弹出一个空菜单
   if (lineMenuEntries().length === 0) return Decoration.none
   const line = view.state.doc.lineAt(view.state.selection.main.head)
+  // 引用行不画:见 inBlockquote
+  if (inBlockquote(view.state, line.from)) return Decoration.none
   // side: -1 让它落在行首第一个字符之前;实际位置由 CSS 绝对定位到行内的空白里
   return Decoration.set([
     Decoration.widget({ widget: new LinePlusWidget(line.number), side: -1 }).range(line.from)

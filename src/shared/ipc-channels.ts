@@ -11,6 +11,13 @@ export const IPC = {
    * 文件冲突的名字,并返回**相对文档目录**的引用路径(见 main/files.ts)。
    */
   FileSaveImage: 'file:save-image',
+  /**
+   * 渲染→主:回收正文里已经不再引用的粘贴图片(移到系统回收站)。
+   *
+   * 渲染层只负责比较保存前后的正文、给出候选文件名;真正的路径校验与
+   * 「同目录其他笔记是否还引用」的判断都在主进程做(见 main/files.ts)。
+   */
+  FileTrashImages: 'file:trash-images',
   ConfirmDiscard: 'dialog:confirm-discard',
   SettingsGet: 'settings:get',
   SettingsSet: 'settings:set',
@@ -219,6 +226,9 @@ export type MenuCommandId =
   | 'file:open'
   | 'file:open-vault'
   | 'file:quick-switch'
+  | 'file:close-tab'
+  | 'file:next-tab'
+  | 'file:prev-tab'
   | 'file:save'
   | 'file:save-as'
   | 'file:export-html'

@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import type { PluginActionPayload, PluginActionResult, PluginView } from '@shared/plugins'
-import { appStore, editorHolder, openSettings } from '../stores/app'
-import { saveCurrentFile } from './fileService'
+import { openSettings } from '../stores/app'
+import { saveAllFileTabsSilently } from './fileService'
 import { notifyError } from './notice'
 import { api } from './api'
 
@@ -188,12 +188,9 @@ export async function runPluginAction(
  */
 async function flushCurrentDocument(): Promise<void> {
   try {
-    const view = editorHolder.view
-    // 未命名文档不做「另存为」弹窗,直接按磁盘现状同步
-    if (view && appStore.filePath) {
-      const text = view.state.doc.toString()
-      if (text !== appStore.savedContent) await saveCurrentFile()
-    }
+    // 未命名文档不做「另存为」弹窗,直接按磁盘现状同步;
+    // 有路径的脏标签全部落盘 —— 一次提交该包含用户眼前所有文档的改动
+    await saveAllFileTabsSilently()
   } finally {
     api.notifyPluginFlushed()
   }

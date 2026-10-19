@@ -56,6 +56,8 @@ const api = {
     request(IPC.FileWrite, { path, content }),
   saveImageAsset: (docPath: string, mime: string, data: Uint8Array): Promise<string> =>
     request(IPC.FileSaveImage, { docPath, mime, data }),
+  trashImageAssets: (docPath: string, names: string[]): Promise<void> =>
+    request(IPC.FileTrashImages, { docPath, names }),
   confirmDiscard: (fileName: string) => request(IPC.ConfirmDiscard, { fileName }),
   getSettings: (): Promise<Settings> => request(IPC.SettingsGet),
   saveSettings: (s: Partial<Settings>): Promise<Settings> => request(IPC.SettingsSet, s),
@@ -63,7 +65,8 @@ const api = {
   setWindowTitle: (name: string | null, dirty: boolean, vaultName?: string | null): void =>
     ipcRenderer.send(IPC.SetTitle, { name, dirty, vaultName }),
   setWindowView: (view: 'picker' | 'editor'): void => ipcRenderer.send(IPC.SetView, view),
-  setDocDirty: (dirty: boolean): void => ipcRenderer.send(IPC.DocDirty, dirty),
+  setDocDirty: (dirty: boolean, dirtyNames: string[] = []): void =>
+    ipcRenderer.send(IPC.DocDirty, { dirty, names: dirtyNames }),
   /** 告诉主进程当前开着哪个文件 —— 它据此决定 imark:// 能读哪些图片 */
   setDocPath: (path: string | null): void => ipcRenderer.send(IPC.DocPath, path),
   notifySaveDone: (ok: boolean): void => ipcRenderer.send(IPC.SaveDone, { ok }),

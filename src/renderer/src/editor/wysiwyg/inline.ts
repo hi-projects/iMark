@@ -1,10 +1,12 @@
 import MarkdownIt from 'markdown-it'
+import { installMath } from '../../services/markdownMath'
 
 /**
  * 行内片段渲染(目前只有表格单元格在用)。
  *
- * 刻意不复用 services/exportHtml.ts 里那个实例:那边顺带 import 了 katex、highlight.js
- * 和一份内联的 KaTeX CSS,而编辑器渲染几个单元格不该被拖上这些。
+ * 刻意不复用 services/exportHtml.ts 里那个实例:那边顺带 import 了 highlight.js
+ * 和一份内联的 KaTeX CSS,而编辑器渲染几个单元格不该被拖上这些。数学规则则必须
+ * 与导出共用(markdownMath)—— 单元格里的 $...$ 不能只有正文编辑器认识。
  *
  * 配置必须与导出那边保持一致 —— 同一篇文档在编辑器里和在导出的 HTML 里长得不一样,
  * 是比"少支持一种语法"严重得多的问题:
@@ -12,6 +14,7 @@ import MarkdownIt from 'markdown-it'
  *   - linkify:true —— 裸 URL 两边都认。
  */
 const md = new MarkdownIt({ html: false, linkify: true })
+installMath(md)
 
 /**
  * 单元格原文 → 行内 HTML。输出可直接赋给 innerHTML:

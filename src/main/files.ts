@@ -1,6 +1,16 @@
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile as fsRead, rename, stat, unlink, writeFile as fsWrite } from 'node:fs/promises'
-import { dirname, isAbsolute, join } from 'node:path'
+import {
+  mkdir,
+  readFile as fsRead,
+  readdir,
+  rename,
+  stat,
+  unlink,
+  writeFile as fsWrite
+} from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join } from 'node:path'
+import { shell } from 'electron'
+import { isManagedImageName } from '@shared/imageAssets'
 import type { ReadResult } from '@shared/types'
 
 /** 读文件:剥 BOM、探测行尾、统一为 LF 返回 */
@@ -96,4 +106,79 @@ export async function saveImageAsset(
   // Markdown 里统一用 `/`;Windows 上 `joinPath(docDir, rel)` 会把它和反斜杠拼在一起,
   // Node 与浏览器都认,仓库换平台也不用改正文。
   return `assets/${name}`
+}
+
+/** 查找引用时视为「笔记」的扩展名(与仓库文件树一致) */
+const NOTE_EXTS = new Set(['md', 'markdown', 'mdown', 'txt'])
+
+/**
+ * 回收正文里已经不再引用的粘贴图片(移到系统回收站)。
+ *
+ * 只在文档**成功写盘之后**调用:草稿阶段用户可能撤销刚才的删除,也可能直接关掉
+ * 不保存 —— 那时图片都该留着。落盘之后正文里的引用才算数。
+ *
+ * 两道保险:
+ * 1. 只认 `saveImageAsset` 生成的文件名(见 shared/imageAssets),`assets/` 里
+ *    用户自己放的文件不碰;
+ * 2. 同目录的笔记共用 `assets/` 是常见做法,保存后扫一遍同目录的笔记:只要还有
+ *    一份提到这个文件名就保留。(子目录里用 `../assets/…` 引用的情形扫不到 ——
+ *    宁可少删,不可错删。)
+ *
+ * 文件不存在(重复保存、用户手动删过)不算失败;回收单个文件失败也不抛出,
+ * 不能因为清理资产而让一次已经成功的保存变成失败。
+ */
+export async function trashUnreferencedImageAssets(
+  docPath: string,
+  names: string[]
+): Promise<void> {
+  if (typeof docPath !== 'string' || !docPath || !isAbsolute(docPath)) {
+    throw new Error('文档路径无效')
+  }
+  if (!Array.isArray(names)) return
+
+  // 只接受裸文件名:带目录的分段一律忽略,防止渲染层传进 `../../x` 之类的路径
+  const candidates = [...new Set(names)].filter(
+    name => typeof name === 'string' && !/[/\\]/.test(name) && isManagedImageName(name)
+  )
+  if (!candidates.length) return
+
+  const docDir = dirname(docPath)
+  const assetsDir = join(docDir, 'assets')
+
+  let notes: string[]
+  try {
+    notes = (await readdir(docDir, { withFileTypes: true }))
+      .filter(entry => entry.isFile() && NOTE_EXTS.has(extname(entry.name).slice(1).toLowerCase()))
+      .map(entry => join(docDir, entry.name))
+  } catch {
+    // 目录都读不了,就别在这里冒险删东西
+    return
+  }
+
+  // 当前文档也在扫描范围里:刚写进去的正文如果还有别处提到这个文件名
+  // (引用式图片、HTML <img> 等),同样保留
+  const stillReferenced = new Set<string>()
+  for (const note of notes) {
+    if (stillReferenced.size === candidates.length) break
+    let text = ''
+    try {
+      text = await fsRead(note, 'utf8')
+    } catch {
+      continue
+    }
+    for (const name of candidates) {
+      if (!stillReferenced.has(name) && text.includes(name)) stillReferenced.add(name)
+    }
+  }
+
+  for (const name of candidates) {
+    if (stillReferenced.has(name)) continue
+    try {
+      await shell.trashItem(join(assetsDir, name))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error('[iMark] 回收图片资产失败', name, err)
+      }
+    }
+  }
 }

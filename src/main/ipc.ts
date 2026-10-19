@@ -21,7 +21,12 @@ import {
   showOpenFileDialog,
   showSaveFileDialog
 } from './dialogs'
-import { readFileContent, saveImageAsset, writeFileAtomic } from './files'
+import {
+  readFileContent,
+  saveImageAsset,
+  trashUnreferencedImageAssets,
+  writeFileAtomic
+} from './files'
 import { getSettings, saveSettings } from './settings'
 import { takePendingOpenFile } from './openFile'
 import { defaultEditorStatus, registerAsDefaultEditor } from './system'
@@ -87,6 +92,12 @@ export function registerIpc(): void {
       saveImageAsset(o.docPath, o.mime, o.data)
   )
 
+  ipcMain.handle(
+    IPC.FileTrashImages,
+    (_e, o: { docPath: string; names: string[] }) =>
+      trashUnreferencedImageAssets(o.docPath, o.names)
+  )
+
   ipcMain.handle(IPC.ConfirmDiscard, (_e, o: { fileName: string }) => {
     const win = getMainWindow()
     return win ? showConfirmDiscard(win, o.fileName) : 'cancel'
@@ -112,8 +123,18 @@ export function registerIpc(): void {
     setWindowView(view)
   })
 
-  ipcMain.on(IPC.DocDirty, (_e, value: boolean) => {
-    setDocDirty(value)
+  ipcMain.on(IPC.DocDirty, (_e, value: unknown) => {
+    // 兼容旧的布尔载荷,同时接受 { dirty, names }:关闭提示要能列出
+    // 所有有未保存改动的标签页,而不只是当前这一份
+    if (typeof value === 'boolean') {
+      setDocDirty(value)
+      return
+    }
+    const o = value as { dirty?: unknown; names?: unknown } | null
+    const names = Array.isArray(o?.names)
+      ? o.names.filter((n): n is string => typeof n === 'string' && n.length > 0)
+      : []
+    setDocDirty(Boolean(o?.dirty), names)
   })
 
   ipcMain.on(IPC.DocPath, (_e, p: unknown) => {

@@ -9,6 +9,8 @@
   height: 100%;
   background: var(--bg-editor);
   user-select: none;
+  /* 没有原生标题栏:页面空白处都可以拖动窗口 */
+  -webkit-app-region: drag;
 }
 
 .vault-picker-card {
@@ -18,6 +20,8 @@
   max-width: calc(100vw - 64px);
   max-height: calc(100vh - 64px);
   padding: 28px 28px 20px;
+  /* 卡片里的按钮/输入框照常可点 */
+  -webkit-app-region: no-drag;
 }
 
 .vault-picker-header {

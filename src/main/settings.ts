@@ -27,12 +27,24 @@ function normalizeTheme(value: unknown): Theme {
   return DEFAULTS.theme
 }
 
+/**
+ * 侧栏宽度:settings.json 是纯文本,可能被手改成 0、负数或字符串。
+ * 夹在 [160, 640] —— 再窄按钮会被裁掉,再宽正文栏就没有位置了。
+ */
+function clampSidebarWidth(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 240
+  return Math.round(Math.min(Math.max(value, 160), 640))
+}
+
 const DEFAULTS: Settings = {
   theme: 'light',
   outline: true,
   explorer: true,
+  explorerWidth: 240,
+  outlineWidth: 240,
   vaultPath: null,
   lastFile: null,
+  openFiles: [],
   ...EDITOR_DEFAULTS,
   vaults: [],
   skipVaultPicker: false,
@@ -91,12 +103,22 @@ function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
   if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
     merged.plugins = {}
   }
+  // 标签会话:只接受非空字符串。被手改成别的形状时当作「没有记住任何标签」,
+  // 而不是让恢复流程拿着一串对象去读文件
+  if (!Array.isArray(merged.openFiles)) merged.openFiles = []
+  else {
+    merged.openFiles = merged.openFiles.filter(
+      (p): p is string => typeof p === 'string' && p.length > 0
+    )
+  }
   // 数值型的编辑器偏好逐个夹回区间:settings.json 是纯文本,手改成 0 秒会让渲染层的
   // 定时器变成疯狂写盘,改成字符串则会让它一直空转。放在这里比在各处读时判要可靠
   Object.assign(merged, normalizeAutoSave(raw))
   merged.theme = normalizeTheme(merged.theme)
   merged.editorFontSize = clampFontSize(merged.editorFontSize)
   merged.lineWrapping = merged.lineWrapping !== false
+  merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
+  merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)
   // 旧字段不留在磁盘上:下一次 saveSettings 写出的就是新模型
   for (const key of ['autoSave', 'autoSaveRealtime', 'autoSaveInterval']) {
     delete merged[key]
@@ -149,16 +171,31 @@ export function onSettingsChanged(fn: SettingsListener): () => void {
   }
 }
 
+/**
+ * 写盘串行队列。
+ *
+ * 渲染层可能连着发两条 saveSettings(切标签、关标签这类操作会连续改状态)。
+ * IPC 消息按顺序到达,但两个 writeFile 会并发完成 —— 谁最后写完谁留在磁盘上,
+ * 完全可能旧快照后完成,把新状态覆盖掉。cache 本身是对的,错的是磁盘,
+ * 而磁盘决定了下次启动读到什么。串起来之后「调用顺序 = 落盘顺序」。
+ */
+let writeChain: Promise<void> = Promise.resolve()
+
 export async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
   const prev = cache ?? (await loadSettings())
   const next: Settings = { ...prev, ...partial }
   cache = next
-  try {
-    await mkdir(dirname(settingsPath()), { recursive: true })
-    await writeFile(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
-  } catch {
-    /* 落盘失败不影响本次会话 */
-  }
+  const snapshot = JSON.stringify(next, null, 2)
+  const write = writeChain.then(async () => {
+    try {
+      await mkdir(dirname(settingsPath()), { recursive: true })
+      await writeFile(settingsPath(), snapshot, 'utf8')
+    } catch {
+      /* 落盘失败不影响本次会话 */
+    }
+  })
+  writeChain = write
+  await write
   // 订阅者的异常不能反过来把保存搞失败 —— 保存是用户按下的动作,必须成功
   for (const fn of listeners) {
     try {

@@ -190,6 +190,16 @@ export interface ImkRenderLayerApi {
     log(level: ImkLogLevel, ...args: unknown[]): void
   }
   readonly editor: ImkRenderLayerEditorApi
+  /**
+   * 把 Markdown 渲染成 HTML 片段，供插件自己的预览窗口使用。
+   *
+   * 使用宿主同一套 markdown-it / KaTeX / Mermaid 配置（`html:false`，原始 HTML
+   * 会被转义），插件不需要也不应该自带渲染器。返回的片段可以放进插件容器；
+   * 用户点击片段里的链接不会导航主窗口（插件应在容器上拦截）。
+   */
+  readonly markdown: {
+    render(text: string): Promise<string>
+  }
   /** 与 main 层的消息;插件没有 main 层时 `send` 会报错 */
   readonly main: ImkLayerChannel
 }

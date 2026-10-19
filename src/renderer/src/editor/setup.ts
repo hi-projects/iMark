@@ -6,12 +6,7 @@ import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-mar
 import { languages } from '@codemirror/language-data'
 import { classHighlighter } from '@lezer/highlight'
 import { wysiwyg } from './wysiwyg'
-import {
-  enterAboveTable,
-  flushTableEdits,
-  selectAdjacentTable,
-  tableInputFilter
-} from './wysiwyg/widgets'
+import { enterAboveTable, selectAdjacentTable, tableInputFilter } from './wysiwyg/widgets'
 import { lineMenu } from './lineMenu'
 import { mathPreview } from './mathPreview'
 import { pluginExtensionsCompartment } from './pluginExtensions'
@@ -21,45 +16,34 @@ import { imagePaste } from './imagePaste'
 import { updateActiveOutline } from './outline'
 
 /**
- * 需要盖掉 CodeMirror base theme 的编辑器外观。
+ * 光标颜色等外观覆盖。
  *
- * base theme 的规则选择器都带生成作用域类(编译成 `.ͼN .cm-xxx`,特异度 0-2-0),
- * 而 editor.css 里直接写 `.cm-xxx`(0-1-0)一律覆盖不到:光标颜色、正文字体、
- * 内容内边距这几条都曾是静默失效的死规则(实际生效的是 base 默认值——光标写死
- * 黑色、正文强制 monospace、内边距 4px)。其中 `.cm-cursor` 的 `&dark` 分支只在用
- * EditorView.darkTheme 标记暗色主题时才生效,而本项目靠 CSS 变量换肤,不设该 facet,
- * 于是深色主题下光标完全看不见。
+ * base theme 的选择器带生成作用域类(编译成 `.ͼN .cm-xxx`,特异度 0-2-0),
+ * editor.css 里的裸类(0-1-0)覆盖不到。这里的规则由 EditorView.theme 注入,
+ * 挂载顺序在 base theme 之后,可以稳定压过它。
+ * (`.cm-cursor` 的 `&dark` 分支只在用 EditorView.darkTheme 标记暗色主题时生效,
+ * 本项目靠 CSS 变量换肤、不设该 facet,所以光标颜色必须显式写出来。)
  *
- * EditorView.theme 的规则同样带作用域类但挂载顺序必然在 base theme 之后,是覆盖
- * 它的唯一可靠途径(`/&/` 之外的写法只能收敛到 `&` 对应元素之外的元素上)。
- * 值里可以照常引用主题变量。
+ * 布局类规则(行高、正文栏宽度、行 padding 等)不在这里,见 editor.css 的
+ * 「编辑器布局覆盖」一节:它们需要热更新时立即作用到已经建好的视图。
  */
 const editorTheme = EditorView.theme({
   '.cm-cursor': { borderLeft: '2px solid var(--caret-color)', marginLeft: '-1px' },
-  '.cm-dropCursor': { borderLeft: '2px solid var(--caret-color)', marginLeft: '-1px' },
-  // 字号走 CSS 变量(设置面板「编辑器」页里可调):标题、代码块都按 em 跟着缩
-  '.cm-scroller': {
-    fontFamily: 'var(--font-editor)',
-    fontSize: 'var(--editor-font-size)',
-    lineHeight: '1.7'
-  },
-  // 可读行宽:与 Obsidian 一样把正文收进一条居中的窄栏,两侧留白
-  '.cm-content': {
-    padding: '20px 0 40vh',
-    maxWidth: 'var(--editor-line-width)',
-    margin: '0 auto'
-  },
-  // position: relative 是行首「+」按钮的落点:它挂在行内(Decoration.widget),
-  // 只有相对本行定位才能用绝对定位藏进左侧这段 padding 里 ——
-  // 行内元素是占位的,不脱流就会把整行文字往右推
-  '.cm-line': { padding: '0 28px', position: 'relative' },
-  /*
-   * 引用行内容相对竖线缩进 1em:竖线画在 26px 处(见 editor.css),文字从
-   * 28px + 1em 开始,竖线到首个字符之间正好留出一个字符的宽度。
-   * padding 必须在这里覆盖 —— editor.css 的 .cm-md-quote 特异度低于这条 .cm-line。
-   */
-  '.cm-md-quote': { paddingLeft: 'calc(28px + 1em)' }
+  '.cm-dropCursor': { borderLeft: '2px solid var(--caret-color)', marginLeft: '-1px' }
 })
+
+/*
+ * 布局类覆盖(字号/行高、正文栏宽度、行 padding、引用缩进)不放在上面这个
+ * theme 里,而是放在 styles/editor.css,用提高特异度的选择器盖掉 base theme。
+ *
+ * 原因:
+ *   1. 行 padding 参与 drawSelection 的选区矩形计算,布局规则和别的编辑器
+ *      样式待在同一份 CSS 里更好维护;
+ *   2. EditorView.theme 的规则在创建视图时注入,开发模式下改了不会作用于
+ *      已经建好的编辑器 —— 表现就是"改了没生效,重启才好"。放进全局 CSS
+ *      后,HMR 能立刻作用到现有视图上。
+ * 详见 editor.css 顶部的「编辑器布局覆盖」一节。
+ */
 
 /**
  * 软换行是唯一一个要能**运行时**改的扩展(设置面板里就一个开关,不该为它重建 state、
@@ -142,6 +126,20 @@ export function buildExtensions(
   ]
 }
 
+/**
+ * 新建一份文档的 EditorState。
+ *
+ * 标签页各自持有一份:撤销栈、选区都随 state 走,切换标签不会串历史,
+ * 也不需要为每个标签建一个 EditorView(重、且插件只认当前那个视图)。
+ */
+export function buildDocumentState(
+  content: string,
+  onDocChange: (view: EditorView) => void,
+  opts?: EditorOptions
+): EditorState {
+  return EditorState.create({ doc: content, extensions: buildExtensions(onDocChange, opts) })
+}
+
 export function createEditor(
   parent: HTMLElement,
   onDocChange: (view: EditorView) => void,
@@ -149,19 +147,7 @@ export function createEditor(
 ): EditorView {
   return new EditorView({
     parent,
-    state: EditorState.create({ doc: '', extensions: buildExtensions(onDocChange, opts) })
+    state: buildDocumentState('', onDocChange, opts)
   })
 }
 
-/** 打开/新建文件时重建编辑器状态(干净的历史栈,旧文档内容不会出现在 undo 里) */
-export function loadDocument(
-  view: EditorView,
-  content: string,
-  onDocChange: (view: EditorView) => void,
-  opts?: EditorOptions
-): void {
-  // 表格单元格里的最后几个字还只在 contenteditable 里:setState 会把那块 DOM 整个换掉,
-  // 必须先刷回文档,否则切换文件/新建会静默吞掉正在输入的内容
-  flushTableEdits()
-  view.setState(EditorState.create({ doc: content, extensions: buildExtensions(onDocChange, opts) }))
-}

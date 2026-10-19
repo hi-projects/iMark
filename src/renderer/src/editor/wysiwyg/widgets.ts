@@ -163,13 +163,15 @@ export interface TableSpec {
 }
 
 /**
- * 结构选区:整张表 / 连续若干行 / 连续若干列。
- * 行/列选区由鼠标按住左键拖动产生(上下拖选行、左右拖选列);选中后按 Backspace / Delete 删除。
+ * 表格选区:整张表 / 一块矩形单元格。
+ *
+ * 矩形由鼠标按住左键拖动产生 —— 起点格与当前指针所在格围出的范围。
+ * 横向拖 = 一行里的若干格,纵向拖 = 一列里的若干格,斜着拖 = 一块矩形;
+ * 不再按拖动方向扩张成整行/整列。选中后按 Backspace / Delete 清空这些格的内容。
  */
 type TableSelection =
   | { kind: 'table' }
-  | { kind: 'row'; from: number; to: number }
-  | { kind: 'col'; from: number; to: number }
+  | { kind: 'range'; rowFrom: number; rowTo: number; colFrom: number; colTo: number }
   | null
 
 /** 围绕表格的浮动控件(插行/删行/插列/删列/选整表/删整表/整表对齐) */
@@ -209,7 +211,7 @@ interface TableDomState {
   layoutScheduled: boolean
   /** 上一次鼠标位置(视口坐标);结构重建后据此恢复控件的按需显隐 */
   hover: { x: number; y: number } | null
-  /** 正在拖拽选行时,用来在 destroy 时解绑 window 监听 */
+  /** 正在拖拽选择单元格时,用来在 destroy 时解绑 window 监听 */
   cancelDrag: (() => void) | null
   /** 刚创建、autoFocus 还没跑完:这段时间不要让"光标别停进表格"的守卫抢先挪走选区 */
   autoFocusPending: boolean
@@ -605,21 +607,16 @@ function trashIcon(): SVGSVGElement {
   return svg
 }
 
-/**
- * `pinned` = 常驻按钮(整表选择 / 删除 / 对齐):不参与悬停显隐,
- * 表格渲染出来就一直可见。行/列的增删控件仍由 applyHoverControls 按需浮现。
- */
+/** 所有控件都由 applyHoverControls 按鼠标位置显隐(整表三枚与行列增删一样) */
 function controlButton(
   act: string,
   cls: string,
   glyph: string,
-  title: string,
-  pinned = false
+  title: string
 ): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = `cm-md-table-ctl ${cls}`
-  if (pinned) btn.classList.add('cm-md-table-ctl-pinned')
   btn.dataset.act = act
   btn.textContent = glyph
   btn.title = title
@@ -700,8 +697,7 @@ function buildControlLayer(state: TableDomState): void {
     'select-table',
     'cm-md-table-select',
     '▦',
-    '选中整张表格（按 Delete 删除）',
-    true
+    '选中整张表格（按 Delete 删除）'
   )
   bindControl(state, selectTable, () => selectStructure(state, { kind: 'table' }))
 
@@ -709,8 +705,7 @@ function buildControlLayer(state: TableDomState): void {
     'delete-table',
     'cm-md-table-del cm-md-table-trash',
     '',
-    '删除整张表格',
-    true
+    '删除整张表格'
   )
   deleteTableBtn.replaceChildren(trashIcon())
   bindControl(state, deleteTableBtn, () => deleteTable(state))
@@ -719,7 +714,7 @@ function buildControlLayer(state: TableDomState): void {
   const addRows: HTMLButtonElement[] = []
 
   rows.forEach((_, r) => {
-    // 行选中不再用按钮:按住左键在表格里上下拖动即可选中连续行
+    // 边框上只留「删除整行」;要选中一块格子,直接在表格里按住左键拖
     const del = controlButton(
       'delete-row',
       'cm-md-table-del',
@@ -743,7 +738,7 @@ function buildControlLayer(state: TableDomState): void {
 
   const colDeletes: HTMLButtonElement[] = []
   for (let c = 0; c < model.columns; c++) {
-    // 列选中不再用按钮:按住左键左右拖动即可选中连续列
+    // 与行一样:列选中靠拖动,控件只负责删整列
     const del = controlButton(
       'delete-col',
       'cm-md-table-del',
@@ -776,8 +771,7 @@ function buildControlLayer(state: TableDomState): void {
     'align-table',
     'cm-md-table-align',
     '≡',
-    '选择整张表格文字的对齐方式',
-    true
+    '选择整张表格文字的对齐方式'
   )
   const alignMenu = document.createElement('div')
   alignMenu.className = 'cm-md-table-align-menu'
@@ -838,14 +832,17 @@ function buildControlLayer(state: TableDomState): void {
 }
 
 /**
- * 行/列控件的按需显隐(整表选择 / 删除 / 对齐三枚按钮常驻,不走这里):
+ * 控件按鼠标位置显隐(整表三枚按钮与行列增删走同一套):
+ *   - 鼠标在表格附近(含四周放控件的留白带)时,显示整表选择 / 对齐 / 删除;
  *   - 鼠标在哪一行/哪一列,只显示那一行/那一列的删除 ×;
  *   - 鼠标靠近某条行/列边界线(10px 内),才显示那条线对应的插入 +。
  */
 function applyHoverControls(state: TableDomState): void {
   const ctl = state.controls
   if (!ctl) return
+  const group = [ctl.selectTable, ctl.alignTable, ctl.deleteTable]
   const hideAll = (): void => {
+    for (const b of group) b.classList.remove('is-shown')
     for (const b of ctl.rowDeletes) b.classList.remove('is-shown')
     for (const b of ctl.addRows) b.classList.remove('is-shown')
     for (const b of ctl.colDeletes) b.classList.remove('is-shown')
@@ -863,47 +860,80 @@ function applyHoverControls(state: TableDomState): void {
   }
   const tableRect = state.table.getBoundingClientRect()
   const { x, y } = hover
+  /*
+   * 整表三枚按钮跟着"鼠标是否在表格附近"走。判定用 frame 而不是 table:
+   * frame 是表格 + 四周给控件留的 padding,按钮就浮在这圈留白里;
+   * 再向外放 CTL_SHOW_MARGIN,鼠标从表格移向按钮的途中不会先把它藏起来。
+   */
+  const frameRect = state.frame.getBoundingClientRect()
+  const nearTable =
+    x >= frameRect.left - CTL_SHOW_MARGIN &&
+    x <= frameRect.right + CTL_SHOW_MARGIN &&
+    y >= frameRect.top - CTL_SHOW_MARGIN &&
+    y <= frameRect.bottom + CTL_SHOW_MARGIN
+  for (const b of group) b.classList.toggle('is-shown', nearTable)
 
   const trs = [headRow, ...Array.from(state.table.tBodies[0]?.rows ?? [])]
   const headCells = Array.from(headRow.cells)
 
+  /*
+   * 行列控件只在**表格本身的响应带**里算,不能只看单轴:
+   * 鼠标停在表格右侧的空白处时,y 仍可能正好落在某一行上,只看 y 会让
+   * 左侧行删除 × 与右侧行插入 + 凭空亮起来;列控件同理。
+   * 响应带覆盖控件自己的外沿,所以"从表格移向控件"的途中不会闪没。
+   */
+  const rowBand =
+    x >= tableRect.left - ROW_CTL_BAND_LEFT && x <= tableRect.right + ROW_CTL_BAND_RIGHT
+  const colBand = y >= tableRect.top - COL_CTL_BAND_TOP && y <= tableRect.bottom
+
   let hoverRow = -1
-  for (let r = 0; r < trs.length; r++) {
-    const rect = trs[r].getBoundingClientRect()
-    if (y >= rect.top && y <= rect.bottom) {
-      hoverRow = r
-      break
+  if (rowBand) {
+    for (let r = 0; r < trs.length; r++) {
+      const rect = trs[r].getBoundingClientRect()
+      if (y >= rect.top && y <= rect.bottom) {
+        hoverRow = r
+        break
+      }
     }
   }
   let hoverCol = -1
-  for (let c = 0; c < headCells.length; c++) {
-    const rect = headCells[c].getBoundingClientRect()
-    if (x >= rect.left && x <= rect.right) {
-      hoverCol = c
-      break
+  if (colBand) {
+    for (let c = 0; c < headCells.length; c++) {
+      const rect = headCells[c].getBoundingClientRect()
+      if (x >= rect.left && x <= rect.right) {
+        hoverCol = c
+        break
+      }
     }
   }
 
   const EDGE = 10
   let nearRow = -1
   let bestRow = EDGE + 0.01
-  for (let r = 0; r < trs.length; r++) {
-    const d = Math.abs(y - trs[r].getBoundingClientRect().bottom)
-    if (d < bestRow) {
-      bestRow = d
-      nearRow = r
+  if (rowBand) {
+    for (let r = 0; r < trs.length; r++) {
+      const d = Math.abs(y - trs[r].getBoundingClientRect().bottom)
+      if (d < bestRow) {
+        bestRow = d
+        nearRow = r
+      }
     }
   }
-  const boundaries = [tableRect.left, ...headCells.map(cell => cell.getBoundingClientRect().right)]
   let nearCol = -1
-  let bestCol = EDGE + 0.01
-  boundaries.forEach((bx, b) => {
-    const d = Math.abs(x - bx)
-    if (d < bestCol) {
-      bestCol = d
-      nearCol = b
-    }
-  })
+  if (colBand) {
+    const boundaries = [
+      tableRect.left,
+      ...headCells.map(cell => cell.getBoundingClientRect().right)
+    ]
+    let bestCol = EDGE + 0.01
+    boundaries.forEach((bx, b) => {
+      const d = Math.abs(x - bx)
+      if (d < bestCol) {
+        bestCol = d
+        nearCol = b
+      }
+    })
+  }
 
   ctl.rowDeletes.forEach((b, r) => b.classList.toggle('is-shown', hoverRow === r))
   ctl.colDeletes.forEach((b, c) => b.classList.toggle('is-shown', hoverCol === c))
@@ -925,6 +955,18 @@ const CTL_RIGHT = 14
  */
 const CTL_GROUP_X = 32
 const CTL_GROUP_GAP = 20
+/** 整表按钮的悬停判定在 frame 外再放宽多少(按钮本身浮在 frame 留白之外一点点) */
+const CTL_SHOW_MARGIN = 16
+/**
+ * 行列控件的响应带(以表格边缘为基准):
+ *   - 左:行删除 × 的外沿(frame 左留白 24 - 控件中心 12 - 半宽 8);
+ *   - 右:行插入 + 的外沿(中心 14 + 半宽 8);
+ *   - 上:顶部列按钮的外沿(中心 8 + 半宽 8)。
+ * 鼠标在更远的空白处时,即使 x / y 恰好与某一行列对齐,也不点亮控件。
+ */
+const ROW_CTL_BAND_LEFT = 20
+const ROW_CTL_BAND_RIGHT = CTL_RIGHT + 8
+const COL_CTL_BAND_TOP = 16
 
 function layoutControls(state: TableDomState): void {
   const { frame, table, controls } = state
@@ -972,7 +1014,7 @@ function layoutControls(state: TableDomState): void {
   })
 }
 
-/** 指针的 y 落在第几行(超出表格时夹到首/末行)—— 按住左键拖动选行用 */
+/** 指针的 y 落在第几行(超出表格时夹到首/末行)—— 拖动时算矩形选区的下边界 */
 function rowAtPointer(state: TableDomState, y: number): number | null {
   const head = state.table.tHead?.rows[0]
   if (!head) return null
@@ -983,7 +1025,7 @@ function rowAtPointer(state: TableDomState, y: number): number | null {
   return trs.length - 1
 }
 
-/** 指针的 x 落在第几列(超出表格时夹到首/末列)—— 按住左键拖动选列用 */
+/** 指针的 x 落在第几列(超出表格时夹到首/末列)—— 拖动时算矩形选区的右边界 */
 function colAtPointer(state: TableDomState, x: number): number | null {
   const head = state.table.tHead?.rows[0]
   if (!head) return null
@@ -1005,23 +1047,33 @@ function scheduleLayout(state: TableDomState): void {
 
 function applySelectionClasses(state: TableDomState): void {
   const sel = state.selection
-  if (sel?.kind === 'row' && (sel.from < 0 || sel.to >= state.rows.length)) state.selection = null
-  if (sel?.kind === 'col' && (sel.from < 0 || sel.to >= state.model.columns)) state.selection = null
+  if (
+    sel?.kind === 'range' &&
+    (sel.rowFrom < 0 ||
+      sel.rowTo >= state.rows.length ||
+      sel.colFrom < 0 ||
+      sel.colTo >= state.model.columns)
+  ) {
+    state.selection = null
+  }
   const active = state.selection
   for (let r = 0; r < state.rows.length; r++) {
     for (let c = 0; c < state.rows[r].length; c++) {
       const on =
         !!active &&
         (active.kind === 'table' ||
-          (active.kind === 'row' && r >= active.from && r <= active.to) ||
-          (active.kind === 'col' && c >= active.from && c <= active.to))
+          (active.kind === 'range' &&
+            r >= active.rowFrom &&
+            r <= active.rowTo &&
+            c >= active.colFrom &&
+            c <= active.colTo))
       state.rows[r][c].classList.toggle('cm-md-table-selected', on)
     }
   }
   const ctl = state.controls
   if (!ctl) return
   ctl.selectTable.classList.toggle('is-active', active?.kind === 'table')
-  // 整表选区才给整圈描边;选一行/一列时只高亮那一行/列,别让人误以为整张表被选中
+  // 只有整表选区给整圈描边;选一块单元格时高亮那些格子,别让人误以为整张表被选中
   state.frame.classList.toggle('is-selected', active?.kind === 'table')
 }
 
@@ -1073,7 +1125,7 @@ function deleteRow(state: TableDomState, index: number): void {
 }
 
 /**
- * 删除连续/多行(拖动选中后按 Delete,或点某一行的 ×)。
+ * 删除连续/多行(点某一行的 ×;拖动选中的矩形只清空内容,不动表格结构)。
  *
  * 表头是 Markdown 表格的必需行:
  *   - 选中了表头且有没被选中的数据行 → 让第一条没被选中的数据行接替表头;
@@ -1127,7 +1179,7 @@ function deleteColumn(state: TableDomState, col: number): void {
   deleteColumns(state, [col])
 }
 
-/** 删除连续/多列(拖动选中后按 Delete,或点某一列的 ×) */
+/** 删除连续/多列(点某一列的 ×;拖动选中的矩形只清空内容,不动表格结构) */
 function deleteColumns(state: TableDomState, cols: number[]): void {
   const model = state.model
   const selected = [...new Set(cols)]
@@ -1205,19 +1257,41 @@ function insertColumnBefore(state: TableDomState, before: number): void {
   startEdit(state, 0, before)
 }
 
+/**
+ * 清空矩形选区里所有单元格的内容(格子本身留在表里)。
+ *
+ * 选区现在是"一块格子"而不是"整行/整列":删掉行/列会把表格结构改掉,
+ * 与用户在选中的那几格上按 Delete 的预期不符。删行/列仍走行/列控件上的 ×。
+ * 空行也重写一遍没有意义,所以只提交真正有内容的行;整块都空时一个事务都不派发。
+ */
+function clearRange(
+  state: TableDomState,
+  sel: { rowFrom: number; rowTo: number; colFrom: number; colTo: number }
+): void {
+  const model = state.model
+  const rows = allRows(model)
+  const changes: Array<{ from: number; to: number; insert: string }> = []
+  for (let r = sel.rowFrom; r <= sel.rowTo; r++) {
+    const row = rows[r]
+    if (!row) continue
+    let changed = false
+    const cells = row.cells.map((cell, c) => {
+      if (c < sel.colFrom || c > sel.colTo || cell.text === '') return { text: cell.text }
+      changed = true
+      return { text: '' }
+    })
+    if (!changed) continue
+    changes.push({ from: row.from, to: row.to, insert: serializeRow(cells, model.columns) })
+  }
+  if (changes.length === 0) return
+  state.view.dispatch({ changes: sortedChanges(changes) })
+}
+
 function deleteSelection(state: TableDomState): void {
   const sel = state.selection
   if (!sel) return
   if (sel.kind === 'table') deleteTable(state)
-  else if (sel.kind === 'row') {
-    const indices: number[] = []
-    for (let i = sel.from; i <= sel.to; i++) indices.push(i)
-    deleteRows(state, indices)
-  } else {
-    const indices: number[] = []
-    for (let i = sel.from; i <= sel.to; i++) indices.push(i)
-    deleteColumns(state, indices)
-  }
+  else clearRange(state, sel)
 }
 
 /**
@@ -1370,15 +1444,20 @@ function bindTableEvents(state: TableDomState): void {
     }
     const cell = target?.closest<HTMLElement>('th, td')
     if (!cell || !wrap.contains(cell)) return
-    if (state.active?.cell === cell) return // 已经在编辑:让浏览器自己处理选词/拖选
     const startRow = Number(cell.dataset.row)
     const startCol = Number(cell.dataset.col)
     if (!Number.isFinite(startRow) || !Number.isFinite(startCol)) return
-    e.preventDefault()
+    /*
+     * 正在编辑的那一格:按下先交给浏览器做选词/选字。只有指针拖**出**这一格
+     * (用户是在跨行/跨列拖)才接管成表格选区 —— 否则从刚点过的格子开始拖,
+     * 永远只能选中格内的文字,拖选在编辑态下就成了死操作。
+     */
+    const editingHere = state.active?.cell === cell
+    if (!editingHere) e.preventDefault()
     state.cancelDrag?.()
 
     /*
-     * 单击 = 编辑这一格;上下拖动 = 选中经过的连续行,左右拖动 = 选中连续列。
+     * 单击 = 编辑这一格;按住拖动 = 选中「起点格 ↔ 当前指针所在格」围出的矩形。
      * 编辑推迟到 mouseup 才发生 —— 否则 mousedown 一进 contenteditable,
      * 拖动就变成了在格子里选字。窗口级的 mousemove/mouseup 保证拖出表格
      * (甚至拖到窗口边缘)也能继续选中。
@@ -1386,24 +1465,44 @@ function bindTableEvents(state: TableDomState): void {
     const downX = e.clientX
     const downY = e.clientY
     let moved = false
-    let axis: 'row' | 'col' | null = null
+    // 编辑态下先不接管拖动;拖出单元格时 claimDrag 会把它切换成表格选区
+    let claimed = !editingHere
+    const leaveCell = (ev: MouseEvent): { x: boolean; y: boolean } => {
+      const rect = cell.getBoundingClientRect()
+      return {
+        x: ev.clientX < rect.left || ev.clientX > rect.right,
+        y: ev.clientY < rect.top || ev.clientY > rect.bottom
+      }
+    }
+    const claimDrag = (): void => {
+      claimed = true
+      moved = true
+      if (state.active?.cell === cell) {
+        // 先把这一格的文字刷回文档、收起输入框,再画表格选区
+        finishEdit(state, true)
+        window.getSelection()?.removeAllRanges()
+      }
+    }
     const move = (ev: MouseEvent): void => {
       const dx = ev.clientX - downX
       const dy = ev.clientY - downY
-      if (!moved) {
+      if (!claimed) {
+        const out = leaveCell(ev)
+        if (!out.x && !out.y) return
+        claimDrag()
+      } else if (!moved) {
         if (Math.abs(dx) + Math.abs(dy) < 5) return
         moved = true
-        // 第一次超过阈值时定方向:横向为主选列,纵向为主选行
-        axis = Math.abs(dx) >= Math.abs(dy) ? 'col' : 'row'
       }
-      if (axis === 'col') {
-        const col = colAtPointer(state, ev.clientX)
-        if (col === null) return
-        state.selection = { kind: 'col', from: Math.min(startCol, col), to: Math.max(startCol, col) }
-      } else {
-        const row = rowAtPointer(state, ev.clientY)
-        if (row === null) return
-        state.selection = { kind: 'row', from: Math.min(startRow, row), to: Math.max(startRow, row) }
+      const row = rowAtPointer(state, ev.clientY)
+      const col = colAtPointer(state, ev.clientX)
+      if (row === null || col === null) return
+      state.selection = {
+        kind: 'range',
+        rowFrom: Math.min(startRow, row),
+        rowTo: Math.max(startRow, row),
+        colFrom: Math.min(startCol, col),
+        colTo: Math.max(startCol, col)
       }
       applySelectionClasses(state)
     }
@@ -1417,10 +1516,12 @@ function bindTableEvents(state: TableDomState): void {
     const up = (ev: MouseEvent): void => {
       cleanup()
       if (moved) {
-        // 选区已经画好,把焦点交给 frame,接下来按 Delete 就能删这几行
+        // 选区已经画好,把焦点交给 frame,接下来按 Delete 就能清空这些格
         state.frame.focus({ preventScroll: true })
         return
       }
+      // 编辑态里的单击/选字:光标位置和选区由浏览器已经处理好,别再重进一次编辑
+      if (editingHere) return
       clearSelection(state)
       startEdit(state, startRow, startCol, ev.clientX, ev.clientY)
     }
@@ -1767,8 +1868,8 @@ export function selectAdjacentTable(view: EditorView, side: 'after' | 'before'):
   /*
    * 兜底:表格没有对应的渲染态 widget(比如它正以源码呈现、或渲染层刚重建过)。
    * 仍然不让默认删除把表格前的换行删掉 —— 直接把整张表的源码选中,
-   * 第二次 Delete 就会删掉这段选区。规则表会在选区覆盖整表时渲染成源码,
-   * 所以这里的选中是看得见的。
+   * 第二次 Delete 就会删掉这段选区。选区覆盖整表时规则表仍按渲染态画出
+   * 表格并打上整表选中标记,所以用户看到的是"渲染出来的表格被选中"。
    */
   const adjacentNumber = line.number + (side === 'after' ? 1 : -1)
   if (adjacentNumber < 1 || adjacentNumber > doc.lines) return false

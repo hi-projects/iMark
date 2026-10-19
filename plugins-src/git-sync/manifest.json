@@ -1,8 +1,8 @@
 {
   "id": "git-sync",
   "name": "定时上传（Git）",
-  "description": "按固定间隔把当前仓库提交并推送到 GitLab / Gitee 等 Git 远端，支持多个远端。",
-  "version": "1.0.2",
+  "description": "按固定间隔，将当前仓库提交并推送到 Git 远端，支持多个远端",
+  "version": "1.1.0",
   "author": "iMark 官方",
   "main": { "mode": "node", "entry": "main.js" },
   "permissions": ["git", "secrets", "vault:read", "vault:write"],
@@ -33,6 +33,29 @@
       "label": "启动后同步一次",
       "default": true,
       "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补上。"
+    },
+    {
+      "key": "proxyMode",
+      "section": "网络代理",
+      "kind": "select",
+      "label": "连接方式",
+      "default": "auto",
+      "options": [
+        { "value": "auto", "label": "自动检测本机代理" },
+        { "value": "manual", "label": "手动指定代理" },
+        { "value": "off", "label": "直连（不使用代理）" }
+      ],
+      "description": "git 不会读取 Windows 的系统代理，所以浏览器能打开 GitHub 时这里仍可能超时。自动模式会依次检查 HTTP_PROXY / HTTPS_PROXY 环境变量与 Windows 系统代理（Clash、FlClash 等客户端开启「系统代理」时写入）。代理只作用于 HTTP(S) 远端；SSH 地址不经过它。"
+    },
+    {
+      "key": "proxyUrl",
+      "section": "网络代理",
+      "kind": "text",
+      "label": "代理地址",
+      "default": "http://127.0.0.1:7890",
+      "placeholder": "http://127.0.0.1:7890",
+      "showWhen": { "key": "proxyMode", "value": "manual" },
+      "description": "支持 http://、https://、socks5://。Clash / FlClash 的混合端口默认是 7890。"
     },
     {
       "key": "commitMessage",
@@ -97,7 +120,8 @@
   ],
   "actions": [
     { "id": "sync-now", "label": "立即上传" },
-    { "id": "test-all", "label": "测试全部远端" }
+    { "id": "test-all", "label": "测试全部远端" },
+    { "id": "detect-proxy", "label": "检测本机代理" }
   ],
   "commands": [
     {

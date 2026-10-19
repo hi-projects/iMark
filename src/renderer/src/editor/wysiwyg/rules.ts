@@ -15,6 +15,7 @@ import {
   type TableSpec
 } from './widgets'
 import { touches, touchesLines } from './selection'
+import { mathContentRange, mathSource } from '../math'
 import { currentMermaidTheme } from '../../services/mermaid'
 import { resolveImageSrc } from '../../utils/text'
 
@@ -477,30 +478,41 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
 
     // ----- LaTeX 公式 -----
     case 'InlineMath': {
-      const content = node.node.getChild('MathContent')
+      const content = mathContentRange(node.node)
       if (!content) return false
       if (touches(ctx.sel, node.from, node.to)) {
         // 源码态:内容加淡底,便于看出公式边界
         ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
       } else {
-        const tex = ctx.doc.sliceString(content.from, content.to)
-        hideWithWidget(ctx, node.from, node.to, new MathWidget(tex, false))
+        hideWithWidget(ctx, node.from, node.to, new MathWidget(mathSource(ctx.doc, node.node), false))
       }
       return false
     }
-    case 'DisplayMath': {
-      const content = node.node.getChild('MathContent')
+    // MathBlock 是块解析器产出的行首 $$...$$(见 editor/math.ts);
+    // DisplayMath 是段落中间的行内块级公式。两者外观与编辑行为完全一致。
+    case 'DisplayMath':
+    case 'MathBlock': {
+      const content = mathContentRange(node.node)
       if (!content) return false
       if (touches(ctx.sel, node.from, node.to)) {
         ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
         return false
       }
-      const tex = ctx.doc.sliceString(content.from, content.to)
+      const tex = mathSource(ctx.doc, node.node)
       const firstLine = ctx.doc.lineAt(node.from)
       const lastLine = ctx.doc.lineAt(node.to)
       if (firstLine.number === lastLine.number) {
         // 单行 $$...$$:直接整体替换
         hideWithWidget(ctx, node.from, node.to, new MathWidget(tex, true))
+        return false
+      }
+      /*
+       * 与表格同一条约束:widget 挂在首行上,后续行的内容会被清空。首行滚出
+       * 视口时 CM 根本不会画那一行,继续清空后续行只会在屏幕上留一块空白。
+       * 这种情况退回源码态(内容加底色),而不是公式 + 空白。
+       */
+      if (firstLine.from < ctx.visibleFrom || firstLine.to > ctx.visibleTo) {
+        ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
         return false
       }
       // 多行:首行渲染公式,其余行清空内容并折叠高度
@@ -581,18 +593,26 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        * 只有表头滚出视口这种 widget 根本画不出来的情况才退回等宽源码。
        */
       const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
-      // 整张表被一个非空选区覆盖时切回源码:这样"表格边界按 Delete 先选中整表"
-      // 在兜底路径(表格还没渲染成 widget)下也看得见选中的是什么
+      /*
+       * 整张表被一个非空选区覆盖(从表格上方拖到下方、Ctrl+A、或兜底路径选中整表源码)
+       * 时**不切回源码**,继续渲染成 widget,并在宿主行上打一个标记由 CSS 高亮:
+       * 用户看到的是"渲染出来的表格被选中",而不是一整段 Markdown 源码。
+       * 真正画不出 widget 的情况(解析失败、表头滚出视口)仍然退回源码。
+       */
       const fullySelected = ctx.sel.ranges.some(
         r => !r.empty && r.from <= node.from && r.to >= node.to
       )
-      if (!spec || !firstLineVisible || fullySelected) {
+      if (!spec || !firstLineVisible) {
         addLineRange(ctx, node.from, node.to, 'cm-md-table')
         return false
       }
       // 首行换成 widget(它自带整张表),其余行清空并折叠高度
       // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行
-      addLine(ctx, firstLine.from, 'cm-md-table-host')
+      addLine(
+        ctx,
+        firstLine.from,
+        fullySelected ? 'cm-md-table-host cm-md-table-host-selected' : 'cm-md-table-host'
+      )
       hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec))
       const lastLine = ctx.doc.lineAt(node.to)
       for (let n = firstLine.number + 1; n <= lastLine.number; n++) {

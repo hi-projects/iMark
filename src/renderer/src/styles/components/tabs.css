@@ -1,0 +1,184 @@
+/* ---------- 标签栏(仿 Obsidian) ---------- */
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  height: 36px;
+  background: var(--bg-app);
+  user-select: none;
+  /*
+   * 这里**不能**设 -webkit-app-region: drag:拖拽区不派发鼠标事件,
+   * 会连带干掉「空白处双击新建标签页」。窗口拖动交给左右两侧的顶栏
+   * (见 shell.css 的 .explorer-header / .outline-header)。
+   */
+}
+
+/*
+ * 大纲收起时标签栏一直伸到窗口右缘,右上角会被系统窗口控件(138px)压住 ——
+ * 预留出这段,新标签按钮就不会藏到按钮底下。
+ */
+.tab-bar.tab-bar-flush-right {
+  padding-right: 138px;
+}
+
+/*
+ * 宽度跟着标签内容走:"+" 紧跟在最后一个标签右边(而不是被推到窗口最右),
+ * 标签多到放不下时这一条收缩并横向滚动,确保 "+" 始终留在可视区。
+ */
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 标签很多时横向滚动,但不显示滚动条(Obsidian 也不显示) */
+  scrollbar-width: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 默认比 Obsidian 的紧凑页签更宽一些:标题长一点也不会很快被省略号截断。
+     标签多到放不下时仍会收缩到 min-width,再放不下就横向滚动 */
+  flex: 0 1 240px;
+  min-width: 96px;
+  max-width: 320px;
+  /* 顶部留 4px:标签从拖拽区里"浮"起来,圆角才看得出来 */
+  margin-top: 4px;
+  padding: 0 6px 0 12px;
+  border-radius: 6px 6px 0 0;
+  /* 用内阴影而不是 border 画分隔线:圆角不会被一条直边框切掉 */
+  box-shadow: inset -1px 0 0 var(--border);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+/* 激活标签与编辑区同色,视觉上连成一块;底部不留分隔线 */
+.tab-active {
+  background: var(--bg-editor);
+  box-shadow: none;
+  color: var(--text-primary);
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 脏标记与关闭按钮共用同一个固定槽位:激活标签上默认显示圆点(改了就要看得见),
+   未修改的激活标签与悬停时显示 ×;标签宽度不会因为鼠标移上去而跳动 */
+.tab-status {
+  position: relative;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+
+.tab-dot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.tab-dot::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.tab-close {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* 未修改的激活标签直接露出 ×;有未保存改动时槽位让给圆点 */
+.tab:hover .tab-close,
+.tab-active:not(.tab-dirty) .tab-close {
+  opacity: 1;
+}
+
+/* 圆点在激活标签上也可见 —— 正在编辑的文档改了没保存,必须一眼看得出来。
+   鼠标移上去时让位给 ×,关闭不需要先移开 */
+.tab:hover .tab-dot {
+  opacity: 0;
+}
+
+.tab-close:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+/* 拖动时的落点提示:一根贴在目标标签左/右边缘的强调色竖线 */
+.tab-dragging {
+  opacity: 0.55;
+}
+
+.tab-drop-before::before,
+.tab-drop-after::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.tab-drop-before::before {
+  left: 0;
+}
+
+.tab-drop-after::before {
+  right: 0;
+}
+
+.tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.tab-new:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}

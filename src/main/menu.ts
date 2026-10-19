@@ -145,6 +145,12 @@ export function buildAppMenu(): DroppedKeybinding[] {
         fmt('打开仓库...', 'file:open-vault', 'CmdOrCtrl+Alt+O'),
         fmt('快速切换文件...', 'file:quick-switch', 'CmdOrCtrl+P'),
         { type: 'separator' },
+        // 标签页快捷键必须挂成原生菜单项才会生效(窗口菜单栏虽隐藏,菜单对象仍在)。
+        // Ctrl+Tab / Ctrl+Shift+Tab 是跨编辑器的通用约定,与 Obsidian 一致。
+        fmt('关闭标签页', 'file:close-tab', 'CmdOrCtrl+W'),
+        fmt('下一个标签页', 'file:next-tab', 'Ctrl+Tab'),
+        fmt('上一个标签页', 'file:prev-tab', 'Ctrl+Shift+Tab'),
+        { type: 'separator' },
         fmt('保存', 'file:save', 'CmdOrCtrl+S'),
         fmt('另存为...', 'file:save-as', 'CmdOrCtrl+Shift+S'),
         { type: 'separator' },

@@ -60,6 +60,14 @@ export interface PluginTarget {
 }
 
 /**
+ * 某一行目标的**最近一次操作结果**(推送 / 测试连接)。
+ *
+ * 设置页据此给目标卡片上色:ok = 绿、error = 红;没有记录 = 还没对它操作过(灰)。
+ * 输入是否填齐**不**由它表达 —— 那由设置页统一列出「还缺哪些输入」。
+ */
+export type PluginTargetResult = 'ok' | 'error'
+
+/**
  * 编辑器行首「+」菜单里的一条。
  *
  * 这是插件**唯一**能影响编辑器的入口。方向是刻意的:插件声明「菜单里有什么、要问用户什么」,
@@ -332,6 +340,13 @@ export interface PluginState {
    * **不会**再挂回状态里重复显示(状态只有 lastMessage 一段文本)。
    */
   lastDetail?: string
+  /**
+   * 目标列表里每一行目标的最近一次操作结果(key 为目标 id)。
+   *
+   * 与 lastMessage 的分工:那里是「这次运行整体说了什么」,这里是「每一行现在是什么颜色」。
+   * setState 写入时按目标**合并**,单目标动作只需报告自己那一行,不用重发其他目标的结果。
+   */
+  targetResults?: Record<string, PluginTargetResult>
 }
 
 /**

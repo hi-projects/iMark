@@ -14,7 +14,17 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { rm, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { IPC } from '@shared/ipc-channels'
@@ -116,6 +126,8 @@ const MAX_FAILURES = 3
 const MAX_LOGS = 50
 /** 设置页「调试」模块保留几条最近操作 */
 const MAX_RECENT_OPS = 3
+/** 启动时从磁盘日志读回尾巴的字节上限(超出只读最后一段;不完整的首行会被丢掉) */
+const LOG_TAIL_BYTES = 256 * 1024
 
 /** 完整插件日志:数据根/logs/plugins/<id>.log(插件 id 已由清单校验为安全文件名) */
 function pluginLogFile(id: string): string {
@@ -148,6 +160,63 @@ function readRecentOps(id: string): PluginOperation[] {
   } catch {
     return []
   }
+}
+
+/** 磁盘日志里一条记录的首行:`2026-10-19 19:56:55 [操作] 正文…`;多行明细跟在后面 */
+const LOG_HEADER = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) \[(debug|info|warn|error|操作)\] ?([\s\S]*)$/
+
+/**
+ * 读回磁盘日志的尾巴 —— 设置页「插件日志」显示的就是它。
+ *
+ * **必须重启后也读回来**。「调试」模块里的最近操作是落盘后重新读的(`.recent.json`),
+ * 日志尾巴如果每次启动都从空开始,用户就会看到「明明插过三次表,日志只有一条启动信息」
+ * (2026-10-20 实测:三次操作留在 .recent.json 里,日志页却只剩本次运行的 `已就绪`)。
+ *
+ * 正文可能带换行(操作摘要的明细),所以不能一行一条:只有带时间戳头的行开启新记录,
+ * 其余行并进上一条。文件从中间截断时,第一条不完整的行会因为匹配不上头而被丢掉。
+ */
+function readLogTail(id: string): PluginLogEntry[] {
+  let text: string
+  try {
+    const file = pluginLogFile(id)
+    const size = statSync(file).size
+    const start = Math.max(0, size - LOG_TAIL_BYTES)
+    const buf = Buffer.alloc(size - start)
+    const fd = openSync(file, 'r')
+    try {
+      readSync(fd, buf, 0, buf.length, start)
+    } finally {
+      closeSync(fd)
+    }
+    text = buf.toString('utf8')
+  } catch {
+    // 文件不存在是第一次启动的常态,不是错误
+    return []
+  }
+
+  const entries: PluginLogEntry[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    const m = LOG_HEADER.exec(line)
+    if (m) {
+      entries.push({
+        at: new Date(
+          Number(m[1]),
+          Number(m[2]) - 1,
+          Number(m[3]),
+          Number(m[4]),
+          Number(m[5]),
+          Number(m[6])
+        ).getTime(),
+        level: m[7] === '操作' ? 'operation' : (m[7] as PluginLogLevel),
+        message: m[8] ?? ''
+      })
+    } else if (entries.length > 0) {
+      // 多行正文 / 末尾空行;末尾空行由下面的 trimEnd 去掉
+      entries[entries.length - 1]!.message += `\n${line}`
+    }
+  }
+  return entries.slice(-MAX_LOGS).map(e => ({ ...e, message: e.message.trimEnd() }))
 }
 
 /** 日志行的时间戳(本地时间) */
@@ -434,7 +503,7 @@ export class PluginHost {
         failures: 0,
         disabledByHost: false,
         suspended: false,
-        logs: [],
+        logs: readLogTail(plugin.descriptor.id),
         recentOps: readRecentOps(plugin.descriptor.id),
         currentAction: null,
         contrib: new ContribRegistry(),
@@ -1135,7 +1204,7 @@ export class PluginHost {
       failures: 0,
       disabledByHost: false,
       suspended: false,
-      logs: [],
+      logs: readLogTail(id),
       recentOps: readRecentOps(id),
       currentAction: null,
       contrib: new ContribRegistry(),
@@ -1224,7 +1293,7 @@ export class PluginHost {
       failures: 0,
       disabledByHost: false,
       suspended: false,
-      logs: [],
+      logs: readLogTail(id),
       recentOps: readRecentOps(id),
       currentAction: null,
       contrib: new ContribRegistry(),
@@ -1432,9 +1501,12 @@ export class PluginHost {
   /**
    * 统一的状态写入。
    *
-   * 状态只保存一段文本(lastMessage):明细不再挂回状态,而是进操作日志 ——
+   * 状态的正文只保存一段文本(lastMessage):明细不再挂回状态,而是进操作日志 ——
    * 否则设置页会先显示摘要、再显示一条几乎一样的明细。lastDetail 仍然接收,
    * 但只用于日志与「摘要为空」时的兜底。
+   *
+   * targetResults 是唯一的结构化例外:它是「每一行目标自己的结果」,没有一段文字
+   * 能同时表达(逐行文本只能读、不能给卡片上色),所以按目标 id 单独存一份。
    */
   private applyState(entry: Entry, patch: Partial<PluginState>, actionOverride?: string): void {
     const prev = entry.state
@@ -1446,9 +1518,16 @@ export class PluginHost {
       ''
     ).trim()
     const detail = patch.lastDetail
+    // 按目标合并,而不是整体替换:单目标动作(如「测试连接」)只报告自己那一行,
+    // 不能把其他远端已有的结果一起抹掉。
+    const targetResults =
+      patch.targetResults === undefined
+        ? prev.targetResults
+        : { ...prev.targetResults, ...patch.targetResults }
     entry.state = {
       ...prev,
       ...patch,
+      targetResults,
       lastMessage: summary || detail || '',
       lastDetail: undefined
     }

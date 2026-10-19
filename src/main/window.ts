@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { IPC } from '@shared/ipc-channels'
 import type { Settings, Theme } from '@shared/types'
 import { appIconPng } from './appIcon'
+import { getSettingsSync, onSettingsChanged } from './settings'
 
 /**
  * 窗口图标(任务栏 / Alt+Tab / 窗口列表里那个)。
@@ -20,11 +21,44 @@ function windowIcon(): string | undefined {
 /** 各主题的窗口底色,用于首帧(渲染完成前)避免白闪 */
 const WINDOW_BG: Record<Theme, string> = { light: '#ffffff', dark: '#262626' }
 
+/**
+ * 无边框窗口(WCO)的顶部配色 —— 去掉 Windows 原生那条浅色标题栏,
+ * 和 Obsidian / VSCode 一样让窗口控件直接浮在应用自己的顶栏上。
+ *
+ * `titleBarOverlay` 只画右上角控件那一块(实测 138×36 DIP),其余顶部区域
+ * 仍是网页内容,所以颜色只要跟当前视图的顶部底色一致,视觉上就不存在"标题栏"。
+ * 仓库选择页铺的是 --bg-editor,编辑器是 --bg-app;符号色用 --text-secondary。
+ */
+const WINDOW_CHROME: Record<Theme, { app: string; editor: string; symbol: string }> = {
+  light: { app: '#f8f9fb', editor: '#ffffff', symbol: '#57606a' },
+  dark: { app: '#212121', editor: '#262626', symbol: '#b3b3b3' }
+}
+
+/** 与 .tab-bar / 两侧顶栏同高(见 tabs.css):窗口控件正好占满顶部这一行 */
+const TITLE_BAR_HEIGHT = 36
+
+/** 当前视图决定顶部底色;由 setWindowView(渲染层切换视图时调用)更新 */
+let currentView: 'picker' | 'editor' = 'picker'
+
+function applyWindowChrome(w: BrowserWindow, theme: Theme, view: 'picker' | 'editor'): void {
+  w.setBackgroundColor(WINDOW_BG[theme] ?? WINDOW_BG.light)
+  // 只有 Windows 用了 WCO;macOS 的交通灯 / Linux 的原生标题栏保持原样
+  if (process.platform !== 'win32') return
+  const c = WINDOW_CHROME[theme] ?? WINDOW_CHROME.light
+  w.setTitleBarOverlay({
+    color: view === 'picker' ? c.editor : c.app,
+    symbolColor: c.symbol,
+    height: TITLE_BAR_HEIGHT
+  })
+}
+
 /** 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸 */
 const PICKER_SIZE = { width: 820, height: 550 }
 
 let mainWindow: BrowserWindow | null = null
 let dirty = false
+/** 有未保存改动的标签页名(窗口关闭提示里列出来,免得只提当前那一个) */
+let dirtyNames: string[] = []
 let closing = false
 let pendingSave = false
 let currentFileName = '未命名'
@@ -46,6 +80,8 @@ export function createMainWindow(settings: Settings): BrowserWindow {
   // 勾了「启动时直接打开上次仓库」就直接最大化开窗,免得先小后大地闪一下
   // (渲染层的视图切换发生在建窗之后)
   const startAtPicker = !(settings.skipVaultPicker && settings.vaultPath)
+  currentView = startAtPicker ? 'picker' : 'editor'
+  const chrome = WINDOW_CHROME[settings.theme] ?? WINDOW_CHROME.light
   mainWindow = new BrowserWindow({
     width: PICKER_SIZE.width,
     height: PICKER_SIZE.height,
@@ -58,6 +94,22 @@ export function createMainWindow(settings: Settings): BrowserWindow {
     icon: windowIcon(),
     // 按主题预设背景色,避免启动白闪
     backgroundColor: WINDOW_BG[settings.theme] ?? WINDOW_BG.light,
+    /*
+     * Windows:藏掉原生标题栏。系统的最小化/最大化/关闭仍由 WCO 画在右上角,
+     * 颜色跟着主题走;顶部其余区域还是网页内容,由渲染层的拖拽区负责移动窗口。
+     * 其他平台保持原生标题栏 —— macOS 的交通灯位置、Linux 的 WCO 兼容性
+     * 都需要单独适配,不在这次改动里冒险。
+     */
+    ...(process.platform === 'win32'
+      ? {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: startAtPicker ? chrome.editor : chrome.app,
+            symbolColor: chrome.symbol,
+            height: TITLE_BAR_HEIGHT
+          }
+        }
+      : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -99,10 +151,17 @@ export function createMainWindow(settings: Settings): BrowserWindow {
       closing = true
       return
     }
+    // 多标签页时脏的可能不止当前这一份。提示里把名字列全,
+    // 否则「是否保存对 A 的更改」会让用户以为 B 的改动已经安全了
+    const multiple = dirtyNames.length > 1
     const choice = dialog.showMessageBoxSync(mainWindow!, {
       type: 'warning',
-      message: `是否保存对「${currentFileName}」的更改?`,
-      detail: '如果不保存就关闭,更改将丢失。',
+      message: multiple
+        ? `有 ${dirtyNames.length} 个文档有未保存的更改`
+        : `是否保存对「${dirtyNames[0] ?? currentFileName}」的更改?`,
+      detail: multiple
+        ? `${dirtyNames.join('\n')}\n\n如果不保存就关闭,这些更改将丢失。`
+        : '如果不保存就关闭,更改将丢失。',
       buttons: ['保存', '不保存', '取消'],
       defaultId: 0,
       cancelId: 2,
@@ -117,11 +176,13 @@ export function createMainWindow(settings: Settings): BrowserWindow {
     // 交给渲染层执行保存流程,完成后 notifySaveDone → win.close()
     pendingSave = true
     mainWindow!.webContents.send(IPC.SaveBeforeClose)
-    // 渲染层崩溃或未加载完成时的兜底强关
+    // 渲染层崩溃或未加载完成时的兜底强关。
+    // 时间给得长:多标签页关闭时会逐个保存,未命名文档还会弹出「另存为」——
+    // 用户正对着对话框选路径时,5 秒就销毁窗口等于把刚敲的内容直接扔掉
     forceCloseTimer = setTimeout(() => {
       closing = true
       mainWindow?.destroy()
-    }, 5000)
+    }, 120_000)
   })
 
   mainWindow.on('closed', () => {
@@ -131,11 +192,20 @@ export function createMainWindow(settings: Settings): BrowserWindow {
     mainWindowClosedHandler?.()
   })
 
+  // 切换主题时窗口底色与 WCO 配色跟着换。saveSettings 是唯一漏斗,挂在它上面
+  // 能覆盖状态栏快捷键、设置面板、插件改设置等所有路径
+  const offSettings = onSettingsChanged((next, prev) => {
+    if (next.theme === prev.theme || !mainWindow) return
+    applyWindowChrome(mainWindow, next.theme, currentView)
+  })
+  mainWindow.once('closed', offSettings)
+
   return mainWindow
 }
 
-export function setDocDirty(value: boolean): void {
+export function setDocDirty(value: boolean, names: string[] = []): void {
   dirty = value
+  dirtyNames = names
 }
 
 /**
@@ -146,6 +216,12 @@ export function setDocDirty(value: boolean): void {
  */
 export function setWindowView(view: 'picker' | 'editor'): void {
   if (!mainWindow) return
+  if (view !== currentView) {
+    currentView = view
+    // 两个视图的顶部底色不同(选择页 --bg-editor,编辑器 --bg-app),
+    // WCO 那块也要跟着换,否则选择页右上角会出现一个色块
+    applyWindowChrome(mainWindow, getSettingsSync()?.theme ?? 'light', view)
+  }
   if (view === 'editor') {
     if (!mainWindow.isMaximized()) mainWindow.maximize()
   } else if (mainWindow.isMaximized()) {

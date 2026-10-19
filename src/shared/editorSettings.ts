@@ -28,7 +28,8 @@ export const EDITOR_DEFAULTS = {
    */
   autoSaveDelay: 1,
   lineWrapping: true,
-  editorFontSize: 16
+  /** 与 Obsidian 的正文设置一致(13px) */
+  editorFontSize: 13
 } as const
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {

@@ -1,13 +1,16 @@
 /* ---------- 光标行行首的「+」按钮 ---------- */
 
 /*
- * 它挂在 .cm-line 里(Decoration.widget),靠绝对定位藏进行左侧那段 28px padding 里 ——
+ * 它挂在 .cm-line 里(Decoration.widget),靠绝对定位藏进正文栏左侧的 gutter 里 ——
  * 行内元素是占位的,不脱流就会把整行文字往右推。定位参照是 .cm-line 的 position: relative,
  * 那条写在 editor/setup.ts 的 editorTheme 里(base theme 的特异度只能从那儿盖)。
+ *
+ * 行本身没有左右 padding(见 setup.ts 的说明),所以按钮要越过正文栏左缘,
+ * 落在 --editor-line-gutter(28px)这段留白里;2px 是与旧版一致的边距。
  */
 .line-plus {
   position: absolute;
-  left: 2px;
+  left: calc(2px - var(--editor-line-gutter));
   top: 0.15em;
   display: flex;
   align-items: center;

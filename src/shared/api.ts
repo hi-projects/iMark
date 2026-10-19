@@ -38,6 +38,13 @@ export interface WindowApi {
    * (如 `assets/image-20261019-143012-ab12cd34.png`)。文档没有路径时调用方应先提示保存。
    */
   saveImageAsset(docPath: string, mime: string, data: Uint8Array): Promise<string>
+  /**
+   * 回收 `docPath` 旁 `assets/` 里已经不再被正文引用的粘贴图片。
+   *
+   * 只在保存成功后调用。`names` 是裸文件名(如 `image-20261019-143012-ab12cd34.png`),
+   * 主进程会复核命名规则、路径,并跳过仍被同目录其他笔记引用的文件。
+   */
+  trashImageAssets(docPath: string, names: string[]): Promise<void>
   confirmDiscard(fileName: string): Promise<'save' | 'discard' | 'cancel'>
   getSettings(): Promise<Settings>
   saveSettings(s: Partial<Settings>): Promise<Settings>
@@ -46,7 +53,11 @@ export interface WindowApi {
   setWindowTitle(name: string | null, dirty: boolean, vaultName?: string | null): void
   /** 让主进程跟着视图调窗口状态:选择页是启动尺寸,编辑器最大化 */
   setWindowView(view: 'picker' | 'editor'): void
-  setDocDirty(dirty: boolean): void
+  /**
+   * 编辑器里有没有未保存的改动。`dirtyNames` 是这些标签页的名字,
+   * 窗口关闭提示要据此告诉用户到底有几份、分别是哪几份。
+   */
+  setDocDirty(dirty: boolean, dirtyNames?: string[]): void
   /** 当前文档的绝对路径(没打开文件时 null)—— 主进程据此划定 imark:// 能读的范围 */
   setDocPath(path: string | null): void
   notifySaveDone(ok: boolean): void

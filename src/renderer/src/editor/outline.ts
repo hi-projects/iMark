@@ -47,12 +47,6 @@ export function extractOutline(state: EditorState): OutlineItem[] {
   return items
 }
 
-/** 重建大纲并立即刷新激活项 */
-export function updateOutline(view: EditorView): void {
-  appStore.outline = extractOutline(view.state)
-  updateActiveOutline(view)
-}
-
 /** 滚动跟随:视口顶部所在章节的标题高亮 */
 export function updateActiveOutline(view: EditorView): void {
   const items = appStore.outline

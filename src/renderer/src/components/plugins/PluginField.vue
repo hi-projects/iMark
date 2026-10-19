@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { CircleHelp } from 'lucide-vue-next'
-import type { PluginField, PluginTarget } from '@shared/plugins'
+import type { PluginField, PluginTarget, PluginTargetResult } from '@shared/plugins'
 import TargetsField from './TargetsField.vue'
 
-const props = defineProps<{
-  field: PluginField
-  value: unknown
-  /** password 字段的密钥掩码('' = 未配置) */
-  hint: string
-  /** targets 字段:目标 id → 密钥掩码 */
-  targetSecrets: Record<string, string>
-  /** targets 字段:每一行自己的动作(如「测试连接」) */
-  targetActions: { id: string; label: string }[]
-  /** 正在执行动作的目标 id */
-  busyTarget: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    field: PluginField
+    value: unknown
+    /** password 字段的密钥掩码('' = 未配置) */
+    hint: string
+    /** targets 字段:目标 id → 密钥掩码 */
+    targetSecrets: Record<string, string>
+    /** targets 字段:每一行自己的动作(如「测试连接」) */
+    targetActions: { id: string; label: string }[]
+    /** targets 字段:每个目标的最近一次操作结果(id → ok/error;没有条目 = 还没操作过) */
+    targetResults?: Record<string, PluginTargetResult>
+    /** 正在执行动作的目标 id */
+    busyTarget: string | null
+  }>(),
+  { targetResults: () => ({}) }
+)
 
 const emit = defineEmits<{
   (e: 'change', value: unknown): void
@@ -60,6 +65,7 @@ function onSecretInput(e: Event): void {
       :targets="Array.isArray(value) ? (value as PluginTarget[]) : []"
       :secrets="targetSecrets"
       :target-actions="targetActions"
+      :target-results="targetResults"
       :busy-target="busyTarget"
       @change="emit('change', $event)"
       @save-secret="(id, v) => emit('save-target-secret', id, v)"

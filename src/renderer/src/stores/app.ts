@@ -2,6 +2,7 @@ import { reactive, watch } from 'vue'
 import type { EditorView } from '@codemirror/view'
 import type { AutoSaveMode, Theme, VaultNode } from '@shared/types'
 import { api } from '../services/api'
+import type { DocTab } from '../services/tabs'
 
 /** 主题枚举顺序(设置面板的选项顺序,也是循环切换顺序) */
 export const THEME_ORDER: Theme[] = ['light', 'dark']
@@ -36,6 +37,17 @@ interface AppState {
   /** 最近打开的仓库列表(最新的在前),来自 settings */
   vaults: string[]
   theme: Theme
+  /**
+   * 打开的标签页(顺序即标签栏顺序)。
+   * 每个标签各持有一份 EditorState(见 services/tabs.ts)。
+   */
+  tabs: DocTab[]
+  /** 当前激活的标签 id;null = 没有打开任何文档 */
+  activeTabId: string | null
+  /**
+   * 当前标签的镜像 —— 状态栏、窗口标题、大纲、插件 API 都读这些旧字段。
+   * 由 services/tabs.ts 的 syncMirror() 维护,不要在别处直接改。
+   */
   filePath: string | null
   fileName: string
   /**
@@ -57,6 +69,8 @@ interface AppState {
   lines: number
   outline: OutlineItem[]
   outlineVisible: boolean
+  /** 大纲侧栏宽度(px),拖动分界线时更新 */
+  outlineWidth: number
   /** 当前激活(视口顶部所在章节)标题的 from 值 */
   outlineActive: number | null
   vaultPath: string | null
@@ -76,6 +90,8 @@ interface AppState {
   /** 展开的目录路径集合(刷新/重载后保留) */
   expandedDirs: Set<string>
   explorerVisible: boolean
+  /** 文件浏览器宽度(px),拖动分界线时更新 */
+  explorerWidth: number
   switcherOpen: boolean
   /**
    * 切换器的打开方式:「搜文件」还是「搜命令」。
@@ -97,6 +113,8 @@ export const appStore = reactive<AppState>({
   view: 'picker',
   vaults: [],
   theme: 'light',
+  tabs: [],
+  activeTabId: null,
   filePath: null,
   fileName: '未命名',
   hasDocument: false,
@@ -108,6 +126,7 @@ export const appStore = reactive<AppState>({
   lines: 1,
   outline: [],
   outlineVisible: true,
+  outlineWidth: 240,
   outlineActive: null,
   vaultPath: null,
   vaultName: null,
@@ -116,11 +135,12 @@ export const appStore = reactive<AppState>({
   autoSaveMode: 'off',
   autoSaveDelay: 1,
   lineWrapping: true,
-  editorFontSize: 16,
+  editorFontSize: 13,
   autoSavedAt: null,
   autoSaveError: null,
   expandedDirs: new Set<string>(),
   explorerVisible: true,
+  explorerWidth: 240,
   switcherOpen: false,
   switcherMode: 'file',
   settingsOpen: false,
@@ -141,11 +161,21 @@ let watching = false
 export function initStoreWatchers(): void {
   if (watching) return
   watching = true
+  /**
+   * 窗口关闭前的脏检查看的是**所有**标签,不是当前这一个:
+   * 后台标签里未保存的改动同样会随窗口一起消失。
+   * 顺便把名字带过去,原生提示才能说清是哪几份。
+   */
   watch(
-    () => appStore.dirty,
-    value => {
-      api.setDocDirty(value)
-    }
+    () => appStore.tabs.map(t => `${t.dirty ? '*' : ''}${t.fileName}`).join('\n'),
+    () => {
+      const dirtyTabs = appStore.tabs.filter(t => t.dirty)
+      api.setDocDirty(
+        dirtyTabs.length > 0,
+        dirtyTabs.map(t => t.fileName)
+      )
+    },
+    { immediate: true }
   )
   watch(
     () =>
@@ -224,6 +254,12 @@ export function toggleOutlineVisible(): void {
 
 export function initExplorerVisible(visible: boolean): void {
   appStore.explorerVisible = visible
+}
+
+/** 仅初始化内存状态,不写盘(启动时读取 settings 后调用) */
+export function initSidebarWidths(explorerWidth: number, outlineWidth: number): void {
+  appStore.explorerWidth = explorerWidth
+  appStore.outlineWidth = outlineWidth
 }
 
 /** 仅初始化内存状态,不写盘(启动时读取 settings 后调用) */

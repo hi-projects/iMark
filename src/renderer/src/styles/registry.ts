@@ -11,7 +11,8 @@
  *   `cm-md-*` 来自所见即所得装饰层、其余为语义化类名)冲突;
  * - 颜色 / 边框 / 间距一律使用 `tokens.css` 里的 CSS 变量
  *   (`--bg-app` `--bg-editor` `--text-primary` `--text-secondary` `--border`
- *   `--accent` `--bg-toolbar` `--bg-selection` `--shadow` `--font-editor` `--font-mono`),
+ *   `--accent` `--bg-toolbar` `--bg-selection` `--shadow` `--font-editor`
+ *   `--font-text` `--font-mono`),
  *   这样亮色 / 深色两档主题自动适配;
  * - 需要覆盖 CodeMirror base theme 已定义的属性(`.cm-cursor` `.cm-scroller` 等)时,
  *   必须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略),

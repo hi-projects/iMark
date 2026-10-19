@@ -26,6 +26,8 @@ import type {
 import type { PluginState, RenderHalfMessage, RendererOpRequest } from '@shared/plugins'
 import { editorKit, getEditorView, onEditorDocChanged } from '../editor/pluginSdk'
 import { registerPluginExtension, unregisterAllPluginExtensions } from '../editor/pluginExtensions'
+import { appStore } from '../stores/app'
+import { renderMarkdownFragment } from './exportHtml'
 import { api } from './api'
 
 interface Session {
@@ -101,6 +103,15 @@ function makeApi(session: Session): ImkRenderLayerApi {
     kit: editorKit
   })
 
+  /**
+   * Markdown → HTML 片段。用宿主自己的 markdown-it 实例渲染，插件不必也不应该
+   * 自带一份；`html:false` 保证原始 HTML 被转义，链接也走宿主默认的白名单校验。
+   */
+  const markdown = Object.freeze({
+    render: (text: string): Promise<string> =>
+      renderMarkdownFragment(String(text ?? ''), appStore.theme === 'light' ? 'light' : 'dark')
+  })
+
   return Object.freeze({
     plugin: Object.freeze({
       id,
@@ -122,6 +133,7 @@ function makeApi(session: Session): ImkRenderLayerApi {
       }
     }),
     editor,
+    markdown,
     main
   })
 }

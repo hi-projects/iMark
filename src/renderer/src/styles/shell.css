@@ -13,19 +13,74 @@
   min-height: 0;
 }
 
+/*
+ * 侧栏拖动分界:视觉上是一条 1px 线(与原来的 border 同宽),命中区向两侧各扩
+ * 4px —— 1px 的线太细,鼠标很难精确压中。侧栏自身不再画 border,避免双线。
+ */
+.pane-resizer {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 1px;
+  align-self: stretch;
+  background: var(--border);
+  cursor: col-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.pane-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+
+/* 右侧分界线的左边紧贴编辑器的滚动条:命中区只向编辑器里伸 1px,
+   其余宽度放到大纲一侧,别跟滚动条抢那几像素 */
+.pane-resizer[data-side='outline']::before {
+  left: -1px;
+  right: -4px;
+}
+
+.pane-resizer:hover,
+.pane-resizer-active {
+  background: var(--accent);
+}
+
+/* 拖动中:鼠标可能已经离开那条线,整页统一成左右拖动光标 */
+body.pane-resizing,
+body.pane-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/*
+ * 编辑区列:标签栏在上、编辑器占满剩余高度。
+ * 左右两侧的文件列表/大纲保持整列高度 —— 标签栏只在编辑器上方,
+ * 不横跨整个窗口(与 Obsidian 的工作区页签一致)。
+ */
+.editor-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* ---------- 文件浏览器 ---------- */
 
 .explorer {
   display: flex;
   flex-direction: column;
-  flex: 0 0 240px;
+  flex: 0 0 var(--explorer-width, 240px);
   min-width: 0;
+  /* 兜底:两个侧栏都取持久化的极宽值时,正文区至少还能剩 320px */
+  max-width: calc(50% - 160px);
   background: var(--bg-app);
-  border-right: 1px solid var(--border);
   user-select: none;
 }
 
-/* 仅承载左上角操作按钮(新建文件 / 新建文件夹 / 刷新),无标题文字 */
+/* 仅承载左上角操作按钮(新建文件 / 新建文件夹 / 刷新),无标题文字。
+   这一条和右侧大纲的标题栏同时充当无边框窗口的拖拽区(见 window.ts 的 WCO) */
 .explorer-header {
   display: flex;
   align-items: center;
@@ -34,11 +89,14 @@
   flex: 0 0 auto;
   min-height: 26px;
   padding: 6px 10px 4px 8px;
+  -webkit-app-region: drag;
 }
 
 .explorer-actions {
   display: inline-flex;
   gap: 2px;
+  /* 按钮必须从拖拽区里摘出来,否则点不动 */
+  -webkit-app-region: no-drag;
 }
 
 .explorer-actions button {
@@ -236,19 +294,23 @@
 .outline-sidebar {
   display: flex;
   flex-direction: column;
-  flex: 0 0 240px;
+  flex: 0 0 var(--outline-width, 240px);
   min-width: 0;
+  /* 同文件栏:防止持久化的极宽值把正文区挤没 */
+  max-width: calc(50% - 160px);
   background: var(--bg-app);
-  border-left: 1px solid var(--border);
   user-select: none;
 }
 
 .outline-header {
   flex: 0 0 auto;
-  padding: 10px 14px 6px;
+  /* 右侧给 Windows 窗口控件让位(三枚按钮共 138px),文字不会被盖住 */
+  padding: 10px 150px 6px 14px;
   font-size: 12px;
   color: var(--text-tertiary);
   letter-spacing: 0.05em;
+  /* 顶部这一行也是窗口拖拽区(原生标题栏已经藏掉) */
+  -webkit-app-region: drag;
 }
 
 .outline-list {

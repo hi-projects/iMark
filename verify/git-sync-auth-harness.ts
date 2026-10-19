@@ -258,6 +258,12 @@ async function main(): Promise<void> {
   const author = (await gitSoft(remote, ['log', '-1', '--format=%an <%ae>', 'main'])).trim()
   check('提交作者用的是插件的兜底身份(-c user.name/-c user.email)', author === 'iMark <imark@local>',
     author)
+  const afterSync = (await host.list()).find(v => v.descriptor.id === 'git-sync')
+  check(
+    '推送结果按目标记下(设置页据此给卡片上色)',
+    afterSync?.state.targetResults?.t1 === 'ok',
+    JSON.stringify(afterSync?.state.targetResults)
+  )
 
   // ---------- 二、「测试连接」打到要求认证的 http 端点 ----------
   // 先让远端有 refs,ls-remote 才有的可读(dumb http 读的是 update-server-info 写的 info/refs)
@@ -292,6 +298,11 @@ async function main(): Promise<void> {
     '状态里不再保留单独的明细(只有 lastMessage 一段文本)',
     afterProbe?.state.lastDetail === undefined,
     afterProbe?.state.lastDetail ?? ''
+  )
+  check(
+    '单目标测试只更新自己那一行,不抹掉其他远端已有的结果',
+    afterProbe?.state.targetResults?.t2 === 'ok' && afterProbe.state.targetResults?.t1 === 'ok',
+    JSON.stringify(afterProbe?.state.targetResults)
   )
   const lastOp = afterProbe?.recentOps?.[0]
   check(
@@ -368,6 +379,11 @@ async function main(): Promise<void> {
   )
   check('整体状态是「部分失败」', syncView?.state.status === 'partial', syncView?.state.status)
   check(
+    '每个远端的成败分别记在自己的目标 id 下',
+    syncView?.state.targetResults?.t1 === 'ok' && syncView.state.targetResults?.t2 === 'error',
+    JSON.stringify(syncView?.state.targetResults)
+  )
+  check(
     '最近操作记录了这次同步',
     syncView?.recentOps?.[0]?.action === '立即上传' &&
       syncView.recentOps[0].status === 'partial',
@@ -392,6 +408,138 @@ async function main(): Promise<void> {
   await first
   // 等排队的第二轮跑完,别在退出时关掉它还在用的 http 服务
   await new Promise(r => setTimeout(r, 1500))
+
+  // ---------- 五、设置页:边框颜色只表达「操作结果」 ----------
+  console.log('\n[五] 设置页:远端卡片边框=上次操作结果,输入校验集中列出')
+  // 等这一轮真的结束再停用:onDisable 会 abort 正在跑的同步,那会把某个远端的
+  // 最后一次结果改写成「失败」,后面的断言就不是我们要看的东西了
+  for (let i = 0; i < 50; i++) {
+    const v = (await host.list()).find(x => x.descriptor.id === 'git-sync')
+    if (v?.state.status !== 'running') break
+    await new Promise(r => setTimeout(r, 100))
+  }
+  // 第三个远端只填了地址:它从没被操作过,应该保持灰框,并出现在统一的校验列表里。
+  // 顺带停用插件,免得 3 秒后的配置同步把界面检查期间的颜色改掉。
+  const incompleteTarget: PluginTarget = {
+    id: 't3',
+    url: 'https://example.invalid/repo.git',
+    localBranch: '',
+    remoteBranch: '',
+    auth: 'token',
+    username: ''
+  }
+  await host.save('git-sync', {
+    enabled: false,
+    config: {
+      targets: [
+        localTarget,
+        { ...authTarget, url: join(ud, 'missing-remote.git') },
+        incompleteTarget
+      ]
+    }
+  })
+  await new Promise(r => setTimeout(r, 300))
+
+  const wc = win.webContents
+  const evalJs = <T>(code: string): Promise<T> => wc.executeJavaScript(code, true) as Promise<T>
+  const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+  await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
+  for (let i = 0; i < 50; i++) {
+    if (await evalJs<boolean>(`!!document.querySelector('.settings-nav')`)) break
+    await sleep(100)
+  }
+  await evalJs(
+    `[...document.querySelectorAll('.settings-nav-item')].find(x => x.textContent.includes('定时上传'))?.click()`
+  )
+  for (let i = 0; i < 50; i++) {
+    if (await evalJs<boolean>(`document.querySelectorAll('.plugin-target').length >= 3`)) break
+    await sleep(100)
+  }
+  const ui = await evalJs<{
+    count: number
+    borders: string[]
+    titles: string[]
+    problems: string
+    success: string
+    danger: string
+    border: string
+  }>(`
+    (() => {
+      const cssColor = name => {
+        const probe = document.createElement('div')
+        probe.style.color = 'var(' + name + ')'
+        document.body.appendChild(probe)
+        const color = getComputedStyle(probe).color
+        probe.remove()
+        return color
+      }
+      const cards = [...document.querySelectorAll('.plugin-target')]
+      const problems = document.querySelector('.plugin-target-problems')
+      return {
+        count: cards.length,
+        borders: cards.map(c => getComputedStyle(c).borderTopColor),
+        titles: cards.map(c => c.getAttribute('title') || ''),
+        problems: problems ? problems.innerText.replace(/\\s+/g, ' ') : '',
+        success: cssColor('--success'),
+        danger: cssColor('--danger'),
+        border: cssColor('--border')
+      }
+    })()
+  `)
+  console.log(`      边框:${ui.borders.join(' / ')}`)
+  console.log(`      校验:${ui.problems || '(空)'}`)
+  check('三个远端都渲染出来', ui.count === 3, `实际 ${ui.count} 张卡片`)
+  check('推送成功的远端是绿框', ui.borders[0] === ui.success, `${ui.borders[0]} vs ${ui.success}`)
+  check('推送失败的远端是红框', ui.borders[1] === ui.danger, `${ui.borders[1]} vs ${ui.danger}`)
+  check(
+    '没操作过的远端保持默认灰框',
+    ui.borders[2] === ui.border,
+    `${ui.borders[2]} vs ${ui.border}`
+  )
+  check(
+    '输入不满足不再染红卡片边框',
+    ui.borders[2] !== ui.danger,
+    ui.borders[2]
+  )
+  check(
+    '缺什么集中列在一处(第 3 个远端：本地分支、访问令牌)',
+    ui.problems.includes('存在 1 个远端配置未完成/错误') &&
+      ui.problems.includes('第 3 个远端：未填本地分支、访问令牌'),
+    ui.problems
+  )
+  check(
+    '卡片悬停提示说的是操作结果',
+    ui.titles[0] === '上次操作成功' &&
+      ui.titles[1] === '上次操作失败' &&
+      ui.titles[2] === '还没有对它执行过操作',
+    ui.titles.join(' / ')
+  )
+
+  // 「调试」里的两类横线要能看出层次:模块标题下的是全强度边框,
+  // 操作条目之间的是浅一档的分隔线。颜色一样时整块会像一堆并列的卡片。
+  const dividers = await evalJs<{ count: number; entry: string; module: string }>(`
+    (() => {
+      const ops = [...document.querySelectorAll('.plugin-op')]
+      const op = ops[ops.length - 1]
+      const head = document.querySelector('.plugin-ops-head')
+      return {
+        count: ops.length,
+        entry: op ? getComputedStyle(op).borderTopColor : '',
+        module: head ? getComputedStyle(head).borderBottomColor : ''
+      }
+    })()
+  `)
+  console.log(`      分隔线:条目 ${dividers.entry} / 模块 ${dividers.module}`)
+  check('调试里有操作记录,才能比较两类分隔线', dividers.count > 0, String(dividers.count))
+  check(
+    '操作条目之间的分隔线比模块标题下的浅一档',
+    dividers.entry !== '' && dividers.module !== '' && dividers.entry !== dividers.module,
+    `${dividers.entry} vs ${dividers.module}`
+  )
+  // 留一张图:颜色断言看不出「三个状态 + 校验框」挤在一起是否还读得顺
+  await evalJs('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+  await new Promise(r => setTimeout(r, 120))
+  await writeFile(join(ud, 'git-sync-targets.png'), (await wc.capturePage()).toPNG())
 
   http.close()
   console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)

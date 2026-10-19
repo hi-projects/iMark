@@ -13,6 +13,7 @@ import { syntaxTree } from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view'
 import katex from 'katex'
+import { mathSource } from './math'
 
 /** 源码与预览之间、预览与编辑区边缘之间的距离(px) */
 const GAP = 10
@@ -27,6 +28,11 @@ interface MathHit {
   display: boolean
 }
 
+/** 三种公式节点:行内 $...$、段落内的 $$...$$、块解析器产出的行首 $$...$$ */
+function isMathNode(name: string): boolean {
+  return name === 'InlineMath' || name === 'DisplayMath' || name === 'MathBlock'
+}
+
 /** 光标所在的公式节点 */
 function mathAtCursor(view: EditorView): MathHit | null {
   const state = view.state
@@ -39,16 +45,14 @@ function mathAtCursor(view: EditorView): MathHit | null {
    */
   for (const bias of [-1, 1] as const) {
     let node = tree.resolveInner(head, bias)
-    while (node.parent && node.name !== 'InlineMath' && node.name !== 'DisplayMath') {
+    while (node.parent && !isMathNode(node.name)) {
       node = node.parent
     }
-    if (node.name !== 'InlineMath' && node.name !== 'DisplayMath') continue
+    if (!isMathNode(node.name)) continue
     if (head < node.from || head > node.to) continue
-    const content = node.getChild('MathContent')
-    if (!content) continue
-    const tex = state.doc.sliceString(content.from, content.to)
+    const tex = mathSource(state.doc, node)
     if (!tex.trim()) continue
-    return { from: node.from, to: node.to, tex, display: node.name === 'DisplayMath' }
+    return { from: node.from, to: node.to, tex, display: node.name !== 'InlineMath' }
   }
   return null
 }

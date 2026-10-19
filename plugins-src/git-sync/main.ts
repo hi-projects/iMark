@@ -16,7 +16,15 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { ImkApi, ImkGitApi, ImkSecretsApi, PluginRuntime } from '@shared/pluginApi'
-import type { PluginActionResult, PluginTarget } from '@shared/plugins'
+import type { PluginActionResult, PluginTarget, PluginTargetResult } from '@shared/plugins'
+import {
+  detectSystemProxy,
+  normalizeProxyUrl,
+  probeProxy,
+  proxyForUrl,
+  type DetectedProxy,
+  type ProxyMode
+} from './proxy'
 
 /** 新建仓库时写入的忽略项;已有仓库绝不改动用户的 .gitignore */
 const DEFAULT_GITIGNORE = `# iMark 定时上传默认忽略
@@ -42,6 +50,32 @@ interface GitSyncConfig {
   writeGitignore: boolean
   /** 初始化仓库时是否创建一个 README.md（已存在则不覆盖） */
   writeReadme: boolean
+  /** 网络代理:auto = 自动探测环境变量 / Windows 系统代理;manual = 用下面填的地址;off = 直连 */
+  proxyMode: ProxyMode
+  /** 手动模式的代理地址(支持 http/https/socks5) */
+  proxyUrl: string
+}
+
+/** 一次网络操作实际用到的代理参数 */
+interface NetworkSetup {
+  /** 追加到 git 命令行(在子命令之前)的 -c 参数 */
+  args: string[]
+  /** 追加到子进程环境变量的部分(NO_PROXY / 强制直连) */
+  env: Record<string, string>
+  mode: ProxyMode
+  /** 实际生效的代理地址;null = 直连(已脱敏,可直接展示) */
+  proxyUrl: string | null
+  /** 代理来源,用于日志与失败提示 */
+  proxySource: string | null
+}
+
+/** 失败原因的分类现场:同样的 timeout,「没代理」「代理挂了」「SSH」要说不同的话 */
+interface FailureContext {
+  mode: ProxyMode
+  /** 已脱敏的代理地址;null = 本次直连 */
+  proxyUrl: string | null
+  proxySource: string | null
+  remoteUrl: string
 }
 
 /**
@@ -71,17 +105,43 @@ function secretSlot(target: Pick<PluginTarget, 'id' | 'auth'>): string {
   return target.auth === 'password' ? `${target.id}#password` : target.id
 }
 
+/** scp 风格的 SSH 地址(`git@host:path`)与 `ssh://` 都不经过 HTTP 代理 */
+function isSshRemote(url: string): boolean {
+  const text = url.trim()
+  return /^ssh:\/\//i.test(text) || /^[^/@\s]+@[^/\s:]+:/.test(text)
+}
+
 /** 把 git 的报错翻译成有指导意义的中文 */
-function classifyPushError(stderr: string): string {
+function classifyPushError(stderr: string, ctx?: FailureContext): string {
   const text = stderr.toLowerCase()
+  if (/\b407\b|proxy authentication required/.test(text)) {
+    return '代理要求认证（407）：请检查本机代理客户端的认证设置。'
+  }
   if (/non-fast-forward|fetch first|rejected|behind/.test(text)) {
     return '远端已有本地没有的提交，推送被拒。请在仓库目录自行处理（如 git pull --rebase）后重试。'
   }
   if (/authentication failed|could not read username|403|401|invalid credentials/.test(text)) {
     return '认证失败：请检查访问令牌是否有效、是否有该仓库的写权限。'
   }
-  if (/could not resolve host|unable to access|connection|timed out/.test(text)) {
-    return '无法连接远端：请检查网络与仓库地址。'
+  if (
+    /could not resolve host|unable to access|could not connect|failed to connect|connection refused|network is unreachable|connection|timed out/.test(
+      text
+    )
+  ) {
+    if (ctx?.proxyUrl) {
+      // 已经告诉 git 走代理还连不上,最可能的是代理客户端没开、或地址/端口不对
+      return `无法连接远端：已尝试经代理 ${ctx.proxyUrl}（${ctx.proxySource ?? '来源未知'}）。请确认代理客户端正在运行；不需要代理时可把「连接方式」改为「直连」。`
+    }
+    if (ctx?.mode === 'off') {
+      return '无法连接远端：当前为直连（不使用代理）。若浏览器能打开而这里超时，请在插件设置里开启「自动检测」或填写本机代理。'
+    }
+    if (ctx?.mode === 'manual') {
+      return '无法连接远端：手动代理地址为空或无法识别，请检查插件设置里的「代理地址」。'
+    }
+    if (ctx && isSshRemote(ctx.remoteUrl)) {
+      return '无法连接远端：SSH 地址不经过 HTTP 代理。请检查网络，或改用 HTTPS 地址（HTTPS 才能走本机代理）。'
+    }
+    return '无法连接远端：未检测到本机代理。若浏览器能访问而这里超时，请在插件设置里填写本机代理（Clash / FlClash 常见为 http://127.0.0.1:7890）。'
   }
   if (/repository not found|does not exist/.test(text)) {
     return '远端仓库不存在或无权访问：请检查地址与令牌权限。'
@@ -144,6 +204,7 @@ class GitSyncPlugin {
     if (actionId === 'sync-now') return this.sync('manual')
     if (actionId === 'test-all') return this.testConnection()
     if (actionId === 'test-connection') return this.testConnection(targetId)
+    if (actionId === 'detect-proxy') return this.detectProxy()
     return { ok: false, message: `未知动作：${actionId}` }
   }
 
@@ -265,7 +326,7 @@ class GitSyncPlugin {
 
       const committed = await this.commitLocal(vaultPath, cfg, signal)
       // 无论有没有新提交都推一次:上一次推送失败(离线/被拒)时也能补上
-      const { pushed, failed } = await this.pushAll(vaultPath, targets, allTargets, signal)
+      const { pushed, failed } = await this.pushAll(vaultPath, targets, allTargets, cfg, signal)
 
       if (failed.length > 0) {
         // 多远端时状态正文就是逐远端的结果;整体成败由徽标承担。
@@ -315,6 +376,127 @@ class GitSyncPlugin {
     }
   }
 
+  // ---------- 代理 ----------
+
+  private proxyMode(cfg: GitSyncConfig): ProxyMode {
+    return cfg.proxyMode === 'manual' || cfg.proxyMode === 'off' ? cfg.proxyMode : 'auto'
+  }
+
+  /**
+   * 为一次网络操作准备代理参数。
+   *
+   * 为什么不能只靠环境变量:git/libcurl 不会读 Windows 的「系统代理」,
+   * 而 Clash / FlClash 开启系统代理时写的正是那里。这里把探测结果显式拼成
+   * `-c http.proxy=…`,让 git 与浏览器走同一条路。
+   */
+  private async networkSetup(url: string, cfg: GitSyncConfig): Promise<NetworkSetup> {
+    const mode = this.proxyMode(cfg)
+    if (mode === 'off') {
+      // 直连要能压过环境变量与全局 git config:空值关掉 http.proxy,NO_PROXY=* 再兜一层
+      return {
+        args: ['-c', 'http.proxy='],
+        env: { NO_PROXY: '*', no_proxy: '*' },
+        mode,
+        proxyUrl: null,
+        proxySource: null
+      }
+    }
+
+    let detected: DetectedProxy | null = null
+    if (mode === 'manual') {
+      const normalized = normalizeProxyUrl(cfg.proxyUrl)
+      if (normalized) detected = { url: normalized, source: '插件设置', bypass: [] }
+    } else {
+      const scheme = /^https:/i.test(url.trim()) ? 'https' : /^http:/i.test(url.trim()) ? 'http' : null
+      // SSH / 本地路径:没有 HTTP 代理可用,也不必白跑一次注册表查询
+      if (scheme) detected = await detectSystemProxy(scheme)
+    }
+    const effective = proxyForUrl(url, detected)
+    const env: Record<string, string> = {}
+    if (effective && detected && detected.bypass.length > 0) {
+      const bypass = detected.bypass.join(',')
+      env.NO_PROXY = bypass
+      env.no_proxy = bypass
+    }
+    return {
+      args: effective ? ['-c', `http.proxy=${effective}`] : [],
+      env,
+      mode,
+      // 日志与报错里展示的地址要脱敏:代理地址本身可能带用户名/口令
+      proxyUrl: effective ? this.git.redact(effective) : null,
+      proxySource: effective ? (detected?.source ?? null) : null
+    }
+  }
+
+  /** 每个远端每次网络操作留一行日志 —— 「到底走没走代理」只看界面是看不出来的 */
+  private logNetwork(label: string, url: string, setup: NetworkSetup): void {
+    if (!/^https?:/i.test(url.trim())) {
+      this.imk.log('info', `${label}：地址不是 HTTP(S)，不使用代理`)
+      return
+    }
+    if (setup.proxyUrl) {
+      this.imk.log('info', `${label}：经代理 ${setup.proxyUrl}（${setup.proxySource ?? '来源未知'}）`)
+      return
+    }
+    if (setup.mode === 'off') this.imk.log('info', `${label}：直连（插件里已关闭代理）`)
+    else if (setup.mode === 'manual') {
+      this.imk.log('warn', `${label}：手动代理地址为空或无法识别，已按直连处理`)
+    } else this.imk.log('info', `${label}：直连（未检测到本机代理）`)
+  }
+
+  /** 「检测本机代理」动作:把自动探测的结果直接摆在状态卡上 */
+  private async detectProxy(): Promise<PluginActionResult> {
+    const cfg = this.imk.getConfig<GitSyncConfig>()
+    const mode = this.proxyMode(cfg)
+
+    if (mode === 'off') {
+      return { ok: true, message: '当前为直连：不使用代理（环境变量里的代理也会被忽略）' }
+    }
+    if (mode === 'manual') {
+      const url = normalizeProxyUrl(cfg.proxyUrl)
+      if (!url) {
+        return {
+          ok: false,
+          message: `手动代理地址无法识别：${cfg.proxyUrl?.trim() || '(空)'}`,
+          detail: '示例：http://127.0.0.1:7890、socks5://127.0.0.1:7891'
+        }
+      }
+      const reachable = await probeProxy(url)
+      return {
+        ok: true,
+        message: `手动代理：${this.git.redact(url)}（${reachable ? '端口可连接' : '端口连不上'}）`,
+        ...(reachable ? {} : { detail: '请确认代理客户端正在运行，或检查地址与端口。' })
+      }
+    }
+
+    // 大多数远端是 HTTPS,先按它探;没有再按 HTTP 探(只设了 HTTP_PROXY 的情况)
+    const found = (await detectSystemProxy('https')) ?? (await detectSystemProxy('http'))
+    if (!found) {
+      const checked = process.platform === 'win32' ? '环境变量与 Windows 系统代理' : '环境变量'
+      return {
+        ok: true,
+        message: `未检测到本机代理（已检查${checked}）`,
+        detail:
+          '可在插件设置里把「连接方式」改为「手动指定代理」；Clash / FlClash 的默认混合端口是 http://127.0.0.1:7890。'
+      }
+    }
+    const reachable = await probeProxy(found.url)
+    return {
+      ok: true,
+      message: `检测到本机代理：${this.git.redact(found.url)}（${found.source}${reachable ? '，端口可连接' : '，但端口连不上'}）`,
+      ...(reachable ? {} : { detail: '代理已配置但连接不上：请确认代理客户端正在运行。' })
+    }
+  }
+
+  private failureContext(target: PluginTarget, setup: NetworkSetup): FailureContext {
+    return {
+      mode: setup.mode,
+      proxyUrl: setup.proxyUrl,
+      proxySource: setup.proxySource,
+      remoteUrl: target.url
+    }
+  }
+
   /** 把工作区改动提交到本地;返回是否产生了新提交 */
   private async commitLocal(
     vaultPath: string,
@@ -344,17 +526,30 @@ class GitSyncPlugin {
     vaultPath: string,
     targets: PluginTarget[],
     allTargets: readonly PluginTarget[],
+    cfg: GitSyncConfig,
     signal: AbortSignal
   ): Promise<{ pushed: string[]; failed: { label: string; detail: string }[] }> {
     const pushed: string[] = []
     const failed: { label: string; detail: string }[] = []
     for (const target of targets) {
-      const result = await this.pushTarget(vaultPath, target, signal)
       const label = targetLabel(allTargets, target)
+      const result = await this.pushTarget(vaultPath, target, label, cfg, signal)
+      // 每推完一个就上报,设置页的卡片不用等整轮结束才变色
+      this.reportTarget(target.id, result.ok ? 'ok' : 'error')
       if (result.ok) pushed.push(label)
       else failed.push({ label, detail: result.detail })
     }
     return { pushed, failed }
+  }
+
+  /**
+   * 上报某个远端的**最近一次操作结果**。
+   *
+   * 设置页据此决定远端卡片的边框颜色(绿/红);没有上报过的远端保持灰色。
+   * 这只说「上一次对它做的事成了没有」,输入是否填齐由设置页自己检查 —— 两件事分开。
+   */
+  private reportTarget(targetId: string, result: PluginTargetResult): void {
+    this.imk.setState({ targetResults: { [targetId]: result } })
   }
 
   /**
@@ -449,14 +644,19 @@ class GitSyncPlugin {
   private async pushTarget(
     vaultPath: string,
     target: PluginTarget,
+    label: string,
+    cfg: GitSyncConfig,
     signal: AbortSignal
   ): Promise<{ ok: boolean; detail: string }> {
     const cred = await this.credentialFor(target)
     const { local, remote } = this.branchNames(target)
+    const setup = await this.networkSetup(target.url, cfg)
+    this.logNetwork(label, target.url, setup)
     // 直接给 URL:插件不改动仓库的 remote 配置;凭据由一次性 helper 注入(ssh 模式则不注入)
     const push = await this.git.run(
       [
         ...this.git.credentialArgs(cred?.pass ?? ''),
+        ...setup.args,
         'push',
         target.url.trim(),
         `refs/heads/${local}:refs/heads/${remote}`
@@ -464,11 +664,11 @@ class GitSyncPlugin {
       {
         cwd: vaultPath,
         signal,
-        env: this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? '')
+        env: { ...this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? ''), ...setup.env }
       }
     )
     if (push.ok) return { ok: true, detail: '' }
-    const hint = classifyPushError(push.stderr)
+    const hint = classifyPushError(push.stderr, this.failureContext(target, setup))
     const raw = this.git.summarize(push.stderr || push.stdout, 4)
     return { ok: false, detail: hint || raw || `退出码 ${push.code}` }
   }
@@ -503,17 +703,25 @@ class GitSyncPlugin {
     for (const target of targets) {
       const cred = await this.credentialFor(target)
       const branch = target.remoteBranch.trim() || target.localBranch.trim()
+      const name = targetLabel(allTargets, target)
+      const setup = await this.networkSetup(target.url, cfg)
+      this.logNetwork(name, target.url, setup)
       const r = await this.git.run(
         [
           ...this.git.credentialArgs(cred?.pass ?? ''),
+          ...setup.args,
           'ls-remote',
           '--heads',
           target.url.trim(),
           branch
         ],
-        { cwd, timeoutMs: 30_000, env: this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? '') }
+        {
+          cwd,
+          timeoutMs: 30_000,
+          env: { ...this.git.credentialEnv(cred?.user ?? '', cred?.pass ?? ''), ...setup.env }
+        }
       )
-      const name = targetLabel(allTargets, target)
+      this.reportTarget(target.id, r.ok ? 'ok' : 'error')
       if (r.ok) {
         okCount += 1
         const found = r.stdout.trim().length > 0
@@ -522,7 +730,9 @@ class GitSyncPlugin {
         )
       } else {
         const reason =
-          classifyPushError(r.stderr) || this.git.summarize(r.stderr || r.stdout, 3) || '连接失败'
+          classifyPushError(r.stderr, this.failureContext(target, setup)) ||
+          this.git.summarize(r.stderr || r.stdout, 3) ||
+          '连接失败'
         lines.push(`${name}：连接测试失败`)
         reasons.push(`${name}：${reason}`)
       }

@@ -59,11 +59,11 @@ function check(label: string, ok: boolean, detail = ''): void {
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 const sha256 = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex')
 
-/** 表格期望长相:2 列时空行是 `|     |     |`,分隔行是 `| --- | --- |` */
-const BLANK_CELL = '     '
+/** 表格期望长相:2 列时空行是 `|       |       |`,分隔行是 `| :---: | :---: |`(默认居中) */
+const BLANK_CELL = '       '
 const row = (...cells: string[]): string => `|${cells.map(c => `${c}|`).join('')}`
 const blank = (cols: number): string => row(...(Array(cols).fill(BLANK_CELL) as string[]))
-const sep = (cols: number): string => row(...(Array(cols).fill(' --- ') as string[]))
+const sep = (cols: number): string => row(...(Array(cols).fill(' :---: ') as string[]))
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -313,6 +313,20 @@ async function main(): Promise<void> {
       return i < 0 ? -1 : i + 1
     })()`)
 
+  /**
+   * 光标在第几行(1 起;找不到返回 -1)—— 用来区分「光标没动」和「按钮没画」。
+   * drawSelection 把光标画在独立的 .cm-cursorLayer 里(不是 .cm-line 的子节点),
+   * 所以只能问原生选区:CM 会把它同步到 contentDOM 的文本节点上。
+   */
+  const cursorLine = (): Promise<number> =>
+    evalJs<number>(`(() => {
+      const node = window.getSelection()?.anchorNode
+      const el = node ? (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement) : null
+      const line = el?.closest ? el.closest('.cm-line') : null
+      if (!line) return -1
+      return [...document.querySelectorAll('.cm-content .cm-line')].indexOf(line) + 1
+    })()`)
+
   const menuLabels = (): Promise<string[]> =>
     evalJs<string[]>(`[...document.querySelectorAll('.line-menu-item')].map(el => el.textContent.trim())`)
 
@@ -424,6 +438,22 @@ async function main(): Promise<void> {
   await key('ArrowDown') // 光标挪到第 2 行(空行)
   check('光标移到第 2 行后,按钮跟着过去', (await plusLine()) === 2, `按钮在第 ${await plusLine()} 行`)
 
+  // ---------- 1b. 引用行不画按钮 ----------
+
+  console.log('\n【1b】引用行不画「+」(按钮会跟着 1em 缩进挤到竖线与 `>` 之间)')
+  // 引用行后面必须留一个空行:紧跟着的普通行按 CommonMark 是惰性续行,仍算在引用里
+  check('载入带引用行的文档', await loadDoc('第一行\n> 引用行\n\n第三行\n'))
+  check('第 1 行(普通行)照常画「+」', (await plusLine()) === 1, `按钮在第 ${await plusLine()} 行`)
+  await key('ArrowDown')
+  check('光标落在引用行(第 2 行)', (await cursorLine()) === 2, `光标在第 ${await cursorLine()} 行`)
+  check('引用行上没有「+」', (await plusLine()) === -1, `按钮在第 ${await plusLine()} 行`)
+  await key('End')
+  check('光标走到引用行行尾', (await cursorLine()) === 2, `光标在第 ${await cursorLine()} 行`)
+  check('行尾(节点边界)也不画「+」', (await plusLine()) === -1, `按钮在第 ${await plusLine()} 行`)
+  await key('ArrowDown')
+  check('光标离开引用行(第 3 行空行)', (await cursorLine()) === 3, `光标在第 ${await cursorLine()} 行`)
+  check('第 3 行「+」回来', (await plusLine()) === 3, `按钮在第 ${await plusLine()} 行`)
+
   // ---------- 2. 菜单 ----------
 
   console.log('\n【2】点「+」→ 菜单出现,里面有「表格」')
@@ -468,7 +498,7 @@ async function main(): Promise<void> {
     got.filter(l => l.startsWith('|') && !l.includes('---')).length === 4,
     JSON.stringify(got.filter(l => l.startsWith('|')))
   )
-  check('分隔行不带冒号(即默认左对齐)', got.includes(sep(2)))
+  check('分隔行用 `:---:`(表头与正文默认居中)', got.includes(sep(2)))
   // 设置页的「插件日志」是宿主日志文件的尾巴:操作摘要必须和插件自己 log() 的行
   // 一起出现在这里,不能只在磁盘上的日志文件里看得到
   const quickView = (await getPluginHost()!.list()).find(v => v.descriptor.id === 'quick-edit')
@@ -489,6 +519,7 @@ async function main(): Promise<void> {
     th: number
     td: number
     voids: number
+    aligns: string[]
   }>(`
     (() => {
       const t = document.querySelector('.cm-content .cm-md-table-widget table')
@@ -497,7 +528,8 @@ async function main(): Promise<void> {
         sourceRows: document.querySelectorAll('.cm-content .cm-line.cm-md-table').length,
         th: t ? t.querySelectorAll('th').length : 0,
         td: t ? t.querySelectorAll('td').length : 0,
-        voids: document.querySelectorAll('.cm-content .cm-line.cm-md-table-void').length
+        voids: document.querySelectorAll('.cm-content .cm-line.cm-md-table-void').length,
+        aligns: t ? [...t.querySelectorAll('th, td')].map(el => el.style.textAlign) : []
       }
     })()`)
   check(
@@ -506,6 +538,11 @@ async function main(): Promise<void> {
     JSON.stringify(rendered)
   )
   check('4 行 2 列 = 2 个表头 + 6 个数据格', rendered.th === 2 && rendered.td === 6, JSON.stringify(rendered))
+  check(
+    '表头与内容默认居中(对齐来自分隔行 `:---:`)',
+    rendered.aligns.length === 8 && rendered.aligns.every(a => a === 'center'),
+    JSON.stringify(rendered.aligns)
+  )
   // 4 行 = 表头 + 分隔行 + 3 行内容,共 5 行源码;表头那一行承载 widget,剩下 4 行折叠
   check('其余 4 行折叠成零高度的 void 行', rendered.voids === 4, JSON.stringify(rendered))
 
@@ -738,7 +775,7 @@ async function main(): Promise<void> {
 
   // ---------- 3f. 选中整行 / 整列 / 整表 + Delete / Backspace ----------
 
-  console.log('\n【3f】按住左键拖动选中行/列、点整表把手,再按 Delete / Backspace 删除')
+  console.log('\n【3f】按住左键拖出矩形选区(不是整行/整列)、点整表把手,再按 Delete / Backspace')
   const TABLE_2x2 = '开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n末尾\n'
   await loadDoc(TABLE_2x2)
   await sleep(500)
@@ -751,22 +788,28 @@ async function main(): Promise<void> {
     evalJs<number>(`document.querySelectorAll('.cm-md-table-widget .cm-md-table-selected').length`)
 
   /**
-   * 真鼠标按住左键,从一条数据行竖着拖到另一条(行参数是 tbody 里的下标)。
-   * x 保持不变、y 取目标行靠下的位置:位移以纵向为主,才会判定为"选行"。
+   * 真鼠标按住左键,从一格拖到另一格,选中两格围出的矩形。
+   * 行 0 是表头,1 起是数据行;列从 0 起。起点取格内左侧、终点取目标格中部,
+   * 保证指针确实进入目标格,又不越出它的边界。
    */
-  const dragRows = async (fromBody: number, toBody: number): Promise<boolean> => {
+  const dragCells = async (
+    fromRow: number,
+    fromCol: number,
+    toRow: number,
+    toCol: number
+  ): Promise<boolean> => {
     const coords = await evalJs<{ ax: number; ay: number; bx: number; by: number } | null>(`
       (() => {
-        const rows = [...document.querySelectorAll('.cm-md-table-widget tbody tr')]
-        const a = rows[${fromBody}]?.querySelector('td')
-        const b = rows[${toBody}]?.querySelector('td')
+        const cellAt = (r, c) => r === 0
+          ? document.querySelectorAll('.cm-md-table-widget thead th')[c]
+          : document.querySelectorAll('.cm-md-table-widget tbody tr')[r - 1]?.querySelectorAll('td')[c]
+        const a = cellAt(${fromRow}, ${fromCol})
+        const b = cellAt(${toRow}, ${toCol})
         if (!a || !b) return null
         const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
         return {
           ax: Math.round(ra.left + 10), ay: Math.round(ra.top + ra.height / 2),
-          bx: Math.round(ra.left + 10),
-          // 同一行内也要有纵向位移(但别越到下一行):取该格底部往上 3px
-          by: Math.round(rb.bottom - 3)
+          bx: Math.round(rb.left + 10), by: Math.round(rb.top + rb.height / 2)
         }
       })()`)
     if (!coords) return false
@@ -778,74 +821,95 @@ async function main(): Promise<void> {
     return true
   }
 
-  /** 真鼠标按住左键,从一列表头横着拖到另一列(列参数是 thead 里的下标) */
-  const dragCols = async (fromCol: number, toCol: number): Promise<boolean> => {
-    const coords = await evalJs<{ ax: number; ay: number; bx: number; by: number } | null>(`
+  /** 单击一条数据行的第一格,进入单元格编辑态 */
+  const clickBodyCell = async (bodyIndex: number): Promise<boolean> => {
+    const point = await evalJs<{ x: number; y: number } | null>(`
       (() => {
-        const cells = [...document.querySelectorAll('.cm-md-table-widget thead th')]
-        const a = cells[${fromCol}], b = cells[${toCol}]
-        if (!a || !b) return null
-        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
-        return {
-          ax: Math.round(ra.left + 10), ay: Math.round(ra.top + ra.height / 2),
-          // 同一列内也要有横向位移:拖到该格右侧靠里 10px
-          bx: Math.round(rb.right - 10), by: Math.round(ra.top + ra.height / 2)
-        }
+        const td = document.querySelectorAll('.cm-md-table-widget tbody tr')[${bodyIndex}]?.querySelector('td')
+        if (!td) return null
+        const r = td.getBoundingClientRect()
+        return { x: Math.round(r.left + 10), y: Math.round(r.top + r.height / 2) }
       })()`)
-    if (!coords) return false
-    wc.sendInputEvent({ type: 'mouseDown', x: coords.ax, y: coords.ay, button: 'left', clickCount: 1 })
-    wc.sendInputEvent({ type: 'mouseMove', x: coords.bx, y: coords.by })
-    await sleep(80)
-    wc.sendInputEvent({ type: 'mouseUp', x: coords.bx, y: coords.by, button: 'left', clickCount: 1 })
-    await sleep(350)
+    if (!point) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    await sleep(20)
+    wc.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    await sleep(250)
     return true
   }
+
+  /** 高亮格子的行/列分布(用来确认选中的是矩形里的格子,而不是整行/整列) */
+  const selectedAxes = (): Promise<{ rows: string[]; cols: string[] }> =>
+    evalJs<{ rows: string[]; cols: string[] }>(`
+      (() => {
+        const cells = [...document.querySelectorAll('.cm-md-table-selected')]
+        const uniq = list => [...new Set(list)]
+        return {
+          rows: uniq(cells.map(el => el.dataset.row)),
+          cols: uniq(cells.map(el => el.dataset.col))
+        }
+      })()`)
 
   check(
     '行选中按钮已经去掉',
     (await evalJs<number>(`document.querySelectorAll('[data-act="select-row"]').length`)) === 0
   )
-  check('按住左键从第一行拖到第二行', await dragRows(0, 1))
-  check('两行共 4 个格子全部高亮', (await selectedCount()) === 4, String(await selectedCount()))
+  check('按住左键横向拖过第一行的两格', await dragCells(1, 0, 1, 1))
+  const rowAxes = await selectedAxes()
+  check('只选中这一行的 2 格(不是两整列)', (await selectedCount()) === 2, String(await selectedCount()))
+  check(
+    '高亮的格子全在拖动轨迹所在的行',
+    JSON.stringify(rowAxes.rows) === JSON.stringify(['1']),
+    JSON.stringify(rowAxes)
+  )
   check('拖完焦点交给表格 frame(能按 Delete)', await frameFocused())
   await key('Delete')
   await sleep(400)
   tableMeta = await tableInfo()
   check(
-    '两行一起被删掉(只剩表头)',
-    tableMeta.tr === 1 && tableMeta.th === 2 && tableMeta.td === 0,
+    '按 Delete 只清空格子内容,表格结构不动',
+    tableMeta.tr === 3 && tableMeta.th === 2 && tableMeta.td === 4,
     JSON.stringify(tableMeta)
   )
   structureSource = await readSource()
   check(
-    '两行内容从源码里消失',
-    !structureSource.includes('| 1 | 2 |') && !structureSource.includes('| 3 | 4 |'),
+    '这一行两格变空,其余行内容不动',
+    structureSource.some(l => l.trim() === '|  |  |') &&
+      structureSource.some(l => l.trim() === '| 3 | 4 |'),
     JSON.stringify(structureSource)
   )
 
   await loadDoc(TABLE_2x2)
   await sleep(500)
   check('列选中也不再有按钮', (await evalJs<number>(`document.querySelectorAll('[data-act="select-col"]').length`)) === 0)
-  check('在第一列表头上按住左键横着拖一下', await dragCols(0, 0))
-  check('整列三个格子高亮(表头 + 2 行)', (await selectedCount()) === 3, String(await selectedCount()))
+  check('按住左键竖着拖过第二列的两格', await dragCells(1, 1, 2, 1))
+  const colAxes = await selectedAxes()
+  check('只选中这一列的 2 格(不是两整行)', (await selectedCount()) === 2, String(await selectedCount()))
+  check(
+    '高亮的格子全在拖动轨迹所在的那一列',
+    JSON.stringify(colAxes.cols) === JSON.stringify(['1']),
+    JSON.stringify(colAxes)
+  )
   await key('Delete')
   await sleep(400)
   tableMeta = await tableInfo()
-  check('整列被删掉(只剩 1 列)', tableMeta.th === 1 && tableMeta.td === 2, JSON.stringify(tableMeta))
+  check('按 Delete 只清空格子内容,两列都还在', tableMeta.th === 2 && tableMeta.td === 4, JSON.stringify(tableMeta))
   structureSource = await readSource()
   check(
-    '第二列顶上来了(B / 2 / 4 还在,A / 1 / 3 被删掉)',
-    structureSource.some(l => l.trim() === '| B |') &&
-      structureSource.some(l => l.trim() === '| 2 |') &&
-      structureSource.some(l => l.trim() === '| 4 |') &&
-      !structureSource.some(l => l.trim() === '| A |') &&
-      !structureSource.some(l => l.trim() === '| 1 |') &&
-      !structureSource.some(l => l.trim() === '| 3 |'),
+    '第二列两格变空,表头与第一列还在',
+    structureSource.some(l => l.trim() === '| A | B |') &&
+      structureSource.some(l => l.trim() === '| 1 |  |') &&
+      structureSource.some(l => l.trim() === '| 3 |  |'),
     JSON.stringify(structureSource)
   )
 
+  await loadDoc(TABLE_2x2)
+  await sleep(500)
+  check('斜着拖出 2×2 矩形', await dragCells(1, 0, 2, 1))
+  check('矩形里的 4 格全部高亮', (await selectedCount()) === 4, String(await selectedCount()))
+
   check('点左上角的整表选择把手', await clickCtl('[data-act="select-table"]'))
-  check('整张表都高亮', (await selectedCount()) === 3, String(await selectedCount()))
+  check('整张表都高亮', (await selectedCount()) === 6, String(await selectedCount()))
   check(
     '整表选区样式落在 frame 上',
     await evalJs<boolean>(`!!document.querySelector('.cm-md-table-frame.is-selected')`)
@@ -860,6 +924,50 @@ async function main(): Promise<void> {
       structureSource.some(l => l.includes('开头')) &&
       structureSource.some(l => l.includes('末尾')),
     JSON.stringify(structureSource)
+  )
+
+  /*
+   * 编辑态下的拖选:点进一格后,从**同一格**拖出去也必须能选中行 ——
+   * 以前 mousedown 在 active 格上直接 return,拖动只剩浏览器选字,
+   * 用户点一下表格再拖就会以为这个功能没了。
+   */
+  console.log('\n【3f-2】编辑态下从同一格拖出去:接管成表格选区')
+  await loadDoc(TABLE_2x2)
+  await sleep(500)
+  check('先单击第一行,进入单元格编辑态', await clickBodyCell(0))
+  check(
+    '这一格确实变成了 contenteditable',
+    await evalJs<boolean>(`!!document.querySelector('.cm-md-table-widget tbody td[contenteditable]')`)
+  )
+  check('从编辑中的格子竖着拖到下一行', await dragCells(1, 0, 2, 0))
+  check('编辑态下也能选中两格(同一列的两行)', (await selectedCount()) === 2, String(await selectedCount()))
+  check(
+    '接管成表格选区后退出编辑态',
+    (await evalJs<number>(`document.querySelectorAll('.cm-md-table-widget [contenteditable]').length`)) === 0
+  )
+
+  // 格内横向拖动仍归浏览器选字:不能一拖就变成列选区
+  await loadDoc(TABLE_2x2)
+  await sleep(500)
+  check('再次单击第一行进入编辑态', await clickBodyCell(0))
+  const inCell = await evalJs<{ x: number; y: number } | null>(`
+    (() => {
+      const td = document.querySelector('.cm-md-table-widget tbody td[contenteditable]')
+      if (!td) return null
+      const r = td.getBoundingClientRect()
+      return { x: Math.round(r.left + 10), y: Math.round(r.top + r.height / 2) }
+    })()`)
+  if (inCell) {
+    wc.sendInputEvent({ type: 'mouseDown', x: inCell.x, y: inCell.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseMove', x: inCell.x + 20, y: inCell.y })
+    await sleep(80)
+    wc.sendInputEvent({ type: 'mouseUp', x: inCell.x + 20, y: inCell.y, button: 'left', clickCount: 1 })
+    await sleep(250)
+  }
+  check('格内拖动不产生行/列选区', (await selectedCount()) === 0, String(await selectedCount()))
+  check(
+    '格内拖动后仍在编辑态(选的是文字)',
+    await evalJs<boolean>(`!!document.querySelector('.cm-md-table-widget tbody td[contenteditable]')`)
   )
 
   // ---------- 3g. 删除表头:下一条数据行接替表头 ----------
@@ -885,15 +993,15 @@ async function main(): Promise<void> {
     JSON.stringify(structureSource)
   )
 
-  // ---------- 3h. 结构删除可以撤销 ----------
+  // ---------- 3h. 清空单元格可以撤销 ----------
 
-  console.log('\n【3h】删行之后 Ctrl+Z 能撤销')
+  console.log('\n【3h】清空单元格之后 Ctrl+Z 能撤销')
   await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
   await sleep(400)
   const bodyRows = (): Promise<number> =>
     evalJs<number>(`document.querySelectorAll('.cm-md-table-widget tbody tr').length`)
   check('初始有 1 行内容', (await bodyRows()) === 1, String(await bodyRows()))
-  check('在行内按住左键拖一下选中这一行', await dragRows(0, 0))
+  check('横向拖这一行的两个格子', await dragCells(1, 0, 1, 1))
   check(
     '这一行两个格子高亮',
     (await evalJs<number>(`document.querySelectorAll('.cm-md-table-selected').length`)) === 2,
@@ -901,12 +1009,13 @@ async function main(): Promise<void> {
   )
   await key('Delete')
   await sleep(300)
-  check('行被删掉', (await bodyRows()) === 0, String(await bodyRows()))
+  check('行还在,只是内容被清空', (await bodyRows()) === 1, String(await bodyRows()))
+  structureSource = await readSource()
+  check('源码里这一行变成空格子', structureSource.some(l => l.trim() === '|  |  |'), JSON.stringify(structureSource))
   await key('z', ['control'])
   await sleep(400)
-  check('Ctrl+Z 把行撤了回来', (await bodyRows()) === 1, String(await bodyRows()))
   structureSource = await readSource()
-  check('源码里 `| 1 | 2 |` 也回来了', structureSource.some(l => l.trim() === '| 1 | 2 |'), JSON.stringify(structureSource))
+  check('Ctrl+Z 把内容撤了回来', structureSource.some(l => l.trim() === '| 1 | 2 |'), JSON.stringify(structureSource))
 
   // ---------- 3i. 表格上一行行尾按 Delete:先选中整表,再按一次才删 ----------
 
@@ -1588,8 +1697,8 @@ async function main(): Promise<void> {
     JSON.stringify(aligns)
   )
 
-  /** 三个整表按钮(选择 / 删除 / 对齐)是不是都常驻可见(不依赖鼠标位置) */
-  const pinnedShown = (): Promise<boolean> =>
+  /** 三个整表按钮(选择 / 删除 / 对齐)此刻是否可见 */
+  const groupShown = (): Promise<boolean> =>
     evalJs<boolean>(`
       (() => {
         const acts = ['select-table', 'delete-table', 'align-table']
@@ -1601,7 +1710,70 @@ async function main(): Promise<void> {
         })
       })()`)
 
-  check('整表选择 / 删除 / 对齐三枚按钮常驻,不用先悬停', await pinnedShown())
+  /** 真实鼠标移动(窗口坐标),让 applyHoverControls 收到 mousemove */
+  const moveMouse = async (x: number, y: number): Promise<void> => {
+    wc.sendInputEvent({ type: 'mouseMove', x, y })
+    await sleep(300)
+  }
+  const tableSpot = (): Promise<{ x: number; y: number } | null> =>
+    evalJs(`
+      (() => {
+        const t = document.querySelector('.cm-md-table-widget table')
+        if (!t) return null
+        const r = t.getBoundingClientRect()
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
+      })()`)
+
+  await moveMouse(5, 5)
+  check('鼠标不在表格上时,整表三枚按钮不显示', !(await groupShown()))
+
+  const spot = await tableSpot()
+  if (spot) await moveMouse(spot.x, spot.y)
+  check('鼠标移到表格上,整表三枚按钮出现', spot !== null && (await groupShown()), JSON.stringify(spot))
+
+  const shownCtrlCount = (): Promise<number> =>
+    evalJs<number>(`document.querySelectorAll('.cm-md-table-ctl.is-shown').length`)
+  const rowHoverSpot = (where: 'inside' | 'blankRight'): Promise<{
+    x: number
+    y: number
+  } | null> =>
+    evalJs(`
+      (() => {
+        const t = document.querySelector('.cm-md-table-widget table')
+        const row = t?.tBodies[0]?.rows[0] ?? t?.tHead?.rows[0]
+        if (!t || !row) return null
+        const r = t.getBoundingClientRect()
+        const rr = row.getBoundingClientRect()
+        return {
+          x: Math.round(${where === 'inside' ? 'r.left + r.width / 2' : 'r.right + 80'}),
+          y: Math.round(rr.top + rr.height / 2)
+        }
+      })()`)
+
+  // 回归:鼠标在表格右侧空白处时,y 仍与某一行对齐,但不能点亮该行的 × / +
+  const blankRight = await rowHoverSpot('blankRight')
+  if (blankRight) await moveMouse(blankRight.x, blankRight.y)
+  check(
+    '鼠标在表格右侧空白处时,行列控件不显示',
+    blankRight !== null && (await shownCtrlCount()) === 0,
+    JSON.stringify({ blankRight, shown: await shownCtrlCount() })
+  )
+
+  // 反向:鼠标在表格内时,该行左侧的删除 × 照常出现
+  const insideRow = await rowHoverSpot('inside')
+  if (insideRow) await moveMouse(insideRow.x, insideRow.y)
+  const rowDeleteShown = await evalJs<boolean>(`
+    (() => {
+      const b = document.querySelector('[data-act="delete-row"][data-row="1"]')
+      if (!b) return false
+      const s = getComputedStyle(b)
+      return s.visibility === 'visible' && Number(s.opacity) === 1
+    })()`)
+  check(
+    '鼠标在表格内时,该行的删除 × 照常出现',
+    insideRow !== null && rowDeleteShown,
+    JSON.stringify(insideRow)
+  )
 
   check('点对齐按钮打开菜单', await click('[data-act="align-table"]'))
   await sleep(150)
@@ -1688,14 +1860,58 @@ async function main(): Promise<void> {
   )
   check('文档没有因为 Esc 变动', JSON.stringify(await readSource()) === JSON.stringify(structureSource))
 
-  wc.sendInputEvent({ type: 'mouseMove', x: 5, y: 5 })
-  await sleep(150)
+  await moveMouse(5, 5)
   check(
-    '鼠标离开表格后:三枚整表按钮仍然常驻,行列控件收起',
-    (await pinnedShown()) &&
+    '鼠标离开表格后:整表三枚按钮与行列控件一起收起',
+    !(await groupShown()) &&
       (await evalJs<number>(
         `document.querySelectorAll('.cm-md-table-ctl.is-shown').length`
       )) === 0
+  )
+
+  // ---------- 3s. 文档选区覆盖整张表:保持渲染态 ----------
+
+  console.log('\n【3s】文档选区覆盖整张表:保持渲染并高亮,不退回源码')
+  await loadDoc('开头\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n末尾\n')
+  await sleep(500)
+  await focusEditor()
+  await key('A', ['control'])
+  await sleep(400)
+  const selectedTable = await evalJs<{
+    rendered: boolean
+    sourceLines: number
+    hostSelected: boolean
+    th: number
+    td: number
+  }>(`
+    (() => {
+      const t = document.querySelector('.cm-content .cm-md-table-widget table')
+      return {
+        rendered: !!t,
+        sourceLines: document.querySelectorAll('.cm-content .cm-line.cm-md-table').length,
+        hostSelected: !!document.querySelector('.cm-content .cm-line.cm-md-table-host-selected'),
+        th: t ? t.querySelectorAll('th').length : 0,
+        td: t ? t.querySelectorAll('td').length : 0
+      }
+    })()`)
+  check(
+    '整表被选区覆盖后仍然渲染成表格',
+    selectedTable.rendered && selectedTable.sourceLines === 0,
+    JSON.stringify(selectedTable)
+  )
+  check('渲染出来的表格被标记为整表选中', selectedTable.hostSelected, JSON.stringify(selectedTable))
+  check(
+    '表头与内容行都还在',
+    selectedTable.th === 2 && selectedTable.td === 2,
+    JSON.stringify(selectedTable)
+  )
+
+  await key('ArrowRight')
+  await sleep(400)
+  check(
+    '取消选区后高亮消失,表格照旧渲染',
+    !(await evalJs<boolean>(`!!document.querySelector('.cm-md-table-host-selected')`)) &&
+      (await renderedTableCount()) === 1
   )
 
   // ---------- 3r. 只有紧贴表格的那一行才触发整表选中 ----------
@@ -1838,8 +2054,31 @@ async function main(): Promise<void> {
   // ---------- 6. 重新初始化宿主(模拟重启) ----------
 
   console.log('\n【6】重新初始化插件宿主 + 重载渲染层 —— descriptor 从磁盘重建后照旧')
+  // 重启前记下日志尾巴:设置页的「插件日志」读的是磁盘日志文件的尾巴,重启后必须还在。
+  // 曾经每次启动都从空开始,而「调试」里的最近操作是落盘读回来的 —— 于是出现
+  // 「做过几次操作,日志却只有一条启动信息」(2026-10-20 实测)。
+  const logsBeforeRestart =
+    (await getPluginHost()!.list()).find(v => v.descriptor.id === 'quick-edit')?.logs ?? []
+  const lastBeforeRestart = logsBeforeRestart[logsBeforeRestart.length - 1]
   await initPluginHost(ensureBundledProvisioned)
   await sleep(400)
+  const logsAfterRestart =
+    (await getPluginHost()!.list()).find(v => v.descriptor.id === 'quick-edit')?.logs ?? []
+  // 磁盘日志只精确到秒,重启后读回来的 at 是整秒;容忍这一点点误差再比对正文
+  const sameLine = (l: { at: number; message: string }): boolean =>
+    Boolean(lastBeforeRestart) &&
+    l.message === lastBeforeRestart!.message &&
+    Math.abs(l.at - lastBeforeRestart!.at) < 2000
+  check(
+    '重启后设置页的日志尾巴从磁盘读回来了(不是从空开始)',
+    Boolean(lastBeforeRestart) && logsAfterRestart.some(sameLine),
+    JSON.stringify({ before: logsBeforeRestart.slice(-2), after: logsAfterRestart.slice(-3) })
+  )
+  check(
+    '重启后仍能在日志里看到重启前的操作摘要',
+    logsAfterRestart.some(l => l.level === 'operation' && l.message.includes('已插入')),
+    JSON.stringify(logsAfterRestart.filter(l => l.level === 'operation').slice(-2))
+  )
   await loadDoc(START)
   check('重启后按钮还在', (await plusLine()) === 1, `按钮在第 ${await plusLine()} 行`)
   check('重启后菜单里还有「表格」', await openMenuAndPick('表格'))

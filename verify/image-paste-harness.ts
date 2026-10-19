@@ -2,21 +2,26 @@
  * 剪贴板图片粘贴端到端验证。
  *
  * 起因:iMark 的编辑器只处理文本粘贴(CodeMirror 内置 paste 只读 text/plain),
- * 截图后 Ctrl+V 看起来毫无反应。这个 harness 钉住四件事:
+ * 截图后 Ctrl+V 看起来毫无反应。这个 harness 钉住七件事:
  *   A 已保存文档粘贴图片 → 存进文档旁 assets/,正文插入相对路径,并且立刻渲染;
  *   B 有选区时粘贴 → 图片替换选区,而不是被内置 paste 空替换掉;
- *   C 未保存文档粘贴 → 提示先保存,不写资产、不崩溃;
- *   D 对照组:纯文本粘贴仍然走 CodeMirror 原逻辑。
+ *   C 删除正文里的图片链接并保存 → 对应文件移入回收站;
+ *   D 粘贴后还没保存就删掉链接 → 首次保存时也要回收(会话记账);
+ *   E 未保存文档粘贴 → 提示先保存,不写资产、不崩溃;
+ *   F 对照组:纯文本粘贴仍然走 CodeMirror 原逻辑;
+ *   G 同目录其他笔记仍引用着这张图 → 不回收。
  *
  * 跑法(在仓库根目录):
  *   node verify/run.mjs image-paste
  */
 
 import { app, dialog, protocol } from 'electron'
+import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { registerIpc } from '../src/main/ipc'
+import { trashUnreferencedImageAssets } from '../src/main/files'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
@@ -121,6 +126,16 @@ async function main(): Promise<void> {
   const assets = async (): Promise<string[]> =>
     readdir(join(vault, 'assets')).catch(() => [] as string[])
 
+  /** 轮询等待某个文件消失(回收站是异步的,trashItem 返回时文件可能还没从目录里消失) */
+  async function waitForFileGone(target: string, ms = 5000): Promise<boolean> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (!existsSync(target)) return true
+      await sleep(100)
+    }
+    return false
+  }
+
   async function waitForNewAsset(before: string[], ms = 5000): Promise<string | null> {
     const until = Date.now() + ms
     while (Date.now() < until) {
@@ -223,9 +238,39 @@ async function main(): Promise<void> {
       !body.includes('标题') && !body.includes('正文段落') && /^!\[图片\]\(assets\/image-.*\.png\)$/.test(body),
       JSON.stringify(body.slice(0, 120))
     )
+    const oldGone = assetPath ? await waitForFileGone(assetPath) : false
+    check('被替换掉的旧图片文件随之回收', oldGone, assetPath ?? '(没有第一张图)')
   }
 
-  console.log('\n【C】未保存文档:提示先保存,不写资产')
+  console.log('\n【C】删除正文里的图片链接并保存 → 对应文件回收')
+  await focusEditor()
+  await key('A', ['control'])
+  await key('Delete')
+  {
+    const saved = await saveNote()
+    check('正文已经清空', saved.trim() === '', JSON.stringify(saved.slice(0, 80)))
+    const gone = assetPathB ? await waitForFileGone(assetPathB) : false
+    check('图片文件随链接一起被回收', gone, assetPathB ?? '(没有第二张图)')
+  }
+
+  console.log('\n【D】粘贴后还没保存就删掉链接 → 首次保存时回收(靠会话记账)')
+  await focusEditor()
+  const beforeD = await assets()
+  await pasteImage()
+  const assetPathD = await waitForNewAsset(beforeD)
+  check('第三张图片写进 assets/', Boolean(assetPathD), assetPathD ?? '(没等到文件)')
+  await key('A', ['control'])
+  await key('Delete')
+  // 不经过一次「正文里带着这张图」的保存:保存前后比较发现不了它
+  const savedD = await saveNote()
+  check('正文保存为空', savedD.trim() === '', JSON.stringify(savedD.slice(0, 80)))
+  check(
+    '从未落过正文的粘贴图片也被回收',
+    assetPathD ? await waitForFileGone(assetPathD) : false,
+    assetPathD ?? '(没有第三张图)'
+  )
+
+  console.log('\n【E】未保存文档:提示先保存,不写资产')
   wc.send(IPC.MenuCommand, 'file:new')
   await sleep(700)
   const beforeC = await assets()
@@ -239,13 +284,27 @@ async function main(): Promise<void> {
     check('没有写出新的图片文件', afterC.length === beforeC.length, `${beforeC.length} → ${afterC.length}`)
   }
 
-  console.log('\n【D】对照组:纯文本粘贴仍然走 CodeMirror 原逻辑')
+  console.log('\n【F】对照组:纯文本粘贴仍然走 CodeMirror 原逻辑')
   await focusEditor()
   await pasteText('普通粘贴')
   await sleep(400)
   {
     const text = await evalJs<string>(`document.querySelector('.cm-content')?.textContent ?? ''`)
     check('纯文本被正常插入', text.includes('普通粘贴'), JSON.stringify(text.slice(0, 80)))
+  }
+
+  console.log('\n【G】同目录其他笔记仍引用着这张图 → 不回收')
+  {
+    const name = 'image-20261019-120000-deadbeef.png'
+    const target = join(vault, 'assets', name)
+    await mkdir(join(vault, 'assets'), { recursive: true })
+    await writeFile(target, PNG)
+    await writeFile(join(vault, '共享.md'), `![图片](assets/${name})\n`, 'utf8')
+    await trashUnreferencedImageAssets(note, [name])
+    check('共享图片被其他笔记引用 → 保留', existsSync(target))
+    await rm(join(vault, '共享.md'), { force: true })
+    await trashUnreferencedImageAssets(note, [name])
+    check('最后一个引用也消失后 → 回收', await waitForFileGone(target))
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

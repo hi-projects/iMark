@@ -136,7 +136,13 @@ async function main(): Promise<void> {
           size: cs.fontSize,
           weight: cs.fontWeight,
           bullet: b ? getComputedStyle(b, '::after').content : '',
-          bar: cs.backgroundImage
+          // 引用竖线现在是 .cm-md-quote::before(行本身不能有 padding,见 editor.css);
+          // 非引用行的伪元素 content 为 none
+          bar: (() => {
+            const before = getComputedStyle(el, '::before')
+            if (before.content === 'none' || before.width === '0px') return 'none'
+            return before.backgroundImage !== 'none' ? before.backgroundImage : before.backgroundColor
+          })()
         }
       })`)
 

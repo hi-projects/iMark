@@ -34,7 +34,7 @@ import { pluginById } from './pluginService'
 import { fuzzyScore } from './vaultService'
 import { pushNotice } from './notice'
 import { appStore } from '../stores/app'
-import { openFileByPath } from './fileService'
+import { reloadFileInTab } from './fileService'
 import { api } from './api'
 
 /**
@@ -240,8 +240,9 @@ export function initPluginUi(): () => void {
    * 这里再弹一次"要不要放弃更改"只会让人以为出了什么错。
    */
   const offExternal = api.onFileExternalChange(path => {
-    if (path !== appStore.filePath) return
-    void openFileByPath(path, { force: true })
+    // 正开着才需要刷新;多个标签里任意一个命中都要处理,而且不抢当前焦点
+    if (!appStore.tabs.some(t => t.filePath === path)) return
+    void reloadFileInTab(path)
   })
   void api
     .getPluginContribs()

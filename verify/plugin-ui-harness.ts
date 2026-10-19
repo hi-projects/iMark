@@ -259,8 +259,8 @@ async function main(): Promise<void> {
     app.exit(1)
     return
   }
-  // 等插件列表到齐(两个内置包 + harness 补装的沙箱插件)
-  await waitFor(`document.querySelectorAll('.settings-nav-label').length >= 3`)
+  // 等插件列表到齐(三个内置包 + harness 补装的沙箱插件)
+  await waitFor(`document.querySelectorAll('.settings-nav-label').length >= 4`)
   await sleep(300)
 
   // ---------- 1. 左栏 ----------
@@ -268,8 +268,8 @@ async function main(): Promise<void> {
   const nav = await evalJs<NavMetrics>(NAV_METRICS)
   console.log(`     行: ${nav.names.join(' / ')}`)
   check(
-    '前提:两个内置插件 + 补装的沙箱插件都在列表里(形态覆盖 script 与 sandboxed)',
-    nav.rowCount === 3,
+    '前提:三个内置插件 + 补装的沙箱插件都在列表里(形态覆盖 script 与 sandboxed)',
+    nav.rowCount === 4,
     `实际 ${nav.rowCount} 行 —— 少一行就有断言测不到东西`
   )
   check('列表里没有形态标签', nav.chips === 0, `还剩 ${nav.chips} 枚`)
@@ -402,11 +402,11 @@ async function main(): Promise<void> {
     })()
   `)
   check('切到「已安装」页签', onTab)
-  const listed = await waitFor(`document.querySelectorAll('.market-row').length >= 3`)
+  const listed = await waitFor(`document.querySelectorAll('.market-row').length >= 4`)
   await sleep(300)
   const inst = await evalJs<InstalledMetrics>(INSTALLED_METRICS)
   console.log(`     行: ${inst.plugins.map(p => `${p.name}[${p.badges.join(',')}]`).join(' / ')}`)
-  check('前提:三行都在', listed && inst.rowCount === 3, `实际 ${inst.rowCount} 行`)
+  check('前提:四行都在', listed && inst.rowCount === 4, `实际 ${inst.rowCount} 行`)
 
   const byName = (n: string): InstalledMetrics['plugins'][number] | undefined =>
     inst.plugins.find(p => p.name.includes(n))

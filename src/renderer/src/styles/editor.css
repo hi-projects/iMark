@@ -1,9 +1,13 @@
 /* CodeMirror 基础外观(全部引用 CSS 变量,一套样式双主题)
  *
  * 注意:凡是 base theme 也定了的 .cm-xxx(.cm-cursor / .cm-scroller / .cm-content /
- * .cm-line 等),这里的裸类选择器特异度只有 0-1-0,一定输给 base theme 的作用域规则
- * (`.ͼN .cm-xxx`)而被静默忽略——那几条必须写进 editor/setup.ts 的 editorTheme。
- * 只有 base theme 没碰过的属性(背景、文字色、选区背景)才放这里。 */
+ * .cm-line 等),裸类选择器(0-1-0)一定输给 base theme 的作用域规则
+ * (`.ͼN .cm-xxx`,0-2-0)而被静默忽略。
+ *   - 布局类覆盖(字号/行高、正文栏宽度、行 padding、引用缩进)写在下面的
+ *     「编辑器布局覆盖」一节,用 0-3-0 / 0-4-0 的选择器压过去;
+ *   - 其余 base theme 也定义、但不需要热更新的属性(光标颜色)仍放在
+ *     editor/setup.ts 的 editorTheme 里。
+ * 只有 base theme 没碰过的属性(背景、文字色、选区背景)才用裸类选择器。 */
 
 .cm-editor {
   height: 100%;
@@ -42,6 +46,77 @@
  */
 .cm-scroller > .cm-selectionLayer {
   z-index: 0 !important;
+  pointer-events: none;
+}
+
+/* ---------- 编辑器布局覆盖 ---------- */
+
+/*
+ * 这些规则故意用「.cm-editor + 重复类名」把特异度提到 0-3-0,压过 CodeMirror
+ * base theme 的 `.ͼN .cm-xxx`(0-2-0)。放在 CSS 而不是 EditorView.theme 里,
+ * 一是因为行 padding 参与 drawSelection 的选区矩形计算(选区左缘会对齐到这里),
+ * 二是开发模式下 EditorView.theme 的规则不会作用于已经建好的视图,而这份 CSS
+ * 能随 HMR 立即生效。
+ */
+
+/* 字号走 CSS 变量(设置面板「编辑器」页里可调):标题、代码块按 em 跟着缩。
+   行高是字号倍率,调字号时行距按比例跟着变。 */
+.cm-editor .cm-scroller.cm-scroller {
+  font-family: var(--font-text);
+  font-size: var(--editor-font-size);
+  line-height: 1.9;
+}
+
+/*
+ * 可读行宽:正文收进一条居中的窄栏。
+ * 顶部 64px(约两行半)是文档与窗口上沿之间的呼吸空间;
+ * 底部 40vh 是短文档的余量,让正文能滚到视口上半区(见 widgets.ts 的说明)。
+ * 行首「+」与引用竖线画在正文栏外侧的 28px 留白里(见 --editor-line-gutter),
+ * 正文本身要再窄两个 gutter,否则内容会顶到这段留白上。
+ */
+.cm-editor .cm-content.cm-content {
+  padding: 64px 0 40vh;
+  max-width: calc(var(--editor-line-width) - 2 * var(--editor-line-gutter));
+  margin: 0 auto;
+}
+
+/*
+ * 行本身不留左右 padding。
+ *
+ * 这 28px 以前画在 .cm-line 上(给行首「+」当落点),但 drawSelection 画整行选区
+ * 时会把这份 padding 排除在外:首行从正文栏边缘开始画,其余行左右各缩进 28px,
+ * 看起来就是"除第一行外,每行第一个字没被选中"。留白挪到正文栏外侧之后,
+ * 所有行的选区都与正文栏同宽。
+ *
+ * position: relative 仍然是「+」按钮的落点(它藏在正文栏左侧的留白里)。
+ */
+.cm-editor .cm-line.cm-line {
+  padding: 0;
+  position: relative;
+}
+
+/*
+ * 引用行**不能用 padding-left 缩进**。
+ *
+ * CodeMirror 计算整行选区的左缘时,取的是 content 里**第一个** .cm-line 的
+ * paddingLeft,并把它当成所有"整行选中"行的左缩进。只要文档第一行恰好是引用,
+ * 全篇所有中间行的选区就会跟着缩进 1em —— 表现就是"除第一行外,每行第一个字
+ * 没被选中"。这里改用 margin-left(不参与那段计算),竖线用绝对定位伪元素画回
+ * 正文栏左缘。
+ */
+.cm-md-quote {
+  position: relative;
+  margin-left: 1em;
+}
+
+.cm-md-quote::before {
+  content: '';
+  position: absolute;
+  left: -1em;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--quote-bar);
   pointer-events: none;
 }
 
@@ -109,19 +184,6 @@
 }
 
 /*
- * 引用块:一条细灰竖线,画在普通正文起始处(行左内边距 28px 的右缘)而不是行框最左。
- * 引用内容再向右缩进 1em(setup.ts 的 editorTheme 里设置),竖线到首个字符正好
- * 留出一个字符宽。不铺底色、不改正文颜色:引用靠竖线和弱化后的标记区分。
- * 26px = 行左内边距 28px - 竖线宽 2px,数值与 setup.ts 里 .cm-line 的 padding 对应。
- */
-.cm-md-quote {
-  background-image: linear-gradient(var(--quote-bar), var(--quote-bar));
-  background-size: 2px 100%;
-  background-position: 26px 0;
-  background-repeat: no-repeat;
-}
-
-/*
  * 光标在引用行上时显形的 `>` 标记:弱化,别和正文抢注意力。
  * 取正文色的 62%(混 transparent,随主题自适应):比 --text-tertiary 亮一档,
  * 与 Obsidian 语法标记的灰度接近。
@@ -144,10 +206,14 @@
 .cm-md-listmark-bullet::after {
   content: '•';
   /* 用 rem 是因为父元素 font-size 被压成 0,em 会跟着变 0;
-     但要跟着正文字号缩放,所以直接算 —— 写死 0.95rem 的话调大字号后圆点会明显偏小 */
-  font-size: calc(var(--editor-font-size) * 0.95);
+     但要跟着正文字号缩放,所以直接算 —— 写死 1.2rem 的话调大字号后圆点会明显偏小。
+     1.2 倍正文:圆点本身比正文小一圈,缩到 0.95 倍时几乎看不清 */
+  font-size: calc(var(--editor-font-size) * 1.2);
   line-height: 1;
   color: var(--list-marker-color);
+  /* 源码里圆点后只有一个空格,视觉上离正文太挤:再补一段字距。
+     0.35em 相对这段伪元素自己的字号,随编辑器字号一起缩放 */
+  margin-inline-end: 0.35em;
 }
 
 .cm-md-headermark {
@@ -200,8 +266,8 @@
   border-collapse: collapse;
   /* 上下间距由 frame 的 --md-table-gap padding 提供,这里不再另外加 margin */
   margin: 0;
-  /* 表格不该继承编辑器的等宽降级样式,回到正文字体 */
-  font-family: var(--font-editor);
+  /* 表格不该继承编辑器的等宽降级样式,回到文档正文字体 */
+  font-family: var(--font-text);
   font-size: 0.95em;
   line-height: 1.45;
 }
@@ -288,8 +354,8 @@
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
-  /* 行列控件默认完全藏起来;由 applyHoverControls 按鼠标所在的行/列/边界
-     给对应的按钮加 is-shown。整表三枚按钮用 -pinned 覆盖成常驻(见下)。
+  /* 控件默认完全藏起来;由 applyHoverControls 按鼠标位置给对应的按钮加 is-shown:
+     行列控件看鼠标所在的行/列/边界,整表三枚按钮看鼠标是否在表格附近。
      visibility 一起切,免得看不见的按钮先接住误点 */
   opacity: 0;
   visibility: hidden;
@@ -299,12 +365,6 @@
 
 .cm-md-table-ctl.is-shown,
 .cm-md-table-ctl:focus {
-  opacity: 1;
-  visibility: visible;
-}
-
-/* 整表选择 / 删除 / 对齐三枚按钮常驻:表格渲染出来就一直可见,不等悬停 */
-.cm-md-table-ctl.cm-md-table-ctl-pinned {
   opacity: 1;
   visibility: visible;
 }
@@ -391,6 +451,18 @@
 }
 
 .cm-md-table-frame.is-selected > table {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* 文档选区覆盖整张表(从表格上方拖到下方 / Ctrl+A):widget 继续渲染,
+   用与表格内部整表选中相同的样式表示"整张表被选中" */
+.cm-md-table-host-selected .cm-md-table-widget th,
+.cm-md-table-host-selected .cm-md-table-widget td {
+  background: var(--bg-selection) !important;
+}
+
+.cm-md-table-host-selected .cm-md-table-frame > table {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }

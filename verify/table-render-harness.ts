@@ -749,16 +749,43 @@ async function main(): Promise<void> {
   await sleep(500)
   check('滚回顶部后表格重新渲染出来', (await tableCount()) === 1, String(await tableCount()))
 
+  // ---------- 6. 单元格里的 LaTeX ----------
+
+  console.log('\n【6】单元格里的 LaTeX 公式交给 KaTeX 渲染')
+  // 单元格的行内渲染走 markdown-it(wysiwyg/inline.ts),不是正文那套 Lezer 解析器;
+  // 数学规则漏装时 $...$ 会原样露出来 —— 导出那边却渲染,两处观感不一致
+  await loadDoc(
+    '| 过程 | 方向 |\n| --- | --- |\n| 前向过程 | $x_0 \\to x_1 \\to \\cdots \\to x_T$ |\n\n末尾\n'
+  )
+  await sleep(400)
+  const mathCell = await evalJs<{ katex: number; text: string; dollar: boolean }>(`
+    (() => {
+      const t = document.querySelector('.cm-content .cm-md-table-widget table')
+      const td = t?.querySelector('tbody td:nth-child(2)')
+      const text = td?.textContent ?? ''
+      return {
+        katex: td ? td.querySelectorAll('.katex').length : 0,
+        text,
+        dollar: text.includes('$')
+      }
+    })()`)
+  check('单元格里的 $...$ 渲染出了 KaTeX', mathCell.katex > 0, JSON.stringify(mathCell))
+  check(
+    '不再露出 $ 定界符与反斜杠命令',
+    !mathCell.dollar && !mathCell.text.includes('\\to'),
+    JSON.stringify(mathCell.text)
+  )
+
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })
   await scrollTo(0)
   await sleep(400)
   // 截图里放两张表:「+」菜单插出来的全空表 和 有字的表 —— 两张的行高必须一样
   await loadDoc(`# 表格渲染\n\n${makeTable(3, 3)}\n\n${TABLE_3x3}\n\n上面一张是全空的(「+」插出来的样子),下面一张有字,行高应当一致。\n`)
-  // 截图里顺带留一个「选中整行」的样子,方便人眼核对结构选区的观感。
+  // 截图里顺带留一个「选中一列里的几格」的样子,方便人眼核对矩形选区的观感。
   // capturePage 偶发 UnknownVizError(见 verify 记忆):截图是观感产物,不能因此把全绿判成失败
   try {
-    // 截图里演示「按住左键拖选两行」:拖完鼠标停在表上,控件也会浮现
+    // 截图里演示「按住左键纵向拖选一列里的几格」:拖完鼠标停在表上,控件也会浮现
     const shotSpot = await evalJs<{ ax: number; ay: number; bx: number; by: number } | null>(`(() => {
       const frames = [...document.querySelectorAll('.cm-md-table-widget')]
       const frame = frames[frames.length - 1]
@@ -768,7 +795,7 @@ async function main(): Promise<void> {
       if (!a || !b) return null
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
       return {
-        // x 不动、只往下拖:位移以纵向为主,才会选中行而不是列
+        // x 不动、只往下拖:选区是一列里的若干格(起点格 ↔ 终点格围出的矩形)
         ax: Math.round(ra.left + 10), ay: Math.round(ra.top + ra.height / 2),
         bx: Math.round(ra.left + 10), by: Math.round(rb.bottom - 3)
       }

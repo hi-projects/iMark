@@ -2,36 +2,21 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { EditorView } from '@codemirror/view'
 import { createEditor } from '../editor/setup'
-import { updateOutline } from '../editor/outline'
 import { appStore, editorHolder } from '../stores/app'
-import { computeStats } from '../utils/text'
 import { openFileByPath } from '../services/fileService'
 import { noteDocChangeForAutoSave } from '../services/autoSave'
+import { attachActiveTab, handleEditorDocChange } from '../services/tabs'
 import { api } from '../services/api'
 
 const container = ref<HTMLElement | null>(null)
 
-let statsTimer: ReturnType<typeof setTimeout> | undefined
-let dirtyTimer: ReturnType<typeof setTimeout> | undefined
-let outlineTimer: ReturnType<typeof setTimeout> | undefined
-
 function onDocChange(view: EditorView): void {
-  // 空状态下编辑器是只读的,用户输入到不了这里;真出现程序化写入(插件直接改文档)
-  // 说明编辑区已经有内容,那就按「有文档」处理,别让标题栏继续说没有页面。
-  if (!appStore.hasDocument) appStore.hasDocument = true
+  // 字数 / 脏标记 / 大纲都归当前标签自己(见 services/tabs.ts);
+  // 定时器按标签 id 结算,切走之后晚到的回调不会写错标签
+  handleEditorDocChange(view)
   // 实时保存的防抖从这里起算:只有真实输入才该触发写盘,
   // 打开/新建文档走的是 setState,不会经过这里
   noteDocChangeForAutoSave()
-  clearTimeout(statsTimer)
-  statsTimer = setTimeout(() => {
-    Object.assign(appStore, computeStats(view.state.doc.toString()))
-  }, 250)
-  clearTimeout(dirtyTimer)
-  dirtyTimer = setTimeout(() => {
-    appStore.dirty = view.state.doc.toString() !== appStore.savedContent
-  }, 250)
-  clearTimeout(outlineTimer)
-  outlineTimer = setTimeout(() => updateOutline(view), 300)
 }
 
 function onDragOver(e: DragEvent): void {
@@ -58,6 +43,8 @@ onMounted(() => {
   })
   editorHolder.view = view
   editorHolder.onDocChange = onDocChange
+  // 极端情况下挂载前已经有当前标签(见 attachActiveTab 的说明)
+  attachActiveTab()
   if (appStore.hasDocument) view.focus()
 })
 
@@ -65,9 +52,6 @@ onBeforeUnmount(() => {
   editorHolder.view?.destroy()
   editorHolder.view = null
   editorHolder.onDocChange = null
-  clearTimeout(statsTimer)
-  clearTimeout(dirtyTimer)
-  clearTimeout(outlineTimer)
 })
 </script>
 

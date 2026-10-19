@@ -1,18 +1,29 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
-import { targetSecretSlot, type PluginAuthMode, type PluginField, type PluginTarget } from '@shared/plugins'
+import {
+  targetSecretSlot,
+  type PluginAuthMode,
+  type PluginField,
+  type PluginTarget,
+  type PluginTargetResult
+} from '@shared/plugins'
 
-const props = defineProps<{
-  field: PluginField
-  targets: PluginTarget[]
-  /** 密钥掩码(形如 ab****23,'' = 未配置):key 为目标 id */
-  secrets: Record<string, string>
-  /** 每个目标单独可执行的动作(如「测试连接」) */
-  targetActions: { id: string; label: string }[]
-  /** 正在执行动作的目标 id */
-  busyTarget: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    field: PluginField
+    targets: PluginTarget[]
+    /** 密钥掩码(形如 ab****23,'' = 未配置):key 为目标 id */
+    secrets: Record<string, string>
+    /** 每个目标单独可执行的动作(如「测试连接」) */
+    targetActions: { id: string; label: string }[]
+    /** 每个目标的最近一次操作结果:卡片边框的颜色由它决定 */
+    targetResults?: Record<string, PluginTargetResult>
+    /** 正在执行动作的目标 id */
+    busyTarget: string | null
+  }>(),
+  { targetResults: () => ({}) }
+)
 
 const emit = defineEmits<{
   (e: 'change', targets: PluginTarget[]): void
@@ -23,9 +34,6 @@ const emit = defineEmits<{
 
 /** 已配置密钥时默认把输入框收起来,点「更换」才展开 */
 const replacing = ref<Record<string, boolean>>({})
-
-/** 这一行是否被碰过:在任意输入框里失焦后开始判定(即使又清空,也按必填规则显示红框) */
-const touched = ref<Record<string, boolean>>({})
 
 function update(index: number, patch: Partial<PluginTarget>): void {
   const next = props.targets.map((t, i) => (i === index ? { ...t, ...patch } : t))
@@ -70,37 +78,54 @@ function secretPlaceholder(target: PluginTarget): string {
 }
 
 /**
- * 这一行远端的填写状态:
- * blank = 还什么都没填(保持默认外观) / ok = 可以推送 / incomplete = 缺东西(红框)
- * 判定与主进程的推送前校验保持一致:file:// 等本地地址不需要凭据,SSH 也不需要。
+ * 这一行远端还缺哪些必填输入。
+ *
+ * 判定与主进程推送前的校验保持一致:地址与本地分支必填;HTTP(S) 地址在
+ * token / password 认证下还需要密钥(password 另需账号);SSH 与本地路径不需要凭据。
  */
-type TargetState = 'blank' | 'ok' | 'incomplete'
-
-function targetState(target: PluginTarget): TargetState {
-  const hasUrl = Boolean(target.url.trim())
-  const hasLocal = Boolean(target.localBranch.trim())
-  const hasSecret = Boolean(props.secrets[targetSecretSlot(target)])
-  // 全新、且没被碰过的一行保持默认外观;一旦点开填写过,就按必填规则判定
-  if (!touched.value[target.id] && !hasUrl && !hasLocal && !hasSecret && !target.username.trim()) {
-    return 'blank'
+function missingFields(target: PluginTarget): string[] {
+  const missing: string[] = []
+  if (!target.url.trim()) missing.push('远程仓库')
+  if (!target.localBranch.trim()) missing.push('本地分支')
+  if (target.auth === 'ssh' || !/^https?:/i.test(target.url.trim())) return missing
+  if (target.auth === 'password' && !target.username.trim()) missing.push('账号')
+  if (!props.secrets[targetSecretSlot(target)]) {
+    missing.push(target.auth === 'password' ? '密码' : '访问令牌')
   }
-
-  if (!hasUrl || !hasLocal) return 'incomplete'
-  if (target.auth === 'ssh' || !/^https?:/i.test(target.url.trim())) return 'ok'
-  if (!hasSecret) return 'incomplete'
-  if (target.auth === 'password' && !target.username.trim()) return 'incomplete'
-  return 'ok'
+  return missing
 }
 
-/** 缺什么,给悬停提示用 */
-function missingHint(target: PluginTarget): string {
-  const state = targetState(target)
-  if (state === 'ok') return '已配置，可以推送'
-  if (state === 'blank') return '还没填写'
-  if (!target.url.trim()) return '还没填远程仓库地址'
-  if (!target.localBranch.trim()) return '还没填本地分支'
-  if (target.auth === 'password' && !target.username.trim()) return '还没填账号'
-  return `还没填${target.auth === 'password' ? '密码' : '访问令牌'}`
+/**
+ * 整行一个字都没填。
+ *
+ * 运行时(同步/测试)会直接跳过这种行,所以校验也不拿它报错 ——
+ * 否则刚点「添加远端」就会立刻跳出一条红字。
+ */
+function isBlank(target: PluginTarget): boolean {
+  return (
+    !target.url.trim() &&
+    !target.localBranch.trim() &&
+    !target.remoteBranch.trim() &&
+    !target.username.trim() &&
+    !props.secrets[targetSecretSlot(target)]
+  )
+}
+
+/** 统一列出缺什么:行号与界面上的行序一致,不再用卡片边框表达 */
+const problems = computed(() =>
+  props.targets.flatMap((target, i) => {
+    if (isBlank(target)) return []
+    const missing = missingFields(target)
+    return missing.length > 0 ? [`第 ${i + 1} 个远端：未填${missing.join('、')}`] : []
+  })
+)
+
+/** 卡片边框的含义(悬停时说明,免得把绿/红误读成「填得对不对」) */
+function resultTitle(target: PluginTarget): string {
+  const result = props.targetResults[target.id]
+  if (result === 'ok') return '上次操作成功'
+  if (result === 'error') return '上次操作失败'
+  return '还没有对它执行过操作'
 }
 
 const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectElement).value
@@ -108,15 +133,23 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
 
 <template>
   <div class="plugin-targets">
+    <!-- 输入校验只在这一处说:逐行列出还缺哪些必填项 -->
+    <div v-if="problems.length > 0" class="plugin-target-problems">
+      <div class="plugin-target-problems-title">存在 {{ problems.length }} 个远端配置未完成/错误：</div>
+      <ul>
+        <li v-for="(problem, i) in problems" :key="i">{{ problem }}</li>
+      </ul>
+    </div>
+
     <div
       v-for="(target, i) in targets"
       :key="target.id"
       class="plugin-target"
       :class="{
-        'plugin-target-ok': targetState(target) === 'ok',
-        'plugin-target-bad': targetState(target) === 'incomplete'
+        'plugin-target-ok': targetResults[target.id] === 'ok',
+        'plugin-target-bad': targetResults[target.id] === 'error'
       }"
-      @focusout="touched[target.id] = true"
+      :title="resultTitle(target)"
     >
       <div class="plugin-target-row">
         <label class="plugin-target-cell plugin-target-cell-wide">
@@ -167,12 +200,6 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
             <option value="ssh">SSH</option>
           </select>
         </label>
-        <!-- 是否已配置好:绿点=可以推送;灰点=还没填齐 -->
-        <span
-          class="plugin-status-dot"
-          :class="targetState(target) === 'ok' ? 'plugin-status-ok' : 'plugin-status-idle'"
-          :title="missingHint(target)"
-        />
       </div>
 
       <!-- 账号:只有「账号密码」认证才需要 -->

@@ -25,7 +25,8 @@ import type {
   PluginCommand,
   PluginMenuItem,
   PluginState,
-  PluginStatusItem
+  PluginStatusItem,
+  PluginTargetResult
 } from '@shared/plugins'
 import { getSettings, getSettingsSync } from '../settings'
 import { getSecret, hasSecret } from '../secrets'
@@ -460,6 +461,24 @@ function normalizeStatePatch(patch: unknown): Partial<PluginState> {
   }
   if (p.lastMessage !== undefined) out.lastMessage = asString(p.lastMessage, 'lastMessage', 500)
   if (p.lastDetail !== undefined) out.lastDetail = asString(p.lastDetail, 'lastDetail', 4096)
+  if (p.targetResults !== undefined) {
+    const raw = asObject(p.targetResults, 'targetResults')
+    const keys = Object.keys(raw)
+    // 目标 id 由设置页生成(形如 t + 时间戳),数量跟着配置里的远端数走;
+    // 上限只为挡住"插件往状态里灌无界数据",128 个远端远超实际
+    if (keys.length > 128) throw new OpError('E_BAD_ARGS', 'targetResults 最多 128 项')
+    const results: Record<string, PluginTargetResult> = {}
+    for (const key of keys) {
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+        throw new OpError('E_BAD_ARGS', `不合法的目标 id「${key}」`)
+      }
+      if (raw[key] !== 'ok' && raw[key] !== 'error') {
+        throw new OpError('E_BAD_ARGS', `目标「${key}」的结果只能是 ok / error`)
+      }
+      results[key] = raw[key] as PluginTargetResult
+    }
+    out.targetResults = results
+  }
   return out
 }
 

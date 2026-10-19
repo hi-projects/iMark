@@ -1,13 +1,21 @@
 :root {
+  /* UI 字体:侧栏、菜单、设置面板等 */
   --font-editor: 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  /* 文档正文字体:与 Obsidian(Minimal 主题的 --font-text)同一套字体栈。
+     Windows 上落到 Segoe UI,中文由系统回退到微软雅黑 —— 和 Obsidian 的实际渲染一致 */
+  --font-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, Ubuntu, sans-serif;
   --font-mono: 'Cascadia Code', Consolas, 'JetBrains Mono', 'Courier New', monospace;
   /* 编辑器正文字号:设置面板「编辑器」页写这个变量,标题/代码块按 em 跟着缩。
-     它不属于任何一档主题 —— 换主题不该把字号也换掉 */
-  --editor-font-size: 16px;
-  /* 正文栏最大宽度:按 Obsidian(Minimal)在「可读行宽」关闭时的做法,
-     正文容器占编辑区的 88%,左右各留 6% 空白。想固定成像素值(如 700px)
-     或改宽窄,在自定义样式里覆盖这个变量即可。 */
-  --editor-line-width: 88%;
+     它不属于任何一档主题 —— 换主题不该把字号也换掉。
+     默认 13px 与用户 Obsidian(baseFontSize / Minimal 的 textNormal)一致 */
+  --editor-font-size: 13px;
+  /* 正文栏最大宽度(含两侧 gutter):占编辑区的 96%,左右各留 2% 空白。
+     想固定成像素值(如 700px)或改宽窄,在自定义样式里覆盖这个变量即可。 */
+  --editor-line-width: 96%;
+  /* 正文栏两侧的留白:行首「+」按钮与引用竖线画在这里。
+     正文宽度 = --editor-line-width - 2 × 这个值(见 editor/setup.ts)。
+     注意别把它设得小于行首按钮的宽度,否则按钮会被裁掉。 */
+  --editor-line-gutter: 28px;
 }
 
 :root,

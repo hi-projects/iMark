@@ -16,7 +16,8 @@
  *   --bg-code       行内代码底色
  *   --bg-codeblock  代码块 / 表头底色
  *   --bg-selection  选中底色
- * 另有 --bg-editor / --bg-app / --shadow / --font-editor / --font-mono 等。
+ * 另有 --bg-editor / --bg-app / --shadow / --font-editor(界面)/
+ * --font-text(文档正文)/ --font-mono 等。
  *
  * 几条要知道的:
  *   - 样式作用于**整个界面**,不只是编辑器。只想改编辑器,就带上 .cm-md-* 这类

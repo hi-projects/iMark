@@ -36,10 +36,22 @@ export interface Settings {
   outline: boolean
   /** 文件浏览器是否可见 */
   explorer: boolean
+  /** 文件浏览器宽度(px):拖动分界线时写入 */
+  explorerWidth: number
+  /** 大纲侧栏宽度(px):拖动分界线时写入 */
+  outlineWidth: number
   /** 当前仓库根目录(未打开为 null) */
   vaultPath: string | null
-  /** 上次打开的仓库内文件 */
+  /** 上次激活的仓库内文件(启动时恢复会话用;未命名文档为 null) */
   lastFile: string | null
+  /**
+   * 上次会话开着的仓库内文件,顺序即标签页顺序(不含无法跨启动恢复的未命名文档)。
+   *
+   * 与 lastFile 并存而不是替代它:lastFile 是「当前页」,决定启动后激活哪个标签;
+   * 这个数组是「还有哪些页开着」。旧设置里没有这个字段时按空数组处理,
+   * 恢复逻辑会退回到只有 lastFile 的单标签行为。
+   */
+  openFiles: string[]
   /** 自动保存方式(设置面板「编辑器」页) */
   autoSaveMode: AutoSaveMode
   /**

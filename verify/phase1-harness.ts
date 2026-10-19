@@ -407,7 +407,7 @@ async function main(): Promise<void> {
   // 后半句才是关键:键序是 integrity 的输入,一旦 manifestKeyOrder 被动过,
   // 既有包的 integrity 就会变。这条挂了 = 所有已发布包在客户端眼里都成了「被篡改」。
   console.log('\n[B] 既有内置包仍然可用(键序 / 白名单没有动坏)')
-  for (const id of ['quick-edit', 'git-sync', 'note-embed', 'todo-marks']) {
+  for (const id of ['quick-edit', 'git-sync', 'note-embed', 'todo-marks', 'ai-for-edit']) {
     // 按 __dirname 找(打包后落在 out/main/,上两级就是仓库根),
     // **不能写成相对 cwd 的 '../src/...'** —— cwd 是仓库根,那样会指到仓库的上一级去
     const raw = await readFile(

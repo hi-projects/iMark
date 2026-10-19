@@ -27,9 +27,9 @@ const COLS_MIN = 1
 const COLS_MAX = 20
 const COLS_DEFAULT = 3
 
-/** 单元格宽度:让表头、内容行与分隔行在源码里对齐 */
-const CELL = '     '
-const SEPARATOR_CELL = ' --- '
+/** 单元格宽度:让表头、内容行与分隔行在源码里对齐(与 ` :---: ` 等宽) */
+const CELL = '       '
+const SEPARATOR_CELL = ' :---: '
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
   const n = Math.trunc(Number(value))
@@ -41,8 +41,8 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
  * 生成一张空表。
  *
  * `rows` **含表头**:第一行是表头,第二行是 Markdown 表格必需的分隔行,之后才是内容行。
- * 分隔行写 `---` 不带冒号 —— 那是 GFM 的默认对齐(渲染成左对齐),
- * 想改对齐方式的人可以自己往单元格里加 `:`。
+ * 分隔行写 `:---:` —— GFM 的列对齐标记,表头与正文默认居中。
+ * 想改成左对齐 / 右对齐,把它写成 `---` / `---:`(宿主表格的整表对齐按钮改的也是这一行)。
  */
 function buildTable(rows: number, cols: number): { text: string; cursorOffset: number } {
   // 行首一个 `|`、每格后面一个 —— 直接 `|${CELL}|`.repeat(cols) 会把相邻两格的竖线

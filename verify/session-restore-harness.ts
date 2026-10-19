@@ -7,7 +7,8 @@
  *
  * 配套的持久化规则(不然 A/B 会互相打架):
  *   - 打开文件 → lastFile 记它;
- *   - 新建未命名文档 → lastFile 清空(未命名没法跨启动恢复);
+ *   - 新建未命名文档 → lastFile 清空(未命名没法跨启动恢复),
+ *     但同一会话里还开着的文件标签仍会恢复(多标签页后它们没有被关掉);
  *   - 回到仓库选择界面 → lastFile 清空(眼前没有页面了);
  *   - 上次的文件已被删除 → 不打开任何东西,并清掉那条记忆。
  *
@@ -289,8 +290,12 @@ async function main(): Promise<void> {
   }
   {
     const win = await openWindow()
-    const ready = await waitFor(win, `document.querySelector('.editor-empty-hint')`)
-    check('重启后没有未命名文档', ready && !(await evalJs<boolean>(win, `!!document.querySelector('.status-file')`)))
+    // 未命名页本身恢复不了,但它旁边的文件标签没有被关掉,仍然该恢复
+    check('重启后恢复了后台的文件标签', await contentHas(win, '关闭前打开的那一页'))
+    check(
+      '但没有恢复未命名文档',
+      await waitFor(win, `!document.querySelector('.status-file')?.textContent?.includes('未命名')`)
+    )
     await closeWindow(win)
   }
 

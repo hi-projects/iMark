@@ -1,0 +1,96 @@
+{
+  "id": "ai-for-edit",
+  "name": "AI for Edit",
+  "description": "用你配置的 AI 服务美化当前文档，或在空文档里按描述生成内容",
+  "version": "1.4.1",
+  "author": "iMark 官方",
+  "main": { "mode": "node", "entry": "main.js" },
+  "render": { "entry": "render.js" },
+  "permissions": ["secrets", "network"],
+  "engines": { "imark": ">=0.1.0" },
+  "fields": [
+    {
+      "key": "endpoint",
+      "section": "AI 服务",
+      "kind": "text",
+      "label": "服务地址",
+      "default": "https://api.deepseek.com/chat/completions",
+      "placeholder": "https://api.deepseek.com/chat/completions",
+      "description": "默认是 DeepSeek。也支持任意 OpenAI 兼容的 chat/completions 地址，以及 Anthropic 的 /v1/messages；只填域名或 /v1 时会自动补全。例：OpenAI https://api.openai.com/v1/chat/completions；Ollama http://127.0.0.1:11434/v1/chat/completions。"
+    },
+    {
+      "key": "model",
+      "section": "AI 服务",
+      "kind": "text",
+      "label": "模型",
+      "default": "deepseek-flash",
+      "placeholder": "deepseek-flash",
+      "description": "默认是 DeepSeek 的 deepseek-flash。换其它服务时填该服务支持的模型名，例如 gpt-4o-mini、moonshot-v1-8k、qwen2.5:7b。Azure 地址里的部署名已经写在路径里，这一项可以留空。"
+    },
+    {
+      "key": "apiKey",
+      "section": "AI 服务",
+      "kind": "password",
+      "label": "API 密钥",
+      "default": "",
+      "placeholder": "粘贴密钥后回车或失焦保存",
+      "description": "加密保存在本机，只会随请求发送到你填写的服务地址。本地服务（如 Ollama）不需要密钥时可留空。"
+    },
+    {
+      "key": "timeoutMs",
+      "section": "行为",
+      "kind": "number",
+      "label": "请求超时（毫秒）",
+      "default": 60000,
+      "min": 5000,
+      "max": 90000,
+      "description": "AI 服务响应慢时可调大。超过这个时间会放弃本次请求，文档不会改动。"
+    },
+    {
+      "key": "characterEnabled",
+      "section": "助手形象",
+      "kind": "boolean",
+      "label": "显示浮动小人",
+      "default": true,
+      "description": "在编辑器里显示一个会动的 AI 小人，点它打开对话，按住可以拖到任意位置。关掉后仍可从状态栏按钮打开。"
+    },
+    {
+      "key": "characterStyle",
+      "section": "助手形象",
+      "kind": "select",
+      "label": "小人形象",
+      "default": "cat",
+      "showWhen": { "key": "characterEnabled", "value": true },
+      "options": [
+        { "value": "cat", "label": "猫咪 🐱" },
+        { "value": "penguin", "label": "企鹅（动画）🐧" },
+        { "value": "robot", "label": "机器人 🤖" },
+        { "value": "ghost", "label": "幽灵 👻" },
+        { "value": "star", "label": "星星 ✨" }
+      ],
+      "description": "选择编辑器里的小人形象。企鹅是内置的动画形象（会眨眼、挥翅膀）。"
+    }
+  ],
+  "actions": [{ "id": "test-connection", "label": "测试连接" }],
+  "lineMenu": [
+    {
+      "id": "ai-generate",
+      "label": "AI 生成内容",
+      "action": "generate-content",
+      "dialog": {
+        "title": "AI 生成内容",
+        "confirmLabel": "生成",
+        "fields": [
+          {
+            "key": "prompt",
+            "kind": "text",
+            "label": "生成要求",
+            "default": "",
+            "placeholder": "例如：一份介绍……的周报大纲",
+            "description": "用一句话描述你想生成的内容。空文档会打开对话预览，确认后写入正文；非空文档仍插入到这一行下方。"
+          }
+        ]
+      }
+    }
+  ]
+}

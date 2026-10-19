@@ -257,7 +257,10 @@ async function main(): Promise<void> {
   console.log('\n[B] 定时保存:停止输入 1 秒后写盘')
   const typed = '定时A'
   check('输入落进编辑器', await type(typed))
+  // 1 秒延迟还没到:标签上的未保存圆点此时必须在
+  check('输入后激活标签显示未保存圆点', await waitFor(`getComputedStyle(document.querySelector('.tab-active .tab-dot')).opacity === '1'`, 800))
   check('1~3 秒内磁盘上出现新内容', await waitForFileText(typed, 3000))
+  check('自动保存后圆点消失', await waitFor(`!document.querySelector('.tab-active .tab-dot')`, 2000))
   check(
     '状态栏给出「已自动保存」反馈',
     await waitFor(`document.querySelector('.status-autosave')?.textContent?.includes('已自动保存')`, 1500)

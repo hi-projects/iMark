@@ -1,9 +1,9 @@
 import { nextTick } from 'vue'
-import type { VaultNode } from '@shared/types'
+import type { Settings, VaultNode } from '@shared/types'
 import { appStore, type SwitcherMode, type VaultFileRef } from '../stores/app'
-import { basename } from '../utils/text'
-import { clearDocument, openFileByPath, saveCurrentFile } from './fileService'
-import { isInside, joinPath, relativeTo, replaceName } from '../utils/paths'
+import { closeAllTabsForSwitch, openFileByPath, restoreSession } from './fileService'
+import { clearTabs, detachDeletedPath, renameTabPaths } from './tabs'
+import { joinPath, relativeTo, replaceName } from '../utils/paths'
 import { notifyError, pushNotice } from './notice'
 import { api } from './api'
 
@@ -124,26 +124,20 @@ export async function forgetVault(vaultPath: string): Promise<void> {
  * 眼前看到的一致 —— 否则在选择界面关掉应用,下次启动还会莫名其妙恢复一个文件。
  */
 export async function showVaultPicker(): Promise<void> {
+  // 回到选择界面 = 眼前没有页面:标签会话一并清掉,否则下次启动又会
+  // 恢复一批用户在界面上已经关掉的文档。调用方负责先处理脏文档。
+  clearTabs()
   appStore.view = 'picker'
-  await api.saveSettings({ lastFile: null })
+  await api.saveSettings({ lastFile: null, openFiles: [] })
 }
 
 /**
  * 从编辑器请求切换仓库(状态栏仓库名 / 菜单「打开仓库」):
- * 先对脏文档做出决定(保存/丢弃/取消),再回到仓库选择界面。
+ * 先对**每个**脏标签做出决定(保存/丢弃/取消),再回到仓库选择界面。
+ * 有一个取消就停在原地 —— 切仓库会丢掉所有标签,不能只问当前那一份。
  */
 export async function requestVaultSwitch(): Promise<boolean> {
-  if (appStore.dirty) {
-    const choice = await api.confirmDiscard(appStore.fileName)
-    if (choice === 'cancel') return false
-    if (choice === 'save') {
-      const ok = await saveCurrentFile()
-      if (!ok) return false
-    } else {
-      // 用户选择丢弃:清掉脏标记,否则编辑器卸载后关闭守卫会再次索要保存
-      appStore.dirty = false
-    }
-  }
+  if (!(await closeAllTabsForSwitch())) return false
   await showVaultPicker()
   return true
 }
@@ -175,13 +169,9 @@ export async function setSkipVaultPicker(skip: boolean): Promise<void> {
  */
 export async function restoreLastDocument(
   vaultPath: string,
-  lastFile: string | null
+  settings: Pick<Settings, 'lastFile' | 'openFiles'>
 ): Promise<void> {
-  if (lastFile && isInside(vaultPath, lastFile)) {
-    const restored = await openFileByPath(lastFile, { silent: true, force: true })
-    if (restored) return
-  }
-  await clearDocument()
+  await restoreSession(vaultPath, settings)
 }
 
 /**
@@ -193,7 +183,7 @@ export async function openVaultFromPicker(vaultPath: string): Promise<boolean> {
   const ok = await loadVault(vaultPath)
   if (!ok) return false
   await enterEditorAndWait()
-  await restoreLastDocument(vaultPath, settings.lastFile)
+  await restoreLastDocument(vaultPath, settings)
   return true
 }
 
@@ -286,21 +276,9 @@ export async function renamePath(node: VaultNode, newName: string): Promise<bool
     return false
   }
   await refreshVault()
-  if (appStore.filePath) {
-    const fp = appStore.filePath
-    if (fp === node.path) {
-      applyOpenFilePath(to)
-    } else if (node.type === 'dir' && isInside(node.path, fp)) {
-      applyOpenFilePath(to + fp.slice(node.path.length))
-    }
-  }
+  // 改名可能同时命中多个标签(目录改名时,目录下打开的每一份都要跟着换路径)
+  renameTabPaths(node.path, to, node.type === 'dir')
   return true
-}
-
-function applyOpenFilePath(newPath: string): void {
-  appStore.filePath = newPath
-  appStore.fileName = basename(newPath)
-  void api.saveSettings({ lastFile: newPath })
 }
 
 /** 删除(回收站);若删除的是打开文件,内容保留但转为未保存的未命名状态 */
@@ -314,13 +292,8 @@ export async function deleteNode(node: VaultNode): Promise<boolean> {
     return false
   }
   await refreshVault()
-  const fp = appStore.filePath
-  if (fp && isInside(node.path, fp)) {
-    appStore.filePath = null
-    appStore.fileName = '未命名'
-    appStore.savedContent = ''
-    void api.saveSettings({ lastFile: null })
-  }
+  // 删除的是磁盘文件,不是用户眼前的文字:受影响的标签转为未保存的未命名文档
+  detachDeletedPath(node.path, node.type === 'dir')
   return true
 }
 

@@ -15,12 +15,14 @@
  * 内置包坏了,用户看到的现象与下载到的包坏掉一模一样,这是有意的。
  */
 
-import { isNewerVersion, type PluginPermission } from '@shared/pluginPackage'
+import { compareVersions, isNewerVersion, type PluginPermission } from '@shared/pluginPackage'
 import { installFromEnvelope } from './installer'
 import { getRecord } from '../plugins/installed'
+import { getSettings, saveSettings } from '../settings'
 import type { PluginHost } from '../plugins/host'
 import gitSyncPackage from './builtin/git-sync.imkpkg.json?raw'
 import quickEditPackage from './builtin/quick-edit.imkpkg.json?raw'
+import aiForEditPackage from './builtin/ai-for-edit.imkpkg.json?raw'
 
 interface BundledPackage {
   raw: string
@@ -43,7 +45,9 @@ interface BundledPackage {
 const BUNDLED: BundledPackage[] = [
   { raw: gitSyncPackage, enable: false },
   // 全新用户也开箱就有「+」:它不配置也能用
-  { raw: quickEditPackage, enable: true }
+  { raw: quickEditPackage, enable: true },
+  // AI 需要用户填服务地址与密钥才有意义,和 git-sync 一样装上但默认关着
+  { raw: aiForEditPackage, enable: false }
 ]
 
 interface ParsedBundle {
@@ -98,6 +102,10 @@ async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<v
   if (!record || record.source !== 'bundled') return
   if (!parsed.version || !isNewerVersion(parsed.version, record.version)) return
 
+  // 默认值只在「这个字段从未保存过」时生效；插件启用过一次之后，整份配置就已经
+  // 落进了 settings.json。默认值变化必须在这里补一次，否则老用户会一直停在旧地址。
+  await migrateStoredConfig(parsed.id, record.version, parsed.version)
+
   const granted = record.grantedPermissions ?? []
   const added = parsed.permissions.filter(p => !granted.includes(p))
   if (added.length > 0) {
@@ -114,6 +122,62 @@ async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<v
     grantedPermissions: granted
   })
   console.log(`[iMark] 已升级插件 ${outcome.name} ${record.version} → ${outcome.version}`)
+}
+
+/**
+ * 内置插件默认值的一次性迁移。
+ *
+ * 只有「整份配置仍然完全是旧默认值」时才动手：用户只要改过端点或模型，哪怕
+ * 又改回了同样的字符串，我们也无法区分，所以规则必须保守到只认这对完整组合。
+ * 迁移点用版本号卡住，之后的升级不会再跑第二遍。
+ */
+const CONFIG_MIGRATIONS: Record<
+  string,
+  {
+    /** 从低于这个版本升级上来时迁移一次 */
+    untilVersion: string
+    /** 返回 null 表示这套配置不该动 */
+    apply: (config: Record<string, unknown>) => Record<string, unknown> | null
+  }
+> = {
+  'ai-for-edit': {
+    untilVersion: '1.1.0',
+    apply: config => {
+      if (
+        config.endpoint !== 'https://api.openai.com/v1/chat/completions' ||
+        config.model !== 'gpt-4o-mini'
+      ) {
+        return null
+      }
+      return {
+        ...config,
+        endpoint: 'https://api.deepseek.com/chat/completions',
+        model: 'deepseek-flash'
+      }
+    }
+  }
+}
+
+async function migrateStoredConfig(
+  id: string,
+  fromVersion: string,
+  toVersion: string
+): Promise<void> {
+  const migration = CONFIG_MIGRATIONS[id]
+  if (!migration) return
+  if (compareVersions(fromVersion, migration.untilVersion) >= 0) return
+  if (compareVersions(toVersion, migration.untilVersion) < 0) return
+
+  const settings = await getSettings()
+  const entry = settings.plugins[id]
+  if (!entry) return
+  const next = migration.apply(entry.config ?? {})
+  if (!next) return
+
+  await saveSettings({
+    plugins: { ...settings.plugins, [id]: { ...entry, config: next } }
+  })
+  console.log(`[iMark] 插件 ${id} 的旧默认配置已迁移`)
 }
 
 /**

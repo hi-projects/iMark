@@ -2,6 +2,7 @@ import { EditorSelection, type Extension, type Text } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { appStore } from '../stores/app'
 import { api } from '../services/api'
+import { notePastedImage } from '../services/pastedImages'
 import { notifyError, pushNotice } from '../services/notice'
 
 /**
@@ -53,7 +54,11 @@ async function completePaste(item: PendingPaste): Promise<void> {
   for (const file of item.files) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      relPaths.push(await api.saveImageAsset(item.docPath, file.type, bytes))
+      const rel = await api.saveImageAsset(item.docPath, file.type, bytes)
+      // 从写盘这一刻起就记账:即使这张图最终没进正文(编辑期间切走了文档),
+      // 保存时也能把它算进「没有引用」的候选
+      notePastedImage(item.docPath, rel)
+      relPaths.push(rel)
     } catch (err) {
       notifyError('粘贴图片', err)
     }

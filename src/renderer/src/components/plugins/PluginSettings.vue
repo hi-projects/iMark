@@ -262,6 +262,7 @@ async function openLog(): Promise<void> {
           :hint="passwordHint(selected.descriptor.id, field)"
           :target-secrets="targetSecrets(selected.descriptor.id, field)"
           :target-actions="field.key === selected.descriptor.targetFieldKey ? (selected.descriptor.targetActions ?? []) : []"
+          :target-results="selected.state.targetResults ?? {}"
           :busy-target="targetBusyId"
           @change="v => commit(field, v)"
           @run-action="runTargetAction"

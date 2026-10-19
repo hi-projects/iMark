@@ -394,13 +394,34 @@
   background: var(--bg-app);
 }
 
-/* 填写完整度:齐了绿框、缺东西红框、什么都没填保持默认 */
+/* 卡片边框 = 最近一次操作的结果:绿=成功、红=失败,没操作过保持默认灰。
+   输入是否填齐不在这里表达 —— 见 .plugin-target-problems。 */
 .plugin-target-ok {
   border-color: var(--success);
 }
 
 .plugin-target-bad {
   border-color: var(--danger);
+}
+
+/* 输入校验:统一列在这里说「哪个远端还缺什么」,不动卡片边框 */
+.plugin-target-problems {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.plugin-target-problems-title {
+  font-weight: 600;
+}
+
+.plugin-target-problems ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
 }
 
 .plugin-target-head {
@@ -666,7 +687,9 @@
 
 .plugin-op {
   padding: 10px 0;
-  border-top: 1px solid var(--border);
+  /* 条目之间的分隔线比模块标题下的分隔线浅一档:
+     先看到「调试」是一块,再看到里面一条条操作,而不是所有横线长一个样 */
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 
 .plugin-op:first-child {

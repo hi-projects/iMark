@@ -5,7 +5,9 @@ import FileExplorer from './components/FileExplorer.vue'
 import OutlineSidebar from './components/OutlineSidebar.vue'
 import QuickSwitcher from './components/QuickSwitcher.vue'
 import VaultPicker from './components/VaultPicker.vue'
+import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
+import PaneResizer from './components/PaneResizer.vue'
 import StatusBar from './components/StatusBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import LineMenu from './components/LineMenu.vue'
@@ -17,6 +19,7 @@ import {
   editorHolder,
   initExplorerVisible,
   initOutlineVisible,
+  initSidebarWidths,
   initSkipVaultPicker,
   initStoreWatchers,
   openSettings,
@@ -26,6 +29,7 @@ import {
 } from './stores/app'
 import { runFormatCommand } from './editor/commands'
 import {
+  closeTab,
   exportHtmlFile,
   newFile,
   openFileFromSystem,
@@ -34,6 +38,7 @@ import {
   saveCurrentFile,
   saveFileAs
 } from './services/fileService'
+import { activeTab, stepTab } from './services/tabs'
 import {
   enterEditorAndWait,
   initVaultList,
@@ -84,6 +89,17 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
       return
     case 'file:quick-switch':
       toggleSwitcher()
+      return
+    case 'file:close-tab': {
+      const tab = activeTab()
+      if (tab) await closeTab(tab.id)
+      return
+    }
+    case 'file:next-tab':
+      stepTab(1)
+      return
+    case 'file:prev-tab':
+      stepTab(-1)
       return
     case 'file:save':
       void saveCurrentFile()
@@ -137,9 +153,10 @@ onMounted(async () => {
     applyTheme(settings.theme)
     initOutlineVisible(settings.outline ?? true)
     initExplorerVisible(settings.explorer ?? true)
+    initSidebarWidths(settings.explorerWidth ?? 240, settings.outlineWidth ?? 240)
     initVaultList(settings.vaults ?? [])
     initSkipVaultPicker(settings.skipVaultPicker ?? false)
-    // 字号/换行要赶在第一个文档装载前定下来:loadDocument 重建 state 时会读换行偏好
+    // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
     initEditorSettings(settings)
 
     // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复
@@ -151,7 +168,7 @@ onMounted(async () => {
         // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
         await enterEditorAndWait()
         // 关闭前打开了页面就恢复它;没有就什么都不打开
-        await restoreLastDocument(settings.vaultPath!, settings.lastFile)
+        await restoreLastDocument(settings.vaultPath!, settings)
       }
     }
   } catch {
@@ -175,9 +192,22 @@ onBeforeUnmount(() => {
 <template>
   <VaultPicker v-if="appStore.view === 'picker'" />
   <div v-else class="app-shell">
-    <div class="app-body">
+    <div
+      class="app-body"
+      :style="{
+        '--explorer-width': appStore.explorerWidth + 'px',
+        '--outline-width': appStore.outlineWidth + 'px'
+      }"
+    >
       <FileExplorer />
-      <EditorPane />
+      <!-- 侧栏的可见性由各自组件里的 v-show 管:分界线跟着一起隐藏 -->
+      <PaneResizer v-if="appStore.explorerVisible" side="explorer" />
+      <!-- 标签栏与编辑器同处一列:它只在编辑区上方,不横跨左右侧栏 -->
+      <div class="editor-column">
+        <TabBar />
+        <EditorPane />
+      </div>
+      <PaneResizer v-if="appStore.outlineVisible" side="outline" />
       <OutlineSidebar />
     </div>
     <StatusBar />
