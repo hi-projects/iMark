@@ -2,9 +2,9 @@
  * AI for Edit —— render 层。
  *
  * 一个对话式助手：
- *   - 状态栏大纲按钮旁的 AI 按钮，以及编辑器右下角的浮动小人，都能打开对话；
- *   - 对话里可以直接问与当前文档相关的问题；
- *   - 顶部两个快捷动作：「生成」用于空文档，「美化」用于已有内容；
+ *   - 状态栏左下角的 AI 按钮，以及编辑器右下角的浮动小人，都能打开对话；
+ *   - 输入框上方选择模式：「对话」（默认）/「生成」（空文档）/「美化」（已有内容），
+ *     输入内容后点「发送」即可；输入框上方是当前环境（文档 + 参考文件）；
  *   - 生成/美化结果以消息形式出现，点「写入文档 / 确认替换」才真正改文档。
  *
  * 小人形象、是否显示由插件配置决定；所有界面都在停用时自己收走。
@@ -24,6 +24,8 @@ import type {
 
 type EditorViewT = NonNullable<ReturnType<ImkRenderLayerApi['editor']['getView']>>
 type ActionKind = 'generate' | 'beautify'
+/** 输入区的三种模式；「发送」按当前模式分发到对话 / 生成 / 美化 */
+type ComposeMode = 'chat' | 'generate' | 'beautify'
 type ActionPhase = 'loading' | 'ready' | 'error'
 type MessageRole = 'user' | 'assistant' | 'system'
 type MessageKind = 'chat' | 'action' | 'hint'
@@ -64,6 +66,53 @@ interface ChatMessageItem {
   detail?: string
   truncated?: boolean
   action?: ActionState
+}
+
+/** 作为参考材料随请求发送的本地文本文件（正文已截断到插件上限） */
+interface AttachmentItem {
+  id: string
+  name: string
+  /** 实际发送的字符数 */
+  chars: number
+  text: string
+  /** 原文件超过单文件上限，text 只是开头一段 */
+  truncated: boolean
+  addedAt: number
+}
+
+/**
+ * 一次对话。
+ *
+ * 会话按**文档**归属：在文件 A 里打开的对话只属于 A，切到文件 B 打开面板
+ * 看到的是 B 自己的会话。`messages` 与全局的 `messages` 是同一个数组引用，
+ * 这样现有的渲染/发送代码不需要知道自己操作的是哪个会话。
+ */
+interface ChatSession {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  fileKey: string
+  fileName: string
+  filePath: string | null
+  messages: ChatMessageItem[]
+}
+
+/** 一个文档的聊天环境：它的历史会话与参考文件（参考文件跟着文档走） */
+interface DocEnvironment {
+  key: string
+  fileName: string
+  filePath: string | null
+  /** null = 用户刚点了「新对话」，下次打开时应是空白会话 */
+  activeSessionId: string | null
+  sessions: ChatSession[]
+  attachments: AttachmentItem[]
+  updatedAt: number
+}
+
+interface PersistedChatStore {
+  version: number
+  docs: Record<string, DocEnvironment>
 }
 
 interface CharacterStyle {
@@ -119,6 +168,35 @@ const MAX_MESSAGE_CHARS = 240 * 1024
 const MAX_INPUT_CHARS = 120_000
 const PLUGIN_ID = 'ai-for-edit'
 const CHARACTER_POS_KEY = 'ai-for-edit:character-position'
+const CHAT_STORE_KEY = 'ai-for-edit:chat-store:v1'
+const CHAT_STORE_VERSION = 1
+/** 每个文档保留的历史会话数；超出时丢掉最久没更新的 */
+const MAX_SESSIONS_PER_DOC = 20
+/** 参考文件：个数、单文件与总计字符数上限。与 main 层的校验保持同一组数值 */
+const MAX_ATTACHMENTS = 6
+const MAX_ATTACHMENT_CHARS = 24_000
+const MAX_ATTACHMENT_TOTAL = 40_000
+/** 超过这个大小的文件不读：File.text() 会整个读进内存 */
+const MAX_ATTACHMENT_FILE_BYTES = 4 * 1024 * 1024
+/** 落盘时单条消息/动作结果的字符上限，避免 localStorage 被一次长回答撑爆 */
+const MAX_PERSIST_MESSAGE_CHARS = 20_000
+const MAX_PERSIST_ACTION_CHARS = 40_000
+/** 输入区模式；顺序即按钮顺序，「对话」是默认模式 */
+const COMPOSE_MODES: ComposeMode[] = ['chat', 'generate', 'beautify']
+const COMPOSE_LABEL: Record<ComposeMode, string> = {
+  chat: '对话',
+  generate: '生成',
+  beautify: '美化'
+}
+const COMPOSE_PLACEHOLDER: Record<ComposeMode, string> = {
+  chat: '问点什么…（Enter 发送，Shift+Enter 换行）',
+  generate: '描述想生成的内容…（Enter 发送，Shift+Enter 换行）',
+  beautify: '这次想怎么美化？可以留空，直接发送让 AI 自行整理（Enter 发送）'
+}
+/** 文件选择框只主动推荐文本类型；用户手动选「所有文件」时再按内容判断 */
+const ATTACHMENT_ACCEPT =
+  '.md,.markdown,.mdx,.txt,.text,.json,.jsonl,.csv,.tsv,.yaml,.yml,.toml,.ini,' +
+  '.xml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.py,.sh,.log,.rst,.org,.tex,.bib,text/*'
 const SPARKLES_SVG =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
   'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -207,6 +285,7 @@ const PANEL_CSS = `
   background: rgba(0, 0, 0, .45);
 }
 .ai-chat-panel {
+  position: relative;
   display: flex; flex-direction: column;
   width: min(980px, 94vw); height: min(84vh, 900px);
   overflow: hidden;
@@ -230,6 +309,20 @@ const PANEL_CSS = `
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 .ai-chat-title { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.ai-chat-file {
+  display: inline-flex; align-items: center;
+  min-width: 0; max-width: 200px; flex: 0 1 auto;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text-secondary);
+  font-size: 11.5px; white-space: nowrap;
+}
+.ai-chat-file.is-empty {
+  border-color: var(--border); background: transparent; color: var(--text-tertiary);
+}
+.ai-chat-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-chat-meta {
   flex: 1; min-width: 0;
   color: var(--text-tertiary); font-size: 12px;
@@ -243,6 +336,127 @@ const PANEL_CSS = `
 }
 .ai-chat-head-btn:hover:not(:disabled) { background: var(--bg-toolbar-btn-hover); color: var(--text-primary); }
 .ai-chat-head-btn:disabled { opacity: .4; cursor: not-allowed; }
+.ai-chat-head-btn.is-open {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+/* ---------- 历史会话浮层 ---------- */
+.ai-chat-history {
+  position: absolute; top: 46px; right: 44px; z-index: 5;
+  width: min(400px, calc(100% - 28px));
+  max-height: min(62%, 440px);
+  display: flex; flex-direction: column;
+  background: var(--bg-editor);
+  border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 18px 44px var(--shadow);
+  overflow: hidden;
+}
+.ai-chat-history[hidden] { display: none; }
+.ai-chat-history-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  font-size: 12px; font-weight: 600;
+}
+.ai-chat-history-scope {
+  margin-left: auto; min-width: 0; max-width: 55%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-tertiary); font-weight: 400;
+}
+.ai-chat-history-list {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 6px; display: flex; flex-direction: column; gap: 4px;
+}
+.ai-chat-history-item {
+  display: flex; align-items: stretch; gap: 2px;
+  border: 1px solid transparent; border-radius: 8px;
+}
+.ai-chat-history-item:hover { background: var(--bg-toolbar-btn-hover); }
+.ai-chat-history-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ai-chat-history-open {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 7px 9px;
+  border: none; background: transparent; color: inherit;
+  font-family: var(--font-editor); text-align: left; cursor: pointer;
+}
+.ai-chat-history-open:disabled { opacity: .5; cursor: not-allowed; }
+.ai-chat-history-title {
+  width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; font-weight: 600;
+}
+.ai-chat-history-meta {
+  max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-tertiary); font-size: 11px;
+}
+.ai-chat-history-delete {
+  width: 28px; flex: 0 0 28px;
+  border: none; border-radius: 6px;
+  background: transparent; color: var(--text-tertiary);
+  font-size: 16px; line-height: 1; cursor: pointer;
+}
+.ai-chat-history-delete:hover:not(:disabled) { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.ai-chat-history-delete:disabled { opacity: .4; cursor: not-allowed; }
+.ai-chat-history-empty { padding: 14px 10px; color: var(--text-tertiary); font-size: 12px; line-height: 1.6; }
+.ai-chat-history-foot {
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-tertiary); font-size: 11px;
+}
+/* ---------- 当前环境：文档 + 参考文件 ---------- */
+.ai-chat-context {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
+}
+.ai-chat-doc-chip {
+  display: inline-flex; align-items: center;
+  max-width: 320px;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text-secondary);
+  font-size: 11.5px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ai-chat-doc-chip.is-empty {
+  border-color: var(--border); background: transparent; color: var(--text-tertiary);
+}
+.ai-chat-attach-title { color: var(--text-tertiary); font-size: 11.5px; margin-right: 2px; }
+.ai-chat-attach-chip {
+  display: inline-flex; align-items: center;
+  max-width: 240px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-toolbar);
+  color: var(--text-secondary); font-size: 11.5px;
+}
+.ai-chat-attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chat-attach-remove {
+  padding: 0 4px; margin-left: 2px;
+  border: none; border-radius: 50%;
+  background: transparent; color: var(--text-tertiary);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.ai-chat-attach-remove:hover { color: var(--danger); }
+.ai-chat-attach-note { color: var(--text-tertiary); font-size: 11px; }
+.ai-chat-context-add {
+  padding: 3px 10px;
+  border: 1px dashed var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-secondary);
+  font-family: var(--font-editor); font-size: 11.5px; cursor: pointer;
+}
+.ai-chat-context-add:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ai-chat-context-add:disabled { opacity: .45; cursor: not-allowed; }
+.ai-chat-file-input { display: none; }
 .ai-chat-close {
   width: 24px; height: 24px;
   border: none; border-radius: 4px;
@@ -250,23 +464,6 @@ const PANEL_CSS = `
   font-size: 18px; line-height: 1; cursor: pointer;
 }
 .ai-chat-close:hover { background: var(--bg-toolbar-btn-hover); color: var(--text-primary); }
-.ai-chat-actions {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.ai-chat-shortcut {
-  padding: 5px 13px;
-  border: 1px solid var(--border); border-radius: 999px;
-  background: transparent; color: var(--text-primary);
-  font-family: var(--font-editor); font-size: 12px; cursor: pointer;
-}
-.ai-chat-shortcut:hover:not(:disabled) {
-  border-color: var(--accent); color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-}
-.ai-chat-shortcut:disabled { opacity: .45; cursor: not-allowed; }
-.ai-chat-actions-hint { margin-left: auto; color: var(--text-tertiary); font-size: 11.5px; }
 .ai-chat-messages {
   flex: 1; min-height: 0;
   overflow: auto;
@@ -415,11 +612,33 @@ const PANEL_CSS = `
 .ai-chat-action-buttons { display: flex; gap: 8px; margin-top: 10px; }
 .ai-chat-applied { margin-top: 8px; color: var(--success); font-size: 12px; }
 .ai-chat-compose {
-  display: flex; gap: 8px; align-items: flex-end;
-  padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 14px 10px;
   border-top: 1px solid var(--border);
   background: var(--bg-toolbar);
 }
+.ai-chat-modes { display: flex; align-items: center; gap: 6px; }
+.ai-chat-mode {
+  padding: 4px 13px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-secondary);
+  font-family: var(--font-editor); font-size: 12px; cursor: pointer;
+}
+.ai-chat-mode:hover:not(:disabled) {
+  border-color: var(--accent); color: var(--accent);
+}
+.ai-chat-mode.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent); font-weight: 600;
+}
+.ai-chat-mode:disabled { opacity: .4; cursor: not-allowed; }
+.ai-chat-mode-hint {
+  margin-left: auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-tertiary); font-size: 11.5px;
+}
+.ai-chat-compose-row { display: flex; gap: 8px; align-items: flex-end; }
 .ai-chat-input {
   flex: 1; min-height: 44px; max-height: 120px;
   padding: 8px 10px;
@@ -452,24 +671,46 @@ let cachedCharacterPos: { x: number; y: number } | null = null
 let offMessage: (() => void) | null = null
 let offDocChanged: (() => void) | null = null
 
-const messages: ChatMessageItem[] = []
+/** 当前会话的消息数组；切换会话时整体替换（不能原地清空，否则会话之间会串） */
+let messages: ChatMessageItem[] = []
 let draft = ''
 let pendingId: string | null = null
 let requestSeq = 0
 let messageSeq = 0
+let sessionSeq = 0
+let attachmentSeq = 0
+
+/** 所有文档的会话与参考文件；模块加载时从 localStorage 恢复 */
+let chatStore: PersistedChatStore = loadChatStore()
+let currentEnv: DocEnvironment | null = null
+let currentSession: ChatSession | null = null
+let persistTimer: number | null = null
+let historyOutsideHandler: ((event: MouseEvent) => void) | null = null
+let attachNotice = ''
+let attachNoticeTimer: number | null = null
 
 let maskEl: HTMLDivElement | null = null
 let panelEl: HTMLDivElement | null = null
 let avatarEl: HTMLSpanElement | null = null
+let fileChipEl: HTMLSpanElement | null = null
+let fileChipNameEl: HTMLSpanElement | null = null
 let metaEl: HTMLSpanElement | null = null
-let generateBtn: HTMLButtonElement | null = null
-let beautifyBtn: HTMLButtonElement | null = null
+let modeButtons: Record<ComposeMode, HTMLButtonElement> | null = null
+let modeHintEl: HTMLSpanElement | null = null
+let addFileBtn: HTMLButtonElement | null = null
 let messagesEl: HTMLDivElement | null = null
+let contextBarEl: HTMLDivElement | null = null
 let inputEl: HTMLTextAreaElement | null = null
 let sendBtn: HTMLButtonElement | null = null
 let newChatBtn: HTMLButtonElement | null = null
-let actionsHintEl: HTMLSpanElement | null = null
+let historyBtn: HTMLButtonElement | null = null
+let historyPopEl: HTMLDivElement | null = null
+let historyListEl: HTMLDivElement | null = null
+let historyScopeEl: HTMLSpanElement | null = null
+let fileInputEl: HTMLInputElement | null = null
 let keydownHandler: ((event: KeyboardEvent) => void) | null = null
+/** 输入区当前模式；默认「对话」，文档变化导致模式失效时自动退回对话 */
+let composeMode: ComposeMode = 'chat'
 
 function currentView(): EditorViewT | null {
   const view = imk.editor.getView()
@@ -493,6 +734,416 @@ function nextRequestId(): string {
 function nextMessageId(): string {
   messageSeq += 1
   return `m${messageSeq}-${Date.now().toString(36)}`
+}
+
+// ---------- 文档环境 / 历史会话 / 参考文件 ----------
+
+/**
+ * 当前文档的身份。
+ *
+ * render 层拿不到 appStore（插件源码只允许依赖 @shared），但标签栏把答案
+ * 放在 DOM 里了：`.tab-active` 的 `title` 是绝对路径（未保存时是
+ * 「未保存到磁盘」），`.tab-title` 是显示名。用路径作 key，未保存的新文档用
+ * 标签名（「未命名 2」之类）区分。窗口在仓库选择页时没有标签 → 无关联文档。
+ */
+function currentDocumentRef(): { key: string; fileName: string; filePath: string | null } {
+  const active = document.querySelector('.tab-active')
+  if (!active) return { key: 'no-document', fileName: '未关联文档', filePath: null }
+  const label = active.querySelector('.tab-title')?.textContent?.trim() ?? ''
+  const tip = active.getAttribute('title') ?? ''
+  const filePath = tip && tip !== '未保存到磁盘' ? tip : null
+  const fileName = filePath ? filePath.split(/[\\/]/).pop() || label : label
+  const name = fileName || '未命名'
+  return {
+    key: filePath ? `file:${filePath}` : `untitled:${name}`,
+    fileName: name,
+    filePath
+  }
+}
+
+function emptyChatStore(): PersistedChatStore {
+  return { version: CHAT_STORE_VERSION, docs: {} }
+}
+
+function sanitizeAction(value: unknown): ActionState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const kind: ActionKind = raw.kind === 'beautify' ? 'beautify' : 'generate'
+  const phaseRaw = raw.phase
+  const phase: ActionPhase =
+    phaseRaw === 'ready' || phaseRaw === 'loading' || phaseRaw === 'error'
+      ? phaseRaw
+      : 'error'
+  const result = typeof raw.result === 'string' ? raw.result : null
+  const action: ActionState = {
+    kind,
+    // 恢复出来的会话里不可能还有在途请求；把 loading 留在界面上会永远转圈
+    phase: phase === 'loading' ? 'error' : phase,
+    result,
+    error:
+      typeof raw.error === 'string'
+        ? raw.error
+        : phase === 'loading'
+          ? '此前的请求已中断'
+          : '',
+    detail: typeof raw.detail === 'string' ? raw.detail : '',
+    original: typeof raw.original === 'string' ? raw.original : '',
+    cursor: typeof raw.cursor === 'number' && Number.isFinite(raw.cursor) ? raw.cursor : 0,
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
+    applied: raw.applied === true,
+    requestId: null,
+    tab: raw.tab === 'source' ? 'source' : 'preview'
+  }
+  if (action.phase === 'ready' && action.result === null) {
+    action.phase = 'error'
+    action.error = '这条历史结果不可用，请重新生成'
+  }
+  return action
+}
+
+function sanitizeMessage(value: unknown): ChatMessageItem | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const role: MessageRole | null =
+    raw.role === 'user' || raw.role === 'assistant' || raw.role === 'system' ? raw.role : null
+  if (!role) return null
+  const kind: MessageKind =
+    raw.kind === 'action' || raw.kind === 'hint' || raw.kind === 'chat' ? raw.kind : 'chat'
+  const text = typeof raw.text === 'string' ? raw.text : ''
+  const action = kind === 'action' ? sanitizeAction(raw.action) : null
+  if (kind === 'action' && !action) return null
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : nextMessageId(),
+    role,
+    kind,
+    text,
+    requestId: null,
+    loading: false,
+    error: typeof raw.error === 'string' ? raw.error : undefined,
+    detail: typeof raw.detail === 'string' ? raw.detail : undefined,
+    truncated: raw.truncated === true,
+    ...(action ? { action } : {})
+  }
+}
+
+function sanitizeAttachment(value: unknown): AttachmentItem | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const text = typeof raw.text === 'string' ? raw.text : ''
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : ''
+  if (!text || !name) return null
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : `a-${Date.now().toString(36)}`,
+    name,
+    chars: text.length,
+    text,
+    truncated: raw.truncated === true,
+    addedAt: typeof raw.addedAt === 'number' ? raw.addedAt : Date.now()
+  }
+}
+
+function sanitizeSession(value: unknown): ChatSession | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : ''
+  if (!id) return null
+  const rawMessages = Array.isArray(raw.messages) ? raw.messages : []
+  const messages = rawMessages
+    .map(sanitizeMessage)
+    .filter((message): message is ChatMessageItem => message !== null)
+  const createdAt =
+    typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now()
+  return {
+    id,
+    title: typeof raw.title === 'string' && raw.title.trim() ? raw.title : '新对话',
+    createdAt,
+    updatedAt:
+      typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
+        ? raw.updatedAt
+        : createdAt,
+    fileKey: typeof raw.fileKey === 'string' ? raw.fileKey : '',
+    fileName: typeof raw.fileName === 'string' ? raw.fileName : '',
+    filePath: typeof raw.filePath === 'string' ? raw.filePath : null,
+    messages
+  }
+}
+
+function sanitizeDoc(key: string, value: unknown): DocEnvironment | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const rawSessions = Array.isArray(raw.sessions) ? raw.sessions : []
+  const sessions = rawSessions
+    .map(sanitizeSession)
+    .filter((session): session is ChatSession => session !== null)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_SESSIONS_PER_DOC)
+  const rawAttachments = Array.isArray(raw.attachments) ? raw.attachments : []
+  const attachments = rawAttachments
+    .map(sanitizeAttachment)
+    .filter((attachment): attachment is AttachmentItem => attachment !== null)
+  let activeSessionId =
+    typeof raw.activeSessionId === 'string' ? raw.activeSessionId : null
+  if (activeSessionId && !sessions.some(session => session.id === activeSessionId)) {
+    activeSessionId = null
+  }
+  return {
+    key,
+    fileName: typeof raw.fileName === 'string' ? raw.fileName : '未命名',
+    filePath: typeof raw.filePath === 'string' ? raw.filePath : null,
+    activeSessionId,
+    sessions,
+    attachments,
+    updatedAt:
+      typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
+        ? raw.updatedAt
+        : Date.now()
+  }
+}
+
+function loadChatStore(): PersistedChatStore {
+  try {
+    const raw = localStorage.getItem(CHAT_STORE_KEY)
+    if (!raw) return emptyChatStore()
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return emptyChatStore()
+    const data = parsed as { version?: unknown; docs?: unknown }
+    if (
+      data.version !== CHAT_STORE_VERSION ||
+      !data.docs ||
+      typeof data.docs !== 'object' ||
+      Array.isArray(data.docs)
+    ) {
+      return emptyChatStore()
+    }
+    const docs: Record<string, DocEnvironment> = {}
+    for (const [key, value] of Object.entries(data.docs as Record<string, unknown>)) {
+      // 只接收普通文档键；__proto__ 之类的键不进存储
+      if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') continue
+      const doc = sanitizeDoc(key, value)
+      if (doc) docs[key] = doc
+    }
+    return { version: CHAT_STORE_VERSION, docs }
+  } catch {
+    return emptyChatStore()
+  }
+}
+
+/** 落盘时把一条消息裁剪成可安全放进 localStorage 的形状 */
+function persistableMessage(message: ChatMessageItem): ChatMessageItem {
+  const copy: ChatMessageItem = { ...message, requestId: null, loading: false }
+  if (copy.text.length > MAX_PERSIST_MESSAGE_CHARS) {
+    copy.text = `${copy.text.slice(0, MAX_PERSIST_MESSAGE_CHARS)}\n…（已截断）`
+  }
+  if (copy.action) {
+    const action = { ...copy.action, requestId: null }
+    action.previewHtml = undefined
+    action.previewError = undefined
+    if (action.phase === 'loading') {
+      action.phase = 'error'
+      action.error = '此前的请求已中断'
+      action.result = null
+    }
+    if (
+      action.original.length > MAX_PERSIST_ACTION_CHARS ||
+      (action.result !== null && action.result.length > MAX_PERSIST_ACTION_CHARS)
+    ) {
+      // 原文档或结果不完整时不能留下一个可点的「确认替换」——那会把截断的内容写回去
+      action.phase = 'error'
+      action.error = '这条历史结果过大，没有保存；请重新生成'
+      action.detail = ''
+      action.result = null
+      action.original = ''
+      action.applied = false
+    }
+    copy.action = action
+  }
+  return copy
+}
+
+function trimPersistedStore(maxSessions: number, maxDocs = 20): PersistedChatStore {
+  const entries = Object.entries(chatStore.docs)
+    .filter(([, doc]) => doc.sessions.length > 0 || doc.attachments.length > 0)
+    .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+    .slice(0, maxDocs)
+  const docs: Record<string, DocEnvironment> = {}
+  for (const [key, doc] of entries) {
+    const sessions = [...doc.sessions]
+      .filter(session => session.messages.length > 0)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, maxSessions)
+      .map(session => ({
+        ...session,
+        messages: session.messages.map(persistableMessage)
+      }))
+    const activeSessionId =
+      doc.activeSessionId && sessions.some(session => session.id === doc.activeSessionId)
+        ? doc.activeSessionId
+        : null
+    const attachments = doc.attachments.slice(0, MAX_ATTACHMENTS)
+    if (sessions.length === 0 && attachments.length === 0) continue
+    docs[key] = { ...doc, sessions, activeSessionId, attachments }
+  }
+  return { version: CHAT_STORE_VERSION, docs }
+}
+
+function writeChatStore(maxSessions: number, maxDocs = 20): boolean {
+  try {
+    localStorage.setItem(CHAT_STORE_KEY, JSON.stringify(trimPersistedStore(maxSessions, maxDocs)))
+    return true
+  } catch (err) {
+    imk.plugin.log('warn', `保存会话历史失败：${err instanceof Error ? err.message : String(err)}`)
+    return false
+  }
+}
+
+function persistChatStore(): void {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  // 正常情况保留全部会话；体积或配额不够时逐级收缩，而不是让一次写入失败后
+  // 把整个历史都丢掉（下次打开还在，只是更旧的部分先让位）。
+  if (writeChatStore(MAX_SESSIONS_PER_DOC)) return
+  if (writeChatStore(8)) return
+  writeChatStore(3, 8)
+}
+
+function schedulePersist(): void {
+  if (persistTimer !== null) return
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null
+    persistChatStore()
+  }, 500)
+}
+
+function flushPersist(): void {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  persistChatStore()
+}
+
+function sessionHasContent(session: ChatSession): boolean {
+  return session.messages.some(message => message.role !== 'system' && message.kind !== 'hint')
+}
+
+function deriveSessionTitle(session: ChatSession): string {
+  const first = session.messages.find(
+    message => message.role === 'user' && message.kind !== 'hint' && message.text.trim() !== ''
+  )
+  if (!first) return '新对话'
+  const text = first.text.replace(/\s+/g, ' ').trim()
+  return text.length > 36 ? `${text.slice(0, 36)}…` : text
+}
+
+function createSession(): ChatSession | null {
+  if (!currentEnv) return null
+  sessionSeq += 1
+  const now = Date.now()
+  return {
+    id: `s${now.toString(36)}-${sessionSeq}`,
+    title: '新对话',
+    createdAt: now,
+    updatedAt: now,
+    fileKey: currentEnv.key,
+    fileName: currentEnv.fileName,
+    filePath: currentEnv.filePath,
+    messages: []
+  }
+}
+
+/** 把面板绑定到当前文档；同一文档重复打开时保留正在使用的会话 */
+function bindEnvironment(): void {
+  const ref = currentDocumentRef()
+  let env = chatStore.docs[ref.key]
+  if (!env) {
+    env = {
+      key: ref.key,
+      fileName: ref.fileName,
+      filePath: ref.filePath,
+      activeSessionId: null,
+      sessions: [],
+      attachments: [],
+      updatedAt: Date.now()
+    }
+    chatStore.docs[ref.key] = env
+  } else {
+    env.fileName = ref.fileName
+    env.filePath = ref.filePath
+  }
+
+  if (currentEnv?.key === ref.key && currentSession) {
+    currentEnv = env
+    return
+  }
+
+  currentEnv = env
+  let session: ChatSession | null = null
+  if (env.activeSessionId) {
+    session = env.sessions.find(s => s.id === env.activeSessionId && sessionHasContent(s)) ?? null
+  }
+  if (!session) session = createSession()
+  currentSession = session
+  messages = session ? session.messages : []
+}
+
+/**
+ * 会话有实际内容后登记进文档环境。
+ *
+ * 空白会话不登记：否则每次打开面板都会多出一条「新对话」，历史列表很快变成噪音。
+ */
+function noteSessionActivity(): void {
+  if (!currentEnv || !currentSession) return
+  if (!sessionHasContent(currentSession)) {
+    schedulePersist()
+    return
+  }
+
+  if (!currentEnv.sessions.includes(currentSession)) {
+    currentEnv.sessions.unshift(currentSession)
+    while (currentEnv.sessions.length > MAX_SESSIONS_PER_DOC) {
+      let remove = -1
+      for (let i = currentEnv.sessions.length - 1; i >= 0; i -= 1) {
+        if (currentEnv.sessions[i] !== currentSession) {
+          remove = i
+          break
+        }
+      }
+      if (remove < 0) break
+      currentEnv.sessions.splice(remove, 1)
+    }
+  }
+
+  const now = Date.now()
+  currentSession.updatedAt = now
+  currentEnv.updatedAt = now
+  if (currentSession.title === '新对话') currentSession.title = deriveSessionTitle(currentSession)
+  currentEnv.activeSessionId = currentSession.id
+  schedulePersist()
+}
+
+function attachmentPayload(): Array<{ name: string; text: string }> {
+  if (!currentEnv) return []
+  return currentEnv.attachments.map(item => ({ name: item.name, text: item.text }))
+}
+
+function documentAttachments(): AttachmentItem[] {
+  return currentEnv?.attachments ?? []
+}
+
+function formatSessionTime(ts: number): string {
+  const date = new Date(ts)
+  if (!Number.isFinite(date.getTime())) return ''
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  if (sameDay) return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  if (date.getFullYear() === now.getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 function characterStyle(): CharacterStyle {
@@ -566,11 +1217,12 @@ function clampCharacterPosition(): void {
   button.style.top = `${clampToHost(top, rect.height - height - 4)}px`
 }
 
-function docInfo(): { hasView: boolean; empty: boolean } {
+function docInfo(): { hasView: boolean; empty: boolean; length: number } {
   const view = currentView()
-  if (!view) return { hasView: false, empty: true }
-  // 只看长度，避免每次按键都为「生成/美化」按钮把整篇文档 toString 一遍
-  return { hasView: true, empty: view.state.doc.length === 0 }
+  if (!view) return { hasView: false, empty: true, length: 0 }
+  // 只看长度，避免每次按键都为上下文条 / 模式按钮把整篇文档 toString 一遍
+  const length = view.state.doc.length
+  return { hasView: true, empty: length === 0, length }
 }
 
 // ---------- 状态栏按钮 ----------
@@ -585,8 +1237,10 @@ function ensureStyle(): void {
 
 function ensureStatusButton(): void {
   if (statusButton?.isConnected) return
-  const toggles = document.querySelector('.status-toggles')
-  if (!toggles) {
+  // 宿主在状态栏左下角留的空槽:和插件状态条目放在同一组(第二道竖线右边)。
+  // 不往 .status-toggles 里挤 —— 那是文件列表/大纲的开关组。
+  const slot = document.querySelector('.status-plugin-slot')
+  if (!slot) {
     if (statusRetry === null) {
       statusRetry = window.setTimeout(() => {
         statusRetry = null
@@ -605,14 +1259,15 @@ function ensureStatusButton(): void {
     event.preventDefault()
     openChatPanel()
   })
-  toggles.append(button)
+  slot.append(button)
   statusButton = button
 
   if (!statusObserver) {
     statusObserver = new MutationObserver(() => {
       if (!statusButton?.isConnected) ensureStatusButton()
     })
-    statusObserver.observe(toggles, { childList: true })
+    // 盯状态栏整棵子树:宿主重渲染时可能连空槽一起换掉,只盯槽会漏掉那种情况
+    statusObserver.observe(slot.closest('.status-bar') ?? slot, { childList: true, subtree: true })
   }
 }
 
@@ -659,14 +1314,15 @@ function syncCharacter(): void {
     button.type = 'button'
     button.className = 'ai-char'
     button.classList.toggle('ai-char-plain', Boolean(style.svg))
-    button.title = `和${style.label}聊聊`
     button.setAttribute('aria-label', '打开 AI 对话')
 
     const avatar = document.createElement('span')
     avatar.className = 'ai-char-emoji'
     const label = document.createElement('span')
     label.className = 'ai-char-label'
-    label.textContent = '和 AI 聊聊'
+    // 悬停提示只保留这一个:文案跟着当前形象走(和猫咪聊聊 / 和企鹅聊聊…),
+    // 不再设原生 title,否则停留一秒后会在下面再冒出一个提示框
+    label.textContent = `和${style.label}聊聊`
     button.append(avatar, label)
 
     // 拖动：按住小人移动；松手保存为相对编辑器区域的比例，窗口缩放后还能夹回来。
@@ -767,8 +1423,9 @@ function syncCharacter(): void {
 
   const avatarEl = characterEl.querySelector<HTMLSpanElement>('.ai-char-emoji')
   if (avatarEl) fillAvatar(avatarEl, style)
+  const labelEl = characterEl.querySelector<HTMLSpanElement>('.ai-char-label')
+  if (labelEl) labelEl.textContent = `和${style.label}聊聊`
   characterEl.classList.toggle('ai-char-plain', Boolean(style.svg))
-  characterEl.title = `和${style.label}聊聊`
 }
 
 function removeCharacter(): void {
@@ -801,8 +1458,20 @@ function ensurePanelDom(): void {
   const title = document.createElement('span')
   title.className = 'ai-chat-title'
   title.textContent = 'AI for Edit'
+  // 关联文档：会话属于哪个文件，就在标题旁明确写出来
+  const fileChip = document.createElement('span')
+  fileChip.className = 'ai-chat-file'
+  const fileChipName = document.createElement('span')
+  fileChipName.className = 'ai-chat-file-name'
+  fileChip.append(document.createTextNode('📄 '), fileChipName)
   const meta = document.createElement('span')
   meta.className = 'ai-chat-meta'
+  const history = document.createElement('button')
+  history.type = 'button'
+  history.className = 'ai-chat-head-btn ai-chat-history-btn'
+  history.title = '查看并恢复这个文档的历史会话'
+  history.textContent = '会话'
+  history.addEventListener('click', () => toggleSessionList())
   const newChat = document.createElement('button')
   newChat.type = 'button'
   newChat.className = 'ai-chat-head-btn'
@@ -814,34 +1483,50 @@ function ensurePanelDom(): void {
   close.title = '关闭'
   close.textContent = '×'
   close.addEventListener('click', () => closePanel())
-  head.append(avatar, title, meta, newChat, close)
+  head.append(avatar, title, fileChip, meta, history, newChat, close)
 
-  const actions = document.createElement('div')
-  actions.className = 'ai-chat-actions'
-  const generate = document.createElement('button')
-  generate.type = 'button'
-  generate.className = 'ai-chat-shortcut ai-chat-generate'
-  generate.textContent = '生成'
-  generate.addEventListener('click', () => runGenerateShortcut())
-  const beautify = document.createElement('button')
-  beautify.type = 'button'
-  beautify.className = 'ai-chat-shortcut ai-chat-beautify'
-  beautify.textContent = '美化'
-  beautify.addEventListener('click', () => runBeautifyShortcut())
-  const actionsHint = document.createElement('span')
-  actionsHint.className = 'ai-chat-actions-hint'
-  actionsHint.textContent = '生成用于空文档 · 美化用于已有内容'
-  actions.append(generate, beautify, actionsHint)
+  // 当前环境：当前文档（非空时）与参考文件。生成 / 美化的入口已经挪到输入框上方，
+  // 这里只说明「这次请求会带什么」。
+  const context = document.createElement('div')
+  context.className = 'ai-chat-context'
+
+  const addFile = document.createElement('button')
+  addFile.type = 'button'
+  addFile.className = 'ai-chat-context-add ai-chat-add-file'
+  addFile.textContent = '＋ 文件'
+  addFile.title = '添加本地文本文件，作为生成 / 美化 / 问答的参考'
+  addFile.addEventListener('click', () => pickAttachments())
 
   const list = document.createElement('div')
   list.className = 'ai-chat-messages'
 
   const compose = document.createElement('div')
   compose.className = 'ai-chat-compose'
+
+  // 模式行：对话 / 生成 / 美化，发送时按当前模式分发
+  const modes = document.createElement('div')
+  modes.className = 'ai-chat-modes'
+  const modeMap = {} as Record<ComposeMode, HTMLButtonElement>
+  for (const mode of COMPOSE_MODES) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `ai-chat-mode ai-chat-mode-${mode}`
+    button.textContent = COMPOSE_LABEL[mode]
+    button.setAttribute('aria-pressed', 'false')
+    button.addEventListener('click', () => selectComposeMode(mode))
+    modeMap[mode] = button
+    modes.append(button)
+  }
+  const modeHint = document.createElement('span')
+  modeHint.className = 'ai-chat-mode-hint'
+  modes.append(modeHint)
+
+  const composeRow = document.createElement('div')
+  composeRow.className = 'ai-chat-compose-row'
   const input = document.createElement('textarea')
   input.className = 'ai-chat-input'
   input.rows = 2
-  input.placeholder = '问点什么，或说说想生成什么…（Enter 发送，Shift+Enter 换行）'
+  input.placeholder = COMPOSE_PLACEHOLDER[composeMode]
   input.addEventListener('input', () => {
     draft = input.value
     syncComposeState()
@@ -850,38 +1535,68 @@ function ensurePanelDom(): void {
     if (event.isComposing) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      sendChat()
+      // 美化允许留空，但空输入按 Enter 容易误触整篇请求；留空时请点「发送」
+      if (composeMode === 'beautify' && draft.trim().length === 0) return
+      submitCompose()
     }
   })
   const send = document.createElement('button')
   send.type = 'button'
   send.className = 'ai-chat-send'
   send.textContent = '发送'
-  send.addEventListener('click', () => sendChat())
-  compose.append(input, send)
+  send.addEventListener('click', () => submitCompose())
+  composeRow.append(input, send)
+  compose.append(modes, composeRow)
 
-  panel.append(head, actions, list, compose)
+  // 历史会话浮层：挂在面板里、绝对定位在标题栏下方；不挡住输入框
+  const historyPop = document.createElement('div')
+  historyPop.className = 'ai-chat-history'
+  historyPop.hidden = true
+  const historyHead = document.createElement('div')
+  historyHead.className = 'ai-chat-history-head'
+  const historyTitle = document.createElement('span')
+  historyTitle.textContent = '历史会话'
+  const historyScope = document.createElement('span')
+  historyScope.className = 'ai-chat-history-scope'
+  const historyList = document.createElement('div')
+  historyList.className = 'ai-chat-history-list'
+  const historyFoot = document.createElement('div')
+  historyFoot.className = 'ai-chat-history-foot'
+  historyFoot.textContent = '历史会话按文档保存；点一条即可恢复继续。'
+  historyHead.append(historyTitle, historyScope)
+  historyPop.append(historyHead, historyList, historyFoot)
+
+  panel.append(head, context, list, compose, historyPop)
   mask.append(panel)
   document.body.append(mask)
 
   maskEl = mask
   panelEl = panel
   avatarEl = avatar
+  fileChipEl = fileChip
+  fileChipNameEl = fileChipName
   metaEl = meta
-  generateBtn = generate
-  beautifyBtn = beautify
-  actionsHintEl = actionsHint
+  modeButtons = modeMap
+  modeHintEl = modeHint
+  addFileBtn = addFile
+  contextBarEl = context
   messagesEl = list
   inputEl = input
   sendBtn = send
   newChatBtn = newChat
+  historyBtn = history
+  historyPopEl = historyPop
+  historyListEl = historyList
+  historyScopeEl = historyScope
 
   keydownHandler = event => {
     if (event.isComposing) return
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
-      closePanel()
+      // 浮层开着时，Escape 先收起它；再按一次才关面板
+      if (historyPopEl && !historyPopEl.hidden) closeSessionList()
+      else closePanel()
     }
   }
   document.addEventListener('keydown', keydownHandler, true)
@@ -893,34 +1608,405 @@ function closePanel(): void {
     document.removeEventListener('keydown', keydownHandler, true)
     keydownHandler = null
   }
+  closeSessionList()
+  if (attachNoticeTimer !== null) {
+    window.clearTimeout(attachNoticeTimer)
+    attachNoticeTimer = null
+  }
+  attachNotice = ''
+  fileInputEl = null
   maskEl?.remove()
   maskEl = null
   panelEl = null
   avatarEl = null
+  fileChipEl = null
+  fileChipNameEl = null
   metaEl = null
-  generateBtn = null
-  beautifyBtn = null
-  actionsHintEl = null
+  modeButtons = null
+  modeHintEl = null
+  addFileBtn = null
+  contextBarEl = null
   messagesEl = null
   inputEl = null
   sendBtn = null
   newChatBtn = null
+  historyBtn = null
+  historyPopEl = null
+  historyListEl = null
+  historyScopeEl = null
+  flushPersist()
   setStatusButtonActive(false)
 }
 
+/**
+ * 新对话：保留当前文档环境（关联文件与参考文件），只把消息清空。
+ *
+ * `activeSessionId = null` 是个有意的状态：它表示「下次打开面板时从一张白纸
+ * 开始」，同时旧会话仍然留在历史列表里。如果把空白会话也登记进历史，
+ * 每次打开面板都会多出一条没有内容的记录。
+ */
 function newChatSession(): void {
   if (pendingId) return
-  messages.length = 0
+  if (currentEnv && currentSession && sessionHasContent(currentSession)) noteSessionActivity()
+  if (!currentEnv) bindEnvironment()
+  if (!currentEnv) return
+  currentEnv.activeSessionId = null
+  currentSession = createSession()
+  messages = currentSession ? currentSession.messages : []
   draft = ''
+  composeMode = 'chat'
   if (inputEl) inputEl.value = ''
+  closeSessionList()
   renderPanel()
+  schedulePersist()
   inputEl?.focus()
 }
 
 function openChatPanel(): void {
   ensurePanelDom()
+  bindEnvironment()
+  // 每次打开都从「对话」开始；行首「+」的生成流程会在之后显式切到「生成」
+  composeMode = 'chat'
   renderPanel()
+  if (currentSession) restoreSessionPreviews(currentSession)
   inputEl?.focus()
+}
+
+/** 恢复的会话里如果有「已生成、未确认」的结果，补齐预览（最多最近 4 条） */
+function restoreSessionPreviews(session: ChatSession): void {
+  const actions: ActionState[] = []
+  for (let i = session.messages.length - 1; i >= 0 && actions.length < 4; i -= 1) {
+    const action = session.messages[i]?.action
+    if (
+      action &&
+      action.phase === 'ready' &&
+      action.result !== null &&
+      action.previewHtml === undefined
+    ) {
+      actions.push(action)
+    }
+  }
+  for (const action of actions) void loadActionPreview(action)
+}
+
+// ---------- 历史会话 ----------
+
+function toggleSessionList(): void {
+  if (!historyPopEl) return
+  if (historyPopEl.hidden) openSessionList()
+  else closeSessionList()
+}
+
+function openSessionList(): void {
+  if (!historyPopEl) return
+  renderSessionList()
+  historyPopEl.hidden = false
+  historyBtn?.classList.add('is-open')
+  if (!historyOutsideHandler) {
+    historyOutsideHandler = event => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (historyPopEl?.contains(target) || historyBtn?.contains(target)) return
+      closeSessionList()
+    }
+    document.addEventListener('pointerdown', historyOutsideHandler, true)
+  }
+}
+
+function closeSessionList(): void {
+  if (historyOutsideHandler) {
+    document.removeEventListener('pointerdown', historyOutsideHandler, true)
+    historyOutsideHandler = null
+  }
+  if (historyPopEl) historyPopEl.hidden = true
+  historyBtn?.classList.remove('is-open')
+}
+
+function sessionMessageCount(session: ChatSession): number {
+  return session.messages.filter(
+    message => message.role !== 'system' && message.kind !== 'hint'
+  ).length
+}
+
+function renderSessionList(): void {
+  if (!historyListEl || !historyScopeEl) return
+  historyScopeEl.textContent = currentEnv?.fileName ?? '未关联文档'
+  historyListEl.replaceChildren()
+
+  const sessions = currentEnv
+    ? [...currentEnv.sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+    : []
+  if (sessions.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'ai-chat-history-empty'
+    empty.textContent = '还没有历史会话。发第一条消息后，它会出现在这里。'
+    historyListEl.append(empty)
+    return
+  }
+
+  for (const session of sessions) {
+    const row = document.createElement('div')
+    row.className = 'ai-chat-history-item'
+    if (currentSession?.id === session.id) row.classList.add('is-active')
+
+    const open = document.createElement('button')
+    open.type = 'button'
+    open.className = 'ai-chat-history-open'
+    open.disabled = pendingId !== null && currentSession?.id !== session.id
+    open.title = pendingId ? 'AI 正在处理，稍后再切换会话' : '恢复这个会话'
+    const title = document.createElement('span')
+    title.className = 'ai-chat-history-title'
+    title.textContent = session.title || '新对话'
+    const meta = document.createElement('span')
+    meta.className = 'ai-chat-history-meta'
+    const count = sessionMessageCount(session)
+    meta.textContent = `📄 ${session.fileName || '未关联文档'} · ${count} 条 · ${formatSessionTime(session.updatedAt)}`
+    open.append(title, meta)
+    open.addEventListener('click', () => switchSession(session.id))
+
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'ai-chat-history-delete'
+    remove.title = '删除这个会话'
+    remove.textContent = '×'
+    remove.disabled = pendingId !== null
+    remove.addEventListener('click', event => {
+      event.stopPropagation()
+      deleteSession(session.id)
+    })
+
+    row.append(open, remove)
+    historyListEl.append(row)
+  }
+}
+
+function switchSession(id: string): void {
+  if (pendingId || !currentEnv) return
+  const session = currentEnv.sessions.find(item => item.id === id)
+  if (!session) return
+  currentEnv.activeSessionId = id
+  currentSession = session
+  messages = session.messages
+  draft = ''
+  if (inputEl) inputEl.value = ''
+  closeSessionList()
+  renderPanel()
+  schedulePersist()
+  restoreSessionPreviews(session)
+  inputEl?.focus()
+}
+
+function deleteSession(id: string): void {
+  if (pendingId || !currentEnv) return
+  const index = currentEnv.sessions.findIndex(session => session.id === id)
+  if (index < 0) return
+  if (!window.confirm('删除这个会话？删除后无法恢复。')) return
+  const wasActive = currentSession?.id === id
+  currentEnv.sessions.splice(index, 1)
+  if (wasActive) {
+    currentEnv.activeSessionId = null
+    currentSession = createSession()
+    messages = currentSession ? currentSession.messages : []
+    draft = ''
+    if (inputEl) inputEl.value = ''
+  }
+  renderPanel()
+  schedulePersist()
+}
+
+// ---------- 参考文件 ----------
+
+function looksBinary(text: string): boolean {
+  return text.slice(0, 8192).includes('\u0000')
+}
+
+function ensureFileInput(): HTMLInputElement | null {
+  if (fileInputEl?.isConnected) return fileInputEl
+  if (!panelEl) return null
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.multiple = true
+  input.accept = ATTACHMENT_ACCEPT
+  input.className = 'ai-chat-file-input'
+  input.tabIndex = -1
+  input.addEventListener('change', () => {
+    const files = input.files ? Array.from(input.files) : []
+    input.value = ''
+    void addAttachments(files)
+  })
+  panelEl.append(input)
+  fileInputEl = input
+  return input
+}
+
+function pickAttachments(): void {
+  if (pendingId) return
+  ensureFileInput()?.click()
+}
+
+function setAttachNotice(text: string): void {
+  attachNotice = text
+  if (attachNoticeTimer !== null) window.clearTimeout(attachNoticeTimer)
+  attachNoticeTimer = window.setTimeout(() => {
+    attachNoticeTimer = null
+    attachNotice = ''
+    renderContextBar()
+  }, 6000)
+  renderContextBar()
+}
+
+async function addAttachments(files: File[]): Promise<void> {
+  if (!currentEnv || files.length === 0) return
+  const env = currentEnv
+  const skipped: string[] = []
+  const added: string[] = []
+
+  for (const file of files) {
+    if (env.attachments.length >= MAX_ATTACHMENTS) {
+      skipped.push(`最多 ${MAX_ATTACHMENTS} 个参考文件`)
+      break
+    }
+    if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
+      skipped.push(`${file.name}（超过 4 MB）`)
+      continue
+    }
+
+    let text = ''
+    try {
+      text = await file.text()
+    } catch {
+      skipped.push(`${file.name}（读取失败）`)
+      continue
+    }
+    if (looksBinary(text)) {
+      skipped.push(`${file.name}（不是文本文件）`)
+      continue
+    }
+    if (!text.trim()) {
+      skipped.push(`${file.name}（内容为空）`)
+      continue
+    }
+
+    const existingIndex = env.attachments.findIndex(item => item.name === file.name)
+    let used = env.attachments.reduce((total, item) => total + item.text.length, 0)
+    if (existingIndex >= 0) used -= env.attachments[existingIndex]!.text.length
+    const room = MAX_ATTACHMENT_TOTAL - used
+    if (room <= 0) {
+      skipped.push(`参考文件总长度已达 ${MAX_ATTACHMENT_TOTAL} 字符`)
+      break
+    }
+
+    const limit = Math.min(MAX_ATTACHMENT_CHARS, room)
+    const truncated = text.length > limit
+    const kept = truncated ? text.slice(0, limit) : text
+    if (!kept.trim()) {
+      skipped.push(`${file.name}（没有可用内容）`)
+      continue
+    }
+
+    attachmentSeq += 1
+    const item: AttachmentItem = {
+      id: `a${Date.now().toString(36)}-${attachmentSeq}`,
+      name: file.name,
+      chars: kept.length,
+      text: kept,
+      truncated,
+      addedAt: Date.now()
+    }
+    if (existingIndex >= 0) env.attachments.splice(existingIndex, 1, item)
+    else env.attachments.push(item)
+    added.push(file.name)
+  }
+
+  if (added.length > 0) {
+    env.updatedAt = Date.now()
+    schedulePersist()
+    if (currentSession) noteSessionActivity()
+    renderContextBar()
+  }
+  if (skipped.length > 0) {
+    setAttachNotice(`${added.length > 0 ? `已添加 ${added.length} 个；` : ''}跳过：${skipped.join('；')}`)
+  } else if (added.length > 0) {
+    setAttachNotice(`已添加 ${added.length} 个参考文件`)
+  }
+}
+
+function removeAttachment(id: string): void {
+  if (!currentEnv) return
+  const index = currentEnv.attachments.findIndex(item => item.id === id)
+  if (index < 0) return
+  currentEnv.attachments.splice(index, 1)
+  currentEnv.updatedAt = Date.now()
+  renderContextBar()
+  schedulePersist()
+}
+
+/**
+ * 渲染当前环境：当前文档（仅非空时展示篇幅）+ 参考文件 + 「＋ 文件」。
+ *
+ * 文档为空时只写「当前文档为空」，不把空文档当成环境的一部分；「＋ 文件」始终
+ * 留在这一行，否则空文档 + 无附件时就没有添加入口了。
+ */
+function renderContextBar(): void {
+  if (!contextBarEl) return
+  const info = docInfo()
+  const items = documentAttachments()
+  contextBarEl.replaceChildren()
+
+  const docChip = document.createElement('span')
+  docChip.className = 'ai-chat-doc-chip'
+  if (!info.hasView) {
+    docChip.classList.add('is-empty')
+    docChip.textContent = '未关联文档'
+  } else if (info.empty) {
+    docChip.classList.add('is-empty')
+    docChip.textContent = '当前文档为空'
+  } else {
+    // 以标签栏当前活动文档为准：发送读的是 currentView()，不是会话绑定的旧文档
+    const name = currentDocumentRef().fileName || '当前文档'
+    docChip.textContent = `📄 ${name} · ${info.length.toLocaleString('zh-CN')} 字符`
+    docChip.title = `对话 / 生成 / 美化会带上当前文档全文（${info.length} 字符）`
+  }
+  contextBarEl.append(docChip)
+
+  if (items.length > 0) {
+    const label = document.createElement('span')
+    label.className = 'ai-chat-attach-title'
+    label.textContent = `参考文件 ${items.length}`
+    contextBarEl.append(label)
+  }
+
+  for (const item of items) {
+    const chip = document.createElement('span')
+    chip.className = 'ai-chat-attach-chip'
+    chip.title = `${item.name} · ${item.chars} 字符${item.truncated ? '（已截断）' : ''}`
+    const name = document.createElement('span')
+    name.className = 'ai-chat-attach-name'
+    name.textContent = item.name
+    const remove = document.createElement('button')
+    remove.type = 'button'
+    remove.className = 'ai-chat-attach-remove'
+    remove.title = `移除 ${item.name}`
+    remove.textContent = '×'
+    remove.addEventListener('click', () => removeAttachment(item.id))
+    chip.append(name, remove)
+    contextBarEl.append(chip)
+  }
+
+  if (addFileBtn) {
+    addFileBtn.disabled = pendingId !== null
+    addFileBtn.title = pendingId
+      ? 'AI 正在处理，稍后再添加参考文件'
+      : '添加本地文本文件，作为生成 / 美化 / 问答的参考'
+    contextBarEl.append(addFileBtn)
+  }
+
+  if (attachNotice) {
+    const note = document.createElement('span')
+    note.className = 'ai-chat-attach-note'
+    note.textContent = attachNotice
+    contextBarEl.append(note)
+  }
 }
 
 // ---------- 渲染 ----------
@@ -930,14 +2016,39 @@ function renderPanel(): void {
   const avatar = avatarEl
   const meta = metaEl
   if (avatar) fillAvatar(avatar, characterStyle())
-  if (meta) {
-    const config = imk.plugin.getConfig<{ model?: unknown }>()
-    const model = typeof config.model === 'string' ? config.model.trim() : ''
-    meta.textContent = model || '文档问答'
+
+  if (fileChipEl && fileChipNameEl) {
+    const env = currentEnv
+    const name = env?.fileName || '未关联文档'
+    fileChipNameEl.textContent = name
+    fileChipEl.title =
+      env?.filePath ?? (env && env.key !== 'no-document' ? '尚未保存到磁盘' : '当前没有打开文档')
+    fileChipEl.classList.toggle('is-empty', !env || env.key === 'no-document')
   }
-  renderActions()
+
+  if (historyBtn) {
+    const count = currentEnv?.sessions.length ?? 0
+    historyBtn.textContent = count > 0 ? `会话 ${count}` : '会话'
+  }
+
+  if (meta) {
+    // 模型是每个地址一份；标题里显示第一个填了的模型，多个就加「等」
+    const config = imk.plugin.getConfig<{ endpoints?: unknown }>()
+    const endpoints = Array.isArray(config.endpoints) ? config.endpoints : []
+    const models = [
+      ...new Set(
+        endpoints
+          .map(row => (row && typeof row === 'object' ? (row as { model?: unknown }).model : ''))
+          .filter((model): model is string => typeof model === 'string' && model.trim() !== '')
+          .map(model => model.trim())
+      )
+    ]
+    meta.textContent =
+      models.length === 0 ? '文档问答' : models.length === 1 ? models[0]! : `${models[0]} 等`
+  }
+  refreshComposeEnvironment()
   renderMessages()
-  syncComposeState()
+  if (historyPopEl && !historyPopEl.hidden) renderSessionList()
   if (inputEl && document.activeElement !== inputEl && inputEl.value !== draft) {
     inputEl.value = draft
   }
@@ -947,26 +2058,82 @@ function stateAvailable(): boolean {
   return maskEl !== null && panelEl !== null
 }
 
-function renderActions(): void {
-  if (!generateBtn || !beautifyBtn || !actionsHintEl) return
+/**
+ * 上下文条、模式按钮与发送按钮共用同一份文档状态。
+ *
+ * 在 onDocChanged 里逐键调用：只用 doc.length，不把整篇文档 toString。
+ */
+function refreshComposeEnvironment(): void {
+  reconcileComposeMode()
+  renderContextBar()
+  renderModes()
+  syncComposeState()
+}
+
+/** 当前模式在本文档上不再适用时退回「对话」；不打断正在处理的请求 */
+function reconcileComposeMode(): void {
+  if (composeMode === 'chat') return
   const info = docInfo()
-  generateBtn.disabled = pendingId !== null || !info.hasView || !info.empty
-  beautifyBtn.disabled = pendingId !== null || !info.hasView || info.empty
-  generateBtn.title = !info.hasView
-    ? '请先打开或新建一个文档'
-    : info.empty
-      ? '在下方输入想生成的内容，然后点「生成」'
-      : '「生成」只用于空文档'
-  beautifyBtn.title = !info.hasView
-    ? '请先打开或新建一个文档'
-    : info.empty
-      ? '「美化」需要有内容的文档'
-      : '美化当前文档'
-  actionsHintEl.textContent = !info.hasView
-    ? '先打开一个文档'
-    : pendingId
+  if (composeMode === 'generate' && (!info.hasView || !info.empty)) composeMode = 'chat'
+  else if (composeMode === 'beautify' && (!info.hasView || info.empty)) composeMode = 'chat'
+}
+
+function selectComposeMode(mode: ComposeMode): void {
+  if (pendingId) return
+  const info = docInfo()
+  if (mode === 'generate' && (!info.hasView || !info.empty)) return
+  if (mode === 'beautify' && (!info.hasView || info.empty)) return
+  composeMode = mode
+  renderModes()
+  syncComposeState()
+  inputEl?.focus()
+}
+
+function renderModes(): void {
+  if (!modeButtons) return
+  const info = docInfo()
+  const blocked: Record<ComposeMode, boolean> = {
+    chat: false,
+    generate: !info.hasView || !info.empty,
+    beautify: !info.hasView || info.empty
+  }
+  for (const mode of COMPOSE_MODES) {
+    const button = modeButtons[mode]
+    const active = composeMode === mode
+    button.classList.toggle('is-active', active)
+    button.setAttribute('aria-pressed', active ? 'true' : 'false')
+    button.disabled = pendingId !== null || blocked[mode]
+    button.title = pendingId
+      ? 'AI 正在处理，请稍候'
+      : mode === 'chat'
+        ? info.hasView
+          ? '结合当前文档与参考文件回答问题'
+          : '没有打开文档也可以提问'
+        : mode === 'generate'
+          ? !info.hasView
+            ? '请先打开或新建一个文档'
+            : info.empty
+              ? '写清想生成的内容，点「发送」'
+              : '「生成」只用于空文档'
+          : !info.hasView
+            ? '请先打开或新建一个文档'
+            : info.empty
+              ? '「美化」需要有内容的文档'
+              : '输入框可以留空；点「发送」让 AI 自行整理'
+  }
+
+  if (modeHintEl) {
+    modeHintEl.textContent = pendingId
       ? 'AI 正在处理…'
-      : '生成用于空文档 · 美化用于已有内容'
+      : !info.hasView
+        ? '先打开一个文档；仍然可以直接提问'
+        : composeMode === 'chat'
+          ? '结合当前文档与参考文件回答'
+          : composeMode === 'generate'
+            ? '生成只用于空文档：写清要求后发送'
+            : '美化用于已有内容；输入框可以留空'
+  }
+  if (inputEl) inputEl.placeholder = COMPOSE_PLACEHOLDER[composeMode]
 }
 
 function renderMessages(): void {
@@ -981,8 +2148,12 @@ function renderMessages(): void {
     avatar.className = 'ai-chat-welcome-avatar'
     fillAvatar(avatar, style)
     const text = document.createElement('div')
+    const envName = currentEnv?.fileName || '未关联文档'
+    const attachmentCount = currentEnv?.attachments.length ?? 0
     text.textContent =
-      '你好，我是 AI for Edit。可以问我关于当前文档的问题，也可以用上面的「生成」「美化」。'
+      `你好，我是 AI for Edit。当前会话关联「${envName}」，` +
+      '可以问我关于这份文档的问题，也可以在输入框上方选择「生成」或「美化」后发送。' +
+      (attachmentCount > 0 ? ` 已附加 ${attachmentCount} 个参考文件。` : '')
     welcome.append(avatar, text)
     messagesEl.append(welcome)
   }
@@ -1217,14 +2388,47 @@ function appendActionButtons(
 }
 
 function syncComposeState(): void {
-  if (sendBtn) sendBtn.disabled = pendingId !== null || draft.trim().length === 0
+  if (sendBtn) {
+    const info = docInfo()
+    const blocked =
+      !info.hasView ||
+      (composeMode === 'generate' && !info.empty) ||
+      (composeMode === 'beautify' && info.empty)
+    // 美化允许不带要求：输入框留空时直接发送，让 AI 自行整理
+    const needsText = composeMode !== 'beautify'
+    sendBtn.disabled = pendingId !== null || blocked || (needsText && draft.trim().length === 0)
+    sendBtn.title = pendingId
+      ? 'AI 正在处理'
+      : blocked
+        ? composeMode === 'generate'
+          ? '「生成」只用于空文档'
+          : '「美化」需要有内容的文档'
+        : composeMode === 'beautify' && draft.trim().length === 0
+          ? '不填要求也可以，直接发送让 AI 自行整理'
+          : '发送（Enter）'
+  }
   if (newChatBtn) newChatBtn.disabled = pendingId !== null
+}
+
+/** 「发送」/ Enter 的唯一入口：按当前模式分发到对话、生成或美化 */
+function submitCompose(): void {
+  if (pendingId) return
+  if (composeMode === 'generate') {
+    runGenerateShortcut()
+    return
+  }
+  if (composeMode === 'beautify') {
+    runBeautifyShortcut()
+    return
+  }
+  sendChat()
 }
 
 // ---------- 快捷动作 ----------
 
 function pushHint(text: string): void {
   messages.push({ id: nextMessageId(), role: 'system', kind: 'hint', text })
+  noteSessionActivity()
   if (maskEl) renderPanel()
 }
 
@@ -1232,7 +2436,7 @@ function runGenerateShortcut(explicitPrompt?: string): void {
   if (pendingId) return
   const prompt = (explicitPrompt ?? draft).trim()
   if (!prompt) {
-    pushHint('先在下方输入想生成的内容，再点「生成」。')
+    pushHint('先在输入框里写想生成的内容，再点「发送」。')
     inputEl?.focus()
     return
   }
@@ -1242,7 +2446,7 @@ function runGenerateShortcut(explicitPrompt?: string): void {
     return
   }
   if (view.state.doc.toString().trim() !== '') {
-    pushHint('「生成」只用于空文档。当前文档已有内容，可以试试「美化」，或直接提问。')
+    pushHint('「生成」只用于空文档。当前文档已有内容，可以切到「美化」，或直接提问。')
     return
   }
   if (explicitPrompt === undefined) {
@@ -1260,7 +2464,7 @@ function runBeautifyShortcut(): void {
     return
   }
   if (view.state.doc.toString().trim() === '') {
-    pushHint('「美化」需要有内容的文档。当前文档是空的，先用「生成」写点内容吧。')
+    pushHint('「美化」需要有内容的文档。当前文档是空的，先切到「生成」写点内容吧。')
     return
   }
   // 输入框里有内容时，它就是这次美化的具体要求（例如「更正式」「精简」「分点」）；
@@ -1304,6 +2508,7 @@ function startAction(kind: ActionKind, prompt: string, displayText: string): voi
     action
   }
   messages.push(message)
+  noteSessionActivity()
 
   const requestId = nextRequestId()
   action.requestId = requestId
@@ -1319,10 +2524,16 @@ function startAction(kind: ActionKind, prompt: string, displayText: string): voi
     return
   }
 
+  const attachments = attachmentPayload()
   const payload: AiBeautifyMessage | AiGenerateMessage =
     kind === 'beautify'
-      ? { id: requestId, text: doc, ...(prompt ? { instruction: prompt } : {}) }
-      : { id: requestId, prompt }
+      ? {
+          id: requestId,
+          text: doc,
+          ...(prompt ? { instruction: prompt } : {}),
+          ...(attachments.length > 0 ? { attachments } : {})
+        }
+      : { id: requestId, prompt, ...(attachments.length > 0 ? { attachments } : {}) }
   if (jsonLength(payload) > MAX_MESSAGE_CHARS) {
     action.phase = 'error'
     action.error = '文档太长，超过插件消息上限'
@@ -1385,6 +2596,7 @@ function confirmAction(message: ChatMessageItem): void {
   }
 
   action.applied = true
+  noteSessionActivity()
   if (maskEl) renderPanel()
 }
 
@@ -1422,6 +2634,7 @@ function retryAction(message: ChatMessageItem): void {
   action.tab = 'preview'
   action.previewHtml = undefined
   action.previewError = undefined
+  noteSessionActivity()
 
   const requestId = nextRequestId()
   action.requestId = requestId
@@ -1437,10 +2650,20 @@ function retryAction(message: ChatMessageItem): void {
     return
   }
 
+  const attachments = attachmentPayload()
   const payload: AiBeautifyMessage | AiGenerateMessage =
     action.kind === 'beautify'
-      ? { id: requestId, text: doc, ...(action.prompt ? { instruction: action.prompt } : {}) }
-      : { id: requestId, prompt: action.prompt }
+      ? {
+          id: requestId,
+          text: doc,
+          ...(action.prompt ? { instruction: action.prompt } : {}),
+          ...(attachments.length > 0 ? { attachments } : {})
+        }
+      : {
+          id: requestId,
+          prompt: action.prompt,
+          ...(attachments.length > 0 ? { attachments } : {})
+        }
   if (jsonLength(payload) > MAX_MESSAGE_CHARS) {
     action.phase = 'error'
     action.error = '文档太长，超过插件消息上限'
@@ -1622,12 +2845,20 @@ function sendChat(): void {
     loading: true
   }
   messages.push(userMessage, assistantMessage)
+  noteSessionActivity()
   draft = ''
   if (inputEl) inputEl.value = ''
   pendingId = requestId
   if (maskEl) renderPanel()
 
-  const payload: AiChatMessage = { id: requestId, message: question, text: doc, history }
+  const attachments = attachmentPayload()
+  const payload: AiChatMessage = {
+    id: requestId,
+    message: question,
+    text: doc,
+    history,
+    ...(attachments.length > 0 ? { attachments } : {})
+  }
   if (jsonLength(payload) > MAX_MESSAGE_CHARS) {
     assistantMessage.loading = false
     assistantMessage.error = '文档或对话太长，暂时无法发送'
@@ -1685,6 +2916,7 @@ function handleAiReply(reply: AiReplyMessage): void {
   }
 
   if (pendingId === reply.id) pendingId = null
+  noteSessionActivity()
   if (maskEl) renderPanel()
 }
 
@@ -1747,7 +2979,12 @@ function handlePreviewOpen(message: PreviewOpenMessage): void {
   openChatPanel()
   if (message.mode === 'generate') {
     const prompt = typeof message.prompt === 'string' ? message.prompt : ''
-    if (prompt) runGenerateShortcut(prompt)
+    if (prompt) {
+      // 让输入区的模式与正在触发的动作一致
+      composeMode = 'generate'
+      renderModes()
+      runGenerateShortcut(prompt)
+    }
   }
 }
 
@@ -1933,7 +3170,7 @@ imk.plugin.handle({
     offMessage = imk.main.onMessage(onMessage)
     offDocChanged?.()
     offDocChanged = imk.editor.onDocChanged(() => {
-      if (maskEl) renderActions()
+      if (maskEl) refreshComposeEnvironment()
     })
   },
 
@@ -1943,6 +3180,7 @@ imk.plugin.handle({
     offDocChanged?.()
     offDocChanged = null
     window.removeEventListener('resize', clampCharacterPosition)
+    flushPersist()
     closePanel()
     removeStatusButton()
     removeCharacter()

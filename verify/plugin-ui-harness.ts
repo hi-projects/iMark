@@ -17,6 +17,9 @@
  *  10. 市场「已安装」每行改成「形态 + 来源」两枚徽标(脚本插件 / 沙箱插件 / 无代码插件);
  *  11. 权限那排去掉「权限」二字,改成盾牌图标 + 柔和胶囊,并挪到名字下面(与元信息对齐)。
  *
+ * 最新一轮:市场「已安装」不再标 Render 层;「内置插件」来源徽标也去掉,
+ * 只有市场装的和本地装的才标来源。
+ *
  * 断言的都是**界面上看得见的东西**(某个容器里还找不找得到这些字、还有没有那枚标签),
  * 不是「源码里有没有那行」—— 这轮改动全是「删掉之后别把有用的东西一起删掉」的风险,
  * 所以第 2/4 段反过来钉住两件**必须留下**的东西:沙箱插件的「打开窗口」按钮、
@@ -78,7 +81,8 @@ const NAV_METRICS = `
     rowText: rows.map(b => b.textContent).join(' ').replace(/\\s+/g, ''),
     chips: nav.querySelectorAll('.plugin-kind-chip').length,
     helpIcon: help ? help.querySelectorAll('svg').length : 0,
-    helpTitle: help ? (help.getAttribute('title') || '') : ''
+    // 问号改用自定义浮层(HelpTip),说明文字挂在 aria-label 上
+    helpTitle: help ? (help.getAttribute('aria-label') || '') : ''
   }
 })()
 `
@@ -109,6 +113,22 @@ const INSTALLED_METRICS = `
     plugins: rows.map(r => ({
       name: ((r.querySelector('.market-row-name b') || {}).textContent || '').trim(),
       badges: [...r.querySelectorAll('.market-row-name .market-badge')].map(b => b.textContent.trim()),
+      // 首枚徽标的左边界 —— 所有行的标签应当对齐在同一竖列
+      badgeLeft: (() => {
+        const first = r.querySelector('.market-row-name .market-badge')
+        return first ? Math.round(first.getBoundingClientRect().left) : null
+      })(),
+      // 版本号右边界:它到徽标的距离才是肉眼看到的「标签离版本号有多远」
+      // (名字列的盒子右边界永远贴着徽标,量它看不出间距)
+      versionRight: (() => {
+        const ver = r.querySelector('.market-row-name-main > .market-mono')
+        return ver ? Math.round(ver.getBoundingClientRect().right) : null
+      })(),
+      // sha256 标签左边界:应与权限徽标共用同一条左对齐线
+      chipLeft: (() => {
+        const chip = r.querySelector('.market-hash-chip')
+        return chip ? Math.round(chip.getBoundingClientRect().left) : null
+      })(),
       titleText: (r.querySelector('.market-row-title') || {}).innerText || '',
       perms: [...r.querySelectorAll('.market-row-perm')].map(c => ({
         text: c.textContent.trim(),
@@ -144,6 +164,9 @@ interface InstalledMetrics {
   plugins: {
     name: string
     badges: string[]
+    badgeLeft: number | null
+    versionRight: number | null
+    chipLeft: number | null
     titleText: string
     perms: { text: string; title: string }[]
   }[]
@@ -415,14 +438,52 @@ async function main(): Promise<void> {
   const quick = byName('Advanced Table')
 
   check(
-    'node main 的徽标是「完整权限插件 + 内置插件」',
-    JSON.stringify(git?.badges) === JSON.stringify(['完整权限插件', '内置插件']),
+    'node main 的徽标只留「完整权限插件」(来源不再标)',
+    JSON.stringify(git?.badges) === JSON.stringify(['完整权限插件']),
     git?.badges.join(' / ') ?? '(没找到这一行)'
   )
   check(
-    '两层插件的徽标是「受限权限插件 + Render 层 + 本地安装」',
-    JSON.stringify(sandbox?.badges) === JSON.stringify(['受限权限插件', 'Render 层', '本地安装']),
+    '两层插件的徽标只留「受限权限插件」(不标 Render 层与来源)',
+    JSON.stringify(sandbox?.badges) === JSON.stringify(['受限权限插件']),
     sandbox?.badges.join(' / ') ?? '(没找到这一行)'
+  )
+  // 名称长短不一时,徽标不能跟着名字左右跳 —— 每行首枚徽标应当在同一竖线上
+  const badgeEdges = inst.plugins
+    .map(p => p.badgeLeft)
+    .filter((n): n is number => n !== null)
+  check(
+    '所有卡片的标签对齐在同一竖列',
+    badgeEdges.length === inst.plugins.length &&
+      Math.max(...badgeEdges) - Math.min(...badgeEdges) <= 1,
+    `首枚徽标左边界 ${badgeEdges.join(' / ')}`
+  )
+  // 对齐不等于把标签推到卡片中间:列宽按最长名字实测再加一段固定间距。
+  // 按版本号文字的右边界量,最宽的那行应当正好是 16px,其余行只会更宽。
+  const badgeGaps = inst.plugins
+    .map(p => (p.badgeLeft !== null && p.versionRight !== null ? p.badgeLeft - p.versionRight : null))
+    .filter((n): n is number => n !== null)
+  check(
+    '标签与版本号之间留出呼吸空间(最宽行约 16px,其余行只会更宽)',
+    badgeGaps.length === inst.plugins.length &&
+      badgeGaps.every(g => g >= 14) &&
+      badgeGaps.some(g => g <= 22),
+    `版本号右边界到徽标的间距 ${badgeGaps.join(' / ')} px`
+  )
+  // 用户要的是「一条竖线」:权限徽标与它下面的 sha256 共用左边界
+  const chipEdges = inst.plugins
+    .map(p => p.chipLeft)
+    .filter((n): n is number => n !== null)
+  check(
+    'sha256 标签与权限徽标左对齐',
+    chipEdges.length === inst.plugins.length &&
+      inst.plugins.every(
+        p => p.badgeLeft !== null && p.chipLeft !== null && Math.abs(p.badgeLeft - p.chipLeft) <= 1
+      ),
+    `徽标 ${badgeEdges.join(' / ')};sha256 ${chipEdges.join(' / ')}`
+  )
+  check(
+    '卡片上不再标来源(市场插件 / 本地安装)',
+    !inst.pageText.includes('市场插件') && !inst.pageText.includes('本地安装')
   )
   check(
     '权限胶囊本身不再带「权限」二字',
@@ -453,6 +514,8 @@ async function main(): Promise<void> {
   )
   check('列表里不再有「含代码 / 不含代码」', !inst.pageText.includes('含代码'))
   check('整页都不再说「应用自带」', !inst.pageText.includes('应用自带'))
+  // 作者/发布者对「我装没装、它安不安全」没有帮助 —— 三张卡片都不再显示
+  check('已安装卡片不再显示发布者', !inst.pageText.includes('发布者'))
   await shot('plugin-ui-installed.png')
 
   console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)

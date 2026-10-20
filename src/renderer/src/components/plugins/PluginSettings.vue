@@ -35,16 +35,6 @@ const restrictedNetToggle = computed(
 )
 
 /**
- * 顶部信息卡:只有「发布者」和 restricted 的联网开关需要它。
- *
- * 来源(内置 / 市场)、形态、安装时间、sha256 与权限明细都在市场「已安装」里 ——
- * 同一件事只说一遍。
- */
-const hasMeta = computed(
-  () => Boolean(selected.value?.installed?.publisher) || restrictedNetToggle.value
-)
-
-/**
  * 日志尾巴:插件自己 log() 的行 + 宿主记录的操作摘要/警告。
  *
  * 与 `logs/plugins/<id>.log` 是同一份内容(那边保留完整历史) —— 第三方插件出问题时
@@ -100,7 +90,9 @@ const fieldGroups = computed(() => {
   )
   const out: { section: string | null; fields: PluginFieldSpec[] }[] = []
   for (const field of visible) {
-    const section = field.section ?? null
+    // 已安装的旧包(市场里的 1.1.0)清单里没有 section,但远端列表本身就是
+    // 一个完整模块。这里给 targets 兜底一个标题,免得老安装永远少一条分组线。
+    const section = field.section ?? (field.kind === 'targets' ? '远程仓库' : null)
     const last = out[out.length - 1]
     if (last && last.section === section) last.fields.push(field)
     else out.push({ section, fields: [field] })
@@ -192,21 +184,12 @@ async function openLog(): Promise<void> {
     </div>
 
     <!--
-      装进来的插件:只剩发布者。
-      来源(内置 / 市场)、形态、安装时间、sha256 与权限明细都在市场「已安装」里 ——
-      同一件事只说一遍。
+      restricted main 的联网开关:
+      默认拒绝(见 main/plugins/ops.ts 的 net.fetch),需要连本机服务的插件由**用户**在这里放开。
+      发布者、来源、形态、安装时间、sha256 与权限明细都在市场「已安装」里,这里不再重复。
     -->
-    <div v-if="hasMeta" class="plugin-meta">
+    <div v-if="restrictedNetToggle" class="plugin-meta">
       <div class="plugin-meta-line">
-        <span v-if="selected.installed?.publisher" class="plugin-chip">
-          发布者 {{ selected.installed.publisher }}
-        </span>
-      </div>
-      <!--
-        restricted main 的联网开关:
-        默认拒绝(见 main/plugins/ops.ts 的 net.fetch),需要连本机服务的插件由**用户**在这里放开。
-      -->
-      <div v-if="restrictedNetToggle" class="plugin-meta-line">
         <label
           class="plugin-net-toggle"
           title="默认拒绝插件访问 127.0.0.1 与内网地址。需要连你本机跑的服务时才打开。"

@@ -256,7 +256,8 @@ async function main(): Promise<void> {
     check('出现一个标签「甲」', await waitCount(win, 1) && (await tabLabels(win))[0] === '甲')
     check('甲是激活标签', (await activeLabel(win)) === '甲')
     check('编辑器装载了甲', await contentHas(win, '第一份文档。'))
-    check('状态栏显示甲.md', await waitFor(win, `document.querySelector('.status-file')?.textContent?.includes('甲.md')`))
+    // 文件名只在标签上显示一次;状态栏不再重复(2026-10 起)
+    check('状态栏不再重复文件名', !(await evalJs<boolean>(win, `!!document.querySelector('.status-file')`)))
 
     check('点开乙', await clickFile(win, noteB))
     check('两个标签,顺序为甲、乙', await waitCount(win, 2) && (await tabLabels(win)).join(',') === '甲,乙')
@@ -282,7 +283,7 @@ async function main(): Promise<void> {
     console.log('\n【4】输入 → 脏标记;切走后仍保留;保存后圆点消失')
     win.webContents.sendInputEvent({ type: 'char', keyCode: 'X' })
     check('甲出现脏标记', await waitFor(win, `document.querySelectorAll('.tab')[0]?.classList.contains('tab-dirty')`))
-    check('状态栏出现圆点', await waitFor(win, `document.querySelector('.status-file')?.textContent?.includes('●')`))
+    check('脏标记只在标签上显示,状态栏不再重复', !(await evalJs<boolean>(win, `!!document.querySelector('.status-file')`)))
     check('激活标签上圆点可见', await waitFor(win, `getComputedStyle(document.querySelector('.tab-active .tab-dot')).opacity === '1'`))
     check('圆点占用关闭按钮的槽位', await evalJs<boolean>(win, `getComputedStyle(document.querySelector('.tab-active .tab-close')).opacity === '0'`))
     check('切到乙', await clickTab(win, 1))

@@ -20,6 +20,7 @@ import type { PluginActionPayload, PluginActionResult } from '@shared/plugins'
 import {
   AiError,
   callAi,
+  modelSummary,
   readAiConfig,
   requestChat,
   type AiResult,
@@ -36,7 +37,13 @@ import {
   userPromptForBeautify,
   userPromptForGenerate
 } from './prompts'
-import type { AiReplyMessage, ChatHistoryItem, DocReply, PreviewOpenMessage } from './protocol'
+import type {
+  AiReplyMessage,
+  AttachmentItem,
+  ChatHistoryItem,
+  DocReply,
+  PreviewOpenMessage
+} from './protocol'
 
 /** 发给 AI 的正文上限；渲染层也用这个值拒绝过大的文档 */
 const MAX_INPUT_CHARS = 120_000
@@ -45,9 +52,20 @@ const MAX_OUTPUT_CHARS = 180_000
 /** 行首菜单对话框里那句话 / 对话输入的长度上限 */
 const MAX_PROMPT_CHARS = 4_000
 const MAX_CHAT_CHARS = 4_000
+/** 设置页里的自定义 system 提示词上限；过大只会白白消耗上下文与费用 */
+const MAX_SYSTEM_PROMPT_CHARS = 20_000
 /** 对话历史只带最近若干轮；每条也截断，避免把整段美化结果塞回上下文 */
 const MAX_HISTORY_ITEMS = 12
 const MAX_HISTORY_TEXT = 2_000
+/**
+ * 参考文件的二次校验（render 层已经截断过一次）。
+ *
+ * 与 render.ts 的 MAX_ATTACHMENTS / MAX_ATTACHMENT_CHARS / MAX_ATTACHMENT_TOTAL
+ * 保持同一组数值：render 是体验，main 是边界，两边都过一遍才放心。
+ */
+const MAX_ATTACHMENTS = 6
+const MAX_ATTACHMENT_CHARS = 24_000
+const MAX_ATTACHMENTS_TOTAL = 40_000
 /** 与宿主 render.send / handleRenderMessage 的上限对齐，并留出 JSON 转义余量 */
 const MAX_MESSAGE_CHARS = 240 * 1024
 /** 一次文档读取的等待上限；超时说明编辑器没有响应 */
@@ -99,7 +117,7 @@ class AiForEditPlugin implements PluginRuntime {
   async runAction(
     actionId: string,
     _ctx: PluginContext,
-    _targetId?: string,
+    targetId?: string,
     payload?: PluginActionPayload
   ): Promise<PluginActionResult> {
     if (this.busy) {
@@ -109,6 +127,7 @@ class AiForEditPlugin implements PluginRuntime {
     try {
       if (actionId === 'generate-content') return await this.generate(payload)
       if (actionId === 'test-connection') return await this.testConnection()
+      if (actionId === 'test-target') return await this.testConnection(targetId)
       return { ok: false, message: `未知动作：${actionId}` }
     } catch (err) {
       return this.failure(err)
@@ -151,7 +170,7 @@ class AiForEditPlugin implements PluginRuntime {
     // 非空文档：沿用「+」菜单的插入行为，不经过整篇替换
     const controller = this.newAbort()
     try {
-      const result = await this.runGenerate(prompt, controller)
+      const result = await this.runGenerate(prompt, [], controller)
       return {
         ok: true,
         message: `已生成 ${result.text.length} 个字符`,
@@ -162,27 +181,83 @@ class AiForEditPlugin implements PluginRuntime {
     }
   }
 
-  private async testConnection(): Promise<PluginActionResult> {
+  /**
+   * 测试连接。
+   *
+   * 不传 targetId 时逐个测试所有地址（对应设置页顶部的按钮），传入时只测那一行
+   * （对应地址卡片上的按钮）。每个地址的结果单独写进 targetResults，卡片边框因此
+   * 能分别变绿/变红。
+   */
+  private async testConnection(targetId?: string): Promise<PluginActionResult> {
     const cfg = await readAiConfig(this.imk, 20_000)
-    this.imk.setState({ status: 'running', lastMessage: '正在测试连接…' })
-
-    const started = Date.now()
-    const controller = this.newAbort()
-    try {
-      const result = await callAi(
-        cfg,
-        '你是连通性测试助手。',
-        '请只回复 OK。',
-        controller.signal
-      )
-      this.logCall(result)
-      const elapsed = Date.now() - started
-      const message = `连接成功 · ${result.provider} · ${result.model} · ${elapsed}ms`
-      this.imk.setState({ status: 'ok', lastRunAt: Date.now(), lastMessage: message })
-      return { ok: true, message }
-    } finally {
-      this.aborts.delete(controller)
+    const targets = targetId ? cfg.endpoints.filter(endpoint => endpoint.id === targetId) : cfg.endpoints
+    if (targets.length === 0) {
+      return {
+        ok: false,
+        message: targetId ? '该地址已不存在（可能刚被删除）' : '请先在插件设置里填写 AI 服务地址'
+      }
     }
+
+    this.imk.setState({
+      status: 'running',
+      lastMessage: targets.length === 1 ? '正在测试连接…' : '正在逐个测试地址…',
+      lastDetail: undefined
+    })
+
+    const lines: string[] = []
+    const details: string[] = []
+    const results: Record<string, 'ok' | 'error'> = {}
+    let okCount = 0
+
+    for (const target of targets) {
+      const index = cfg.endpoints.findIndex(endpoint => endpoint.id === target.id)
+      const name = targets.length > 1 ? `第 ${index + 1} 个地址` : ''
+      const started = Date.now()
+      const controller = this.newAbort()
+      try {
+        const result = await callAi(
+          { ...cfg, endpoints: [target] },
+          '你是连通性测试助手。',
+          '请只回复 OK。',
+          controller.signal
+        )
+        this.logCall(result)
+        okCount += 1
+        results[target.id] = 'ok'
+        const elapsed = Date.now() - started
+        const summary = `连接成功 · ${result.provider} · ${result.model} · ${elapsed}ms`
+        lines.push(name ? `${name}：${summary}` : summary)
+      } catch (err) {
+        if (controller.signal.aborted) break
+        results[target.id] = 'error'
+        const failure = this.toFailure(err)
+        lines.push(name ? `${name}：连接失败` : '连接失败')
+        details.push(
+          `${name ? `${name}：` : ''}${failure.message}${failure.detail ? `（${failure.detail}）` : ''}`
+        )
+      } finally {
+        this.aborts.delete(controller)
+      }
+    }
+
+    if (lines.length === 0) return { ok: false, message: '请求已取消' }
+
+    const allOk = okCount === targets.length
+    const message = lines.join('\n')
+    this.imk.setState({
+      status: allOk ? 'ok' : okCount > 0 ? 'partial' : 'error',
+      lastRunAt: Date.now(),
+      lastMessage: message,
+      lastDetail: details.length > 0 ? details.join('\n') : undefined,
+      targetResults: results
+    })
+
+    const summary = targets.length === 1
+      ? message
+      : allOk
+        ? `全部 ${targets.length} 个地址连接成功`
+        : `${targets.length - okCount}/${targets.length} 个地址连接失败`
+    return { ok: allOk, message: summary, detail: details.length > 0 ? details.join('\n') : undefined }
   }
 
   /** 打开 render 层的预览面板；失败时给用户一条通知，而不是静默什么都不发生 */
@@ -201,9 +276,28 @@ class AiForEditPlugin implements PluginRuntime {
 
   // ---------- AI 调用（动作与预览共用） ----------
 
+  /**
+   * 校验设置页里的 system 提示词。
+   *
+   * 设置页的 required 字段会挡住清空,但 settings.json 可以被手改,所以调用前
+   * 仍然要检查:空提示词发给模型等于没有任何角色约束,不如直接报错。
+   */
+  private systemPrompt(value: string, label: string): string {
+    if (!value) {
+      throw new AiError(`${label}为空，请在插件设置里填写，或点标题旁的恢复图标`)
+    }
+    if (value.length > MAX_SYSTEM_PROMPT_CHARS) {
+      throw new AiError(
+        `${label}太长（${value.length} 字符），最多 ${MAX_SYSTEM_PROMPT_CHARS} 字符`
+      )
+    }
+    return value
+  }
+
   private async runBeautify(
     text: string,
     instruction: string,
+    attachments: AttachmentItem[],
     controller: AbortController
   ): Promise<AiTextResult> {
     const cfg = await readAiConfig(this.imk)
@@ -219,15 +313,16 @@ class AiForEditPlugin implements PluginRuntime {
       throw new AiError(`文档太长（${body.length} 字符），目前最多支持 ${MAX_INPUT_CHARS} 字符`)
     }
 
+    const prompt = this.systemPrompt(cfg.beautifyPrompt, '美化提示词')
     this.imk.setState({
       status: 'running',
-      lastMessage: `正在请求 AI 美化（${cfg.model || '默认模型'}）…`
+      lastMessage: `正在请求 AI 美化（${modelSummary(cfg.endpoints)}）…`
     })
 
     const result = await callAi(
       cfg,
-      systemPromptForBeautify(instruction),
-      userPromptForBeautify(body),
+      systemPromptForBeautify(prompt, instruction, attachments.length > 0),
+      userPromptForBeautify(body, attachments),
       controller.signal
     )
     this.logCall(result)
@@ -248,7 +343,11 @@ class AiForEditPlugin implements PluginRuntime {
     return { text: joinDocument(parts, beautified), model: result.model }
   }
 
-  private async runGenerate(prompt: string, controller: AbortController): Promise<AiTextResult> {
+  private async runGenerate(
+    prompt: string,
+    attachments: AttachmentItem[],
+    controller: AbortController
+  ): Promise<AiTextResult> {
     const trimmed = prompt.trim()
     if (!trimmed) throw new AiError('请填写想生成的内容')
     if (trimmed.length > MAX_PROMPT_CHARS) {
@@ -256,15 +355,16 @@ class AiForEditPlugin implements PluginRuntime {
     }
 
     const cfg = await readAiConfig(this.imk)
+    const systemPrompt = this.systemPrompt(cfg.generatePrompt, '生成提示词')
     this.imk.setState({
       status: 'running',
-      lastMessage: `正在生成（${cfg.model || '默认模型'}）…`
+      lastMessage: `正在生成（${modelSummary(cfg.endpoints)}）…`
     })
 
     const result = await callAi(
       cfg,
-      systemPromptForGenerate(),
-      userPromptForGenerate(trimmed),
+      systemPromptForGenerate(systemPrompt),
+      userPromptForGenerate(trimmed, attachments),
       controller.signal
     )
     this.logCall(result)
@@ -286,6 +386,7 @@ class AiForEditPlugin implements PluginRuntime {
     documentText: string,
     message: string,
     history: ChatMessage[],
+    attachments: AttachmentItem[],
     controller: AbortController
   ): Promise<AiTextResult> {
     const question = message.trim()
@@ -297,7 +398,7 @@ class AiForEditPlugin implements PluginRuntime {
     const cfg = await readAiConfig(this.imk)
     this.imk.setState({
       status: 'running',
-      lastMessage: `正在回答（${cfg.model || '默认模型'}）…`
+      lastMessage: `正在回答（${modelSummary(cfg.endpoints)}）…`
     })
 
     const doc =
@@ -306,9 +407,12 @@ class AiForEditPlugin implements PluginRuntime {
         : documentText
     const result = await requestChat(
       cfg,
-      systemPromptForChat(doc),
+      systemPromptForChat(doc, attachments),
       [...history, { role: 'user', content: question }],
-      controller.signal
+      controller.signal,
+      // 对话里文档 + 参考文件是跨轮次稳定的 system 前缀，值得标缓存断点。
+      // 美化/生成每次正文都变，不标，避免白付缓存写入费。
+      { cacheSystem: true }
     )
     this.logCall(result)
 
@@ -343,9 +447,10 @@ class AiForEditPlugin implements PluginRuntime {
         void this.replyAi(id, { ok: false, message: '没有收到文档内容' })
         return
       }
+      const attachments = readAttachments(payload.attachments)
       void this.handlePanelAi(
         id,
-        controller => this.runBeautify(text, instruction, controller),
+        controller => this.runBeautify(text, instruction, attachments, controller),
         '美化结果已生成，等待确认'
       )
       return
@@ -354,7 +459,12 @@ class AiForEditPlugin implements PluginRuntime {
     if (channel === 'ai.generate') {
       if (!id) return
       const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
-      void this.handlePanelAi(id, controller => this.runGenerate(prompt, controller), '生成结果已生成，等待确认')
+      const attachments = readAttachments(payload.attachments)
+      void this.handlePanelAi(
+        id,
+        controller => this.runGenerate(prompt, attachments, controller),
+        '生成结果已生成，等待确认'
+      )
       return
     }
 
@@ -393,9 +503,17 @@ class AiForEditPlugin implements PluginRuntime {
       history.push({ role, content: content.slice(0, MAX_HISTORY_TEXT) })
     }
 
+    const attachments = readAttachments(payload.attachments)
     void this.handlePanelAi(
       id,
-      controller => this.runChat(text, message, history.slice(-MAX_HISTORY_ITEMS), controller),
+      controller =>
+        this.runChat(
+          text,
+          message,
+          history.slice(-MAX_HISTORY_ITEMS),
+          attachments,
+          controller
+        ),
       '对话回复已生成'
     )
   }
@@ -527,9 +645,22 @@ class AiForEditPlugin implements PluginRuntime {
   // ---------- 内部 ----------
 
   private logCall(result: AiResult): void {
+    // 缓存用量来自服务端返回：命中说明上下文走了缓存价，写入说明下一轮可以命中。
+    // 服务不支持缓存时没有这段，日志里也就不会出现，不会误导成「0 命中」。
+    const cache = result.cache
+    const cacheNote = cache
+      ? [
+          cache.read > 0 ? `缓存命中 ${cache.read} tokens` : '',
+          cache.write > 0 ? `缓存写入 ${cache.write} tokens` : ''
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : ''
     this.imk.log(
       'debug',
-      `AI 请求完成：${result.provider} · ${result.endpointDisplay} · ${result.elapsedMs}ms`
+      `AI 请求完成：${result.provider} · ${result.endpointDisplay} · ${result.elapsedMs}ms${
+        cacheNote ? ` · ${cacheNote}` : ''
+      }`
     )
   }
 
@@ -569,6 +700,42 @@ class AiForEditPlugin implements PluginRuntime {
       this.pending.delete(id)
     }
   }
+}
+
+/**
+ * 读取 render 层送来的参考文件。
+ *
+ * 不信任消息里的任何字段：文件名只用于标示，文本按单文件与总量双重截断。
+ * 截断比拒绝好 —— 用户至少还能带着大部分材料继续生成。
+ */
+function readAttachments(value: unknown): AttachmentItem[] {
+  if (!Array.isArray(value)) return []
+  const out: AttachmentItem[] = []
+  let total = 0
+
+  for (const item of value) {
+    if (out.length >= MAX_ATTACHMENTS || total >= MAX_ATTACHMENTS_TOTAL) break
+    if (!item || typeof item !== 'object') continue
+    const entry = item as { name?: unknown; text?: unknown }
+    const text = typeof entry.text === 'string' ? entry.text : ''
+    if (!text) continue
+    const rawName = typeof entry.name === 'string' ? entry.name.trim() : ''
+    const name = (rawName || '参考文件').slice(0, 200)
+
+    let clipped = text
+    if (clipped.length > MAX_ATTACHMENT_CHARS) {
+      clipped = `${clipped.slice(0, MAX_ATTACHMENT_CHARS)}\n…（已截断）`
+    }
+    if (total + clipped.length > MAX_ATTACHMENTS_TOTAL) {
+      const room = MAX_ATTACHMENTS_TOTAL - total
+      if (room < 200) break
+      clipped = `${clipped.slice(0, room)}\n…（已截断）`
+    }
+
+    out.push({ name, text: clipped })
+    total += clipped.length
+  }
+  return out
 }
 
 function jsonLength(value: unknown): number {

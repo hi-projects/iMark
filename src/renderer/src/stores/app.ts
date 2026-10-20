@@ -1,6 +1,7 @@
 import { reactive, watch } from 'vue'
 import type { EditorView } from '@codemirror/view'
 import type { AutoSaveMode, Theme, VaultNode } from '@shared/types'
+import type { CodeIndentSize } from '@shared/editorSettings'
 import { api } from '../services/api'
 import type { DocTab } from '../services/tabs'
 
@@ -83,6 +84,8 @@ interface AppState {
   autoSaveDelay: number
   lineWrapping: boolean
   editorFontSize: number
+  /** 代码块内 Tab 插入的空格数 */
+  codeIndentSize: CodeIndentSize
   /** 最近一次自动保存成功的时刻;null 表示不显示提示 */
   autoSavedAt: number | null
   /** 自动保存失败的说明(状态栏红字);成功后清掉 */
@@ -136,6 +139,7 @@ export const appStore = reactive<AppState>({
   autoSaveDelay: 1,
   lineWrapping: true,
   editorFontSize: 13,
+  codeIndentSize: 4,
   autoSavedAt: null,
   autoSaveError: null,
   expandedDirs: new Set<string>(),

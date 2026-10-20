@@ -37,6 +37,17 @@ export interface ChatHistoryItem {
   content: string
 }
 
+/**
+ * 用户添加的本地参考文件。
+ *
+ * 只包含文件名与文本内容 —— 插件不需要绝对路径，也不把路径发给模型。
+ * render 层已经按上限截断，main 层仍会再校验一次。
+ */
+export interface AttachmentItem {
+  name: string
+  text: string
+}
+
 /** render → main：普通对话提问 */
 export interface AiChatMessage {
   id: string
@@ -46,6 +57,8 @@ export interface AiChatMessage {
   text: string
   /** 之前几轮对话（不含这次的问题） */
   history: ChatHistoryItem[]
+  /** 与当前文档关联的参考文件 */
+  attachments?: AttachmentItem[]
 }
 
 /** render → main：请求美化一段文档 */
@@ -54,12 +67,16 @@ export interface AiBeautifyMessage {
   text: string
   /** 用户在对话输入框里提的美化要求；空 = 由 AI 自行整理 */
   instruction?: string
+  /** 与当前文档关联的参考文件 */
+  attachments?: AttachmentItem[]
 }
 
 /** render → main：请求生成内容 */
 export interface AiGenerateMessage {
   id: string
   prompt: string
+  /** 与当前文档关联的参考文件 */
+  attachments?: AttachmentItem[]
 }
 
 /** render → main：面板被关闭，取消这次请求 */

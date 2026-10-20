@@ -3,7 +3,7 @@
   "name": "Advanced Table",
   "description": "在光标所在行的左侧放一个「+」按钮，点开即可插入表格",
   "version": "1.0.2",
-  "author": "iMark 官方",
+  "author": "iMark",
   "main": { "mode": "restricted", "entry": "main.js" },
   "permissions": [],
   "engines": { "imark": ">=0.1.0" },

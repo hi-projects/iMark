@@ -1,4 +1,5 @@
 import type { PluginConfigEntry } from './plugins'
+import type { CodeIndentSize } from './editorSettings'
 
 /** light 亮色 / dark 深色(底色对齐 Obsidian Minimal,文字保持 iMark 默认) */
 export type Theme = 'light' | 'dark'
@@ -65,6 +66,8 @@ export interface Settings {
   lineWrapping: boolean
   /** 编辑器正文字号(px) */
   editorFontSize: number
+  /** 代码块内按 Tab 插入的空格数(2 或 4) */
+  codeIndentSize: CodeIndentSize
   /** 最近打开的仓库列表(最新的在前) */
   vaults: string[]
   /** 启动时跳过仓库选择界面,直接打开上次仓库 */

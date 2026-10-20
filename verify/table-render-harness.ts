@@ -242,6 +242,34 @@ async function main(): Promise<void> {
     String(await evalJs<number>(`document.querySelectorAll('.cm-content .cm-line.cm-md-table-void').length`))
   )
 
+  // 行高:单元格上下各留 8px 内边距,长公式(带上下标)不至于贴边
+  const rowBox = await evalJs<{
+    padTop: number
+    padBottom: number
+    rowHeight: number
+    lineHeight: number
+  } | null>(`
+    (() => {
+      const td = document.querySelector('.cm-content table tbody td')
+      const tr = td && td.closest('tr')
+      if (!td || !tr) return null
+      const s = getComputedStyle(td)
+      return {
+        padTop: parseFloat(s.paddingTop),
+        padBottom: parseFloat(s.paddingBottom),
+        rowHeight: tr.getBoundingClientRect().height,
+        lineHeight: parseFloat(s.lineHeight)
+      }
+    })()`)
+  check(
+    '单元格上下各留 8px,行高比纯文本行高多出这两段内边距',
+    !!rowBox &&
+      rowBox.padTop === 8 &&
+      rowBox.padBottom === 8 &&
+      rowBox.rowHeight >= rowBox.lineHeight + 16 - 0.5,
+    JSON.stringify(rowBox)
+  )
+
   // ---------- 1b. 结构控件:数量对、位置在表格外、默认隐藏、靠近才浮现 ----------
 
   console.log('\n【1b】表格四周的结构控件:只在生效范围内出现')

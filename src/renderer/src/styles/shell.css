@@ -440,19 +440,26 @@ body.pane-resizing * {
   }
 }
 
-.status-bar .status-file {
-  color: var(--text-tertiary);
-  overflow: hidden;
-  max-width: 40%;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 主题切换 / 设置:靠在一起,与左侧统计项拉开距离 */
+/* 右下角:通知铃铛(插件图标已挪到左侧插件组) */
 .status-bar .status-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+}
+
+/* 左下角最左边:设置 / 主题切换 */
+.status-bar .status-app-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 分组竖线:自身 1px 宽,左右留白由状态栏的 gap 提供 */
+.status-bar .status-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  background: var(--border);
 }
 
 /* 侧栏开关组 */
@@ -460,8 +467,19 @@ body.pane-resizing * {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding-right: 10px;
-  border-right: 1px solid var(--border);
+}
+
+/* 插件图标组:插件状态条目 + render 层插件自画按钮的空槽 */
+.status-bar .status-plugin-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* render 层插件的空槽:里面装插件自己画的按钮(AI for Edit 等) */
+.status-bar .status-plugin-slot {
+  display: inline-flex;
+  align-items: center;
 }
 
 .status-bar button {
@@ -486,6 +504,28 @@ body.pane-resizing * {
 .status-bar button.status-toggle-on {
   background: var(--bg-active);
   color: var(--active-text);
+}
+
+/* 通知铃铛:未读角标贴在右上角,不参与按钮布局(否则 24px 的按钮会被挤开) */
+.status-bar button.status-notify {
+  position: relative;
+}
+
+.status-bar .status-notify-badge {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* 仓库名按钮:宽度自适应,过长省略 */

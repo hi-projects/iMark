@@ -198,9 +198,24 @@
   cursor: pointer;
 }
 
-.plugin-icon-btn:hover {
+.plugin-icon-btn:hover:not(:disabled) {
   background: var(--bg-toolbar-btn-hover);
   color: var(--danger);
+}
+
+.plugin-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 中性操作(测试连接等)不该用「删除」的红色 hover */
+.plugin-icon-btn.plugin-icon-btn-accent:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+/* 执行中转圈:只转图标,不转按钮框 */
+.plugin-icon-btn .plugin-spin {
+  animation: plugin-spin 1s linear infinite;
 }
 
 .plugin-action-result {
@@ -276,6 +291,24 @@
   gap: 10px;
 }
 
+/* 多行文本字段:标签在上、控件占满整行 */
+.plugin-field-block {
+  gap: 8px;
+}
+
+.plugin-field-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.plugin-textarea {
+  min-height: 96px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
 .plugin-field-label {
   flex: 1;
   font-size: 13px;
@@ -314,6 +347,26 @@
 
 .plugin-field-help:hover {
   color: var(--accent);
+}
+
+/* 说明浮层(HelpTip.vue):字号比原生 title 小,宽度可控、不被滚动容器裁掉 */
+.plugin-help-tip {
+  position: fixed;
+  z-index: 150;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 11.5px;
+  line-height: 1.55;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  pointer-events: none;
+}
+
+.plugin-help-tip.is-above {
+  transform: translateY(-100%);
 }
 
 .plugin-field-desc {
@@ -366,7 +419,11 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  /* 输入框的文字从「9px 内边距 + 1px 边框」处开始;掩码不在输入框里,
+     补上同样的内缩,掩码文字才会和上下两行的输入文字落在同一条竖线上 */
+  padding: 0 10px;
   font-size: 12.5px;
+  font-family: var(--font-editor);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -376,12 +433,26 @@
   color: var(--text-tertiary);
 }
 
-/* 远端列表 */
+/* 远端 / 地址列表 */
 
 .plugin-targets {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 地址卡片里的三行(地址 / 模型 / 密钥):标签定宽,三行输入框左右两端对齐 */
+.plugin-endpoint-cell > .plugin-endpoint-label {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 72px;
+  gap: 3px;
+}
+
+/* 问号挂在「服务地址」字样的右上角:跟着标签走,不占输入框的宽度 */
+.plugin-endpoint-label .plugin-endpoint-help {
+  align-self: flex-start;
+  margin-top: 1px;
 }
 
 .plugin-target {
@@ -455,10 +526,14 @@
   color: var(--text-tertiary);
 }
 
-/* 标签不换行(否则「远程分支」会被挤成两行);输入框撑满自己的那一格 */
+/* 标签定宽且不换行(否则「远程分支」会被挤成两行)。
+   定宽是为了让「账号」「密码」这类两字标签不会把输入框往左拉:
+   同一张卡片里各行的输入框左边缘要落在同一条线上。
+   两字标签在自己的列里居中,四字标签正好占满,看起来仍是统一的一条标签列。 */
 .plugin-target-cell > span {
-  flex: 0 0 auto;
+  flex: 0 0 4em;
   white-space: nowrap;
+  text-align: center;
 }
 
 .plugin-target-cell .plugin-input {
@@ -472,10 +547,13 @@
   flex: 1 1 100%;
 }
 
-/* 认证方式下拉框不用占满 */
+/* 认证方式下拉框不用占满。
+   值文本居中:它是一组固定选项里的当前选择(不是待输入的文本),
+   居中后和右端的箭头一起把这一格撑得平衡些。 */
 .plugin-target-auth {
   flex: 0 1 auto;
   max-width: 180px;
+  text-align: center;
 }
 
 .plugin-target-hint {
@@ -496,6 +574,19 @@
 .plugin-target-secret {
   flex: 1;
   min-width: 0;
+}
+
+/* 密钥行在「只有输入框」「输入框 + 取消」「遮罩 + 更换/清除」三种状态下必须等高,
+   否则保存令牌后下面的动作按钮会往下跳一下(滚动锚定还会带着上方的行一起动)。
+   按钮文字的行盒由字体度量决定,比输入框的内容区高几像素 —— 只对齐内边距不够,
+   所以把这一格里的输入框与按钮定成同一个高度,文字由 flex 居中。 */
+.plugin-target-cell .plugin-input,
+.plugin-target-cell > .plugin-btn {
+  height: 28px;
+}
+
+.plugin-target-cell > .plugin-btn {
+  padding-block: 0;
 }
 
 /*

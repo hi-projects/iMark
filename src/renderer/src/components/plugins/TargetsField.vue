@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { Loader2, PlugZap, Plus, Trash2 } from 'lucide-vue-next'
 import {
   targetSecretSlot,
   type PluginAuthMode,
@@ -72,6 +72,13 @@ function secretLabel(target: PluginTarget): string {
 }
 
 function secretPlaceholder(target: PluginTarget): string {
+  // 已经存过密钥时,这里只是「更换」输入框:留空不会清掉原密钥,
+  // 所以不能再写「必填」,否则看起来像没填却又不报错。
+  if (props.secrets[targetSecretSlot(target)]) {
+    return target.auth === 'password'
+      ? '输入新密码（留空则保留已保存的）'
+      : '输入新访问令牌（留空则保留已保存的）'
+  }
   return target.auth === 'password'
     ? '必填（账号对应的密码）'
     : '必填（私有仓库需要访问令牌）'
@@ -80,14 +87,21 @@ function secretPlaceholder(target: PluginTarget): string {
 /**
  * 这一行远端还缺哪些必填输入。
  *
- * 判定与主进程推送前的校验保持一致:地址与本地分支必填;HTTP(S) 地址在
- * token / password 认证下还需要密钥(password 另需账号);SSH 与本地路径不需要凭据。
+ * 只判断「填没填」,不判断地址格式 —— 地址能不能用交给 git 自己回答。
+ * 凭据是否必填与主进程推送前的校验保持一致:只有 HTTP(S) 远端在
+ * token / password 认证下需要密钥(password 另需账号);SSH 与本地路径
+ * 不要求凭据。
+ *
+ * 地址还没填时无法判断凭据要不要,但界面上凭据那一格标着「必填」且就摆在
+ * 用户眼前 —— 空着就一起列出来,否则会像是「填了地址、空着令牌」却没人提示。
  */
 function missingFields(target: PluginTarget): string[] {
+  const url = target.url.trim()
   const missing: string[] = []
-  if (!target.url.trim()) missing.push('远程仓库')
+  if (!url) missing.push('远程仓库')
   if (!target.localBranch.trim()) missing.push('本地分支')
-  if (target.auth === 'ssh' || !/^https?:/i.test(target.url.trim())) return missing
+  if (target.auth === 'ssh') return missing
+  if (url && !/^https?:\/\//i.test(url)) return missing
   if (target.auth === 'password' && !target.username.trim()) missing.push('账号')
   if (!props.secrets[targetSecretSlot(target)]) {
     missing.push(target.auth === 'password' ? '密码' : '访问令牌')
@@ -96,37 +110,16 @@ function missingFields(target: PluginTarget): string[] {
 }
 
 /**
- * 整行一个字都没填。
+ * 统一列出缺什么:行号与界面上的行序一致,不再用卡片边框表达。
  *
- * 运行时(同步/测试)会直接跳过这种行,所以校验也不拿它报错 ——
- * 否则刚点「添加远端」就会立刻跳出一条红字。
+ * 全空的行也要列出来 —— 刚点「添加远端」正是最需要知道还缺哪些必填项的时候。
  */
-function isBlank(target: PluginTarget): boolean {
-  return (
-    !target.url.trim() &&
-    !target.localBranch.trim() &&
-    !target.remoteBranch.trim() &&
-    !target.username.trim() &&
-    !props.secrets[targetSecretSlot(target)]
-  )
-}
-
-/** 统一列出缺什么:行号与界面上的行序一致,不再用卡片边框表达 */
 const problems = computed(() =>
   props.targets.flatMap((target, i) => {
-    if (isBlank(target)) return []
     const missing = missingFields(target)
     return missing.length > 0 ? [`第 ${i + 1} 个远端：未填${missing.join('、')}`] : []
   })
 )
-
-/** 卡片边框的含义(悬停时说明,免得把绿/红误读成「填得对不对」) */
-function resultTitle(target: PluginTarget): string {
-  const result = props.targetResults[target.id]
-  if (result === 'ok') return '上次操作成功'
-  if (result === 'error') return '上次操作失败'
-  return '还没有对它执行过操作'
-}
 
 const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectElement).value
 </script>
@@ -149,7 +142,6 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
         'plugin-target-ok': targetResults[target.id] === 'ok',
         'plugin-target-bad': targetResults[target.id] === 'error'
       }"
-      :title="resultTitle(target)"
     >
       <div class="plugin-target-row">
         <label class="plugin-target-cell plugin-target-cell-wide">
@@ -216,9 +208,11 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
         </label>
       </div>
 
-      <!-- 密钥:token / password 需要;ssh 用本机密钥,不显示这一行 -->
+      <!-- 密钥:token / password 需要;ssh 用本机密钥,不显示这一行。
+           这一行不能用 <label> 当容器:label 会把非交互区域(掩码、按钮之间的空白)
+           的点击转给第一个 labelable 子控件 —— 也就是「更换」按钮,鼠标没对准也会触发。 -->
       <div v-if="target.auth !== 'ssh'" class="plugin-target-row">
-        <label class="plugin-target-cell plugin-target-cell-wide">
+        <div class="plugin-target-cell plugin-target-cell-wide">
           <span>{{ secretLabel(target) }}</span>
           <template v-if="secrets[targetSecretSlot(target)] && !replacing[target.id]">
             <b class="plugin-secret-mask plugin-secret-on">{{ secrets[targetSecretSlot(target)] }}</b>
@@ -229,6 +223,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
             <input
               class="plugin-input plugin-target-secret"
               type="password"
+              :aria-label="secretLabel(target)"
               :placeholder="secretPlaceholder(target)"
               @change="onSecretInput(targetSecretSlot(target), $event)"
             />
@@ -236,23 +231,31 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
               取消
             </button>
           </template>
-        </label>
+        </div>
       </div>
       <p v-else class="plugin-target-hint">SSH 认证：使用本机 SSH 密钥，无需填写密钥。</p>
 
-      <!-- 每个远端自己的动作(测试连接…)与删除 -->
+      <!-- 每个远端自己的动作(测试连接…)与删除。图标按钮不带文字,动作名走 title -->
       <div class="plugin-target-actions">
         <button
           v-for="a in targetActions"
           :key="a.id"
-          class="plugin-btn"
+          class="plugin-icon-btn plugin-icon-btn-accent"
+          :title="busyTarget === target.id ? '执行中…' : a.label"
+          :aria-label="a.label"
           :disabled="busyTarget === target.id"
           @click="emit('run-action', target.id, a.id)"
         >
-          {{ busyTarget === target.id ? '执行中…' : a.label }}
+          <Loader2 v-if="busyTarget === target.id" :size="14" class="plugin-spin" />
+          <PlugZap v-else :size="14" />
         </button>
-        <button class="plugin-btn plugin-btn-danger" title="从列表里移除该远端" @click="remove(i)">
-          删除远端
+        <button
+          class="plugin-icon-btn"
+          title="从列表里移除该远端"
+          aria-label="删除远端"
+          @click="remove(i)"
+        >
+          <Trash2 :size="14" />
         </button>
       </div>
     </div>

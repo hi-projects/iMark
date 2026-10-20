@@ -458,7 +458,6 @@ async function main(): Promise<void> {
   const ui = await evalJs<{
     count: number
     borders: string[]
-    titles: string[]
     problems: string
     success: string
     danger: string
@@ -478,7 +477,6 @@ async function main(): Promise<void> {
       return {
         count: cards.length,
         borders: cards.map(c => getComputedStyle(c).borderTopColor),
-        titles: cards.map(c => c.getAttribute('title') || ''),
         problems: problems ? problems.innerText.replace(/\\s+/g, ' ') : '',
         success: cssColor('--success'),
         danger: cssColor('--danger'),
@@ -507,13 +505,264 @@ async function main(): Promise<void> {
       ui.problems.includes('第 3 个远端：未填本地分支、访问令牌'),
     ui.problems
   )
-  check(
-    '卡片悬停提示说的是操作结果',
-    ui.titles[0] === '上次操作成功' &&
-      ui.titles[1] === '上次操作失败' &&
-      ui.titles[2] === '还没有对它执行过操作',
-    ui.titles.join(' / ')
+  // 刚点「添加远端」得到的全空行也要列出来:这正是用户需要知道必填项的时候。
+  const blankTarget: PluginTarget = {
+    id: 't4',
+    url: '',
+    localBranch: '',
+    remoteBranch: '',
+    auth: 'token',
+    username: ''
+  }
+  await host.save('git-sync', {
+    enabled: false,
+    config: { targets: [localTarget, { ...authTarget, url: join(ud, 'missing-remote.git') }, incompleteTarget, blankTarget] }
+  })
+  await sleep(300)
+  const blankProblems = await evalJs<string>(
+    `document.querySelector('.plugin-target-problems')?.innerText.replace(/\\s+/g, ' ') ?? ''`
   )
+  check(
+    '全空的远端行也列出缺少的必填项',
+    blankProblems.includes('存在 2 个远端配置未完成/错误') &&
+      blankProblems.includes('第 4 个远端：未填远程仓库、本地分支、访问令牌'),
+    blankProblems
+  )
+
+  // 账号密码认证下,地址还没填时账号、密码也要列出来:界面上这两格同样标着「必填」。
+  await host.save('git-sync', {
+    enabled: false,
+    config: {
+      targets: [
+        localTarget,
+        { ...authTarget, url: join(ud, 'missing-remote.git') },
+        incompleteTarget,
+        { ...blankTarget, auth: 'password' }
+      ]
+    }
+  })
+  await sleep(300)
+  const blankPasswordProblems = await evalJs<string>(
+    `document.querySelector('.plugin-target-problems')?.innerText.replace(/\\s+/g, ' ') ?? ''`
+  )
+  check(
+    '空地址 + 账号密码认证时也列出账号、密码',
+    blankPasswordProblems.includes('存在 2 个远端配置未完成/错误') &&
+      blankPasswordProblems.includes('第 4 个远端：未填远程仓库、本地分支、账号、密码'),
+    blankPasswordProblems
+  )
+
+  // 地址格式不做校验:像 `111` 这种认不出的写法,只要地址和分支填了就不该报错 ——
+  // 能不能用交给 git 回答。用账号密码认证:顺便把两字标签(账号/密码)的输入框
+  // 也渲染出来,才能验左对齐。
+  const badUrlTarget: PluginTarget = {
+    id: 't5',
+    url: '111',
+    localBranch: '11',
+    remoteBranch: '',
+    auth: 'password',
+    username: ''
+  }
+  await host.save('git-sync', {
+    enabled: false,
+    config: {
+      targets: [
+        localTarget,
+        { ...authTarget, url: join(ud, 'missing-remote.git') },
+        incompleteTarget,
+        blankTarget,
+        badUrlTarget
+      ]
+    }
+  })
+  await sleep(300)
+  const badUrlProblems = await evalJs<string>(
+    `document.querySelector('.plugin-target-problems')?.innerText.replace(/\\s+/g, ' ') ?? ''`
+  )
+  check(
+    '认不出的地址不再报格式错误(只校验必填项)',
+    badUrlProblems.includes('存在 2 个远端配置未完成/错误') &&
+      !badUrlProblems.includes('第 5 个远端') &&
+      !badUrlProblems.includes('格式不正确'),
+    badUrlProblems
+  )
+
+  // 标签定宽:地址/分支/认证方式/账号/密码各行的输入框左边缘必须落在同一条线上。
+  const alignedLefts = await evalJs<number[]>(`
+    (() => {
+      const card = [...document.querySelectorAll('.plugin-target')]
+        .find(c => c.querySelector('.plugin-target-auth')?.value === 'password')
+      if (!card) return []
+      const fields = [
+        ...card.querySelectorAll('.plugin-target-cell-wide > .plugin-input'),
+        card.querySelector('.plugin-target-row .plugin-target-cell:first-child > .plugin-input'),
+        card.querySelector('.plugin-target-auth')
+      ].filter(Boolean)
+      return [...new Set(fields.map(el => Math.round(el.getBoundingClientRect().left)))]
+    })()
+  `)
+  check('各行输入框左对齐', alignedLefts.length === 1, `左边缘:${alignedLefts.join(' / ')}`)
+
+  // 两字标签(账号/密码)在 4em 的标签列里居中,左右留白相等。
+  const labelGaps = await evalJs<{ label: string; left: number; right: number }[]>(`
+    (() => {
+      const card = [...document.querySelectorAll('.plugin-target')]
+        .find(c => c.querySelector('.plugin-target-auth')?.value === 'password')
+      if (!card) return []
+      return [...card.querySelectorAll('.plugin-target-cell > span')]
+        .filter(s => [...s.textContent.trim()].length === 2)
+        .map(span => {
+          const range = document.createRange()
+          range.selectNodeContents(span)
+          const text = range.getBoundingClientRect()
+          const box = span.getBoundingClientRect()
+          return {
+            label: span.textContent.trim(),
+            left: Math.round(text.left - box.left),
+            right: Math.round(box.right - text.right)
+          }
+        })
+    })()
+  `)
+  check(
+    '两字标签(账号/密码)在标签列内居中',
+    labelGaps.length === 2 && labelGaps.every(g => Math.abs(g.left - g.right) <= 1),
+    labelGaps.map(g => `${g.label} ${g.left}/${g.right}`).join(' , ')
+  )
+
+  // 已保存密钥那一行的掩码占满中间空白:点它(或掩码旁边的空白)不该展开「更换」。
+  // 这一行曾用 <label> 包住掩码与两个按钮,label 的默认激活行为会把非交互区域的
+  // 点击转给第一个 labelable 控件 —— 也就是「更换」按钮。
+  await evalJs(`
+    (() => {
+      const mask = document.querySelector('.plugin-target .plugin-secret-mask')
+      if (mask) mask.scrollIntoView({ block: 'center' })
+      return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+    })()`)
+  await sleep(150)
+  const maskPoint = await evalJs<{ x: number; y: number; hit: string; index: number; before: boolean } | null>(`
+    (() => {
+      const cards = [...document.querySelectorAll('.plugin-target')]
+      const index = cards.findIndex(c => c.querySelector('.plugin-secret-mask'))
+      if (index < 0) return null
+      const card = cards[index]
+      const r = card.querySelector('.plugin-secret-mask').getBoundingClientRect()
+      const x = Math.round(r.left + r.width / 2)
+      const y = Math.round(r.top + r.height / 2)
+      const el = document.elementFromPoint(x, y)
+      return {
+        x,
+        y,
+        index,
+        hit: el ? el.tagName + '.' + el.className : '(none)',
+        before: Boolean(card.querySelector('.plugin-target-secret'))
+      }
+    })()`)
+  if (maskPoint) {
+    wc.sendInputEvent({ type: 'mouseDown', x: maskPoint.x, y: maskPoint.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: maskPoint.x, y: maskPoint.y, button: 'left', clickCount: 1 })
+    await sleep(200)
+  }
+  // 必须按**点击前记下的卡片下标**复查:误触后掩码会消失,再按掩码找会落到下一张卡上。
+  // 别的卡本来就可能因为「还没存密钥」而渲染着输入框,所以只看这一张。
+  const strayOpened = maskPoint
+    ? await evalJs<boolean>(`
+        Boolean(document.querySelectorAll('.plugin-target')[${maskPoint.index}]?.querySelector('.plugin-target-secret'))`)
+    : false
+  if (maskPoint) console.log(`      点击: (${maskPoint.x},${maskPoint.y}) 命中 ${maskPoint.hit},点前该卡是替换态 ${maskPoint.before}`)
+  check(
+    '点密钥掩码/空白处不会误触「更换」',
+    maskPoint !== null && !maskPoint.before && !strayOpened,
+    maskPoint === null ? '找不到密钥掩码' : strayOpened ? '点空白处后进入了替换态' : ''
+  )
+
+  // 「更换」已保存的密钥时,输入框只是替换草稿:留空不会清掉原值,
+  // 提示语不能继续写「必填」,否则用户会以为没填却没报错。
+  const replaceHint = await evalJs<string>(`
+    (async () => {
+      const card = document.querySelector('.plugin-target')
+      const change = [...card.querySelectorAll('button')].find(b => b.textContent.trim() === '更换')
+      if (!change) return '(找不到更换按钮)'
+      change.click()
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+      const input = card.querySelector('.plugin-target-secret')
+      const placeholder = input?.getAttribute('placeholder') ?? ''
+      const cancel = [...card.querySelectorAll('button')].find(b => b.textContent.trim() === '取消')
+      cancel?.click()
+      return placeholder
+    })()
+  `)
+  check(
+    '更换已保存的令牌时提示留空会保留原值',
+    replaceHint.includes('留空则保留已保存的') && !replaceHint.includes('必填'),
+    replaceHint
+  )
+
+  // 密钥行在「输入框」与「遮罩 + 更换/清除」两种状态下必须等高,
+  // 否则保存令牌后,下面的测试/删除按钮会上下跳一下。
+  const secretRowShift = await evalJs<number>(`
+    (async () => {
+      const card = document.querySelector('.plugin-target')
+      const actions = card.querySelector('.plugin-target-actions')
+      const change = [...card.querySelectorAll('button')].find(b => b.textContent.trim() === '更换')
+      if (!change) return 999
+      const topMask = actions.getBoundingClientRect().top
+      change.click()
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+      const topInput = actions.getBoundingClientRect().top
+      const cancel = [...card.querySelectorAll('button')].find(b => b.textContent.trim() === '取消')
+      cancel?.click()
+      return Math.round((topInput - topMask) * 10) / 10
+    })()
+  `)
+  check('密钥行切换「遮罩/输入框」时动作按钮不跳动', Math.abs(secretRowShift) <= 1, `${secretRowShift}px`)
+
+  // 用户真正会看到的变化是「还没存密钥(只有输入框)→ 保存后(遮罩 + 两个按钮)」:
+  // 这两种状态的密钥行也必须等高,不能只验「更换/取消」内部切换。
+  const secretRowHeights = await evalJs<number[]>(`
+    (() => [...document.querySelectorAll('.plugin-target')]
+      .map(card => {
+        const row = [...card.querySelectorAll('.plugin-target-row')]
+          .find(r => r.querySelector('.plugin-target-secret, .plugin-secret-mask'))
+        return row ? Math.round(row.getBoundingClientRect().height * 10) / 10 : -1
+      })
+      .filter(h => h > 0))()`)
+  check(
+    '有密钥/没密钥时密钥行等高(保存令牌不推动下方内容)',
+    secretRowHeights.length > 1 && new Set(secretRowHeights).size === 1,
+    secretRowHeights.join(' / ')
+  )
+
+  // 认证方式下拉框显示的是「已选项」,不是待输入的文本:值文本居中。
+  const authAlign = await evalJs<string>(`
+    (() => {
+      const select = document.querySelector('.plugin-target-auth')
+      return select ? getComputedStyle(select).textAlign : '<missing>'
+    })()`)
+  check('认证方式下拉框的值文本居中', authAlign === 'center', authAlign)
+
+  // 留一张下拉框特写:原生 select 的文本对齐在 computed style 里能读到,
+  // 但「看上去是不是居中」还得看图(箭头在右端,居中的基准可能不是框的正中)。
+  await evalJs(`
+    (() => {
+      const select = document.querySelector('.plugin-target-auth')
+      if (select) select.scrollIntoView({ block: 'center' })
+      return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+    })()`)
+  await new Promise(r => setTimeout(r, 150))
+  const authRect = await evalJs<{ x: number; y: number; width: number; height: number }>(`
+    (() => {
+      const r = document.querySelector('.plugin-target-auth').getBoundingClientRect()
+      return { x: r.x, y: r.y, width: r.width, height: r.height }
+    })()`)
+  const inset = 10
+  const authShot = await wc.capturePage({
+    x: Math.round(authRect.x - inset),
+    y: Math.round(authRect.y - inset),
+    width: Math.round(authRect.width + inset * 2),
+    height: Math.round(authRect.height + inset * 2)
+  })
+  await writeFile(join(ud, 'auth-select.png'), authShot.toPNG())
 
   // 「调试」里的两类横线要能看出层次:模块标题下的是全强度边框,
   // 操作条目之间的是浅一档的分隔线。颜色一样时整块会像一堆并列的卡片。

@@ -1,4 +1,5 @@
 import type { KeyBinding } from '@codemirror/view'
+import { insertCodeIndent } from './codeIndent'
 import {
   insertCodeBlock,
   insertHorizontalRule,
@@ -20,6 +21,8 @@ import {
  * 这里主要作为菜单缺失场景的兜底;标点键同时绑定原始键与 shift 后的键名。
  */
 export const editorKeymap: KeyBinding[] = [
+  // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
+  { key: 'Tab', run: insertCodeIndent },
   { key: 'Mod-b', run: toggleBold },
   { key: 'Mod-i', run: toggleItalic },
   { key: 'Mod-e', run: toggleInlineCode },

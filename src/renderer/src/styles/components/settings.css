@@ -10,15 +10,102 @@
   background: rgba(0, 0, 0, 0.45);
 }
 
+/* 外框:尺寸、位移与边缘热区的锚点。面板铺满它。 */
+.settings-dialog-frame {
+  position: relative;
+  width: min(1080px, 92vw);
+  height: min(760px, 88vh);
+}
+
 .settings-dialog {
   display: flex;
-  width: min(880px, 90vw);
-  height: min(620px, 86vh);
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   background: var(--bg-editor);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 20px 60px var(--shadow);
+}
+
+/*
+ * 调整大小的热区:贴在面板**外侧**的 6px 环带。
+ * 放外侧是因为面板右缘就是内容滚动条,热区压进去会把滚动条拖拽抢走。
+ * 四角比边多伸出去一点,保证斜向拖动好抓。
+ */
+.settings-resize-edge {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+}
+
+.settings-resize-n,
+.settings-resize-s {
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.settings-resize-n {
+  top: -6px;
+}
+
+.settings-resize-s {
+  bottom: -6px;
+}
+
+.settings-resize-e,
+.settings-resize-w {
+  top: 14px;
+  bottom: 14px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.settings-resize-e {
+  right: -6px;
+}
+
+.settings-resize-w {
+  left: -6px;
+}
+
+.settings-resize-ne,
+.settings-resize-nw,
+.settings-resize-se,
+.settings-resize-sw {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-resize-ne {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.settings-resize-nw {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.settings-resize-se {
+  bottom: -6px;
+  right: -6px;
+  cursor: nwse-resize;
+}
+
+.settings-resize-sw {
+  bottom: -6px;
+  left: -6px;
+  cursor: nesw-resize;
+}
+
+/* 拖动过程中别让经过的文字被选中 */
+.settings-dialog-resizing {
+  user-select: none;
 }
 
 /* 左侧分类 */

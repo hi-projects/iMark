@@ -15,10 +15,16 @@
  * 内置包坏了,用户看到的现象与下载到的包坏掉一模一样,这是有意的。
  */
 
-import { compareVersions, isNewerVersion, type PluginPermission } from '@shared/pluginPackage'
+import {
+  compareVersions,
+  isNewerVersion,
+  type PluginPermission
+} from '@shared/pluginPackage'
+import { secretKey } from '@shared/plugins'
 import { installFromEnvelope } from './installer'
 import { getRecord } from '../plugins/installed'
 import { getSettings, saveSettings } from '../settings'
+import { getSecret, hasSecret, setSecret } from '../secrets'
 import type { PluginHost } from '../plugins/host'
 import gitSyncPackage from './builtin/git-sync.imkpkg.json?raw'
 import quickEditPackage from './builtin/quick-edit.imkpkg.json?raw'
@@ -127,8 +133,12 @@ async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<v
 /**
  * 内置插件默认值的一次性迁移。
  *
- * 只有「整份配置仍然完全是旧默认值」时才动手：用户只要改过端点或模型，哪怕
- * 又改回了同样的字符串，我们也无法区分，所以规则必须保守到只认这对完整组合。
+ * 两类迁移，规则不同：
+ *   - **换默认值**只在「整份配置仍然是旧默认值」时动手。用户只要改过端点或模型，
+ *     哪怕又改回了同样的字符串，我们也无法区分，所以只认这对完整组合。
+ *   - **改字段形状**（单地址 → 地址列表、毫秒 → 秒）总是迁移，并且原样保留用户
+ *     填的值 —— 不迁移的话，旧配置会被新字段表整个丢掉。
+ *
  * 迁移点用版本号卡住，之后的升级不会再跑第二遍。
  */
 const CONFIG_MIGRATIONS: Record<
@@ -141,20 +151,112 @@ const CONFIG_MIGRATIONS: Record<
   }
 > = {
   'ai-for-edit': {
-    untilVersion: '1.1.0',
+    untilVersion: '1.6.0',
     apply: config => {
+      const next = { ...config }
+      let changed = false
+
+      // 1.1.0 换默认服务：旧默认是 OpenAI + gpt-4o-mini
       if (
-        config.endpoint !== 'https://api.openai.com/v1/chat/completions' ||
-        config.model !== 'gpt-4o-mini'
+        next.endpoint === 'https://api.openai.com/v1/chat/completions' &&
+        next.model === 'gpt-4o-mini'
       ) {
-        return null
+        next.endpoint = 'https://api.deepseek.com/chat/completions'
+        next.model = 'deepseek-flash'
+        changed = true
       }
-      return {
-        ...config,
-        endpoint: 'https://api.deepseek.com/chat/completions',
-        model: 'deepseek-flash'
+
+      // 1.5.0：单个 endpoint 字符串 → endpoints 列表（值不改）
+      if (typeof next.endpoint === 'string') {
+        if (!Array.isArray(next.endpoints)) {
+          const url = next.endpoint.trim()
+          next.endpoints = url ? [{ id: 'legacy', url }] : []
+        }
+        delete next.endpoint
+        changed = true
       }
+
+      // 1.6.0：模型从「全局一个」变成「每个地址一个」。
+      // 旧全局模型先原样填给每个地址，用户不用重新输；之后会删掉全局字段。
+      const legacyModel = typeof next.model === 'string' ? next.model.trim() : ''
+      if (Array.isArray(next.endpoints)) {
+        let modelsChanged = false
+        const rows = next.endpoints.map(item => {
+          if (!item || typeof item !== 'object') return item
+          const row = item as Record<string, unknown>
+          if (typeof row.model === 'string' && row.model.trim()) return row
+          modelsChanged = true
+          return { ...row, model: legacyModel }
+        })
+        if (modelsChanged) {
+          next.endpoints = rows
+          changed = true
+        }
+      }
+      if (next.model !== undefined) {
+        delete next.model
+        changed = true
+      }
+
+      // 1.6.0：apiKey 从全局字段变成每个地址的 targetSecret（密钥本身见下面的
+      // SECRET_MIGRATIONS）；config 里这个旧占位字段直接删掉
+      if (next.apiKey !== undefined) {
+        delete next.apiKey
+        changed = true
+      }
+
+      // 1.5.0：timeoutMs → timeoutSec（夹取范围与新字段一致）
+      if (next.timeoutMs !== undefined) {
+        if (next.timeoutSec === undefined) {
+          const ms = Number(next.timeoutMs)
+          if (Number.isFinite(ms)) {
+            next.timeoutSec = Math.min(90, Math.max(5, Math.round(ms / 1000)))
+          }
+        }
+        delete next.timeoutMs
+        changed = true
+      }
+
+      return changed ? next : null
     }
+  }
+}
+
+/**
+ * 与 CONFIG_MIGRATIONS 配套的**密钥**迁移。
+ *
+ * 配置在 settings.json，密钥在 secrets.json —— 后者不能靠一次对象改写完成，
+ * 所以单独列在这里，并在配置落盘**之前**执行。顺序很关键：
+ *   - 先复制密钥、失败就抛 → 配置还没保存，旧插件照常工作，下次启动重试；
+ *   - 复制成功后删旧 key → 新插件只认每个地址自己的槽位，不留一份无人读的明文。
+ */
+const SECRET_MIGRATIONS: Record<
+  string,
+  (id: string, config: Record<string, unknown>) => Promise<void>
+> = {
+  'ai-for-edit': async (id, config) => {
+    const endpoints = Array.isArray(config.endpoints) ? config.endpoints : []
+    if (endpoints.length === 0) return
+
+    // 1.5 及更早只有一个全局 apiKey；没有它就不需要迁移（新用户或已迁过）
+    const legacyKey = await getSecret(secretKey(id, 'apiKey'))
+    if (!legacyKey) return
+
+    let copied = false
+    for (const item of endpoints) {
+      if (!item || typeof item !== 'object') continue
+      const endpointId = (item as { id?: unknown }).id
+      if (typeof endpointId !== 'string' || !endpointId) continue
+      const slot = secretKey(id, 'endpoints', endpointId)
+      if (await hasSecret(slot)) {
+        copied = true
+        continue
+      }
+      await setSecret(slot, legacyKey)
+      copied = true
+    }
+    // 一个有效地址都没有时保留旧密钥，别把用户唯一的凭据删掉
+    if (copied) await setSecret(secretKey(id, 'apiKey'), null)
   }
 }
 
@@ -162,22 +264,28 @@ async function migrateStoredConfig(
   id: string,
   fromVersion: string,
   toVersion: string
-): Promise<void> {
+): Promise<Record<string, unknown> | null> {
   const migration = CONFIG_MIGRATIONS[id]
-  if (!migration) return
-  if (compareVersions(fromVersion, migration.untilVersion) >= 0) return
-  if (compareVersions(toVersion, migration.untilVersion) < 0) return
+  if (!migration) return null
+  if (compareVersions(fromVersion, migration.untilVersion) >= 0) return null
+  if (compareVersions(toVersion, migration.untilVersion) < 0) return null
 
   const settings = await getSettings()
   const entry = settings.plugins[id]
-  if (!entry) return
+  if (!entry) return null
   const next = migration.apply(entry.config ?? {})
-  if (!next) return
+  if (!next) return null
+
+  // 密钥迁移必须在配置落盘之前：它抛错时整个升级会中止，旧配置与旧插件
+  // 都完好，下次启动还能重试。
+  const migrateSecrets = SECRET_MIGRATIONS[id]
+  if (migrateSecrets) await migrateSecrets(id, next)
 
   await saveSettings({
     plugins: { ...settings.plugins, [id]: { ...entry, config: next } }
   })
   console.log(`[iMark] 插件 ${id} 的旧默认配置已迁移`)
+  return next
 }
 
 /**

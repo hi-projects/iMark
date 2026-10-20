@@ -12,12 +12,37 @@ import type { ImkApi } from '@shared/pluginApi'
 
 export type Provider = 'openai' | 'anthropic' | 'azure'
 
-export interface AiConfig {
-  endpoint: string
+/**
+ * 设置页里的一行服务地址。
+ *
+ * id 既用于把「测试连接」结果对回那一行，也用于读取这一行自己的密钥
+ * （secrets 的槽位是 `endpoints:<id>`）。
+ */
+export interface AiEndpoint {
+  id: string
+  url: string
+  /** 该地址使用的模型；Azure 可以留空（部署名在路径里） */
   model: string
+  /** 只在这一行使用；读取失败/未配置时为空串 */
   apiKey: string
-  /** 已夹取到 5–90 秒 */
+}
+
+export interface AiConfig {
+  /** 按设置页里的顺序逐个尝试；空地址已被过滤 */
+  endpoints: AiEndpoint[]
+  /** 单个地址的请求超时（毫秒），已夹取到 5–90 秒 */
   timeoutMs: number
+  /** 设置页里的「生成提示词」；已被 trim，空串由调用方拒绝 */
+  generatePrompt: string
+  /** 设置页里的「美化提示词」；已被 trim，空串由调用方拒绝 */
+  beautifyPrompt: string
+}
+
+/** 状态卡上的一句话模型说明：一个模型就写名字，多个就写「首个 等」 */
+export function modelSummary(endpoints: AiEndpoint[]): string {
+  const models = [...new Set(endpoints.map(endpoint => endpoint.model.trim()).filter(Boolean))]
+  if (models.length === 0) return '默认模型'
+  return models.length === 1 ? models[0]! : `${models[0]} 等`
 }
 
 /** 带「给用户看的一句话 + 给日志看的明细」的错误；code 用于两层之间传分类 */
@@ -44,9 +69,29 @@ export interface AiResult {
   provider: Provider
   model: string
   endpointDisplay: string
+  /** 成功的是第几个地址（0 起）；日志与「测试连接」用它说清楚回退到了哪一个 */
+  endpointIndex: number
   elapsedMs: number
   truncated: boolean
   finishReason: string | null
+  /** 服务端返回的上下文缓存用量；服务不支持或本次未命中/未写入时没有这个字段 */
+  cache?: CacheStats
+}
+
+/** 服务端上下文缓存：命中读取的 token 与写入缓存的 token（仅 Anthropic 有写入值） */
+export interface CacheStats {
+  read: number
+  write: number
+}
+
+/** 单次请求的可选行为；目前只有「是否给稳定上下文加缓存标记」 */
+export interface ChatRequestOptions {
+  /**
+   * Anthropic：给 system（文档 + 参考文件）打 `cache_control`。
+   * OpenAI 兼容服务（含 DeepSeek）无需这个标记 —— 它们按请求前缀自动缓存；
+   * 打开它也不会发送额外字段，靠的是 system 始终排在最前面的稳定结构。
+   */
+  cacheSystem?: boolean
 }
 
 /** 对话历史里的一条；只允许用户与助手两种角色 */
@@ -62,27 +107,56 @@ const MIN_TIMEOUT_MS = 5_000
 
 export async function readAiConfig(imk: ImkApi, timeoutCap?: number): Promise<AiConfig> {
   const raw = imk.getConfig<Record<string, unknown>>()
-  const endpoint = typeof raw.endpoint === 'string' ? raw.endpoint.trim() : ''
-  if (!endpoint) throw new AiError('请先在插件设置里填写 AI 服务地址')
+  const rows = readEndpoints(raw.endpoints)
+  if (rows.length === 0) throw new AiError('请先在插件设置里填写 AI 服务地址')
 
-  const model = typeof raw.model === 'string' ? raw.model.trim() : ''
-
-  const rawTimeout = Number(raw.timeoutMs)
-  let timeoutMs = Number.isFinite(rawTimeout) ? Math.round(rawTimeout) : 60_000
-  timeoutMs = Math.min(Math.max(timeoutMs, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS)
+  const rawTimeout = Number(raw.timeoutSec)
+  let timeoutSec = Number.isFinite(rawTimeout) ? Math.round(rawTimeout) : 60
+  timeoutSec = Math.min(Math.max(timeoutSec, MIN_TIMEOUT_MS / 1000), MAX_TIMEOUT_MS / 1000)
+  let timeoutMs = timeoutSec * 1000
   if (timeoutCap !== undefined) timeoutMs = Math.min(timeoutMs, timeoutCap)
+
+  // 提示词由设置页原样提供；是否为空、是否过长由 main.ts 在调用前判断，
+  // 这样测试连接/对话不会因为提示词问题被牵连。
+  const generatePrompt = typeof raw.generatePrompt === 'string' ? raw.generatePrompt.trim() : ''
+  const beautifyPrompt = typeof raw.beautifyPrompt === 'string' ? raw.beautifyPrompt.trim() : ''
 
   if (!imk.secrets) {
     throw new AiError('插件没有读取密钥的权限，无法读取 API 密钥', '请在插件设置里重新启用它，或重新安装。')
   }
-  let apiKey = ''
-  try {
-    apiKey = (await imk.secrets.get('apiKey')) ?? ''
-  } catch (err) {
-    throw new AiError('读取 API 密钥失败', errorText(err))
+
+  // 密钥是**每个地址一份**的：槽位就是地址卡片的 id。读取失败必须整体报错，
+  // 不能悄悄不带密钥去请求 —— 那样用户看到的是 401，而不是「密钥读不出来」。
+  const endpoints: AiEndpoint[] = []
+  for (const row of rows) {
+    let apiKey = ''
+    try {
+      apiKey = (await imk.secrets.get('endpoints', row.id)) ?? ''
+    } catch (err) {
+      throw new AiError('读取 API 密钥失败', errorText(err))
+    }
+    endpoints.push({ ...row, apiKey })
   }
 
-  return { endpoint, model, apiKey, timeoutMs }
+  return { endpoints, timeoutMs, generatePrompt, beautifyPrompt }
+}
+
+/** 从设置页的地址列表里读出「有地址」的行，顺序保持不变 */
+function readEndpoints(value: unknown): Omit<AiEndpoint, 'apiKey'>[] {
+  if (!Array.isArray(value)) return []
+  const out: Omit<AiEndpoint, 'apiKey'>[] = []
+  for (const [i, item] of value.entries()) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Partial<AiEndpoint>
+    const url = typeof row.url === 'string' ? row.url.trim() : ''
+    if (!url) continue
+    out.push({
+      id: typeof row.id === 'string' && row.id ? row.id : `e${i}`,
+      url,
+      model: typeof row.model === 'string' ? row.model.trim() : ''
+    })
+  }
+  return out
 }
 
 const LOCAL_HOST_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)(?::|\/|$)/i
@@ -91,9 +165,9 @@ const PRIVATE_HOST_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/
 /**
  * 把用户填的地址归一成最终请求地址。
  *
- * 只做**可预期**的补全：没有协议时本地地址补 http、其它补 https；空路径补常见的
- * 接口尾段；已经带 `/completions` 或 `/messages` 的地址原样使用。自定义网关路径
- * 不会被猜着改 —— 猜错的表现是 404，比“看起来改了但其实没改”更难查。
+ * 只补协议：没有协议时本地地址补 http、其它补 https。**不再补接口路径** ——
+ * 地址按用户填的路径原样请求，少写 `/v1/chat/completions` 时由服务端返回 404，
+ * 而不是被插件猜着改写。自定义网关的路径因此也不会被改坏。
  */
 export function resolveEndpoint(raw: string): ResolvedEndpoint {
   let text = raw.trim()
@@ -135,17 +209,9 @@ export function resolveEndpoint(raw: string): ResolvedEndpoint {
         '请在地址后面加上 ?api-version=2024-06-01（以你的资源支持的版本为准）。'
       )
     }
-  } else if (provider === 'anthropic') {
-    // 兼容把 Anthropic 兼容基地址直接粘进来的写法：
-    //   https://api.deepseek.com/anthropic  →  /anthropic/v1/messages
-    if (path === '') path = '/v1/messages'
-    else if (/\/anthropic$/i.test(path)) path += '/v1/messages'
-    else if (!/\/messages$/i.test(path)) path += '/messages'
-  } else {
-    if (path === '') path = '/v1/chat/completions'
-    else if (!/\/completions$/i.test(path)) path += '/chat/completions'
   }
 
+  // 去掉末尾斜杠即可；接口路径（/v1/chat/completions、/v1/messages 等）必须由用户填全
   url.pathname = path
   return { url, provider, display: `${url.origin}${url.pathname}` }
 }
@@ -180,18 +246,61 @@ export async function callAi(
   return requestChat(cfg, system, [{ role: 'user', content: user }], signal)
 }
 
-/** 多轮对话版：system 是文档上下文与角色说明，messages 是历史 + 这次的问题 */
+/**
+ * 多轮对话版：system 是文档上下文与角色说明，messages 是历史 + 这次的问题。
+ *
+ * 地址按设置页里的顺序逐个尝试：前一个连接失败、超时或返回 HTTP 错误时换下一个。
+ * 全部失败时只保留一条错误，正文说明「所有地址都不可用」，明细逐个列出原因。
+ */
 export async function requestChat(
   cfg: AiConfig,
   system: string,
   messages: ChatMessage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: ChatRequestOptions = {}
 ): Promise<AiResult> {
-  const resolved = resolveEndpoint(cfg.endpoint)
-  if (resolved.provider !== 'azure' && !cfg.model) {
-    throw new AiError('请先在插件设置里填写模型名')
+  if (cfg.endpoints.length === 0) throw new AiError('请先在插件设置里填写 AI 服务地址')
+
+  const failures: { index: number; label: string; error: AiError }[] = []
+  for (const [index, endpoint] of cfg.endpoints.entries()) {
+    if (signal?.aborted) throw new AiError('请求已取消')
+    try {
+      return await requestChatAt(cfg, endpoint, index, system, messages, signal, options)
+    } catch (err) {
+      // 用户取消不是「这个地址不可用」，不该继续试下一个
+      if (signal?.aborted) throw new AiError('请求已取消')
+      const error =
+        err instanceof AiError ? err : new AiError('连接 AI 服务失败', describeFetchError(err))
+      failures.push({ index, label: describeEndpoint(endpoint.url), error })
+    }
   }
 
+  // 只有一个地址时保留原来的错误文案（401/404/超时等），不要包一层「所有地址」
+  if (failures.length === 1) throw failures[0]!.error
+  throw new AiError(
+    `所有 AI 服务地址都不可用（已尝试 ${failures.length} 个）`,
+    failures
+      .map(f => `第 ${f.index + 1} 个（${f.label}）：${f.error.message}`)
+      .join('\n')
+  )
+}
+
+/** 对单个地址发一次请求；超时按地址单独计算 */
+async function requestChatAt(
+  cfg: AiConfig,
+  endpoint: AiEndpoint,
+  endpointIndex: number,
+  system: string,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  options: ChatRequestOptions = {}
+): Promise<AiResult> {
+  const resolved = resolveEndpoint(endpoint.url)
+  // 模型跟着地址走：某个地址没填模型只影响它自己，后面的地址照常尝试。
+  // Azure 的部署名在路径里，模型可以留空。
+  if (resolved.provider !== 'azure' && !endpoint.model) {
+    throw new AiError('请先在插件设置里填写模型名')
+  }
   const started = Date.now()
   const controller = new AbortController()
   let timedOut = false
@@ -208,8 +317,10 @@ export async function requestChat(
   try {
     const res = await fetch(resolved.url.toString(), {
       method: 'POST',
-      headers: buildHeaders(resolved.provider, cfg.apiKey),
-      body: JSON.stringify(buildBody(resolved.provider, cfg.model, system, messages)),
+      headers: buildHeaders(resolved.provider, endpoint.apiKey),
+      body: JSON.stringify(
+        buildBody(resolved.provider, endpoint.model, system, messages, options)
+      ),
       // 不自动跟随：自定义认证头不能被带到另一个 host 上
       redirect: 'manual',
       signal: controller.signal
@@ -231,8 +342,9 @@ export async function requestChat(
     return {
       ...parsed,
       provider: resolved.provider,
-      model: cfg.model || 'Azure 部署',
+      model: endpoint.model || 'Azure 部署',
       endpointDisplay: resolved.display,
+      endpointIndex,
       elapsedMs: Date.now() - started
     }
   } catch (err) {
@@ -248,6 +360,15 @@ export async function requestChat(
   } finally {
     clearTimeout(timer)
     if (signal) signal.removeEventListener('abort', onAbort)
+  }
+}
+
+/** 错误明细里对某个地址的称呼；地址本身不合法时退回原文 */
+function describeEndpoint(raw: string): string {
+  try {
+    return resolveEndpoint(raw).display
+  } catch {
+    return raw.trim() || '(空地址)'
   }
 }
 
@@ -269,20 +390,29 @@ function buildBody(
   provider: Provider,
   model: string,
   system: string,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  options: ChatRequestOptions
 ): Record<string, unknown> {
   const turns = messages
     .filter(message => message.content.length > 0)
     .map(message => ({ role: message.role, content: message.content }))
   if (provider === 'anthropic') {
+    // Anthropic 的 prompt caching 是显式的：把稳定的 system（当前文档 + 参考
+    // 文件）标成一个缓存断点。多轮对话里文档不变时，后续轮次按缓存读取计费。
+    // 只有对话打开 cacheSystem；美化/生成每次都换正文，标了也命不中，反而多付写入费。
+    const systemContent = options.cacheSystem
+      ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+      : system
     return {
       model,
-      system,
+      system: systemContent,
       messages: turns,
       // Anthropic 必填；8192 足够整篇笔记，真被截断时调用方会拒绝写回
       max_tokens: 8192
     }
   }
+  // OpenAI 兼容服务（DeepSeek 等）按请求前缀自动缓存：system 放最前、文档与
+  // 附件保持稳定，后续轮次就能命中，不需要也不能加 cache_control。
   const all = [{ role: 'system', content: system }, ...turns]
   // Azure 的模型由路径里的部署名决定，body 里不再重复
   if (provider === 'azure') return { messages: all, stream: false }
@@ -293,6 +423,40 @@ interface ParsedResponse {
   text: string
   truncated: boolean
   finishReason: string | null
+  cache?: CacheStats
+}
+
+/**
+ * 从响应的 usage 里读上下文缓存用量。各家的字段不一样：
+ * - Anthropic：`cache_read_input_tokens`（命中）/ `cache_creation_input_tokens`（写入）
+ * - DeepSeek：`prompt_cache_hit_tokens`（自动缓存，命中部分便宜很多）
+ * - OpenAI：`prompt_tokens_details.cached_tokens`
+ * 服务不支持或本次没有命中/写入时返回 undefined，而不是 0，方便日志区分。
+ */
+function readCacheStats(usage: unknown): CacheStats | undefined {
+  if (!usage || typeof usage !== 'object') return undefined
+  const record = usage as Record<string, unknown>
+  const details =
+    record.prompt_tokens_details && typeof record.prompt_tokens_details === 'object'
+      ? (record.prompt_tokens_details as Record<string, unknown>)
+      : null
+
+  const pick = (...values: unknown[]): number => {
+    let best = 0
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value) && value > best) best = value
+    }
+    return Math.round(best)
+  }
+
+  const read = pick(
+    record.cache_read_input_tokens,
+    record.prompt_cache_hit_tokens,
+    details?.cached_tokens
+  )
+  const write = pick(record.cache_creation_input_tokens)
+  if (read === 0 && write === 0) return undefined
+  return { read, write }
 }
 
 function parseResponse(provider: Provider, body: string): ParsedResponse {
@@ -316,7 +480,12 @@ function parseResponse(provider: Provider, body: string): ParsedResponse {
     }
     const text = parts.join('')
     if (!text.trim()) throw new AiError('AI 没有返回文本内容', summarizeError(body))
-    return { text, truncated: stop === 'max_tokens', finishReason: stop }
+    return {
+      text,
+      truncated: stop === 'max_tokens',
+      finishReason: stop,
+      cache: readCacheStats(root.usage)
+    }
   }
 
   const choices = Array.isArray(root.choices) ? root.choices : []
@@ -331,7 +500,12 @@ function parseResponse(provider: Provider, body: string): ParsedResponse {
   const text = contentToString(message?.content ?? choice?.text)
   if (!text.trim()) throw new AiError('AI 没有返回文本内容', summarizeError(body))
   // length = 输出达到上限。调用方必须把它当成失败：半篇文档不能写回磁盘
-  return { text, truncated: finish === 'length', finishReason: finish }
+  return {
+    text,
+    truncated: finish === 'length',
+    finishReason: finish,
+    cache: readCacheStats(root.usage)
+  }
 }
 
 function contentToString(value: unknown): string {

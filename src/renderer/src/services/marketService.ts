@@ -517,29 +517,3 @@ export function formatTime(ts: number | undefined): string {
 export function previewTitle(p: PackagePreview): string {
   return `${p.name} ${p.version}`
 }
-
-/**
- * 复制一段文本(sha256 与 integrity 要能被用户拿去和别人核对,所以必须能复制)。
- * 渲染层是 secure 的自定义协议,`navigator.clipboard` 通常可用;万一不可用就退回
- * 临时 textarea + execCommand —— 这是唯一一条不依赖权限的退路。
- */
-export async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    try {
-      const el = document.createElement('textarea')
-      el.value = text
-      el.style.position = 'fixed'
-      el.style.opacity = '0'
-      document.body.appendChild(el)
-      el.select()
-      const ok = document.execCommand('copy')
-      document.body.removeChild(el)
-      return ok
-    } catch {
-      return false
-    }
-  }
-}

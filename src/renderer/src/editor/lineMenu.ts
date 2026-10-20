@@ -101,12 +101,39 @@ function inBlockquote(state: EditorState, pos: number): boolean {
   return false
 }
 
+/**
+ * 这一行是否落在代码块里(围栏块或缩进块)。
+ *
+ * 代码块内不画「+」:菜单里全是 Markdown 块(表格 / 公式 / 引用…),插进代码里
+ * 只会变成一段源码;而且代码块左侧那 1.25em 留白正好是按钮的落点,按钮会压在代码上。
+ *
+ * 不能只拿行首 resolveInner:缩进代码块的节点从第 5 列才开始,行首落在节点外。
+ * 用整行的范围去遍历,块内的每一行(包括空行)都会被 FencedCode / CodeBlock 覆盖到。
+ */
+function inCodeBlock(state: EditorState, from: number, to: number): boolean {
+  let found = false
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter(node) {
+      if (node.name === 'FencedCode' || node.name === 'CodeBlock') {
+        found = true
+        return false
+      }
+      return undefined
+    }
+  })
+  return found
+}
+
 function buildDecorations(view: EditorView): DecorationSet {
   // 没有插件贡献菜单条目时不画按钮 —— 免得点了弹出一个空菜单
   if (lineMenuEntries().length === 0) return Decoration.none
   const line = view.state.doc.lineAt(view.state.selection.main.head)
   // 引用行不画:见 inBlockquote
   if (inBlockquote(view.state, line.from)) return Decoration.none
+  // 代码块内的行不画:见 inCodeBlock
+  if (inCodeBlock(view.state, line.from, line.to)) return Decoration.none
   // side: -1 让它落在行首第一个字符之前;实际位置由 CSS 绝对定位到行内的空白里
   return Decoration.set([
     Decoration.widget({ widget: new LinePlusWidget(line.number), side: -1 }).range(line.from)

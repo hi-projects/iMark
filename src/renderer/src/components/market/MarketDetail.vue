@@ -10,22 +10,21 @@
  * 仍然可以按精确版本号取到),但用户有权知道自己正在装一个作者撤回过的版本。
  */
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
-  ArrowLeft,
   Check,
   Download,
   ExternalLink,
   FileCode2,
   Package,
-  ShieldCheck
+  ShieldCheck,
+  Trash2
 } from 'lucide-vue-next'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import type { MarketVersionInfo } from '@shared/market'
+import { copyText } from '../../utils/clipboard'
 import {
-  closeDetail,
-  copyText,
   formatTime,
   installFromMarket,
   loadIcon,
@@ -34,8 +33,10 @@ import {
   openDetail,
   openSource,
   remoteStore,
-  searchMarket
+  uninstallPlugin
 } from '../../services/marketService'
+import { renderMarkdownFragment } from '../../services/exportHtml'
+import { appStore } from '../../stores/app'
 import { settingsNav } from '../../services/pluginService'
 import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
@@ -53,17 +54,77 @@ const visibleVersions = computed(() => (showAllVersions.value ? versions.value :
 
 const local = computed(() => (id.value ? localVersion(id.value) : null))
 
+/**
+ * 卸载确认。
+ *
+ * 与「已安装」页同一套两段式确认:卸载会删程序文件与密钥,是不可撤销的操作,
+ * 不能点一下就发生。配置默认保留,勾选才一并删除。
+ */
+const uninstallOpen = ref(false)
+const dropConfig = ref(false)
+
+function toggleUninstall(): void {
+  uninstallOpen.value = !uninstallOpen.value
+  dropConfig.value = false
+}
+
+async function doUninstall(): Promise<void> {
+  if (!id.value) return
+  const removeConfig = dropConfig.value
+  uninstallOpen.value = false
+  await uninstallPlugin(id.value, removeConfig)
+}
+
+// 切到别的插件时,上一页打开的确认框不能跟过去
+watch(id, () => {
+  uninstallOpen.value = false
+  dropConfig.value = false
+})
+
+/**
+ * README 用宿主自己的 markdown-it 渲染(html:false,原始标签已被转义)。
+ * 异步渲染加了序号:切换插件时旧结果不能盖掉新结果。
+ */
+const readmeHtml = ref('')
+let readmeSeq = 0
+
+watch(
+  () => [detail.value?.readme ?? '', appStore.theme] as const,
+  async ([readme, theme]) => {
+    const seq = ++readmeSeq
+    if (!readme) {
+      readmeHtml.value = ''
+      return
+    }
+    try {
+      const html = await renderMarkdownFragment(readme, theme)
+      if (seq === readmeSeq) readmeHtml.value = html
+    } catch {
+      const escaped = readme
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+      if (seq === readmeSeq) readmeHtml.value = `<pre>${escaped}</pre>`
+    }
+  },
+  { immediate: true }
+)
+
+/** 说明里的外链交给系统浏览器,不能让整个界面被导航走 */
+function onReadmeClick(e: MouseEvent): void {
+  const anchor = (e.target as HTMLElement | null)?.closest('a')
+  if (!anchor) return
+  e.preventDefault()
+  const href = anchor.getAttribute('href') ?? ''
+  if (/^https?:\/\//i.test(href)) void api.openExternal(href)
+}
+
 async function copy(text: string): Promise<void> {
   if (!(await copyText(text))) return
   copied.value = text
   window.setTimeout(() => {
     if (copied.value === text) copied.value = null
   }, 1500)
-}
-
-function back(): void {
-  closeDetail()
-  void searchMarket()
 }
 
 function permLabel(p: string): string {
@@ -88,15 +149,6 @@ onMounted(() => {
 
 <template>
   <div class="market-tab-body">
-    <div class="market-toolbar">
-      <button class="plugin-btn" @click="back()">
-        <ArrowLeft :size="13" />
-        返回列表
-      </button>
-      <span class="market-toolbar-gap" />
-      <span v-if="id" class="market-mono market-dim">{{ id }}</span>
-    </div>
-
     <MarketProgress />
 
     <div v-if="!detail" class="market-empty">
@@ -130,7 +182,6 @@ onMounted(() => {
           </h1>
           <p class="market-detail-sub">
             <span v-if="detail.author">{{ detail.author }}</span>
-            <span>发布者 {{ detail.publisher }}</span>
             <span>{{ detail.downloads }} 次下载</span>
             <span>更新于 {{ formatTime(detail.updatedAt) }}</span>
           </p>
@@ -142,13 +193,15 @@ onMounted(() => {
           <!-- 沙箱插件也要能看源码:它是**真的会跑的代码**,只是跑在沙箱里。
                「显示的就是将要运行的字节」这条承诺对它同样成立,而且更该兑现 ——
                用户要判断的正是"这段代码值不值得我给它那些权限" -->
+          <!-- 只留图案:源码是次要动作,不抢「安装/重新安装」的视觉重量 -->
           <button
             v-if="detail.mainMode || detail.hasRender"
-            class="plugin-btn"
+            class="plugin-icon-btn plugin-icon-btn-accent"
+            title="查看源码"
+            aria-label="查看源码"
             @click="openSource(detail.version)"
           >
-            <FileCode2 :size="13" />
-            查看源码
+            <FileCode2 :size="14" />
           </button>
           <button
             v-if="detail.homepage"
@@ -157,6 +210,18 @@ onMounted(() => {
           >
             <ExternalLink :size="13" />
             主页
+          </button>
+          <!-- 只在本地确实装着时出现。图标按钮与「已安装」页的卸载保持一致,
+               也避免在头部一排文字按钮里塞进一个破坏性操作 -->
+          <button
+            v-if="local"
+            class="plugin-icon-btn"
+            title="卸载"
+            aria-label="卸载"
+            :disabled="marketStore.busy"
+            @click="toggleUninstall()"
+          >
+            <Trash2 :size="14" />
           </button>
           <button
             class="plugin-btn plugin-btn-add"
@@ -169,12 +234,26 @@ onMounted(() => {
         </div>
       </div>
 
-      <p v-if="local" class="market-hint">
-        本地已安装 <b>v{{ local }}</b>{{ local === detail.version ? '（与市场最新版相同）' : '' }}。
-        想换回某个旧版本，在下面的版本列表里点对应版本的「安装此版本」。
-      </p>
-
       <p class="market-detail-desc">{{ detail.description || '（这个插件还没有写说明）' }}</p>
+
+      <!-- 卸载确认用的是「已安装」页同一套说明:密钥一定删,配置默认留 -->
+      <div v-if="uninstallOpen" class="market-row-confirm">
+        <p class="market-hint">
+          卸载会停止并删除这个插件的程序文件。<b>已保存的密钥一定会被删除</b>
+          （插件 id 可能被其他人重新使用，凭据不能留给下一个同名插件）；
+          配置默认保留，方便你以后重新装回来时不用重填其余字段。
+        </p>
+        <label class="market-ack">
+          <input v-model="dropConfig" type="checkbox" />
+          <span>连同配置一起删除（不可恢复）</span>
+        </label>
+        <div class="market-row-confirm-actions">
+          <button class="plugin-btn" @click="uninstallOpen = false">取消</button>
+          <button class="plugin-btn market-btn-danger" :disabled="marketStore.busy" @click="doUninstall()">
+            确认卸载
+          </button>
+        </div>
+      </div>
 
       <section class="market-block">
         <h2 class="market-block-title">权限</h2>
@@ -210,24 +289,31 @@ onMounted(() => {
       <section class="market-block">
         <h2 class="market-block-title">版本（{{ versions.length }}）</h2>
         <ul class="market-files">
-          <li v-for="v in visibleVersions" :key="v.version">
+          <li
+            v-for="v in visibleVersions"
+            :key="v.version"
+            :class="{ 'market-version-current': local === v.version }"
+          >
             <span>
               <b class="market-mono">v{{ v.version }}</b>
               <span v-if="v.yanked" class="market-badge market-badge-warn">已下架</span>
-              <span v-if="local === v.version" class="market-badge market-badge-ok">本地</span>
             </span>
             <span class="market-version-tail">
-              <span class="market-dim">{{ formatTime(v.publishedAt) }}</span>
               <button class="market-hash-chip" :title="v.integrity" @click="copy(v.integrity)">
                 {{ copied === v.integrity ? '已复制' : `sha256 ${v.integrity.slice(0, 10)}…` }}
               </button>
+              <!-- 当前装着的那个版本只做状态说明;重装走顶部的「重新安装」 -->
+              <!-- 已安装只留一个勾:绿边已经把「当前版本」说清楚了,
+                   按钮再写一遍「已安装」是重复信息 -->
               <button
                 class="plugin-btn"
-                :disabled="marketStore.busy || marketStore.loading"
+                :title="local === v.version ? '已安装' : undefined"
+                :aria-label="local === v.version ? '已安装' : undefined"
+                :disabled="marketStore.busy || marketStore.loading || local === v.version"
                 @click="installFromMarket(detail!.id, v.version)"
               >
                 <Check v-if="local === v.version" :size="12" />
-                安装此版本
+                <template v-else>安装</template>
               </button>
             </span>
           </li>
@@ -243,24 +329,8 @@ onMounted(() => {
 
       <section v-if="detail.readme" class="market-block">
         <h2 class="market-block-title">说明</h2>
-        <pre class="market-readme">{{ detail.readme }}</pre>
-      </section>
-
-      <section class="market-block">
-        <h2 class="market-block-title">下载前请核对</h2>
-        <div class="market-hash">
-          <code>{{ detail.version }} · {{ versions.find(v => v.version === detail!.version)?.integrity }}</code>
-          <button
-            class="plugin-btn"
-            @click="copy(versions.find(v => v.version === detail!.version)?.integrity ?? '')"
-          >
-            复制
-          </button>
-        </div>
-        <p class="market-hint">
-          这个 sha256 是插件的整包摘要。安装确认框里显示的应当与它一致 ——
-          不一致就说明中途被人换过，不要安装。
-        </p>
+        <!-- 片段来自 markdown-it(html:false):原始 HTML 已被转义,链接也过了校验 -->
+        <div class="market-readme" v-html="readmeHtml" @click="onReadmeClick" />
       </section>
 
       <div v-if="detail.mainMode === 'node'" class="market-alert market-alert-danger">
@@ -269,8 +339,8 @@ onMounted(() => {
           <b>它的 main 层在主进程里执行代码，拥有完整 Node 权限。</b>
           <p>
             安装它等于让作者写的代码以与 iMark 相同的权限在你的电脑上运行：
-            可以读写任意文件、发起网络请求、启动其他程序。下面的权限清单、发布者与
-            sha256 是用来帮你做判断的，它们<b>不构成沙箱</b>。
+            可以读写任意文件、发起网络请求、启动其他程序。上面的权限清单
+            是用来帮你做判断的，它<b>不构成沙箱</b>。
           </p>
         </div>
       </div>

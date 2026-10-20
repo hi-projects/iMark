@@ -18,6 +18,15 @@ export const AUTO_SAVE_DELAY_MIN = 1
 export const EDITOR_FONT_SIZE_MIN = 12
 export const EDITOR_FONT_SIZE_MAX = 24
 
+/**
+ * 代码块内按 Tab 插入的空格数。
+ *
+ * 只提供 2 / 4 两档(与 Obsidian 的 Tab size 一致):这个值只影响代码块里的
+ * 手写缩进,不是可自由编排的排版参数,档位越少越不用纠结。
+ */
+export const CODE_INDENT_OPTIONS = [2, 4] as const
+export type CodeIndentSize = (typeof CODE_INDENT_OPTIONS)[number]
+
 /** 「恢复默认」的落点,也是 settings.json 里缺字段时的兜底 */
 export const EDITOR_DEFAULTS = {
   /** 默认不自动写盘:那会真的动磁盘,得由用户自己点头 */
@@ -29,7 +38,9 @@ export const EDITOR_DEFAULTS = {
   autoSaveDelay: 1,
   lineWrapping: true,
   /** 与 Obsidian 的正文设置一致(13px) */
-  editorFontSize: 13
+  editorFontSize: 13,
+  /** 与 Obsidian 的 Tab size 默认档一致 */
+  codeIndentSize: 4
 } as const
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
@@ -51,6 +62,11 @@ export function clampAutoSaveDelay(sec: unknown, fallback: number = EDITOR_DEFAU
 
 export function clampFontSize(px: unknown): number {
   return clampNum(px, EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX, EDITOR_DEFAULTS.editorFontSize)
+}
+
+/** 只接受 2 / 4;被手改成别的数值(或字符串)就落回默认档 */
+export function clampCodeIndentSize(size: unknown): CodeIndentSize {
+  return size === 2 || size === 4 ? size : EDITOR_DEFAULTS.codeIndentSize
 }
 
 /** 「1 秒」/「5 分钟」/「2 小时」:能整除就说大单位,别让人自己换算 300 */

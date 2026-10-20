@@ -2,14 +2,15 @@
   "id": "git-sync",
   "name": "定时上传（Git）",
   "description": "按固定间隔，将当前仓库提交并推送到 Git 远端，支持多个远端",
-  "version": "1.1.0",
-  "author": "iMark 官方",
+  "version": "1.1.1",
+  "author": "iMark",
   "main": { "mode": "node", "entry": "main.js" },
   "permissions": ["git", "secrets", "vault:read", "vault:write"],
   "engines": { "imark": ">=0.1.0" },
   "fields": [
     {
       "key": "targets",
+      "section": "远程仓库",
       "kind": "targets",
       "label": "远端仓库",
       "default": [],

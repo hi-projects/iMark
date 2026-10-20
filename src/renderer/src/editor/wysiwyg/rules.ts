@@ -3,6 +3,7 @@ import type { EditorSelection, Range, Text } from '@codemirror/state'
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common'
 import {
   CheckboxWidget,
+  CodeCopyWidget,
   HrWidget,
   ImageWidget,
   MathWidget,
@@ -264,12 +265,13 @@ function fenceLanguage(doc: Text, code: SyntaxNode): string {
 }
 
 /**
- * 从语法树里取出围栏内容。
+ * 从语法树里取出代码正文(围栏块与缩进块通用)。
  *
  * 用 CodeText 子节点而不是首尾行号切片:引用块/列表里的围栏,行首还有 `> ` / `- `
  * 这些容器标记,节点切片的范围只覆盖真正的代码文本,拼起来天然把标记排除在外。
+ * 缩进代码块同理 —— lezer 的 CodeText 已从第 5 列开始,缩进不在其中。
  */
-function readFencedSource(doc: Text, code: SyntaxNode): string {
+function readCodeSource(doc: Text, code: SyntaxNode): string {
   let content = ''
   for (let child = code.firstChild; child; child = child.nextSibling) {
     if (child.name === 'CodeText') content += doc.sliceString(child.from, child.to)
@@ -295,9 +297,28 @@ function readFencedSource(doc: Text, code: SyntaxNode): string {
   return content
 }
 
+/**
+ * 代码块右上角的复制按钮。
+ *
+ * 挂在首行的零长度 widget 上,由 CSS 绝对定位到行尾(见 editor.css 的
+ * .cm-md-code-copy)。代码正文从语法树现取,而不是点按钮时再去文档里找区间 ——
+ * 装饰重建时 eq() 能据正文判断要不要复用旧 DOM,按钮状态也就不会乱跳。
+ */
+function addCodeCopy(ctx: RuleContext, code: SyntaxNode): void {
+  // CodeText 不含闭合围栏前的那一个换行,所以这里连末尾空行都不用剥 —— 原样复制
+  const source = readCodeSource(ctx.doc, code)
+  const pos = ctx.doc.lineAt(code.from).from
+  ctx.decos.push({
+    from: pos,
+    to: pos,
+    value: Decoration.widget({ widget: new CodeCopyWidget(source), side: 1 })
+  })
+}
+
 /** 源码态:整块等宽 + 隐藏围栏标记(渲染态与源码态共用同一套外观) */
 function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
   addLineRange(ctx, code.from, code.to, 'cm-md-code')
+  addCodeCopy(ctx, code)
   const first = code.firstChild
   const last = code.lastChild
   if (first?.name === 'CodeMark' && lineUntouched(ctx, first.from)) {
@@ -410,7 +431,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
          */
         const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
         if (firstLineVisible && !touchesLines(ctx.sel, ctx.doc, node.from, node.to)) {
-          const widget = new MermaidWidget(readFencedSource(ctx.doc, code), currentMermaidTheme())
+          const widget = new MermaidWidget(readCodeSource(ctx.doc, code), currentMermaidTheme())
           hideWithWidget(ctx, firstLine.from, firstLine.to, widget)
           for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
             const line = ctx.doc.line(n)
@@ -428,6 +449,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     }
     case 'CodeBlock': {
       addLineRange(ctx, node.from, node.to, 'cm-md-code')
+      addCodeCopy(ctx, node.node)
       return false
     }
 

@@ -37,6 +37,7 @@ import './components/plugins.css'
 import './components/market.css'
 import './components/lineMenu.css'
 import './components/toast.css'
+import './components/notification.css'
 // 放最后:它要盖掉 .plugin-icon-btn:hover 的红色(hover 变红是给「删除」用的,
 // 「重新读取」是中性操作)
 import './components/userstyle.css'

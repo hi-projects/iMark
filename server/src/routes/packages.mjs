@@ -88,7 +88,14 @@ export function register(router, app) {
       if (render === 'true' && !latest.manifest.render) continue
       if (render === 'false' && latest.manifest.render) continue
       if (q) {
-        const hay = `${id} ${latest.manifest.name} ${latest.manifest.description ?? ''} ${pkg.owner}`.toLowerCase()
+        // 作者(author,清单里写的人)与发布者(owner,市场账号)是两回事,
+        // 但用户搜「iMark」时通常指的是作者署名 —— 两边都放进搜索范围。
+        // 括号不能省:否则 toLowerCase 只作用在第二个模板串上,作者/名称会变成
+        // 大小写敏感(搜 iMark 搜不到 iMark 的插件)
+        const hay = (
+          `${id} ${latest.manifest.name} ${latest.manifest.author ?? ''} ` +
+          `${latest.manifest.description ?? ''} ${pkg.owner}`
+        ).toLowerCase()
         if (!hay.includes(q)) continue
       }
       all.push(entryOf(id, pkg, latest))

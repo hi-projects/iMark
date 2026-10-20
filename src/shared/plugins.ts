@@ -6,7 +6,15 @@
  * 通过新增 field kind 扩展,而不是让插件自带 UI。
  */
 
-export type PluginFieldKind = 'text' | 'password' | 'number' | 'boolean' | 'select' | 'targets'
+export type PluginFieldKind =
+  | 'text'
+  | 'textarea'
+  | 'password'
+  | 'number'
+  | 'boolean'
+  | 'select'
+  | 'targets'
+  | 'endpoints'
 
 // 插件层与权限词表定义在 pluginPackage.ts(它们本来就是清单的概念)。
 // 这里只做类型中转,方便渲染层从一处 import。
@@ -29,16 +37,46 @@ export interface PluginField {
   showWhen?: { key: string; value: unknown }
   /** 字段下方的说明文字 */
   description?: string
-  default: string | number | boolean | PluginTarget[]
+  default: string | number | boolean | PluginTarget[] | PluginEndpoint[]
   placeholder?: string
   min?: number
   max?: number
+  /** textarea 的显示行数(不影响取值) */
+  rows?: number
+  /**
+   * 在字段标题旁显示「恢复默认」图标;当前值与 default 相同时图标置灰。
+   * 用于提示词这类长文本。
+   */
+  resettable?: boolean
+  /** 文本类字段失焦时若为空,自动恢复 default,避免把空提示词存进配置 */
+  required?: boolean
+  /**
+   * 地址列表(kind: 'endpoints')里每一行的模型输入。
+   *
+   * 模型是「每个服务地址一份」的,所以它不单独占一个字段,而是随每张地址卡片渲染。
+   * 与 targetSecret 一样,标签和占位符由插件说明,宿主只负责画。
+   */
+  endpointModel?: { label: string; placeholder?: string }
   options?: PluginFieldOption[]
   /**
    * 该字段的每个目标各自带一个密钥(如远端列表里每个远端一个 token)。
-   * 仅对 kind: 'targets' 有意义,密钥 key 形如 `<pluginId>:<fieldKey>:<targetId>`。
+   * 对 kind: 'targets' 与 'endpoints' 有意义,密钥 key 形如
+   * `<pluginId>:<fieldKey>:<targetId>`。
    */
   targetSecret?: { label: string; placeholder?: string }
+}
+
+/**
+ * 地址列表里的一行(kind: 'endpoints')。
+ *
+ * 与 git 的「远端」列表分开:这里一行是「地址 + 模型」,API 密钥按行单独存
+ * (字段上的 targetSecret)。正常请求会用这个顺序逐个尝试,前一个失败再试下一个。
+ */
+export interface PluginEndpoint {
+  id: string
+  url: string
+  /** 该地址使用的模型名;Azure 的部署名在路径里,可以留空 */
+  model: string
 }
 
 /** 认证方式:token = 访问令牌(默认);password = 账号 + 密码;ssh = 用本机 SSH 密钥 */

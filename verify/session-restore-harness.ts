@@ -194,21 +194,22 @@ async function main(): Promise<void> {
   /** 「没有打开页面」的界面事实 */
   async function noDocumentState(win: Win): Promise<{
     hint: boolean
-    fileLabel: boolean
+    tabCount: number
     content: string
     title: string
     statusText: string
   }> {
     const dom = await evalJs<{
       hint: boolean
-      fileLabel: boolean
+      tabCount: number
       content: string
       statusText: string
     }>(win, `(() => {
       const content = document.querySelector('.cm-content')
       return {
         hint: !!document.querySelector('.editor-empty-hint'),
-        fileLabel: !!document.querySelector('.status-file'),
+        // 状态栏不再重复文件名后,「有没有打开页面」看标签栏
+        tabCount: document.querySelectorAll('.tab-bar .tab').length,
         content: content ? content.textContent : '(没有编辑器)',
         statusText: document.querySelector('.status-bar')?.textContent ?? ''
       }
@@ -241,7 +242,7 @@ async function main(): Promise<void> {
     check('进入编辑器且显示空状态提示', ready)
     const state = await noDocumentState(win)
     check('编辑区没有内容', state.content.trim() === '', JSON.stringify(state.content))
-    check('状态栏不写「未命名」', !state.fileLabel && !state.statusText.includes('未命名'), state.statusText)
+    check('空状态没有标签、界面不写「未命名」', state.tabCount === 0 && !state.statusText.includes('未命名'), JSON.stringify(state))
     check('窗口标题不写「未命名」', !state.title.includes('未命名') && state.title.includes(basename(vault)), state.title)
     check('盘上的 lastFile 仍是空', (await readSettings()).lastFile === null)
     await closeWindow(win)
@@ -253,7 +254,7 @@ async function main(): Promise<void> {
     const win = await openWindow()
     const ready = await waitFor(win, `document.querySelector('.editor-empty-hint')`)
     const state = await noDocumentState(win)
-    check('重启后仍是空状态', ready && state.content.trim() === '' && !state.fileLabel)
+    check('重启后仍是空状态', ready && state.content.trim() === '' && state.tabCount === 0)
     check('标题仍只有仓库名', state.title === `${basename(vault)} - iMark`, state.title)
     await closeWindow(win)
   }
@@ -264,7 +265,7 @@ async function main(): Promise<void> {
     const win = await openWindow()
     check('文件树里能点到那个文件', await clickFile(win, note))
     check('编辑器装载了文件内容', await contentHas(win, '关闭前打开的那一页'))
-    check('状态栏显示文件名', await waitFor(win, `document.querySelector('.status-file')?.textContent?.includes('笔记.md')`))
+    check('标签显示文件名', await waitFor(win, `document.querySelector('.tab-active .tab-title')?.textContent?.includes('笔记')`))
     check('lastFile 记录了它', await waitSettings(s => s.lastFile === note), String((await readSettings()).lastFile))
     await closeWindow(win)
   }
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
     await contentHas(win, '关闭前打开的那一页')
     win.webContents.send(IPC.MenuCommand, 'file:new')
     check('编辑器清空', await waitFor(win, `document.querySelector('.cm-content')?.textContent?.trim() === ''`))
-    check('此时是一份未命名文档(有文件名、无空状态提示)', await waitFor(win, `document.querySelector('.status-file')?.textContent?.includes('未命名')`))
+    check('此时是一份未命名文档(标签写着未命名、无空状态提示)', await waitFor(win, `document.querySelector('.tab-active .tab-title')?.textContent?.includes('未命名')`))
     check('lastFile 被清空', await waitSettings(s => s.lastFile === null), String((await readSettings()).lastFile))
     await closeWindow(win)
   }
@@ -294,7 +295,7 @@ async function main(): Promise<void> {
     check('重启后恢复了后台的文件标签', await contentHas(win, '关闭前打开的那一页'))
     check(
       '但没有恢复未命名文档',
-      await waitFor(win, `!document.querySelector('.status-file')?.textContent?.includes('未命名')`)
+      await waitFor(win, `![...document.querySelectorAll('.tab-title')].some(t => t.textContent?.includes('未命名'))`)
     )
     await closeWindow(win)
   }
@@ -317,7 +318,7 @@ async function main(): Promise<void> {
   {
     const win = await openWindow()
     const ready = await waitFor(win, `document.querySelector('.editor-empty-hint')`)
-    check('重启后没有恢复任何页面', ready && !(await evalJs<boolean>(win, `!!document.querySelector('.status-file')`)))
+    check('重启后没有恢复任何页面', ready && !(await evalJs<boolean>(win, `!!document.querySelector('.tab-bar .tab')`)))
     await closeWindow(win)
   }
 
@@ -349,7 +350,7 @@ async function main(): Promise<void> {
     await sleep(3000)
     const state = await noDocumentState(win)
     check('停留几秒后仍显示空状态提示', await evalJs<boolean>(win, `!!document.querySelector('.editor-empty-hint')`))
-    check('停留几秒后仍没有文档', !state.fileLabel && !state.statusText.includes('未命名'), state.statusText)
+    check('停留几秒后仍没有文档', state.tabCount === 0 && !state.statusText.includes('未命名'), JSON.stringify(state))
     check('停留几秒后标题仍只有仓库名', state.title === `${basename(vault)} - iMark`, state.title)
     check('停留几秒后编辑区仍没有内容', state.content.trim() === '', JSON.stringify(state.content))
 
@@ -372,7 +373,7 @@ async function main(): Promise<void> {
       '聚焦后输入不会冒出未命名文档',
       await evalJs<boolean>(
         win,
-        `!document.querySelector('.status-file') && document.querySelector('.cm-content')?.textContent?.trim() === ''`
+        `!document.querySelector('.tab-bar .tab') && document.querySelector('.cm-content')?.textContent?.trim() === ''`
       )
     )
 
@@ -393,7 +394,7 @@ async function main(): Promise<void> {
       await evalJs<boolean>(
         win,
         `document.activeElement !== document.querySelector('.cm-content') &&
-         !document.querySelector('.status-file') &&
+         !document.querySelector('.tab-bar .tab') &&
          !!document.querySelector('.editor-empty-hint')`
       )
     )
@@ -402,7 +403,7 @@ async function main(): Promise<void> {
     win.webContents.send(IPC.MenuCommand, 'file:new')
     check(
       'Ctrl+N 新建未命名文档',
-      await waitFor(win, `document.querySelector('.status-file')?.textContent?.includes('未命名')`)
+      await waitFor(win, `document.querySelector('.tab-active .tab-title')?.textContent?.includes('未命名')`)
     )
     check(
       '新建后编辑器恢复可写',

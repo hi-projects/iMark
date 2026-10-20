@@ -161,15 +161,81 @@
   padding: 0.12em 0.4em;
 }
 
+/*
+ * 代码块整行底色 + 左侧留白。
+ *
+ * 留白用 border-left 而不是 padding-left:drawSelection 求解整行选区时,会把
+ * 视口里**第一行**的 paddingLeft 当成所有整行选区的左缘(见 .cm-md-quote 的说明)。
+ * 首行恰好是代码行时,全篇选区会跟着右移;border 不参与那段计算。
+ * 边框取透明色而不是同色实心:背景默认画到 border-box,透明边框下面露出的就是
+ * 这一行自己的背景 —— 用户自定义 .cm-md-code 的 background 时,这段留白自动跟着变。
+ */
 .cm-md-code {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--bg-codeblock);
+  border-left: 1.25em solid transparent;
+}
+
+/*
+ * 把选区多染出来的那段留白盖回去。
+ *
+ * 整行选区的第一行从字首起画(left = 首字的坐标,已经越过这 1.25em);其余行
+ * CodeMirror 统一用 content 左缘当左缘,不认行盒的 border —— 于是多行选中代码
+ * 时,除第一行外每行左边都会多出一截被选区染色的留白(见 drawSelection 的
+ * rectanglesForRange:leftSide 只读第一个 .cm-line 的 paddingLeft)。
+ *
+ * 留白里没有任何文字,直接把同色底铺在选区图层(0)之上抹掉染色。用 inherit
+ * 而不是 var(--bg-codeblock):用户自定义 .cm-md-code 底色时这段也跟着变。
+ * 绝对定位的包含块是行盒的 padding box,要把 left 推到 border 外侧才盖得住。
+ */
+.cm-md-code::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1.25em;
+  width: 1.25em;
+  background: inherit;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .cm-md-codeinfo {
   color: var(--text-tertiary);
   font-style: italic;
+}
+
+/*
+ * 代码块右上角的复制按钮(见 wysiwyg/widgets.ts 的 CodeCopyWidget)。
+ * 定位参照是 .cm-line 的 position: relative;按钮不占行内空间。
+ * 底色与代码块相同,叠在代码上时不会露出一块别的颜色。
+ */
+.cm-md-code-copy {
+  position: absolute;
+  /* 下移后按钮底边会伸进下一行:行盒有 position:relative,后面的代码行按文档序
+   * 画在它上面,会把按钮底边和 p/y 的下伸部盖掉。抬一层,让按钮压在后续行之上。 */
+  z-index: 1;
+  top: 9px;
+  right: 14px;
+  padding: 0 7px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-codeblock);
+  color: var(--text-tertiary);
+  font-family: var(--font-editor);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.12s;
+}
+
+.cm-md-code-copy:hover {
+  opacity: 1;
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-secondary);
 }
 
 .cm-md-link {
@@ -273,14 +339,15 @@
 }
 
 /*
- * 行高压扁、列宽拉大:表格是密集内容,原来的 6px 上下内边距让每行都太高,
- * 而列宽只由内容决定,空格子挤成窄条。min-width 同时给空格子一块可点击的区域
- * —— 「+」插出来的新表整张都是空格子。
+ * 行距放宽、列宽拉大:表格是密集内容,但格子之间需要呼吸空间 ——
+ * 带上下标的公式尤其明显,贴边时整张表显得局促。上下各 8px 撑开行高,
+ * 仍比段落紧凑。列宽只由内容决定,空格子会挤成窄条,min-width
+ * 同时给空格子一块可点击的区域 —— 「+」插出来的新表整张都是空格子。
  */
 .cm-md-table-widget th,
 .cm-md-table-widget td {
   border: 1px solid var(--border);
-  padding: 2px 16px;
+  padding: 8px 16px;
   min-width: 110px;
   vertical-align: top;
   cursor: text;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-vue-next'
-import { dismissNotice, noticeStore } from '../services/notice'
+import { dismissNotice, noticeCenter, noticeStore } from '../services/notice'
 
 /**
  * 右下角通知的舞台。
@@ -18,8 +18,10 @@ const ICON = {
 
 <template>
   <!-- 容器本身不吃鼠标事件,只有每条气泡自己吃 —— 否则右下角会有一块
-       看不见的挡板,点不到底下的东西 -->
-  <div class="toast-host">
+       看不见的挡板,点不到底下的东西。
+       通知中心打开时把气泡收起来:两者都停在右下角,叠在一起谁都看不清;
+       期间新来的通知已经在历史里,不会漏。 -->
+  <div v-show="!noticeCenter.open" class="toast-host">
     <div
       v-for="n in noticeStore.list"
       :key="n.id"

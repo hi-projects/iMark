@@ -19,7 +19,8 @@ import { computed, ref, watch } from 'vue'
 import { AlertTriangle, FileCode2, Layers, Puzzle, ShieldCheck } from 'lucide-vue-next'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import { formatBytes } from '../../utils/text'
-import { cancelInstall, confirmInstall, copyText, marketStore } from '../../services/marketService'
+import { copyText } from '../../utils/clipboard'
+import { cancelInstall, confirmInstall, marketStore } from '../../services/marketService'
 
 const preview = computed(() => marketStore.pending?.preview ?? null)
 

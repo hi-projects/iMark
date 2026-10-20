@@ -9,6 +9,7 @@ import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
 import PaneResizer from './components/PaneResizer.vue'
 import StatusBar from './components/StatusBar.vue'
+import NotificationCenter from './components/NotificationCenter.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import LineMenu from './components/LineMenu.vue'
 import LineActionDialog from './components/LineActionDialog.vue'
@@ -50,11 +51,12 @@ import {
   toggleSwitcher
 } from './services/vaultService'
 import { openMarketSettings } from './services/pluginService'
-import { initEditorSettings } from './services/editorSettings'
+import { initEditorSettings, installFontSizeWheelZoom } from './services/editorSettings'
 import { api } from './services/api'
 
 let offMenu: (() => void) | null = null
 let offOpenFile: (() => void) | null = null
+let offFontWheelZoom: (() => void) | null = null
 
 async function handleMenuCommand(id: MenuCommandId): Promise<void> {
   // 仓库选择界面下没有编辑器实例,文件/格式类命令忽略(与 Obsidian 无仓库时一致)
@@ -148,6 +150,8 @@ onMounted(async () => {
   // 阻止窗口级默认拖放导航(文件拖出编辑区时防止 Electron 加载该文件)
   window.addEventListener('dragover', e => e.preventDefault())
   window.addEventListener('drop', e => e.preventDefault())
+  // Ctrl + 滚轮调正文字号:全窗口生效,不要求焦点在编辑器里
+  offFontWheelZoom = installFontSizeWheelZoom()
   try {
     const settings = await api.getSettings()
     applyTheme(settings.theme)
@@ -186,6 +190,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   offMenu?.()
   offOpenFile?.()
+  offFontWheelZoom?.()
 })
 </script>
 
@@ -211,6 +216,8 @@ onBeforeUnmount(() => {
       <OutlineSidebar />
     </div>
     <StatusBar />
+    <!-- 状态栏铃铛的小框:固定在右下角,层级低于设置 / 市场这些模态层 -->
+    <NotificationCenter />
     <QuickSwitcher />
     <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->
     <LineMenu />

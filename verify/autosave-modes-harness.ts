@@ -173,7 +173,7 @@ async function main(): Promise<void> {
   }
 
   async function openEditorSettings(): Promise<void> {
-    await evalJs(`document.querySelector('.status-actions button[title^="设置"]')?.click()`)
+    await evalJs(`document.querySelector('.status-app-actions button[title^="设置"]')?.click()`)
     await waitFor(`document.querySelector('.settings-dialog')`, 3000)
     await evalJs(
       `(() => { const b = [...document.querySelectorAll('.settings-nav-item')].find(x => x.textContent.trim() === '编辑器'); b?.click(); return !!b })()`

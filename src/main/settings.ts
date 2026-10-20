@@ -1,7 +1,12 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { AutoSaveMode, Settings, Theme } from '@shared/types'
-import { clampAutoSaveDelay, clampFontSize, EDITOR_DEFAULTS } from '@shared/editorSettings'
+import {
+  clampAutoSaveDelay,
+  clampCodeIndentSize,
+  clampFontSize,
+  EDITOR_DEFAULTS
+} from '@shared/editorSettings'
 import { dataRoot } from './dataDir'
 
 /** 上一版用来表达三种自动保存状态的字段;只用于迁移,不再往磁盘上写 */
@@ -116,6 +121,7 @@ function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
   Object.assign(merged, normalizeAutoSave(raw))
   merged.theme = normalizeTheme(merged.theme)
   merged.editorFontSize = clampFontSize(merged.editorFontSize)
+  merged.codeIndentSize = clampCodeIndentSize(merged.codeIndentSize)
   merged.lineWrapping = merged.lineWrapping !== false
   merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
   merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)

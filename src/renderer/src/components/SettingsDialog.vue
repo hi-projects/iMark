@@ -1,18 +1,12 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import {
-  CircleHelp,
-  Palette,
-  RotateCcw,
-  Settings2,
-  Store,
-  TextCursorInput,
-  X
-} from 'lucide-vue-next'
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
+import HelpTip from './HelpTip.vue'
 import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
 import {
   AUTO_SAVE_DELAY_MIN,
+  CODE_INDENT_OPTIONS,
   delayLabel,
   EDITOR_FONT_SIZE_MAX,
   EDITOR_FONT_SIZE_MIN
@@ -23,6 +17,7 @@ import {
   resetEditorSettings,
   setAutoSaveDelay,
   setAutoSaveMode,
+  setCodeIndentSize,
   setEditorFontSize,
   setLineWrapping
 } from '../services/editorSettings'
@@ -148,6 +143,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
 const dialogEl = ref<HTMLElement | null>(null)
 const dragOffset = reactive({ x: 0, y: 0 })
 const dragging = ref(false)
+/** 用户拖右下角调整过的尺寸;null = 用 CSS 里的默认尺寸(90vw / 86vh 且封顶) */
+const dialogSize = ref<{ width: number; height: number } | null>(null)
+const resizing = ref(false)
 /** 一次拖动的起点;base* 是「没拖动时面板在视口里的位置」,用来算边界 */
 let dragStart: {
   pointerX: number
@@ -163,9 +161,18 @@ let dragStart: {
 /** 面板与视口边缘至少留这么多,怎么拖都整块留在视线里 */
 const DRAG_MARGIN = 8
 
-const dialogStyle = computed(() => ({
-  transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`
-}))
+/** 最小尺寸取默认尺寸(1080×760)的 85%,长宽比与默认一致;
+ *  缩得更小左侧导航 + 内容就挤得没法用了(窗口更小时以视口为准) */
+const MIN_DIALOG_WIDTH = 918
+const MIN_DIALOG_HEIGHT = 646
+
+const dialogStyle = computed(() => {
+  const size = dialogSize.value
+  return {
+    transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`,
+    ...(size ? { width: `${size.width}px`, height: `${size.height}px` } : {})
+  }
+})
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(Math.max(v, min), Math.max(min, max))
@@ -210,6 +217,85 @@ function onDragEnd(): void {
   window.removeEventListener('pointerup', onDragEnd)
 }
 
+// ---------- 调整面板大小 ----------
+//
+// 四条边 + 四个角各有一条透明热区(贴在面板外侧,不压滚动条)。拖动时只移动
+// 被拖的那条边:对边钉住。面板本身是 flex 居中的,宽高变化会把基准位置推走,
+// 所以这里直接由目标 left/top 反算 translate,对边自然不动。
+// 上限是视口减两倍边距,下限见 MIN_DIALOG_*。
+
+/** 八个方向:边 n/s/e/w 改一个维度,角改两个维度 */
+type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+const RESIZE_EDGES: ResizeEdge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
+
+let resizeStart: {
+  pointerX: number
+  pointerY: number
+  left: number
+  top: number
+  width: number
+  height: number
+  edge: ResizeEdge
+} | null = null
+
+function onResizeStart(e: PointerEvent, edge: ResizeEdge): void {
+  if (e.button !== 0 || !dialogEl.value) return
+  const rect = dialogEl.value.getBoundingClientRect()
+  resizeStart = {
+    pointerX: e.clientX,
+    pointerY: e.clientY,
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+    edge
+  }
+  resizing.value = true
+  window.addEventListener('pointermove', onResizeMove)
+  window.addEventListener('pointerup', onResizeEnd)
+  e.preventDefault()
+}
+
+function onResizeMove(e: PointerEvent): void {
+  const from = resizeStart
+  if (!from) return
+
+  const viewW = window.innerWidth
+  const viewH = window.innerHeight
+  const maxW = Math.max(0, viewW - DRAG_MARGIN * 2)
+  const maxH = Math.max(0, viewH - DRAG_MARGIN * 2)
+  const minW = Math.min(MIN_DIALOG_WIDTH, maxW)
+  const minH = Math.min(MIN_DIALOG_HEIGHT, maxH)
+  const dx = e.clientX - from.pointerX
+  const dy = e.clientY - from.pointerY
+  const right0 = from.left + from.width
+  const bottom0 = from.top + from.height
+
+  let left = from.left
+  let right = right0
+  let top = from.top
+  let bottom = bottom0
+  if (from.edge.includes('e')) right = clamp(right0 + dx, from.left + minW, viewW - DRAG_MARGIN)
+  if (from.edge.includes('w')) left = clamp(from.left + dx, DRAG_MARGIN, right0 - minW)
+  if (from.edge.includes('s')) bottom = clamp(bottom0 + dy, from.top + minH, viewH - DRAG_MARGIN)
+  if (from.edge.includes('n')) top = clamp(from.top + dy, DRAG_MARGIN, bottom0 - minH)
+
+  const width = right - left
+  const height = bottom - top
+  dialogSize.value = { width, height }
+  // 居中基准 + 位移 = 目标 left/top;这样没被拖的边保持不动
+  dragOffset.x = left - (viewW - width) / 2
+  dragOffset.y = top - (viewH - height) / 2
+  e.preventDefault()
+}
+
+function onResizeEnd(): void {
+  resizeStart = null
+  resizing.value = false
+  window.removeEventListener('pointermove', onResizeMove)
+  window.removeEventListener('pointerup', onResizeEnd)
+}
+
 /** 窗口变小 / 拖动中改了尺寸:把面板重新夹回视口,别让它有一半在屏幕外 */
 function clampIntoView(): void {
   const el = dialogEl.value
@@ -237,24 +323,45 @@ watch(
     dragOffset.x = 0
     dragOffset.y = 0
     onDragEnd()
+    onResizeEnd()
   }
 )
 
-onMounted(() => window.addEventListener('resize', clampIntoView))
+/** 窗口变小:尺寸与位移一起夹回视口(尺寸改完要等 Vue 落到 DOM 再量位置) */
+function onWindowResize(): void {
+  const size = dialogSize.value
+  if (size) {
+    const width = Math.min(size.width, Math.max(0, window.innerWidth - DRAG_MARGIN * 2))
+    const height = Math.min(size.height, Math.max(0, window.innerHeight - DRAG_MARGIN * 2))
+    if (width !== size.width || height !== size.height) {
+      dialogSize.value = { width, height }
+    }
+  }
+  void nextTick(clampIntoView)
+}
+
+onMounted(() => window.addEventListener('resize', onWindowResize))
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', clampIntoView)
+  window.removeEventListener('resize', onWindowResize)
   onDragEnd()
+  onResizeEnd()
 })
 </script>
 
 <template>
   <div v-if="appStore.settingsOpen" class="settings-mask" @mousedown.self="closeSettings()">
+    <!--
+      外框只负责尺寸、位移与边缘热区;真正的面板(.settings-dialog)铺满外框。
+      四条边/四个角的热区放在面板**外侧**:面板右缘就是内容滚动条,热区若压在
+      里面会把滚动条抢走。
+    -->
     <div
       ref="dialogEl"
-      class="settings-dialog"
-      :class="{ 'settings-dialog-dragging': dragging }"
+      class="settings-dialog-frame"
+      :class="{ 'settings-dialog-dragging': dragging, 'settings-dialog-resizing': resizing }"
       :style="dialogStyle"
     >
+      <div class="settings-dialog">
       <aside class="settings-nav">
         <div class="settings-nav-group">选项</div>
         <button
@@ -284,9 +391,7 @@ onBeforeUnmount(() => {
         <!-- 插件单独一行分组:市场排第一项,下面直接列出每个已安装插件 -->
         <div class="settings-nav-group">
           <span>插件</span>
-          <span class="settings-nav-help" :title="LAYER_HELP">
-            <CircleHelp :size="12" />
-          </span>
+          <HelpTip :text="LAYER_HELP" :size="12" class="settings-nav-help" />
         </div>
         <button
           class="settings-nav-item"
@@ -453,6 +558,36 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">编辑</div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-row settings-row-stack">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">代码块 Tab 缩进</div>
+                  <div class="settings-row-desc">
+                    在代码块里按 Tab 时插入的空格数；正文中 Tab 仍用于切换焦点。
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <span class="settings-presets">
+                    <button
+                      v-for="size in CODE_INDENT_OPTIONS"
+                      :key="size"
+                      class="settings-preset"
+                      :class="{ 'settings-preset-active': appStore.codeIndentSize === size }"
+                      @click="setCodeIndentSize(size)"
+                    >
+                      {{ size }} 个空格
+                    </button>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
             <button class="settings-reset" @click="resetEditorSettings()">
               <RotateCcw :size="13" />
               <span>恢复默认设置</span>
@@ -488,6 +623,16 @@ onBeforeUnmount(() => {
           <UserStyleSettings />
         </div>
       </section>
+      </div>
+
+      <!-- 四条边 + 四个角:鼠标贴边即可拖动改大小(热区在面板外侧) -->
+      <div
+        v-for="edge in RESIZE_EDGES"
+        :key="edge"
+        class="settings-resize-edge"
+        :class="`settings-resize-${edge}`"
+        @pointerdown.stop.prevent="onResizeStart($event, edge)"
+      />
     </div>
   </div>
 

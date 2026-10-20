@@ -47,17 +47,18 @@ function check(label: string, ok: boolean, detail = ''): void {
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 /** 用户报告的公式:第四行以 `+` 开头 */
-const FORMULA = [
-  '$$',
+const FORMULA_BODY = [
   'q_\\sigma(x_{t-1}\\mid x_t, x_0)',
   '= \\mathcal{N}\\left(',
   '\\sqrt{\\bar\\alpha_{t-1}}\\,x_0',
   '+ \\sqrt{1-\\bar\\alpha_{t-1}-\\sigma_t^2}\\cdot',
   '\\frac{x_t-\\sqrt{\\bar\\alpha_t}x_0}{\\sqrt{1-\\bar\\alpha_t}},',
   '\\ \\sigma_t^2 I',
-  '\\right)',
-  '$$'
-].join('\n')
+  '\\right)'
+]
+const FORMULA = ['$$', ...FORMULA_BODY, '$$'].join('\n')
+/** AI 模型更常用的另一种写法,必须与 $$ 一样整块解析 */
+const BRACKET_FORMULA = ['\\[', ...FORMULA_BODY, '\\]'].join('\n')
 
 async function main(): Promise<void> {
   if (!app.commandLine.hasSwitch('user-data-dir')) {
@@ -224,6 +225,18 @@ async function main(): Promise<void> {
 
   await inContainer('列表项里的块级公式', `- $$\n  a\n  + b\n  $$\n\n末尾\n`)
   await inContainer('引用块里的块级公式', `> $$\n> a\n> + b\n> $$\n\n末尾\n`)
+
+  console.log('\n【4b】\\[...\\] 写法:公式体里的 `+` 行同样不会被读成列表')
+  await loadDoc(`开头\n\n${BRACKET_FORMULA}\n\n末尾\n`)
+  const bracket = await state()
+  check('整块渲染成一个公式 widget', bracket.widgets === 1, JSON.stringify(bracket.widgets))
+  check('widget 里是真正的 KaTeX 输出', bracket.katex === 1, JSON.stringify(bracket.katex))
+  check('渲染态没有列表圆点', bracket.bullets === 0, JSON.stringify(bracket.bullets))
+  check(
+    '渲染态看不到公式源码',
+    !bracket.text.includes('\\sqrt'),
+    JSON.stringify(bracket.text.slice(0, 160))
+  )
 
   console.log('\n【5】滚动穿过比视口还高的公式:任何位置都不会留下空白')
   // 与表格同一条不变式:折叠行只可能在 widget 已经画出来的前提下存在。

@@ -47,6 +47,7 @@ import {
   type PluginContribsSnapshot,
   type PluginDescriptor,
   type PluginEditorInsert,
+  type PluginEndpoint,
   type PluginEvent,
   type PluginEventMap,
   type PluginField,
@@ -755,7 +756,7 @@ export class PluginHost {
     if (field.kind !== 'password' && !field.targetSecret) {
       throw new Error(`字段 ${fieldKey} 不接受密钥`)
     }
-    if (field.kind === 'targets' && value !== null && !targetId) {
+    if ((field.kind === 'targets' || field.kind === 'endpoints') && value !== null && !targetId) {
       throw new Error('目标列表的密钥必须指定目标')
     }
     await setSecret(secretKey(id, fieldKey, targetId ?? undefined), value)
@@ -2119,6 +2120,20 @@ export function normalizeConfig(
               auth,
               username: typeof o.username === 'string' ? o.username : ''
             } satisfies PluginTarget
+          })
+        break
+      }
+      case 'endpoints': {
+        const list = Array.isArray(value) ? value : (field.default as PluginEndpoint[])
+        out[field.key] = (list as unknown[])
+          .filter(t => t && typeof t === 'object')
+          .map((t, i) => {
+            const o = t as Partial<PluginEndpoint>
+            return {
+              id: typeof o.id === 'string' && o.id ? o.id : `e${Date.now().toString(36)}${i}`,
+              url: typeof o.url === 'string' ? o.url : '',
+              model: typeof o.model === 'string' ? o.model : ''
+            } satisfies PluginEndpoint
           })
         break
       }

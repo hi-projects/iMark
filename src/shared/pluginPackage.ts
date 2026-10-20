@@ -292,7 +292,7 @@ const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const FIELD_KEY_RE = /^[A-Za-z0-9_]{1,40}$/
 const ACTION_ID_RE = /^[a-z0-9-]{1,40}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
-const FIELD_KINDS = ['text', 'password', 'number', 'boolean', 'select', 'targets']
+const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'targets', 'endpoints']
 
 /** id 里出现 ':' 会让 secretKey() 的拼接跨插件串台,所以是**安全规则**而非格式洁癖 */
 const RESERVED_IDS = ['imk', 'market', 'system', 'core', 'node', 'electron']
@@ -820,8 +820,11 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   }
 
   const fields = Array.isArray(m.fields) ? m.fields : []
-  const isTargetsField = fields.some(
-    (f) => f && typeof f === 'object' && (f as PluginField).kind === 'targets'
+  const hasTargetListField = fields.some(
+    (f) =>
+      f &&
+      typeof f === 'object' &&
+      ((f as PluginField).kind === 'targets' || (f as PluginField).kind === 'endpoints')
   )
 
   validateFields(m.fields, errors)
@@ -840,8 +843,8 @@ export function validateManifest(raw: unknown): Validation<PluginManifest> {
   validateStatusBar(m.statusBar, errors, actionIds)
   validateMenus(m.menus, errors, actionIds)
 
-  if (m.targetActions !== undefined && m.targetActions.length > 0 && !isTargetsField) {
-    errors.push('声明了 targetActions 但没有任何 targets 字段')
+  if (m.targetActions !== undefined && m.targetActions.length > 0 && !hasTargetListField) {
+    errors.push('声明了 targetActions 但没有任何 targets / endpoints 字段')
   }
   if (m.targetFieldKey !== undefined && typeof m.targetFieldKey !== 'string') {
     errors.push('targetFieldKey 必须是字符串')

@@ -5,6 +5,7 @@ import { syntaxTree } from '@codemirror/language'
 import katex from 'katex'
 import { renderInline } from './inline'
 import { mermaidErrorMessage, renderMermaid, type MermaidTheme } from '../../services/mermaid'
+import { copyText } from '../../utils/clipboard'
 
 /** 单元格对齐方式,取自 GFM 分隔行里的冒号;null = 文档没声明,交给 CSS */
 export type TableAlign = 'left' | 'center' | 'right' | null
@@ -118,6 +119,62 @@ export class ImageWidget extends WidgetType {
 
   ignoreEvent(): boolean {
     return false
+  }
+}
+
+/**
+ * 代码块右上角的复制按钮。
+ *
+ * 是**零长度 widget**,不是替换装饰:代码本身留在文档里照常可编辑、可选中,
+ * 按钮只是绝对定位到首行右上角(定位参照是 .cm-line 的 position: relative)。
+ * 因此它挂在代码块首行上 —— 首行滚出视口时,按钮跟着一起走。
+ *
+ * eq() 比的是代码正文:文档没改到这块时,重建装饰会复用同一个 DOM,
+ * 按钮上的「copied」不会因为一次无关的光标移动被重置。
+ */
+export class CodeCopyWidget extends WidgetType {
+  constructor(readonly code: string) {
+    super()
+  }
+
+  eq(other: CodeCopyWidget): boolean {
+    return other.code === this.code
+  }
+
+  toDOM(): HTMLElement {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'cm-md-code-copy'
+    btn.textContent = 'copy'
+    btn.title = '复制代码'
+    btn.setAttribute('aria-label', '复制代码')
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const flash = (label: string): void => {
+      btn.textContent = label
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (btn.isConnected) btn.textContent = 'copy'
+      }, 1500)
+    }
+    // 按住按钮别让编辑器丢焦点:丢了选区会跳,代码块还会翻回源码态
+    btn.addEventListener('mousedown', e => e.preventDefault())
+    btn.addEventListener('click', e => {
+      e.preventDefault()
+      void copyText(this.code).then(ok => flash(ok ? 'copied' : 'failed'))
+    })
+    return btn
+  }
+
+  ignoreEvent(): boolean {
+    return true
+  }
+
+  /**
+   * 不参与行内坐标计算。按钮是绝对定位的,视觉上不占位;但 CM 仍会把它当行内
+   * 节点测量,点击行尾空白时可能把光标坐标算到按钮上(与 lineMenu 的「+」同一问题)。
+   */
+  get isHidden(): boolean {
+    return true
   }
 }
 

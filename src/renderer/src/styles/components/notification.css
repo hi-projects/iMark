@@ -1,0 +1,168 @@
+/*
+ * 状态栏铃铛弹出的小框(通知中心)。
+ *
+ * 层级取 95:它在编辑器与状态栏之上,但在快速切换(100)、设置(110)、
+ * 市场(120/130)这些模态层之下 —— 用户打开设置时,一扇旧的通知框不该盖在上面。
+ * 气泡(toast)仍是 140,但小框打开时气泡会收起来(见 ToastHost.vue)。
+ */
+
+.notif-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 36px;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(60vh, 460px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-editor);
+  box-shadow: 0 12px 32px var(--shadow);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  animation: notif-in 0.14s ease-out;
+}
+
+@keyframes notif-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+}
+
+.notif-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.notif-clear {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-editor);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.notif-clear:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.notif-empty {
+  padding: 26px 12px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.notif-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notif-item:last-child {
+  border-bottom: none;
+}
+
+.notif-icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.notif-success .notif-icon {
+  color: var(--success);
+}
+
+.notif-warn .notif-icon {
+  color: var(--warn);
+}
+
+.notif-error .notif-icon {
+  color: var(--danger);
+}
+
+.notif-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 来源标签:只有插件/浏览器才显示,应用自己的通知标题就是 iMark */
+.notif-source {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-code);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.notif-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notif-time {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.notif-message {
+  max-height: 7.5em;
+  margin-top: 2px;
+  overflow: auto;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

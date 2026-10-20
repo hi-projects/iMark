@@ -2,17 +2,17 @@
 /**
  * 市场 · 已安装 —— 插件的落地页,也是离线时唯一有内容的页。
  *
- * 每行两枚徽标各答一个问题:**形态**(脚本 / 沙箱 / 无代码)决定它能碰你多少东西,
- * **来源**(内置 / 市场 / 本地)决定这东西是谁给你的 —— 三种来源的风险完全不同
- * (内置的是随应用一起发布的,本地安装的可能是自己随手打的包)。
+ * 每行用徽标回答「它能碰我多少东西」:完整权限 / 受限权限。来源(市场装、本地装、
+ * 随应用发布)一律不标 —— 这一页要区分的是权限层,那才决定它能碰我什么;
+ * 「是谁给的」在安装那一刻已经确认过,留在每行只会多一枚同款胶囊。
  * 权限则逐条列在名字下面,不再另起一个「权限」标题。
  */
 
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Download, Package, RefreshCw, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { copyText } from '../../utils/clipboard'
 import {
   checkUpdates,
-  copyText,
   formatTime,
   installFromMarket,
   marketStore,
@@ -21,16 +21,67 @@ import {
   refreshInstalled,
   remoteStore,
   restoreBundled,
-  sourceLabel,
   uninstallPlugin
 } from '../../services/marketService'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
+import type { PluginView } from '@shared/plugins'
 import { selectPluginSettings } from '../../services/pluginService'
 import { pluginStatusMessage, pluginStatusTone } from '../../services/pluginStatus'
 import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
 
 const plugins = computed(() => marketStore.installed?.plugins ?? [])
+
+const listEl = ref<HTMLElement | null>(null)
+
+/** 文字与标签之间留出的呼吸空间:贴得太紧时,徽标看起来像版本号的一部分。 */
+const LABEL_GAP_PX = 16
+
+/**
+ * 左侧文字列的宽度:取「名字 + 版本号」与「安装于 …」里最宽的那个,再加一段间距。
+ *
+ * 权限徽标与 sha256 标签都从这一列的右边界起步,于是它们落在同一条竖线上;
+ * 列宽按实测而不是写死,标签才会紧跟文字,而不是被推到卡片中间的空地上。
+ *
+ * 先清掉变量让各列回到自然宽度再量;实测与设值在同一帧完成,不会闪。
+ */
+function syncLabelColumn(): void {
+  const list = listEl.value
+  if (!list) return
+  list.style.removeProperty('--market-label-col')
+  let widest = 0
+  for (const el of list.querySelectorAll<HTMLElement>('.market-row-name-main')) {
+    widest = Math.max(widest, Math.ceil(el.getBoundingClientRect().width))
+  }
+  // 「安装于 …」也在这一列里:它比名字宽时列要跟着变宽,否则时间会顶到 sha256 上。
+  // 用 Range 量文字本身,不受 grid 轨道(尤其是跨列的开发模式提示)影响。
+  for (const el of list.querySelectorAll<HTMLElement>('.market-row-sub-main')) {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    widest = Math.max(widest, Math.ceil(range.getBoundingClientRect().width))
+  }
+  if (widest > 0) list.style.setProperty('--market-label-col', `${widest + LABEL_GAP_PX}px`)
+}
+
+// flush: 'post' 保证量到的是这一轮渲染之后的 DOM
+watch(plugins, syncLabelColumn, { flush: 'post' })
+
+onMounted(() => {
+  syncLabelColumn()
+  // 字体晚一点就绪时宽度会变,再量一次
+  void document.fonts?.ready.then(syncLabelColumn)
+})
+
+/**
+ * 已安装列表的层徽标。
+ *
+ * 这里不标 render 层:这一页回答的是「哪些插件会跑、现在什么状态」,而 render
+ * 不影响这个判断(它与 main 层同属一个插件)。完整权限 / 受限权限仍然保留 ——
+ * 那两枚才决定「它能碰我多少东西」。
+ */
+function installedShapeLabels(view: PluginView) {
+  return shapeLabels(shapeOf(view)).filter(s => s.tone !== 'render')
+}
 
 /**
  * 可用更新。
@@ -164,7 +215,7 @@ async function refreshAll(): Promise<void> {
       <p>还没有安装任何插件。</p>
     </div>
 
-    <ul v-else class="market-list">
+    <ul v-else ref="listEl" class="market-list">
       <li v-for="p in plugins" :key="p.descriptor.id" class="market-row">
         <div class="market-row-main">
           <span
@@ -174,29 +225,35 @@ async function refreshAll(): Promise<void> {
           />
           <div class="market-row-title">
             <div class="market-row-name">
-              <b>{{ p.descriptor.name }}</b>
-              <span class="market-mono market-dim">v{{ p.descriptor.version }}</span>
-              <!-- 层在前、来源在后:层决定「它能碰我什么」,来源决定「这东西是谁给我的」 -->
-              <span
-                v-for="s in shapeLabels(shapeOf(p))"
-                :key="s.label"
-                class="market-badge"
-                :class="`market-shape-${s.tone}`"
-                >{{ s.label }}</span
-              >
-              <span v-if="p.dev" class="market-badge market-badge-bad">开发模式</span>
-              <span v-else class="market-badge">{{ sourceLabel(p.source, marketStore.bundled.includes(p.descriptor.id)) }}</span>
-              <span v-if="p.disabledByHost" class="market-badge market-badge-bad">
-                已被停用（连续失败）
+              <!-- 名字+版本占一列定宽,徽标才能在所有行上对齐成同一竖列 -->
+              <span class="market-row-name-main">
+                <b :title="p.descriptor.name">{{ p.descriptor.name }}</b>
+                <span class="market-mono market-dim">v{{ p.descriptor.version }}</span>
               </span>
-              <span v-else-if="(p.failures ?? 0) > 0" class="market-badge market-badge-warn">
-                失败 {{ p.failures }} 次
+              <span class="market-row-badges">
+                <span
+                  v-for="s in installedShapeLabels(p)"
+                  :key="s.label"
+                  class="market-badge"
+                  :class="`market-shape-${s.tone}`"
+                  >{{ s.label }}</span
+                >
+                <span v-if="p.dev" class="market-badge market-badge-bad">开发模式</span>
+                <span v-if="p.disabledByHost" class="market-badge market-badge-bad">
+                  已被停用（连续失败）
+                </span>
+                <span v-else-if="(p.failures ?? 0) > 0" class="market-badge market-badge-warn">
+                  失败 {{ p.failures }} 次
+                </span>
               </span>
             </div>
             <div class="market-row-sub">
-              <span v-if="p.dev">代码来自 --plugin-dev 指定的目录，重启应用后不再加载</span>
-              <span v-if="p.installed?.publisher">发布者 {{ p.installed.publisher }}</span>
-              <span v-if="p.installed">安装于 {{ formatTime(p.installed.installedAt) }}</span>
+              <span v-if="p.dev" class="market-row-sub-dev">
+                代码来自 --plugin-dev 指定的目录，重启应用后不再加载
+              </span>
+              <span v-if="p.installed" class="market-row-sub-main">
+                安装于 {{ formatTime(p.installed.installedAt) }}
+              </span>
               <button
                 v-if="p.installed?.integrity"
                 class="market-hash-chip"

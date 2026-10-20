@@ -103,9 +103,44 @@
 .market-row-name {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0;
   font-size: 13px;
   color: var(--text-primary);
+}
+
+/*
+ * 名字+版本占一列:**宽度由脚本按最长一行实测**(--market-label-col),
+ * 实测值里已经含了一段标签与文字之间的间距。
+ * 徽标与下面那行的 sha256 都用这条右边界作为左起点,于是两类标签落在
+ * 同一条竖线上,与版本号之间也留出呼吸空间,而不是被一个拍脑袋的定宽
+ * 推到卡片中间。更长的名字省略号收尾,完整名字在 title 里。
+ */
+.market-row-name-main {
+  display: inline-flex;
+  flex: 0 0 min(var(--market-label-col), 55%);
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.market-row-name-main b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 版本号不参与收缩:要截就截名字 */
+.market-row-name-main > .market-mono {
+  flex: none;
+}
+
+.market-row-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .market-row-sub {
@@ -116,6 +151,24 @@
   margin-top: 3px;
   font-size: 11.5px;
   color: var(--text-tertiary);
+}
+
+/*
+ * 已安装行的第二行也按同一列排:「安装于 …」占左列,sha256 标签隔一段间距接在后面。
+ * 左列宽与上面的名字列共用 --market-label-col(间距已含在宽度里),两类标签左边界对齐。
+ * (浏览市场卡片仍用上面的 flex 版本,那边没有这种两列关系。)
+ */
+.market-row .market-row-sub {
+  display: grid;
+  grid-template-columns: min(var(--market-label-col), 55%) max-content;
+  align-items: center;
+  column-gap: 0;
+  row-gap: 3px;
+}
+
+/* 开发模式的长提示不参与列宽,单独占一整行 */
+.market-row .market-row-sub-dev {
+  grid-column: 1 / -1;
 }
 
 .market-row-actions {
@@ -671,6 +724,7 @@
 
 .market-files li {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 3px 6px;
@@ -678,6 +732,23 @@
   background: var(--bg-app);
   font-size: 11.5px;
   color: var(--text-secondary);
+}
+
+/* 本地已装着的那个版本整行描一圈绿边。
+   右侧按钮虽然写了「已安装」,但扫视版本列表时先看到的是整行,
+   让当前版本一眼可辨,不用逐行读按钮 */
+.market-files li.market-version-current {
+  /* 用 inset 阴影而不是 border:不改变行高,列表不会因版本状态抖动 */
+  box-shadow: inset 0 0 0 1px var(--success);
+  background: color-mix(in srgb, var(--success) 7%, var(--bg-app));
+}
+
+/* 按钮定宽:不同状态(「安装」/「已安装」)宽度不同,会带着左边的 sha 标签左右跑。
+   定高:已安装状态只剩一个勾,不定高的话整行会比其他版本矮一截 */
+.market-version-tail .plugin-btn {
+  min-width: 82px;
+  min-height: 31px;
+  justify-content: center;
 }
 
 /* ---------- 市场(联网部分) ---------- */
@@ -754,6 +825,7 @@
   list-style: none;
 }
 
+/* 整张卡片可点进详情;右下角的安装按钮自己拦住事件 */
 .market-card {
   display: flex;
   align-items: flex-start;
@@ -762,6 +834,20 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-panel);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.market-card:hover,
+.market-card:focus-visible {
+  border-color: var(--accent);
+  background: var(--bg-hover, color-mix(in srgb, var(--border) 40%, transparent));
+}
+
+.market-card:focus-visible {
+  outline: none;
 }
 
 .market-card-icon {
@@ -810,7 +896,6 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 8px;
 }
 
 .market-detail-title {
@@ -829,6 +914,9 @@
 
 .market-detail-sub {
   display: flex;
+  /* 各段是独立的 flex item:默认拉伸对齐会让「iMark」这类纯西文段与
+     含中文的段按各自字体的 ascent 定位,基线差出 2–3px。按基线对齐。 */
+  align-items: baseline;
   gap: 12px;
   flex-wrap: wrap;
   margin: 5px 0 0;
@@ -837,7 +925,7 @@
 }
 
 .market-detail-desc {
-  margin: 8px 0 0;
+  margin: 0;
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-secondary);
@@ -860,20 +948,122 @@
   font-size: 11.5px;
 }
 
+/* README 是渲染后的 Markdown 片段(不再是 <pre> 原文) */
 .market-readme {
   margin: 0;
-  padding: 10px;
+  padding: 10px 12px;
   max-height: 320px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-app);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.market-readme > :first-child {
+  margin-top: 0;
+}
+
+.market-readme > :last-child {
+  margin-bottom: 0;
+}
+
+.market-readme h1,
+.market-readme h2,
+.market-readme h3,
+.market-readme h4,
+.market-readme h5,
+.market-readme h6 {
+  margin: 14px 0 6px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.market-readme h1 {
+  font-size: 16px;
+}
+
+.market-readme h2 {
+  font-size: 14.5px;
+}
+
+.market-readme p {
+  margin: 6px 0;
+}
+
+.market-readme ul,
+.market-readme ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.market-readme li {
+  margin: 2px 0;
+}
+
+.market-readme code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 45%, transparent);
   font-family: var(--font-mono, monospace);
   font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
+}
+
+.market-readme pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.market-readme pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.market-readme a {
+  color: var(--accent);
+}
+
+.market-readme blockquote {
+  margin: 8px 0;
+  padding: 0 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-tertiary);
+}
+
+.market-readme table {
+  margin: 8px 0;
+  border-collapse: collapse;
+}
+
+.market-readme th,
+.market-readme td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+
+.market-readme th {
+  color: var(--text-primary);
+}
+
+.market-readme img {
+  max-width: 100%;
+}
+
+.market-readme hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .market-hint-ok {

@@ -14,7 +14,10 @@ import { initMarketService } from './services/marketService'
 import { initLineMenu } from './services/lineMenu'
 import { initDocEvents } from './services/docEvents'
 import { initUserStyleService } from './services/userStyleService'
+import { initNotificationCapture } from './services/notificationCapture'
 
+// 先接管浏览器的 Notification,再挂载界面:render 层插件的通知也要进通知中心
+initNotificationCapture()
 createApp(App).mount('#app')
 
 // 插件服务订阅(主进程状态广播 + 「先保存再同步」握手),与组件生命周期无关

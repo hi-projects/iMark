@@ -58,7 +58,7 @@ const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const FIELD_KEY_RE = /^[A-Za-z0-9_]{1,40}$/
 const ACTION_ID_RE = /^[a-z0-9-]{1,40}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
-const FIELD_KINDS = ['text', 'password', 'number', 'boolean', 'select', 'targets']
+const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'targets', 'endpoints']
 /** 对话框里允许出现的字段 kind —— 密钥与目标列表是一次性的对话框装不下的东西 */
 const DIALOG_FIELD_KINDS = ['text', 'number', 'boolean', 'select']
 const RESERVED_IDS = ['imk', 'market', 'system', 'core', 'node', 'electron']
@@ -282,9 +282,11 @@ export function validateManifest(manifest) {
         }
       }
       const targetField = fields.find(f => f.key === manifest.targetFieldKey)
-      if (!targetField || targetField.kind !== 'targets') {
-        errors.push('声明了 targetActions 就必须有 targetFieldKey 指向一个 targets 字段')
-      } else if (manifest.targetActions.length > 0 && !targetField.targetSecret) {
+      // endpoints 与 targets 都是「一行目标」的列表。endpoints 没有目标级密钥,
+      // 所以 targetSecret 只对 targets 强制 —— 与客户端 validateManifest 保持一致。
+      if (!targetField || (targetField.kind !== 'targets' && targetField.kind !== 'endpoints')) {
+        errors.push('声明了 targetActions 就必须有 targetFieldKey 指向一个 targets / endpoints 字段')
+      } else if (manifest.targetActions.length > 0 && targetField.kind === 'targets' && !targetField.targetSecret) {
         errors.push('targets 字段必须声明 targetSecret,否则目标级动作没有密钥可用')
       }
     }

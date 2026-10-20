@@ -227,7 +227,12 @@ export function initPluginUi(): () => void {
   }
   const offContribs = api.onPluginContribs(apply)
   const offNotice = api.onPluginNotice(notice => {
-    pushNotice(notice.message, { title: notice.pluginName, level: notice.level })
+    // source 让通知中心把它和"应用自己说的话"区分开(小标签:插件)
+    pushNotice(notice.message, {
+      title: notice.pluginName,
+      level: notice.level,
+      source: 'plugin'
+    })
   })
   const offCommand = api.onPluginCommand(({ pluginId, itemId }) => {
     // 从菜单/快捷键进来的命令:光标上下文由渲染层现取(主进程不知道光标在哪)

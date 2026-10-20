@@ -15,9 +15,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, FileCode2, Info, Package } from 'lucide-vue-next'
 import { PERMISSION_INFO } from '@shared/pluginPackage'
 import { formatBytes } from '../../utils/text'
+import { copyText } from '../../utils/clipboard'
 import {
   acknowledgePlainHttp,
-  copyText,
   loadAuth,
   loginMarket,
   logoutMarket,
