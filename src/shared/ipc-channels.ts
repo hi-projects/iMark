@@ -65,6 +65,42 @@ export const IPC = {
   VaultRename: 'vault:rename',
   VaultDelete: 'vault:delete',
   VaultConfirmDelete: 'vault:confirm-delete',
+  // ---------- 扩展(v2 模型) ----------
+  /** 渲染→主:整份扩展视图(含密钥掩码) */
+  ExtensionList: 'extension:list',
+  /** 渲染→主:启用/禁用;返回最新视图 */
+  ExtensionSetEnabled: 'extension:set-enabled',
+  /** 渲染→主:保存非密配置(值为完整配置键);返回最新视图 */
+  ExtensionSetConfig: 'extension:set-config',
+  /** 渲染→主:写/清一条密钥(key 为 `<扩展内键>` 或 `<字段>:<目标>`);返回最新视图 */
+  ExtensionSetSecret: 'extension:set-secret',
+  /** 渲染→主:重新加载单个扩展 */
+  ExtensionReload: 'extension:reload',
+  /** 渲染→主:重新加载一个宿主组 */
+  ExtensionReloadHost: 'extension:reload-host',
+  /** 渲染→主:修改 isolated/shared 与 affinity */
+  ExtensionSetHostSettings: 'extension:set-host-settings',
+  /** 渲染→主:卸载扩展 */
+  ExtensionUninstall: 'extension:uninstall',
+  /** 用系统默认程序打开某个扩展的日志文件 */
+  ExtensionLogOpen: 'extension:log-open',
+  /** 渲染→主:取一次界面贡献点快照 */
+  ExtensionContribGet: 'extension:contrib-get',
+  /** 渲染→主:执行一条扩展命令 */
+  ExtensionCommandRun: 'extension:command-run',
+  /** 主→渲染:菜单里的扩展命令被点了 */
+  ExtensionCommand: 'extension:command',
+  /**
+   * 渲染→主:编辑器桥与界面回执(RendererToMainMessage)。
+   *
+   * 与 v1 的多条通道不同,v2 的 renderer↔main 协议在 extensionProtocol.ts 里
+   * 有完整的可辨识联合;一条通道既避免十几组重复的序列化代码,也让「哪些消息
+   * 可以跨进程」只有一处定义。
+   */
+  ExtensionToMain: 'extension:to-main',
+  /** 主→渲染:编辑器请求 / 贡献点 / webview / UI 请求(MainToRendererMessage) */
+  ExtensionToRenderer: 'extension:to-renderer',
+
   PluginList: 'plugin:list',
   PluginSave: 'plugin:save',
   PluginSetSecret: 'plugin:set-secret',

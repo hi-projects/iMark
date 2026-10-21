@@ -8,9 +8,20 @@
  * 有 30 秒硬超时且默认禁止本机地址，这两条都会卡住整篇美化与本地 Ollama。
  */
 
-import type { ImkApi } from '@shared/pluginApi'
-
 export type Provider = 'openai' | 'anthropic' | 'azure'
+
+/**
+ * 读配置与密钥的最小接口。
+ *
+ * 扩展侧用 `workspace.getConfiguration('imark.ai-for-edit')` 与 `context.secrets`
+ * 实现它；这样 aiClient 不依赖宿主 API 的具体形状，也方便在测试里替换。
+ */
+export interface AiConfigSource {
+  /** 读一个短键（endpoints / timeoutSec / generatePrompt / beautifyPrompt） */
+  get(key: string): unknown
+  /** 读某个地址的 API 密钥；槽位是 `endpoints:<endpointId>` */
+  getSecret(key: string): Promise<string | undefined>
+}
 
 /**
  * 设置页里的一行服务地址。
@@ -94,10 +105,21 @@ export interface ChatRequestOptions {
   cacheSystem?: boolean
 }
 
+/** 随一条消息发送的图片；目前只用于扫描件 PDF 的页面 */
+export interface ChatImage {
+  mediaType: 'image/jpeg' | 'image/png'
+  /** 不带 `data:` 前缀的 base64 */
+  data: string
+  /** 图片前的一句文字说明，帮助模型把图片和参考文件对应起来 */
+  caption?: string
+}
+
 /** 对话历史里的一条；只允许用户与助手两种角色 */
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /** 图片只随当前用户消息发送；历史里不保存图片 */
+  images?: ChatImage[]
 }
 
 /** 单次响应最多读 4 MiB：正常聊天响应远小于这个数，超出基本可以当成异常 */
@@ -105,12 +127,14 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_TIMEOUT_MS = 90_000
 const MIN_TIMEOUT_MS = 5_000
 
-export async function readAiConfig(imk: ImkApi, timeoutCap?: number): Promise<AiConfig> {
-  const raw = imk.getConfig<Record<string, unknown>>()
-  const rows = readEndpoints(raw.endpoints)
+export async function readAiConfig(
+  source: AiConfigSource,
+  timeoutCap?: number
+): Promise<AiConfig> {
+  const rows = readEndpoints(source.get('endpoints'))
   if (rows.length === 0) throw new AiError('请先在插件设置里填写 AI 服务地址')
 
-  const rawTimeout = Number(raw.timeoutSec)
+  const rawTimeout = Number(source.get('timeoutSec'))
   let timeoutSec = Number.isFinite(rawTimeout) ? Math.round(rawTimeout) : 60
   timeoutSec = Math.min(Math.max(timeoutSec, MIN_TIMEOUT_MS / 1000), MAX_TIMEOUT_MS / 1000)
   let timeoutMs = timeoutSec * 1000
@@ -118,12 +142,8 @@ export async function readAiConfig(imk: ImkApi, timeoutCap?: number): Promise<Ai
 
   // 提示词由设置页原样提供；是否为空、是否过长由 main.ts 在调用前判断，
   // 这样测试连接/对话不会因为提示词问题被牵连。
-  const generatePrompt = typeof raw.generatePrompt === 'string' ? raw.generatePrompt.trim() : ''
-  const beautifyPrompt = typeof raw.beautifyPrompt === 'string' ? raw.beautifyPrompt.trim() : ''
-
-  if (!imk.secrets) {
-    throw new AiError('插件没有读取密钥的权限，无法读取 API 密钥', '请在插件设置里重新启用它，或重新安装。')
-  }
+  const generatePrompt = textValue(source.get('generatePrompt')).trim()
+  const beautifyPrompt = textValue(source.get('beautifyPrompt')).trim()
 
   // 密钥是**每个地址一份**的：槽位就是地址卡片的 id。读取失败必须整体报错，
   // 不能悄悄不带密钥去请求 —— 那样用户看到的是 401，而不是「密钥读不出来」。
@@ -131,7 +151,7 @@ export async function readAiConfig(imk: ImkApi, timeoutCap?: number): Promise<Ai
   for (const row of rows) {
     let apiKey = ''
     try {
-      apiKey = (await imk.secrets.get('endpoints', row.id)) ?? ''
+      apiKey = (await source.getSecret(`endpoints:${row.id}`)) ?? ''
     } catch (err) {
       throw new AiError('读取 API 密钥失败', errorText(err))
     }
@@ -139,6 +159,10 @@ export async function readAiConfig(imk: ImkApi, timeoutCap?: number): Promise<Ai
   }
 
   return { endpoints, timeoutMs, generatePrompt, beautifyPrompt }
+}
+
+function textValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
 }
 
 /** 从设置页的地址列表里读出「有地址」的行，顺序保持不变 */
@@ -336,7 +360,24 @@ async function requestChatAt(
     }
 
     const body = await readTextCapped(res, MAX_RESPONSE_BYTES)
-    if (!res.ok) throw httpError(res.status, summarizeError(body))
+    if (!res.ok) {
+      const summary = summarizeError(body)
+      const error = httpError(res.status, summary)
+      // 带图片的请求被 400/422 拒绝，最常见的原因是模型不支持视觉输入。
+      // 原始错误仍然保留在 detail 里，避免把「请求体里别的字段不合法」误诊。
+      if (
+        messagesHaveImages(messages) &&
+        (res.status === 400 || res.status === 422)
+      ) {
+        throw new AiError(
+          `模型可能不支持图片输入（HTTP ${res.status}）`,
+          `本次请求包含扫描页图片。可以在插件设置里关闭「把扫描页作为图片发送」后重试，或换用支持视觉的模型。${
+            summary ? `服务返回：${summary}` : ''
+          }`
+        )
+      }
+      throw error
+    }
 
     const parsed = parseResponse(resolved.provider, body)
     return {
@@ -394,8 +435,8 @@ function buildBody(
   options: ChatRequestOptions
 ): Record<string, unknown> {
   const turns = messages
-    .filter(message => message.content.length > 0)
-    .map(message => ({ role: message.role, content: message.content }))
+    .filter(message => message.content.length > 0 || (message.images?.length ?? 0) > 0)
+    .map(message => buildTurn(provider, message))
   if (provider === 'anthropic') {
     // Anthropic 的 prompt caching 是显式的：把稳定的 system（当前文档 + 参考
     // 文件）标成一个缓存断点。多轮对话里文档不变时，后续轮次按缓存读取计费。
@@ -417,6 +458,55 @@ function buildBody(
   // Azure 的模型由路径里的部署名决定，body 里不再重复
   if (provider === 'azure') return { messages: all, stream: false }
   return { model, messages: all, stream: false }
+}
+
+/**
+ * 一条消息在请求体里的形状。
+ *
+ * 没有图片时保持原来的纯字符串 content —— 一些 OpenAI 兼容网关对 content
+ * 数组的支持并不完整，不能因为加了功能就把所有请求都换成数组。带图片时才
+ * 按各家的多模态格式拆成 content parts。
+ */
+function buildTurn(
+  provider: Provider,
+  message: ChatMessage
+): { role: 'user' | 'assistant'; content: unknown } {
+  const images = message.role === 'user' ? message.images ?? [] : []
+  if (images.length === 0) {
+    return { role: message.role, content: message.content }
+  }
+
+  if (provider === 'anthropic') {
+    const blocks: Record<string, unknown>[] = []
+    if (message.content) blocks.push({ type: 'text', text: message.content })
+    for (const image of images) {
+      if (image.caption) blocks.push({ type: 'text', text: image.caption })
+      blocks.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: image.mediaType,
+          data: image.data
+        }
+      })
+    }
+    return { role: message.role, content: blocks }
+  }
+
+  const parts: Record<string, unknown>[] = []
+  if (message.content) parts.push({ type: 'text', text: message.content })
+  for (const image of images) {
+    if (image.caption) parts.push({ type: 'text', text: image.caption })
+    parts.push({
+      type: 'image_url',
+      image_url: { url: `data:${image.mediaType};base64,${image.data}` }
+    })
+  }
+  return { role: message.role, content: parts }
+}
+
+function messagesHaveImages(messages: ChatMessage[]): boolean {
+  return messages.some(message => (message.images?.length ?? 0) > 0)
 }
 
 interface ParsedResponse {

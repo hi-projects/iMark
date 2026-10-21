@@ -1,25 +1,27 @@
 #!/usr/bin/env node
 /**
- * 把 plugins-src/ 下的每个插件目录打包成插件信封,产出
- * `src/main/market/builtin/<id>.imkpkg.json`(应用内置的兜底包)。
+ * 把 plugins-src/ 下的每个扩展打包成扩展信封,产出
+ * `src/main/market/builtin/<publisher>.<name>.imkpkg.json`。
  *
- * 插件由两层组成,构建也按层取产物:
- *   - `main.mode: 'node'`       → tsc CommonJS 产物(dist/node)
- *   - `main.mode: 'restricted'` → tsc ES module 产物(dist/restricted)
- *   - `render`                  → tsc ES2022 产物(dist/render),入口必须是普通脚本
+ * v2 的构建只有一种入口形态:
  *
- * 这些包不是「另一套格式」——它们与从市场下载的包**逐字节同构**,
- * 应用补装时走的是完全相同的校验与安装代码路径。
+ *   package.json  清单(唯一真身)
+ *   main.ts       → esbuild → main.js(CommonJS,`imark` 外置)
+ *   webview/*.ts  → esbuild → webview/*.js(IIFE,依赖全部内联)
+ *   其余文件      → 原样复制
  *
- * 零依赖:只用 Node 内置模块 + 仓库里已有的 typescript。
+ * 内置包与市场下载的包**逐字节同构**:应用补装时走完全相同的校验与安装代码。
+ *
+ * 关键点:清单校验、规范化与 integrity 的 stable stringify **不在本脚本里重写**。
+ * 脚本用 esbuild 把 `src/shared/extensionPackage.ts` 打成一段无依赖的 ESM,再通过
+ * data: URL import 进来。这样作者、构建、服务端、应用四处对“什么算合法清单”只有
+ * 一份实现,不会出现“本地能打包、应用拒收”的漂移。
  *
  *   npm run plugins:build
  */
 
-import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -28,110 +30,60 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
-import { dirname, join, posix, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import * as esbuild from 'esbuild'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'plugins-src')
 const OUT = join(ROOT, 'src/main/market/builtin')
+const DIST = join(SRC, 'dist')
 
-/** 三套 tsc 产物根(见 plugins-src/tsconfig.*.json 的 rootDir/outDir) */
-const DIST = {
-  node: join(SRC, 'dist/node/plugins-src'),
-  restricted: join(SRC, 'dist/restricted/plugins-src'),
-  render: join(SRC, 'dist/render/plugins-src')
-}
-
-const LIMITS = {
-  envelopeBytes: 8 * 1024 * 1024,
-  fileBytes: 2 * 1024 * 1024,
-  entryBytes: 1024 * 1024
-}
-/** 插件源码目录里不参与打包的目录 */
-const EXCLUDE = new Set(['node_modules', 'dist', '.git'])
-/** 也不参与打包的文件:源码与构建中间产物。清单单独处理(它进 envelope.manifest,不进 files) */
-const EXCLUDE_FILE = /(^|\/)(manifest\.json|.*\.(ts|tsx|mts|cts|map))$/
-
-/**
- * 与 src/shared/pluginPackage.ts 共用的格式数据(清单键序、扩展名白名单、保留段)。
- *
- * 直接读 JSON 而不是各抄一份:这个脚本跑在裸 Node 上,import 不了 TS 模块,
- * 而键序与白名单**必须**与应用逐字一致 —— 见 pluginFormat.json 里的说明。
- */
-const FORMAT = JSON.parse(readFileSync(join(ROOT, 'src/shared/pluginFormat.json'), 'utf8'))
-const ALLOWED_EXT = FORMAT.allowedExtensions
-const RESERVED_SEGMENT = FORMAT.reservedSegment
-const ARRAY_KEYS = new Set(FORMAT.arrayKeys)
+const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', '.cache'])
+/** 源码与构建中间产物不进包;清单单独进 envelope.manifest */
+const EXCLUDE_FILE = /(^|\/)(package\.json|tsconfig[^/]*\.json|.*\.(ts|tsx|mts|cts|map))$/
+/** webview 下不作为入口打包的共享模块 */
+const WEBVIEW_NON_ENTRIES = new Set(['shim.ts', 'shared.ts'])
 
 const sha256 = buf => createHash('sha256').update(buf).digest('hex')
 
 /**
- * 文本文件一律以 **LF** 进包。
+ * 文本文件一律以 LF 进包。
  *
- * `core.autocrlf=true` 的检出(Windows 默认)会让工作区里的文件是 CRLF,而包的
- * integrity 是对**字节**求的 —— 同一份源码在 Windows 与 Linux 上构建会得到
- * 两个 integrity,表现是"包没变,但校验值变了",合并时还会把这两个庞大的 JSON
- * 当成冲突文件。归一之后两边逐字节一致。
+ * `core.autocrlf=true` 的检出会让工作区文件变成 CRLF,而 integrity 是对字节求的;
+ * 归一之后 Windows 与 Linux 构建出的包逐字节一致。
  */
-const TEXT_EXT = new Set(FORMAT.textExtensions)
 function normalizeEol(name, buf) {
   const ext = (name.split('.').pop() ?? '').toLowerCase()
   if (!TEXT_EXT.has(ext)) return buf
   return Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
 }
 
-/** 按固定键序重建一个嵌套对象(main / render) */
-function orderObject(value, keys) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const out = {}
-  for (const key of keys) {
-    if (value[key] !== undefined) out[key] = value[key]
-  }
-  return out
-}
-
 /**
- * 与 shared/pluginPackage.ts 的 canonicalManifest() 同构 —— 同一个键序、同一套兜底。
- * integrity 是对 `JSON.stringify({manifest, files})` 求的 sha256,JSON.stringify 保留键的
- * 插入顺序,所以这个顺序是格式的一部分:两边对不上,包会被应用自己的校验拒掉。
+ * 把共享校验模块打成无依赖 ESM 并 import 进来。
+ *
+ * 不用临时文件:data: URL 里的模块没有任何相对 import(已 bundle),不会从
+ * 工作目录解析到别的东西。构建脚本只读本仓库源码,不碰下载来的内容。
  */
-function canonicalManifest(raw) {
-  const out = {}
-  for (const key of FORMAT.manifestKeyOrder) {
-    if (ARRAY_KEYS.has(key)) {
-      out[key] = raw[key] ?? []
-    } else if (key === 'main' && raw.main) {
-      out.main = orderObject(raw.main, FORMAT.mainKeyOrder)
-    } else if (key === 'render' && raw.render) {
-      out.render = orderObject(raw.render, FORMAT.renderKeyOrder)
-    } else if (raw[key] !== undefined) {
-      out[key] = raw[key]
-    }
-  }
-  return out
+async function loadSharedValidator() {
+  const result = await esbuild.build({
+    entryPoints: [join(ROOT, 'src/shared/extensionPackage.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    write: false,
+    logLevel: 'silent',
+    charset: 'utf8',
+    loader: { '.json': 'json' }
+  })
+  const code = result.outputFiles[0].text
+  return import(`data:text/javascript;base64,${Buffer.from(code, 'utf8').toString('base64')}`)
 }
 
-/** 与 shared/pluginPackage.ts 的 integrityInput() 同构(同样按文件名排序) */
-function integrityInput(manifest, files) {
-  const map = {}
-  for (const name of Object.keys(files).sort()) map[name] = files[name].sha256
-  return JSON.stringify({ manifest, files: map })
-}
-
-function isSafeRelPath(p) {
-  if (!p || p.length > 128 || p.startsWith('/') || p.includes('\\')) return false
-  const parts = p.split('/')
-  if (parts.length > 3) return false
-  if (parts.some(s => s === '' || s === '.' || s === '..')) return false
-  if (parts.some(s => s.toLowerCase() === RESERVED_SEGMENT)) return false
-  const ext = (parts[parts.length - 1].split('.').pop() ?? '').toLowerCase()
-  return ALLOWED_EXT.includes(ext)
-}
-
-/** 递归收集插件源目录里的静态资源(README / icon / assets 等) */
 function collectStatic(dir, base = dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (EXCLUDE.has(name) || name.startsWith('.')) continue
+    if (EXCLUDE_DIRS.has(name) || name.startsWith('.')) continue
     const full = join(dir, name)
     if (statSync(full).isDirectory()) {
       collectStatic(full, base, out)
@@ -144,171 +96,178 @@ function collectStatic(dir, base = dir, out = []) {
   return out
 }
 
-/**
- * 递归收集某个编译产物目录里的文件(入口可能 import/require 同目录的其它文件)。
- * 返回的路径相对于 `<root>/<dirName>`,也就是包内路径。
- */
-function collectDist(root, dirName, out = [], base = join(root, dirName)) {
-  if (!existsSync(base)) return out
-  for (const name of readdirSync(base)) {
-    const full = join(base, name)
-    const s = statSync(full)
-    if (s.isDirectory()) {
-      collectDist(root, dirName, out, full)
-      continue
-    }
-    if (name === 'manifest.json' || /\.(map|d\.ts)$/.test(name)) continue
-    out.push(relative(join(root, dirName), full).split(/[/\\]/).join('/'))
-  }
-  return out
+function collectTopLevel(dir, suffix) {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter(name => name.endsWith(suffix) && !name.startsWith('_'))
 }
 
-/**
- * render 入口必须是普通脚本:CSP/注入方式不允许 import/export/require/eval。
- * 返回**剥掉 tsc 模块标记之后**的字节。
- */
-function plainScript(name, buf) {
-  let code = buf.toString('utf8')
-  // tsc 会给"只 import type"的模块补一个 `export {};` —— 它不产生任何运行时语义,剥掉
-  code = code.replace(/^\s*export\s*\{\s*\}\s*;?\s*$/gm, '')
-  if (/\b(?:import|export)\b/.test(code) || /\brequire\s*\(/.test(code) || /\beval\s*\(/.test(code)) {
-    throw new Error(
-      `${name}: render 入口必须是普通脚本(不能有 import/export/require/eval);` +
-        `请作者自行打包成 IIFE`
-    )
+async function bundleMain(dir, manifest, entryName) {
+  const source = join(dir, entryName.replace(/\.js$/, '.ts'))
+  if (!existsSync(source)) {
+    throw new Error(`${relative(ROOT, dir)}:清单声明了 main=${entryName},但找不到 ${relative(ROOT, source)}`)
   }
-  return Buffer.from(code, 'utf8')
+  const result = await esbuild.build({
+    entryPoints: [source],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    charset: 'utf8',
+    write: false,
+    logLevel: 'silent',
+    // 宿主注入的虚拟模块;必须由扩展宿主在运行时解析
+    external: ['imark'],
+    // Node 内置模块自动外置;允许扩展带自己的 CJS/ESM 依赖
+    packages: 'external',
+    legalComments: 'eof',
+    sourcemap: false,
+    define: { 'process.env.NODE_ENV': '"production"' }
+  })
+  const text = result.outputFiles[0].text
+  if (text.length > LIMITS.entryBytes) {
+    throw new Error(`${relative(ROOT, source)}:入口超过 ${LIMITS.entryBytes} 字节`)
+  }
+  return Buffer.from(text, 'utf8')
 }
 
-function buildOne(dirName) {
+async function bundleWebviewEntry(source) {
+  const result = await esbuild.build({
+    entryPoints: [source],
+    bundle: true,
+    platform: 'browser',
+    format: 'iife',
+    target: 'es2022',
+    charset: 'utf8',
+    write: false,
+    logLevel: 'silent',
+    minify: true,
+    // 保留带 @license 的版权声明;完整许可证另随包分发
+    legalComments: 'eof',
+    define: { 'process.env.NODE_ENV': '"production"' }
+  })
+  const buf = Buffer.from(result.outputFiles[0].text, 'utf8')
+  if (buf.byteLength > LIMITS.entryBytes) {
+    throw new Error(`${relative(ROOT, source)}:webview 入口超过 ${LIMITS.entryBytes} 字节`)
+  }
+  return buf
+}
+
+async function buildOne(dirName, shared) {
   const dir = join(SRC, dirName)
-  const manifestRaw = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'))
-  const manifest = canonicalManifest(manifestRaw)
+  const raw = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+  const checked = shared.validateManifest(raw)
+  for (const warning of checked.warnings) {
+    console.warn(`[plugins] ${dirName}: 警告:${warning}`)
+  }
+  if (!checked.ok) {
+    throw new Error(`${dirName}: package.json 校验失败:\n  - ${checked.errors.join('\n  - ')}`)
+  }
+  const manifest = checked.value
+  const id = shared.extensionIdOf(manifest)
+  const entry = shared.entryFileOf(manifest)
+
+  /** 包内路径 → 字节 */
   const contents = {}
 
-  // ---- main 层 ----
-  if (manifest.main) {
-    const mode = manifest.main.mode
-    const root = DIST[mode]
-    if (!root) throw new Error(`${dirName}: 不认识的 main.mode ${String(mode)}`)
-    const files = collectDist(root, dirName)
-    if (files.length === 0) {
-      throw new Error(`${dirName}: 找不到 ${mode} 的编译产物,请先跑 tsc`)
-    }
-    for (const rel of files) contents[rel] = readFileSync(join(root, dirName, rel))
-    if (!contents[manifest.main.entry]) {
-      throw new Error(`${dirName}: 清单声明的 main 入口 ${manifest.main.entry} 不在编译产物里`)
-    }
+  if (entry) {
+    contents[entry] = await bundleMain(dir, manifest, entry)
   }
 
-  // ---- render 层 ----
-  if (manifest.render) {
-    const files = collectDist(DIST.render, dirName)
-    if (files.length === 0) {
-      throw new Error(`${dirName}: 找不到 render 的编译产物,请先跑 tsc`)
-    }
-    for (const rel of files) contents[rel] = readFileSync(join(DIST.render, dirName, rel))
-    const entry = contents[manifest.render.entry]
-    if (!entry) {
-      throw new Error(`${dirName}: 清单声明的 render 入口 ${manifest.render.entry} 不在编译产物里`)
-    }
-    contents[manifest.render.entry] = plainScript(`${dirName}/${manifest.render.entry}`, entry)
+  // webview/**/*.ts → webview/**/*.js;html/css 等由静态资源收集处理
+  const webviewDir = join(dir, 'webview')
+  for (const name of collectTopLevel(webviewDir, '.ts')) {
+    if (WEBVIEW_NON_ENTRIES.has(name)) continue
+    const outName = `webview/${name.replace(/\.ts$/, '.js')}`
+    contents[outName] = await bundleWebviewEntry(join(webviewDir, name))
   }
 
-  // ---- 静态资源(README / icon / assets) ----
   for (const rel of collectStatic(dir)) {
     contents[rel] = readFileSync(join(dir, rel))
   }
 
-  // ---- 入口体积 ----
-  for (const [label, entry] of [
-    ['main', manifest.main?.entry],
-    ['render', manifest.render?.entry]
-  ]) {
-    if (!entry) continue
-    const buf = contents[entry]
-    if (!buf) throw new Error(`${dirName}: ${label} 入口 ${entry} 不在包里`)
-    if (buf.byteLength > LIMITS.entryBytes) {
-      throw new Error(`${dirName}: ${label} 入口 ${entry} 超过 ${LIMITS.entryBytes} 字节上限`)
-    }
-  }
-
+  // 包内路径与体积
   const files = {}
   const data = {}
   for (const name of Object.keys(contents).sort()) {
-    if (!isSafeRelPath(name)) throw new Error(`${dirName}: 非法文件路径 ${name}`)
+    if (!shared.isSafeRelPath(name)) throw new Error(`${dirName}: 非法文件路径 ${name}`)
     const buf = normalizeEol(name, contents[name])
-    if (buf.byteLength > LIMITS.fileBytes) {
-      throw new Error(`${dirName}: ${name} 超过 ${LIMITS.fileBytes} 字节上限`)
+    const limit =
+      name === 'README.md'
+        ? shared.EXTENSION_LIMITS.readmeBytes
+        : name === shared.iconFileOf(manifest)
+          ? shared.EXTENSION_LIMITS.iconBytes
+          : shared.EXTENSION_LIMITS.fileBytes
+    if (buf.byteLength > limit) {
+      throw new Error(`${dirName}: ${name} 超过 ${limit} 字节上限`)
     }
     files[name] = { encoding: 'base64', size: buf.byteLength, sha256: sha256(buf) }
     data[name] = buf.toString('base64')
   }
 
+  const integrityInput = shared.stableIntegrityInput(manifest, files)
   const envelope = {
-    format: 'imk-plugin',
-    formatVersion: FORMAT.formatVersion,
+    format: shared.PACKAGE_FORMAT,
+    formatVersion: shared.PACKAGE_FORMAT_VERSION,
     manifest,
     files,
     data,
-    integrity: sha256(integrityInput(manifest, files))
+    integrity: sha256(integrityInput)
   }
+
+  // 自检:生成的包必须能通过应用与市场共用的同一套校验
+  const verifies = shared.validateEnvelope(envelope)
+  if (!verifies.ok) {
+    throw new Error(`${dirName}: 生成的扩展包未通过校验:\n  - ${verifies.errors.join('\n  - ')}`)
+  }
+
   const json = JSON.stringify(envelope)
-  if (Buffer.byteLength(json) > LIMITS.envelopeBytes) {
+  if (Buffer.byteLength(json) > shared.EXTENSION_LIMITS.envelopeBytes) {
     throw new Error(`${dirName}: 包体积超过上限`)
   }
+
+  // 同时铺一份可直接用于开发模式的目录
+  const devDir = join(DIST, id)
+  rmSync(devDir, { recursive: true, force: true })
+  mkdirSync(devDir, { recursive: true })
+  for (const [name, buf] of Object.entries(contents)) {
+    const target = join(devDir, name)
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, normalizeEol(name, buf))
+  }
+  writeFileSync(join(devDir, 'package.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+
   return { envelope, files: Object.keys(files) }
 }
 
 // ---------- 主流程 ----------
 
-const tsc = join(ROOT, 'node_modules/typescript/bin/tsc')
-console.log('[plugins] 编译 plugins-src …')
-for (const target of ['node', 'restricted', 'render']) {
-  const config = join(SRC, `tsconfig.${target}.json`)
-  if (!existsSync(config)) {
-    throw new Error(`缺少 ${relative(ROOT, config)} —— 需要 node/restricted/render 三份 tsconfig`)
-  }
-  // 清掉旧产物:tsc 不会删除已被移除的源文件对应的 .js
-  rmSync(join(SRC, `dist/${target}`), { recursive: true, force: true })
-  execFileSync(process.execPath, [tsc, '-p', config], { stdio: 'inherit' })
-}
+const shared = await loadSharedValidator()
+const TEXT_EXT = new Set(shared.EXTENSION_TEXT_EXTENSIONS)
+const LIMITS = shared.EXTENSION_LIMITS
+
+rmSync(DIST, { recursive: true, force: true })
 
 const plugins = readdirSync(SRC).filter(
   name => !name.startsWith('.') && name !== 'dist' && statSync(join(SRC, name)).isDirectory()
 )
 if (plugins.length === 0) {
-  console.log('[plugins] plugins-src/ 下没有插件')
+  console.log('[plugins] plugins-src/ 下没有扩展')
   process.exit(0)
 }
 
 mkdirSync(OUT, { recursive: true })
 for (const name of plugins) {
-  const raw = JSON.parse(readFileSync(join(SRC, name, 'manifest.json'), 'utf8'))
-  const manifest = canonicalManifest(raw)
-
-  // 把清单拷进对应编译产物目录,让它成为**可以直接跑开发模式的插件目录**。
-  // render 层没有独立的源目录概念,但 manifest 仍可放在 render dist 里。
-  if (manifest.main) {
-    copyFileSync(
-      join(SRC, name, 'manifest.json'),
-      join(DIST[manifest.main.mode], name, 'manifest.json')
-    )
+  if (!existsSync(join(SRC, name, 'package.json'))) {
+    console.warn(`[plugins] 跳过 ${name}:没有 package.json`)
+    continue
   }
-  if (manifest.render) {
-    mkdirSync(join(DIST.render, name), { recursive: true })
-    copyFileSync(join(SRC, name, 'manifest.json'), join(DIST.render, name, 'manifest.json'))
-  }
-
-  const { envelope, files } = buildOne(name)
-  const target = join(OUT, `${envelope.manifest.id}.imkpkg.json`)
+  const { envelope, files } = await buildOne(name, shared)
+  const id = shared.extensionIdOf(envelope.manifest)
+  const target = join(OUT, `${id}.imkpkg.json`)
   writeFileSync(target, JSON.stringify(envelope, null, 2) + '\n', 'utf8')
   console.log(
-    `[plugins] ${envelope.manifest.id} ${envelope.manifest.version} → ${posix.join(
-      'src/main/market/builtin',
-      `${envelope.manifest.id}.imkpkg.json`
-    )}` +
-      `\n          文件 ${files.join(', ')}` +
-      `\n          integrity ${envelope.integrity}`
+    `[plugins] ${id} ${envelope.manifest.version} → src/main/market/builtin/${id}.imkpkg.json\n` +
+      `          文件 ${files.join(', ')}\n` +
+      `          integrity ${envelope.integrity}`
   )
 }

@@ -1865,6 +1865,31 @@ export function tableInputFilter(tr: Transaction): TransactionSpec | readonly Tr
 }
 
 /**
+ * 程序化选区落进渲染态表格时(例如扩展插入表格后调用 `setSelection`),
+ * 把 CM 选区挪到表格外并进入对应单元格的编辑态。
+ *
+ * `autoFocus` 只在 widget 首次创建时跑一次;插入表格走的是「先 edit、再 setSelection」
+ * 两条 RPC,等选区到达时 widget 已经建好,不会再触发 autoFocus。
+ */
+export function focusRenderedTableAtPosition(view: EditorView, position: number): boolean {
+  for (const state of renderedTables) {
+    if (state.view !== view) continue
+    const model = state.model
+    if (position < model.protectFrom || position > model.protectTo) continue
+    if (!state.wrap.isConnected) continue
+    // 先把 CM 选区挪出隐藏源码,再让单元格接管焦点(顺序与 autoFocus 一致)
+    let safe = -1
+    if (model.protectFrom > 0) safe = model.protectFrom - 1
+    else if (model.protectTo < view.state.doc.length) safe = model.protectTo + 1
+    if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
+    const loc = locateCell(model, position)
+    if (loc) startEdit(state, loc.row, loc.col)
+    return true
+  }
+  return false
+}
+
+/**
  * 鼠标点在渲染态表格的 [protectFrom, protectTo] 区间时,返回表格外最近的落点
  * (否则 null)。insert 非空表示表格贴着文末、下方没有可落的行,
  * 调用方需要在同一笔事务里插入它,点击才能真正落到表格后面。

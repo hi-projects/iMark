@@ -23,7 +23,7 @@
  * **当前标签的镜像**。状态栏、窗口标题、大纲、插件 API、自动保存读的都是这些
  * 旧字段;每次激活/编辑/保存后由 `syncMirror()` 同步,避免全仓改读取点。
  */
-import type { EditorState } from '@codemirror/state'
+import { ChangeSet, type EditorState, type TransactionSpec } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { applyWrapping, buildDocumentState } from '../editor/setup'
 import { refreshPluginExtensions } from '../editor/pluginExtensions'
@@ -61,6 +61,32 @@ interface TabRuntime {
 }
 
 const runtime = new Map<string, TabRuntime>()
+
+/**
+ * 文档级事件的上报口(编辑器桥订阅)。
+ *
+ * 表格输入、另存为、外部重载这些路径改完标签之后没必要让桥去轮询文本 ——
+ * 由这里在**改动落定的那一刻**说一声,桥负责版本号与跨进程消息。
+ */
+export type TabDocumentEvent =
+  | { kind: 'saved'; tabId: string }
+  | { kind: 'replaced'; tabId: string; text: string; eol: 'LF' | 'CRLF' }
+
+let documentObserver: ((event: TabDocumentEvent) => void) | null = null
+
+export function setTabDocumentObserver(
+  fn: ((event: TabDocumentEvent) => void) | null
+): void {
+  documentObserver = fn
+}
+
+function notifyDocumentEvent(event: TabDocumentEvent): void {
+  try {
+    documentObserver?.(event)
+  } catch (err) {
+    console.error('[iMark] 文档事件通知失败', err)
+  }
+}
 
 let nextId = 1
 let metaTimer: ReturnType<typeof setTimeout> | undefined
@@ -371,6 +397,62 @@ function refreshOutline(id: string): void {
   }
 }
 
+/**
+ * 把一批「旧坐标」的增量修改应用到某个标签。
+ *
+ * 当前标签走视图 dispatch —— 撤销栈、选区映射、WYSIWYG 都按正常输入处理;
+ * 后台标签没有视图,只能 `state.update()`,再顺手把字数/大纲结清
+ * (它下一次被激活时看到的就是新内容,不会等一次 250ms 的防抖)。
+ *
+ * 返回 false 表示修改不合法(越界/重叠):调用方据此回 `invalid-edit`,
+ * 而不是让 ChangeSet 的异常穿到 IPC 层变成一句看不清的错误。
+ */
+export function applyTabChanges(
+  id: string,
+  changes: ReadonlyArray<{ from: number; to: number; text: string }>
+): boolean {
+  const state = tabState(id)
+  if (!state) return false
+  let set: ChangeSet
+  try {
+    // ChangeSet 的字段叫 `insert`；协议 DTO 用的是 `text`，这里必须显式转换。
+    // 传错字段不会抛错，只会得到一份空 ChangeSet —— 症状是「扩展说改成功了，文档没动」。
+    set = ChangeSet.of(
+      changes.map(change => ({ from: change.from, to: change.to, insert: change.text })),
+      state.doc.length
+    )
+  } catch {
+    return false
+  }
+  if (id === appStore.activeTabId && editorHolder.view) {
+    editorHolder.view.dispatch({ changes: set, userEvent: 'input' })
+    return true
+  }
+  const rt = runtime.get(id)
+  if (!rt) return false
+  rt.state = rt.state.update({ changes: set }).state
+  refreshMeta(id)
+  refreshOutline(id)
+  return true
+}
+
+/**
+ * 对某个标签的 state 施加一个事务(目前只用于装饰:它不产生文本变化)。
+ *
+ * 没有 span/撤销栈的副作用,因此不需要过滤;后台标签也只是把 runtime 里
+ * 那份 state 换掉,等切回来时 `mountTabState` 会连同装饰一起装进视图。
+ */
+export function updateTabState(id: string, spec: TransactionSpec): boolean {
+  if (id === appStore.activeTabId && editorHolder.view) {
+    editorHolder.view.dispatch(spec)
+    return true
+  }
+  const rt = runtime.get(id)
+  if (!rt) return false
+  rt.state = rt.state.update(spec).state
+  return true
+}
+
 function clearTimers(): void {
   clearTimeout(metaTimer)
   clearTimeout(outlineTimer)
@@ -423,6 +505,7 @@ export function markTabSaved(id: string, text: string): void {
   const current = stateOf(id)
   tab.dirty = current ? current.doc.toString() !== text : false
   if (id === appStore.activeTabId) syncMirror()
+  notifyDocumentEvent({ kind: 'saved', tabId: id })
 }
 
 /** 另存为/重命名后更新路径与名字 */
@@ -458,6 +541,7 @@ export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRL
   }
   syncMirror()
   if (id === appStore.activeTabId && view) updateActiveOutline(view)
+  notifyDocumentEvent({ kind: 'replaced', tabId: id, text: content, eol })
 }
 
 // ---------- 文件树改名 / 删除 ----------

@@ -14,7 +14,6 @@ import {
 } from 'lucide-vue-next'
 import type { VaultNode } from '@shared/types'
 import { appStore } from '../stores/app'
-import { invokeContrib, menuItems } from '../services/pluginUi'
 import {
   createDir,
   createFile,
@@ -148,26 +147,6 @@ const menuEntries = computed<MenuEntry[]>(() => {
   }
   entries.push({ label: '重命名', run: () => startEdit('rename', '', node, node.name) })
   entries.push({ label: '删除', danger: true, run: () => void onDelete(node) })
-
-  // 插件条目排在最后、并有分隔线:右键菜单是应用自己的地盘,插件是客人
-  const fromPlugins = menuItems('files')
-  if (fromPlugins.length > 0) {
-    entries.push({ label: '', separator: true, run: () => undefined })
-    for (const item of fromPlugins) {
-      entries.push({
-        label: item.label,
-        danger: item.danger,
-        source: item.pluginName,
-        run: () =>
-          void invokeContrib({
-            pluginId: item.pluginId,
-            itemId: item.id,
-            from: 'files',
-            filePath: node.path
-          })
-      })
-    }
-  }
   return entries
 })
 

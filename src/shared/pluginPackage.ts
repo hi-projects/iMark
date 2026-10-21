@@ -250,9 +250,9 @@ export const LIMITS = {
   /** 整包上限 */
   envelopeBytes: 8 * 1024 * 1024,
   /** 单个文件上限 */
-  fileBytes: 2 * 1024 * 1024,
-  /** main / render 各自入口的上限 */
-  entryBytes: 1024 * 1024,
+  fileBytes: 4 * 1024 * 1024,
+  /** main / render 各自入口的上限（render 入口可能内联 PDF.js 等运行时依赖） */
+  entryBytes: 4 * 1024 * 1024,
   readmeBytes: 256 * 1024,
   iconBytes: 64 * 1024,
   fileCount: 64,
@@ -260,7 +260,7 @@ export const LIMITS = {
   pathDepth: 3,
   /**
    * 源码查看器里单个文件最多显示多少字节。
-   * main.js 的上限是 1 MiB,一整个塞进 `<pre>` 会让界面卡住;超出的部分截断并明确标注。
+   * 入口文件的上限是 4 MiB,一整个塞进 `<pre>` 会让界面卡住;超出的部分截断并明确标注。
    */
   sourceTextBytes: 200 * 1024,
   /**

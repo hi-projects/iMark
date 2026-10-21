@@ -1,32 +1,39 @@
 /**
- * AI for Edit —— 主进程侧。
+ * AI for Edit —— 扩展宿主侧。
  *
- * 它负责配置、密钥、网络与提示词；文档正文由 render 层读取，**预览与确认也在
- * render 层**：AI 结果不会自动写回，只有用户在预览面板里点确认才会改文档。
+ * 它负责配置、密钥、网络、提示词与文档编辑；界面全部在 webview 里
+ * （`webview/chat.ts` 与 `webview/character.ts`）。扩展不把密钥、提示词以外的
+ * 请求细节交给 webview，也不让 webview 直接碰编辑器 —— 所有编辑都经
+ * `TextEditor.edit` 回到 renderer 的同一个 CM6 transaction。
  *
- * 两层之间是单向消息，这里用关联 id 实现请求/应答：
- *   preview.open（main → render）   打开预览面板
- *   ai.beautify / ai.generate（render → main）  请求 AI
- *   ai.reply（main → render）      返回结果或失败原因
- *   ai.cancel（render → main）     面板关闭时取消在途请求
+ * 与 webview 的协议（`webview/shim.ts` 那一侧）：
+ *   config（扩展 → 页面）   配置快照；密钥不在其中
+ *   doc（扩展 → 页面）      活动文档快照：key/文件名/版本/正文/光标
+ *   legacy（页面 → 扩展）   旧 render 层的单向通道：ai.chat / ai.beautify / …
+ *   request/response        markdown.render 与 doc.applyEdits 的请求/应答
+ *   chat.open / close       小人点击打开对话 / 对话面板要求关闭
  *
- * 选 node main 而不是 restricted：restricted 的 net.fetch 有 30 秒硬超时，且默认
- * 禁止访问本机地址（本地 Ollama 会被挡）。
+ * 正文只在用户确认后写入：AI 结果先回到面板预览，`view.dispatch` 在 shim 里
+ * 被翻译成一次 `TextEditor.edit`。扩展从不主动改文档。
  */
 
-import { randomUUID } from 'node:crypto'
-import type { ImkApi, PluginContext, PluginRuntime } from '@shared/pluginApi'
-import type { PluginActionPayload, PluginActionResult } from '@shared/plugins'
+import { randomBytes } from 'node:crypto'
+import { basename } from 'node:path'
+import * as imark from 'imark'
 import {
   AiError,
   callAi,
   modelSummary,
   readAiConfig,
   requestChat,
+  type AiConfigSource,
   type AiResult,
+  type ChatImage,
   type ChatMessage
 } from './aiClient'
 import {
+  hasTextAttachments,
+  imageNoteForAttachments,
   joinDocument,
   normalizeAiOutput,
   normalizeChatText,
@@ -37,45 +44,47 @@ import {
   userPromptForBeautify,
   userPromptForGenerate
 } from './prompts'
-import type {
-  AiReplyMessage,
-  AttachmentItem,
-  ChatHistoryItem,
-  DocReply,
-  PreviewOpenMessage
-} from './protocol'
+import type { AttachmentImageUploadRef, ChatHistoryItem } from './protocol'
 
-/** 发给 AI 的正文上限；渲染层也用这个值拒绝过大的文档 */
+const SECTION = 'imark.ai-for-edit'
+const CHAT_VIEW_TYPE = 'imark.ai-for-edit.chat'
+const CHARACTER_VIEW_TYPE = 'imark.ai-for-edit.character'
+
+const CMD_OPEN_CHAT = 'imark.ai-for-edit.openChat'
+const CMD_GENERATE = 'imark.ai-for-edit.generate'
+const CMD_TEST_CONNECTION = 'imark.ai-for-edit.testConnection'
+const CMD_TEST_TARGET = 'imark.ai-for-edit.testTarget'
+
+/** 发给 AI 的正文上限；webview 也用这个值拒绝过大的文档 */
 const MAX_INPUT_CHARS = 120_000
-/** AI 返回内容的字符上限，同时满足宿主 256 KiB 的消息上限 */
+/** AI 返回内容的字符上限 */
 const MAX_OUTPUT_CHARS = 180_000
 /** 行首菜单对话框里那句话 / 对话输入的长度上限 */
 const MAX_PROMPT_CHARS = 4_000
 const MAX_CHAT_CHARS = 4_000
-/** 设置页里的自定义 system 提示词上限；过大只会白白消耗上下文与费用 */
+/** 设置页里的自定义 system 提示词上限 */
 const MAX_SYSTEM_PROMPT_CHARS = 20_000
-/** 对话历史只带最近若干轮；每条也截断，避免把整段美化结果塞回上下文 */
+/** 对话历史只带最近若干轮；每条也截断 */
 const MAX_HISTORY_ITEMS = 12
 const MAX_HISTORY_TEXT = 2_000
-/**
- * 参考文件的二次校验（render 层已经截断过一次）。
- *
- * 与 render.ts 的 MAX_ATTACHMENTS / MAX_ATTACHMENT_CHARS / MAX_ATTACHMENT_TOTAL
- * 保持同一组数值：render 是体验，main 是边界，两边都过一遍才放心。
- */
+/** 参考文件二次校验（webview 已经截断过一次） */
 const MAX_ATTACHMENTS = 6
 const MAX_ATTACHMENT_CHARS = 24_000
 const MAX_ATTACHMENTS_TOTAL = 40_000
-/** 与宿主 render.send / handleRenderMessage 的上限对齐，并留出 JSON 转义余量 */
+/** 与 webview 的消息上限对齐，并留出 JSON 转义余量 */
 const MAX_MESSAGE_CHARS = 240 * 1024
-/** 一次文档读取的等待上限；超时说明编辑器没有响应 */
-const DOC_TIMEOUT_MS = 10_000
-
-interface Pending {
-  resolve: (value: unknown) => void
-  reject: (error: Error) => void
-  timer: NodeJS.Timeout
-}
+/** 扫描页图片的二次校验 */
+const MAX_SCAN_IMAGES = 16
+const MAX_SCAN_IMAGE_CHARS = 200_000
+const MAX_SCAN_IMAGE_TOTAL_CHARS = 2_800_000
+/** 等齐一组图片的上限 */
+const IMAGE_UPLOAD_WAIT_MS = 5_000
+/** 没有被任何请求取走的图片最多留这么久 */
+const IMAGE_UPLOAD_TTL_MS = 2 * 60_000
+const MAX_IMAGE_UPLOADS = 32
+const IMAGE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/
+/** 文档快照的防抖：连续输入时不必每个按键都往 webview 送一遍全文 */
+const DOC_PUSH_DEBOUNCE_MS = 80
 
 interface AiTextResult {
   text: string
@@ -84,204 +93,736 @@ interface AiTextResult {
   truncated?: boolean
 }
 
-class AiForEditPlugin implements PluginRuntime {
-  private readonly pending = new Map<string, Pending>()
+/** main 层内部使用的图片：已经从 `attach.image` 上传里解析出来 */
+interface ResolvedImage {
+  page: number
+  mediaType: 'image/jpeg' | 'image/png'
+  data: string
+  width: number
+  height: number
+}
+
+/** 参考文件 + 它的扫描页图片 */
+interface ResolvedAttachment {
+  name: string
+  text: string
+  images: ResolvedImage[]
+}
+
+/** 一组正在分条上传的扫描页图片 */
+interface ImageUpload {
+  id: string
+  total: number
+  name: string
+  images: Map<number, ResolvedImage>
+  chars: number
+  at: number
+}
+
+/** 行首「+」菜单传进来的参数 */
+interface LineMenuArgs {
+  values?: Record<string, unknown>
+  /** 点「+」时的那一行（1 基）；缺失时用当前光标行 */
+  line?: number
+  source?: string
+}
+
+interface TargetActionArgs {
+  targetId?: string
+  source?: string
+}
+
+interface DocSnapshot {
+  key: string
+  fileName: string
+  filePath: string | null
+  version: number
+  text: string
+  selectionHead: number
+  editable: boolean
+}
+
+class AiForEditExtension {
   private readonly aborts = new Set<AbortController>()
-  /** 预览面板发起的 AI 请求：request id → 可取消的 controller */
+  /** 面板发起的 AI 请求：request id → 可取消的 controller */
   private readonly aiJobs = new Map<string, AbortController>()
+  /** 正在分条上传的扫描页图片：upload id → 已到的图片 */
+  private readonly imageUploads = new Map<string, ImageUpload>()
+  private readonly output: imark.OutputChannel
+  private chatPanel: imark.WebviewPanel | null = null
+  private characterPanel: imark.WebviewPanel | null = null
+  private statusItem: imark.StatusBarItem | null = null
+  private docTimer: NodeJS.Timeout | null = null
   private busy = false
-  private offRender: (() => void) | null = null
+  private disposed = false
 
-  constructor(private readonly imk: ImkApi) {}
-
-  onEnable(): void {
-    // 宿主停用/重载时会清空监听，所以每次 onEnable 都重新登记
-    this.offRender?.()
-    this.offRender =
-      this.imk.render?.onMessage((channel, data) => {
-        this.onRenderMessage(channel, data)
-      }) ?? null
+  constructor(private readonly context: imark.ExtensionContext) {
+    this.output = imark.window.createOutputChannel('AI for Edit')
   }
 
-  onDisable(): void {
-    this.offRender?.()
-    this.offRender = null
-    this.cancelInFlight()
+  // ---------- 生命周期 ----------
+
+  start(): void {
+    this.context.subscriptions.push(
+      imark.commands.registerCommand(CMD_OPEN_CHAT, () => this.openChat()),
+      imark.commands.registerCommand(CMD_GENERATE, (args?: LineMenuArgs) =>
+        this.generate(args)
+      ),
+      imark.commands.registerCommand(CMD_TEST_CONNECTION, () => this.testConnection()),
+      imark.commands.registerCommand(CMD_TEST_TARGET, (args?: TargetActionArgs) =>
+        this.testConnection(args?.targetId)
+      )
+    )
+
+    this.statusItem = imark.window.createStatusBarItem(imark.StatusBarAlignment.Right, 100)
+    this.statusItem.text = '$(sparkles) AI'
+    this.statusItem.tooltip = '打开 AI 对话'
+    this.statusItem.command = CMD_OPEN_CHAT
+    this.statusItem.show()
+    this.context.subscriptions.push(this.statusItem)
+
+    // 只有 chat 有序列化器；character 每次启动按配置重建，不跨启动恢复
+    this.context.subscriptions.push(
+      imark.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
+        deserializeWebviewPanel: async panel => {
+          this.adoptChatPanel(panel)
+        }
+      })
+    )
+
+    this.context.subscriptions.push(
+      imark.window.onDidChangeActiveTextEditor(() => this.scheduleDoc(true)),
+      imark.window.onDidChangeTextEditorSelection(() => this.scheduleDoc()),
+      imark.workspace.onDidChangeTextDocument(event => {
+        const active = imark.window.activeTextEditor
+        if (!active) return
+        if (event.document.uri.toString() === active.document.uri.toString()) {
+          this.scheduleDoc()
+        }
+      }),
+      imark.workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration(SECTION)) this.onConfigChanged()
+      })
+    )
+
+    this.syncCharacterPanel()
   }
 
-  onConfigChange(): void {
-    // 配置刚变（多半是地址/密钥）：不要再把文档发往旧地址
-    this.cancelInFlight()
-  }
-
-  async runAction(
-    actionId: string,
-    _ctx: PluginContext,
-    targetId?: string,
-    payload?: PluginActionPayload
-  ): Promise<PluginActionResult> {
-    if (this.busy) {
-      return { ok: false, message: 'AI 正在处理上一个请求，请稍候' }
+  stop(): void {
+    this.disposed = true
+    if (this.docTimer) {
+      clearTimeout(this.docTimer)
+      this.docTimer = null
     }
-    this.busy = true
+    this.cancelInFlight()
+    this.chatPanel?.dispose()
+    this.chatPanel = null
+    this.characterPanel?.dispose()
+    this.characterPanel = null
+    this.statusItem?.dispose()
+    this.statusItem = null
+    this.output.dispose()
+  }
+
+  private onConfigChanged(): void {
+    // 地址/密钥可能刚变：不要把在途请求继续发向旧地址
+    this.cancelInFlight()
+    this.syncCharacterPanel()
+    const config = this.configSnapshot()
+    this.postToChat({ type: 'config', config })
+    this.characterPanel?.webview.postMessage({ type: 'config', config })
+  }
+
+  // ---------- 配置与密钥 ----------
+
+  private getConfig(): imark.WorkspaceConfiguration {
+    return imark.workspace.getConfiguration(SECTION)
+  }
+
+  private configGet<T>(key: string, fallback: T): T {
+    return this.getConfig().get<T>(key, fallback)
+  }
+
+  private configSnapshot(): Record<string, unknown> {
+    return {
+      endpoints: this.configGet<unknown>('endpoints', []),
+      generatePrompt: this.configGet<string>('generatePrompt', ''),
+      beautifyPrompt: this.configGet<string>('beautifyPrompt', ''),
+      timeoutSec: this.configGet<number>('timeoutSec', 60),
+      scannedPdfImages: this.configGet<boolean>('scannedPdfImages', true),
+      characterEnabled: this.configGet<boolean>('characterEnabled', true),
+      characterStyle: this.configGet<string>('characterStyle', 'cat')
+    }
+  }
+
+  private configSource(): AiConfigSource {
+    return {
+      get: key => this.getConfig().get(key),
+      getSecret: key => this.context.secrets.get(key)
+    }
+  }
+
+  // ---------- 面板 ----------
+
+  private openChat(): void {
+    if (this.disposed) return
+    if (this.chatPanel) return
+    const panel = imark.window.createWebviewPanel(
+      CHAT_VIEW_TYPE,
+      'AI 对话',
+      { viewColumn: imark.ViewColumn.One },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.context.extensionUri],
+        imark: { presentation: 'sidebar', width: 420 }
+      }
+    )
+    this.adoptChatPanel(panel)
+  }
+
+  private adoptChatPanel(panel: imark.WebviewPanel): void {
+    if (this.disposed) {
+      panel.dispose()
+      return
+    }
+    if (this.chatPanel && this.chatPanel !== panel) this.chatPanel.dispose()
+    this.chatPanel = panel
+
+    this.context.subscriptions.push(
+      panel.webview.onDidReceiveMessage(message => {
+        void this.onChatMessage(message).catch(err => {
+          this.log('warn', `处理界面消息失败：${errorText(err)}`)
+        })
+      }),
+      panel.onDidDispose(() => {
+        if (this.chatPanel !== panel) return
+        this.chatPanel = null
+        // 面板关掉后，在途请求的回复已经没有去处；一并取消，避免占着 busy
+        this.cancelInFlight()
+      })
+    )
+
+    panel.webview.html = this.panelHtml(panel, 'chat')
+    this.pushDoc()
+  }
+
+  private syncCharacterPanel(): void {
+    if (this.disposed) return
+    const enabled = this.configGet<boolean>('characterEnabled', true) !== false
+    if (!enabled) {
+      this.characterPanel?.dispose()
+      this.characterPanel = null
+      return
+    }
+    if (this.characterPanel) return
+
+    const panel = imark.window.createWebviewPanel(
+      CHARACTER_VIEW_TYPE,
+      'AI 助手',
+      { viewColumn: imark.ViewColumn.One },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.context.extensionUri],
+        imark: {
+          presentation: 'floating',
+          transparent: true,
+          anchor: 'bottom-right',
+          width: 108,
+          height: 128
+        }
+      }
+    )
+    this.characterPanel = panel
+    this.context.subscriptions.push(
+      panel.webview.onDidReceiveMessage(message => {
+        if (!message || typeof message !== 'object') return
+        const type = (message as { type?: unknown }).type
+        if (type === 'chat.open') this.openChat()
+      }),
+      panel.onDidDispose(() => {
+        if (this.characterPanel === panel) this.characterPanel = null
+      })
+    )
+    panel.webview.html = this.panelHtml(panel, 'character')
+  }
+
+  private panelHtml(panel: imark.WebviewPanel, mode: 'chat' | 'character'): string {
+    const nonce = randomBytes(16).toString('base64')
+    const csp = panel.webview.cspSource
+    const entry = mode === 'chat' ? 'chat.js' : 'character.js'
+    const scriptUri = panel.webview.asWebviewUri(
+      imark.Uri.joinPath(this.context.extensionUri, 'webview', entry)
+    )
+    const bootstrap = JSON.stringify({
+      mode,
+      panelId: '',
+      extensionId: this.context.extension.id,
+      config: this.configSnapshot()
+    }).replace(/</g, '\\u003c')
+
+    const title = mode === 'chat' ? 'AI 对话' : 'AI 助手'
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${csp} data: blob:; font-src ${csp}; style-src ${csp} 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp}; connect-src https: http: ws: wss:; frame-src 'none'; worker-src blob: ${csp};" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${title}</title>
+</head>
+<body>
+<script type="application/json" id="imark-bootstrap">${bootstrap}</script>
+<script nonce="${nonce}" src="${escapeAttr(scriptUri.toString())}"></script>
+</body>
+</html>`
+  }
+
+  // ---------- 文档快照 ----------
+
+  private scheduleDoc(immediate = false): void {
+    if (!this.chatPanel) return
+    if (immediate) {
+      if (this.docTimer) {
+        clearTimeout(this.docTimer)
+        this.docTimer = null
+      }
+      this.pushDoc()
+      return
+    }
+    if (this.docTimer) return
+    this.docTimer = setTimeout(() => {
+      this.docTimer = null
+      this.pushDoc()
+    }, DOC_PUSH_DEBOUNCE_MS)
+  }
+
+  private pushDoc(): void {
+    if (!this.chatPanel) return
+    void this.chatPanel.webview.postMessage({ type: 'doc', doc: this.docSnapshot() })
+  }
+
+  private docSnapshot(): DocSnapshot {
+    const editor = imark.window.activeTextEditor
+    if (!editor) {
+      return {
+        key: 'no-document',
+        fileName: '未关联文档',
+        filePath: null,
+        version: 0,
+        text: '',
+        selectionHead: 0,
+        editable: false
+      }
+    }
+    const document = editor.document
+    const text = document.getText()
+    const fsPath = document.uri.scheme === 'file' ? document.uri.fsPath : ''
+    const name = fsPath ? basename(fsPath) : document.uri.path.replace(/^\/+/, '') || '未命名'
+    return {
+      key: document.uri.toString(),
+      fileName: name,
+      filePath: fsPath || null,
+      version: document.version,
+      text,
+      selectionHead: document.offsetAt(editor.selection.active),
+      editable: true
+    }
+  }
+
+  private postToChat(message: unknown): void {
+    if (!this.chatPanel) return
+    void this.chatPanel.webview.postMessage(message)
+  }
+
+  private postLegacy(channel: string, data: unknown): void {
+    this.postToChat({ type: 'legacy', channel, data })
+  }
+
+  // ---------- webview 消息 ----------
+
+  private async onChatMessage(raw: unknown): Promise<void> {
+    if (this.disposed || !raw || typeof raw !== 'object') return
+    const message = raw as Record<string, unknown>
+    const type = message.type
+
+    if (type === 'legacy') {
+      const channel = typeof message.channel === 'string' ? message.channel : ''
+      if (!channel) return
+      await this.onLegacy(channel, message.data)
+      return
+    }
+    if (type === 'request') {
+      await this.onRequest(message)
+      return
+    }
+    if (type === 'close') {
+      this.chatPanel?.dispose()
+    }
+  }
+
+  private async onRequest(message: Record<string, unknown>): Promise<void> {
+    const id = typeof message.id === 'string' ? message.id : ''
+    if (!id) return
+    const kind = typeof message.kind === 'string' ? message.kind : ''
+
     try {
-      if (actionId === 'generate-content') return await this.generate(payload)
-      if (actionId === 'test-connection') return await this.testConnection()
-      if (actionId === 'test-target') return await this.testConnection(targetId)
-      return { ok: false, message: `未知动作：${actionId}` }
+      if (kind === 'markdown.render') {
+        const text = typeof message.text === 'string' ? message.text : ''
+        const html = await imark.imark.renderMarkdown(text)
+        this.replyRequest(id, true, html)
+        return
+      }
+      if (kind === 'doc.applyEdits') {
+        const result = await this.applyEdits(message)
+        this.replyRequest(id, true, result)
+        return
+      }
+      throw new AiError(`未知的界面请求：${kind || '(空)'}`)
     } catch (err) {
-      return this.failure(err)
-    } finally {
-      this.busy = false
+      this.replyRequest(id, false, undefined, errorText(err))
     }
   }
 
-  // ---------- 动作 ----------
+  private replyRequest(id: string, ok: boolean, value?: unknown, error?: string): void {
+    this.postToChat({
+      type: 'response',
+      id,
+      ok,
+      ...(ok ? { value } : { error: error || '请求失败' })
+    })
+  }
 
-  private async generate(payload?: PluginActionPayload): Promise<PluginActionResult> {
-    const prompt = typeof payload?.values?.prompt === 'string' ? payload.values.prompt.trim() : ''
-    if (!prompt) return { ok: false, message: '请填写想生成的内容' }
+  /**
+   * webview 里的伪 `view.dispatch`。
+   *
+   * 只接受与页面当前文档一致的编辑：聊天面板的文档快照可能落后于一次快速切换，
+   * 把编辑打到另一篇文档上比失败更糟。CM6 的偏移与 JS 字符串下标一致，
+   * `positionAt` 按 UTF-16 计算，不需要额外换算。
+   */
+  private async applyEdits(message: Record<string, unknown>): Promise<{ version: number }> {
+    const editor = imark.window.activeTextEditor
+    if (!editor) throw new AiError('当前没有打开的文档，无法写入')
+    const key = typeof message.key === 'string' ? message.key : ''
+    const document = editor.document
+    if (key && document.uri.toString() !== key) {
+      throw new AiError('文档已经切换，请重新确认')
+    }
+
+    const rawEdits = Array.isArray(message.edits) ? message.edits : []
+    const edits: { from: number; to: number; insert: string }[] = []
+    const text = document.getText()
+    for (const item of rawEdits) {
+      if (!item || typeof item !== 'object') continue
+      const edit = item as Record<string, unknown>
+      const from = clampOffset(Number(edit.from), text.length)
+      const to = clampOffset(Number(edit.to), text.length)
+      const insert = typeof edit.insert === 'string' ? edit.insert : ''
+      edits.push({ from: Math.min(from, to), to: Math.max(from, to), insert })
+    }
+    if (edits.length === 0) return { version: document.version }
+
+    const ok = await editor.edit(edit => {
+      for (const change of edits) {
+        edit.replace(
+          new imark.Range(document.positionAt(change.from), document.positionAt(change.to)),
+          change.insert
+        )
+      }
+    })
+    if (!ok) throw new AiError('文档拒绝修改')
+
+    if (typeof message.selection === 'number') {
+      const offset = clampOffset(message.selection, text.length)
+      editor.setSelection(document.positionAt(offset))
+    }
+    return { version: document.version }
+  }
+
+  /** 旧 render 层的单向通道；形状与 v1 的 render.onMessage 保持一致 */
+  private async onLegacy(channel: string, data: unknown): Promise<void> {
+    const payload = (data ?? {}) as Record<string, unknown>
+    const id = typeof payload.id === 'string' ? payload.id : ''
+
+    if (channel === 'attach.image') {
+      this.acceptImageUpload(payload)
+      return
+    }
+
+    if (channel === 'ai.beautify') {
+      if (!id) return
+      const text = typeof payload.text === 'string' ? payload.text : ''
+      const instruction = typeof payload.instruction === 'string' ? payload.instruction : ''
+      if (!text) {
+        await this.replyAi(id, { ok: false, message: '没有收到文档内容' })
+        return
+      }
+      let attachments: ResolvedAttachment[]
+      try {
+        attachments = await this.readAttachments(payload.attachments)
+      } catch (err) {
+        await this.replyAi(id, { ok: false, ...this.toFailure(err) })
+        return
+      }
+      void this.handlePanelAi(
+        id,
+        controller => this.runBeautify(text, instruction, attachments, controller),
+        '美化结果已生成，等待确认'
+      )
+      return
+    }
+
+    if (channel === 'ai.generate') {
+      if (!id) return
+      const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
+      let attachments: ResolvedAttachment[]
+      try {
+        attachments = await this.readAttachments(payload.attachments)
+      } catch (err) {
+        await this.replyAi(id, { ok: false, ...this.toFailure(err) })
+        return
+      }
+      void this.handlePanelAi(
+        id,
+        controller => this.runGenerate(prompt, attachments, controller),
+        '生成结果已生成，等待确认'
+      )
+      return
+    }
+
+    if (channel === 'ai.chat') {
+      await this.startChat(payload)
+      return
+    }
+
+    if (channel === 'ai.cancel') {
+      if (id) this.cancelAi(id)
+      return
+    }
+  }
+
+  private async startChat(payload: Record<string, unknown>): Promise<void> {
+    const id = typeof payload.id === 'string' ? payload.id : ''
+    if (!id) return
+    const message = typeof payload.message === 'string' ? payload.message : ''
+    const text = typeof payload.text === 'string' ? payload.text : ''
+
+    const history: ChatMessage[] = []
+    const raw = Array.isArray(payload.history) ? payload.history : []
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue
+      const entry = item as ChatHistoryItem
+      const role = entry.role === 'assistant' ? 'assistant' : entry.role === 'user' ? 'user' : null
+      const content = typeof entry.content === 'string' ? entry.content.trim() : ''
+      if (!role || !content) continue
+      history.push({ role, content: content.slice(0, MAX_HISTORY_TEXT) })
+    }
+
+    let attachments: ResolvedAttachment[]
+    try {
+      attachments = await this.readAttachments(payload.attachments)
+    } catch (err) {
+      await this.replyAi(id, { ok: false, ...this.toFailure(err) })
+      return
+    }
+    void this.handlePanelAi(
+      id,
+      controller =>
+        this.runChat(
+          text,
+          message,
+          history.slice(-MAX_HISTORY_ITEMS),
+          attachments,
+          controller
+        ),
+      '对话回复已生成'
+    )
+  }
+
+  // ---------- 命令 ----------
+
+  /**
+   * 行首「+」菜单的生成动作。
+   *
+   * 空文档：打开对话面板，由用户在预览里确认后整篇写入（与 v1 一致）。
+   * 非空文档：直接生成并插入到光标行 / 菜单行下方，不进预览 —— 这时写入是
+   * 用户点「AI 生成内容」时就已经预期的事，而且只追加、不覆盖原文。
+   */
+  private async generate(args?: LineMenuArgs): Promise<void> {
+    const prompt =
+      typeof args?.values?.prompt === 'string' ? args.values.prompt.trim() : ''
+    if (!prompt) {
+      await imark.window.showWarningMessage('请填写想生成的内容')
+      return
+    }
     if (prompt.length > MAX_PROMPT_CHARS) {
-      return {
-        ok: false,
-        message: `生成要求太长（${prompt.length} 字符），最多 ${MAX_PROMPT_CHARS} 字符`
-      }
+      await imark.window.showWarningMessage(
+        `生成要求太长（${prompt.length} 字符），最多 ${MAX_PROMPT_CHARS} 字符`
+      )
+      return
+    }
+    if (this.busy) {
+      await imark.window.showWarningMessage('AI 正在处理上一个请求，请稍候')
+      return
     }
 
-    this.imk.setState({ status: 'running', lastMessage: '正在读取当前文档…' })
-    let text: string | null = null
-    try {
-      text = await this.requestDocument()
-    } catch (err) {
-      // 文档超过消息上限时只能确定它非空；非空文档走宿主插入，不需要正文
-      if (err instanceof AiError && err.code === 'too-large') text = null
-      else throw err
+    const editor = imark.window.activeTextEditor
+    if (!editor) {
+      await imark.window.showWarningMessage('请先打开一个 Markdown 文档')
+      return
     }
 
-    const empty = text !== null && text.trim() === ''
-
-    if (empty) {
-      // 空文档：打开对话，由用户在结果消息里确认后整篇写入
-      const opened = await this.openPreview({ mode: 'generate', prompt, auto: true })
-      if (!opened) return { ok: false, message: '无法打开对话：编辑器界面未就绪' }
-      return { ok: true, message: '已打开生成对话，确认后才会写入文档' }
+    if (editor.document.getText().trim() === '') {
+      this.openChat()
+      this.postLegacy('preview.open', { mode: 'generate', prompt, auto: true })
+      this.report({ status: 'idle', message: '已打开生成对话，确认后才会写入文档' })
+      return
     }
 
-    // 非空文档：沿用「+」菜单的插入行为，不经过整篇替换
+    this.busy = true
     const controller = this.newAbort()
+    const key = editor.document.uri.toString()
     try {
+      this.report({ status: 'running', message: '正在生成内容…' })
       const result = await this.runGenerate(prompt, [], controller)
-      return {
-        ok: true,
-        message: `已生成 ${result.text.length} 个字符`,
-        editor: { text: result.text, cursorOffset: result.text.length }
+      if (this.disposed) return
+
+      // 生成期间用户可能切换了文档；写入原文档比写到当前文档更符合预期，
+      // 但文档已经关闭时宁可失败也不重新打开它。
+      if (editor.document.isClosed) throw new AiError('文档已关闭，生成结果没有写入')
+      if (imark.window.activeTextEditor?.document.uri.toString() !== key) {
+        throw new AiError('生成期间切换了文档，结果没有写入', '请回到原文档后重试')
       }
+
+      await insertBlockBelow(editor, args?.line, result.text)
+      this.report({
+        status: 'ok',
+        lastRunAt: Date.now(),
+        message: `已生成 ${result.text.length} 个字符`
+      })
+    } catch (err) {
+      const failure = this.toFailure(err)
+      this.report({
+        status: 'idle',
+        lastRunAt: Date.now(),
+        message: `上次失败：${failure.message}`
+      })
+      await imark.window.showErrorMessage(
+        failure.detail ? `${failure.message}（${failure.detail}）` : failure.message
+      )
     } finally {
       this.aborts.delete(controller)
+      this.busy = false
     }
   }
 
   /**
    * 测试连接。
    *
-   * 不传 targetId 时逐个测试所有地址（对应设置页顶部的按钮），传入时只测那一行
-   * （对应地址卡片上的按钮）。每个地址的结果单独写进 targetResults，卡片边框因此
+   * 不传 targetId 时逐个测试所有地址（设置页顶部的按钮），传入时只测那一行
+   * （地址卡片上的按钮）。每个地址的结果单独写进 targetResults，卡片边框因此
    * 能分别变绿/变红。
    */
-  private async testConnection(targetId?: string): Promise<PluginActionResult> {
-    const cfg = await readAiConfig(this.imk, 20_000)
-    const targets = targetId ? cfg.endpoints.filter(endpoint => endpoint.id === targetId) : cfg.endpoints
-    if (targets.length === 0) {
-      return {
-        ok: false,
-        message: targetId ? '该地址已不存在（可能刚被删除）' : '请先在插件设置里填写 AI 服务地址'
-      }
+  private async testConnection(targetId?: string): Promise<void> {
+    if (this.busy) {
+      await imark.window.showWarningMessage('AI 正在处理上一个请求，请稍候')
+      return
     }
-
-    this.imk.setState({
-      status: 'running',
-      lastMessage: targets.length === 1 ? '正在测试连接…' : '正在逐个测试地址…',
-      lastDetail: undefined
-    })
-
-    const lines: string[] = []
-    const details: string[] = []
-    const results: Record<string, 'ok' | 'error'> = {}
-    let okCount = 0
-
-    for (const target of targets) {
-      const index = cfg.endpoints.findIndex(endpoint => endpoint.id === target.id)
-      const name = targets.length > 1 ? `第 ${index + 1} 个地址` : ''
-      const started = Date.now()
-      const controller = this.newAbort()
-      try {
-        const result = await callAi(
-          { ...cfg, endpoints: [target] },
-          '你是连通性测试助手。',
-          '请只回复 OK。',
-          controller.signal
-        )
-        this.logCall(result)
-        okCount += 1
-        results[target.id] = 'ok'
-        const elapsed = Date.now() - started
-        const summary = `连接成功 · ${result.provider} · ${result.model} · ${elapsed}ms`
-        lines.push(name ? `${name}：${summary}` : summary)
-      } catch (err) {
-        if (controller.signal.aborted) break
-        results[target.id] = 'error'
-        const failure = this.toFailure(err)
-        lines.push(name ? `${name}：连接失败` : '连接失败')
-        details.push(
-          `${name ? `${name}：` : ''}${failure.message}${failure.detail ? `（${failure.detail}）` : ''}`
-        )
-      } finally {
-        this.aborts.delete(controller)
-      }
-    }
-
-    if (lines.length === 0) return { ok: false, message: '请求已取消' }
-
-    const allOk = okCount === targets.length
-    const message = lines.join('\n')
-    this.imk.setState({
-      status: allOk ? 'ok' : okCount > 0 ? 'partial' : 'error',
-      lastRunAt: Date.now(),
-      lastMessage: message,
-      lastDetail: details.length > 0 ? details.join('\n') : undefined,
-      targetResults: results
-    })
-
-    const summary = targets.length === 1
-      ? message
-      : allOk
-        ? `全部 ${targets.length} 个地址连接成功`
-        : `${targets.length - okCount}/${targets.length} 个地址连接失败`
-    return { ok: allOk, message: summary, detail: details.length > 0 ? details.join('\n') : undefined }
-  }
-
-  /** 打开 render 层的预览面板；失败时给用户一条通知，而不是静默什么都不发生 */
-  private async openPreview(payload: PreviewOpenMessage): Promise<boolean> {
-    const render = this.imk.render
-    if (!render) return false
+    this.busy = true
+    const controller = this.newAbort()
     try {
-      await render.send('preview.open', payload)
-      return true
+      const cfg = await readAiConfig(this.configSource(), 20_000)
+      const targets = targetId
+        ? cfg.endpoints.filter(endpoint => endpoint.id === targetId)
+        : cfg.endpoints
+      if (targets.length === 0) {
+        await imark.window.showWarningMessage(
+          targetId ? '该地址已不存在（可能刚被删除）' : '请先在插件设置里填写 AI 服务地址'
+        )
+        return
+      }
+
+      this.report({
+        status: 'running',
+        message: targets.length === 1 ? '正在测试连接…' : '正在逐个测试地址…',
+        detail: ''
+      })
+
+      const lines: string[] = []
+      const details: string[] = []
+      const results: Record<string, 'ok' | 'error'> = {}
+      let okCount = 0
+
+      for (const target of targets) {
+        const index = cfg.endpoints.findIndex(endpoint => endpoint.id === target.id)
+        const name = targets.length > 1 ? `第 ${index + 1} 个地址` : ''
+        const started = Date.now()
+        try {
+          const result = await callAi(
+            { ...cfg, endpoints: [target] },
+            '你是连通性测试助手。',
+            '请只回复 OK。',
+            controller.signal
+          )
+          this.logCall(result)
+          okCount += 1
+          results[target.id] = 'ok'
+          const elapsed = Date.now() - started
+          const summary = `连接成功 · ${result.provider} · ${result.model} · ${elapsed}ms`
+          lines.push(name ? `${name}：${summary}` : summary)
+        } catch (err) {
+          if (controller.signal.aborted) break
+          results[target.id] = 'error'
+          const failure = this.toFailure(err)
+          lines.push(name ? `${name}：连接失败` : '连接失败')
+          details.push(
+            `${name ? `${name}：` : ''}${failure.message}${failure.detail ? `（${failure.detail}）` : ''}`
+          )
+        }
+      }
+
+      if (lines.length === 0) {
+        this.report({ status: 'idle', lastRunAt: Date.now(), message: '请求已取消' })
+        return
+      }
+
+      const allOk = okCount === targets.length
+      const message = lines.join('\n')
+      this.report({
+        status: allOk ? 'ok' : okCount > 0 ? 'partial' : 'error',
+        lastRunAt: Date.now(),
+        message,
+        detail: details.length > 0 ? details.join('\n') : undefined,
+        targetResults: results
+      })
+
+      const summary =
+        targets.length === 1
+          ? message
+          : allOk
+            ? `全部 ${targets.length} 个地址连接成功`
+            : `${targets.length - okCount}/${targets.length} 个地址连接失败`
+      if (allOk) await imark.window.showInformationMessage(summary)
+      else await imark.window.showWarningMessage(summary, { detail: details.join('\n') })
     } catch (err) {
-      this.imk.log('warn', `打开预览失败：${errorText(err)}`)
-      this.imk.ui.notify('AI 预览暂时不可用，请稍后重试', 'warn')
-      return false
+      const failure = this.toFailure(err)
+      this.report({
+        status: 'error',
+        lastRunAt: Date.now(),
+        message: failure.message
+      })
+      await imark.window.showErrorMessage(
+        failure.detail ? `${failure.message}（${failure.detail}）` : failure.message
+      )
+    } finally {
+      this.aborts.delete(controller)
+      this.busy = false
     }
   }
 
-  // ---------- AI 调用（动作与预览共用） ----------
+  // ---------- AI 调用（命令与面板共用） ----------
 
-  /**
-   * 校验设置页里的 system 提示词。
-   *
-   * 设置页的 required 字段会挡住清空,但 settings.json 可以被手改,所以调用前
-   * 仍然要检查:空提示词发给模型等于没有任何角色约束,不如直接报错。
-   */
+  /** 校验设置页里的 system 提示词 */
   private systemPrompt(value: string, label: string): string {
     if (!value) {
       throw new AiError(`${label}为空，请在插件设置里填写，或点标题旁的恢复图标`)
@@ -297,10 +838,10 @@ class AiForEditPlugin implements PluginRuntime {
   private async runBeautify(
     text: string,
     instruction: string,
-    attachments: AttachmentItem[],
+    attachments: ResolvedAttachment[],
     controller: AbortController
   ): Promise<AiTextResult> {
-    const cfg = await readAiConfig(this.imk)
+    const cfg = await readAiConfig(this.configSource())
     const parts = splitFrontMatter(text)
     const body = parts.body
 
@@ -314,15 +855,22 @@ class AiForEditPlugin implements PluginRuntime {
     }
 
     const prompt = this.systemPrompt(cfg.beautifyPrompt, '美化提示词')
-    this.imk.setState({
+    this.report({
       status: 'running',
-      lastMessage: `正在请求 AI 美化（${modelSummary(cfg.endpoints)}）…`
+      message: `正在请求 AI 美化（${modelSummary(cfg.endpoints)}）…`
     })
 
-    const result = await callAi(
+    const images = chatImages(attachments)
+    const result = await requestChat(
       cfg,
-      systemPromptForBeautify(prompt, instruction, attachments.length > 0),
-      userPromptForBeautify(body, attachments),
+      systemPromptForBeautify(prompt, instruction, hasTextAttachments(attachments)),
+      [
+        {
+          role: 'user',
+          content: userPromptForBeautify(body, attachments),
+          ...(images.length > 0 ? { images } : {})
+        }
+      ],
       controller.signal
     )
     this.logCall(result)
@@ -345,7 +893,7 @@ class AiForEditPlugin implements PluginRuntime {
 
   private async runGenerate(
     prompt: string,
-    attachments: AttachmentItem[],
+    attachments: ResolvedAttachment[],
     controller: AbortController
   ): Promise<AiTextResult> {
     const trimmed = prompt.trim()
@@ -354,17 +902,24 @@ class AiForEditPlugin implements PluginRuntime {
       throw new AiError(`生成要求太长（${trimmed.length} 字符），最多 ${MAX_PROMPT_CHARS} 字符`)
     }
 
-    const cfg = await readAiConfig(this.imk)
+    const cfg = await readAiConfig(this.configSource())
     const systemPrompt = this.systemPrompt(cfg.generatePrompt, '生成提示词')
-    this.imk.setState({
+    this.report({
       status: 'running',
-      lastMessage: `正在生成（${modelSummary(cfg.endpoints)}）…`
+      message: `正在生成（${modelSummary(cfg.endpoints)}）…`
     })
 
-    const result = await callAi(
+    const images = chatImages(attachments)
+    const result = await requestChat(
       cfg,
       systemPromptForGenerate(systemPrompt),
-      userPromptForGenerate(trimmed, attachments),
+      [
+        {
+          role: 'user',
+          content: userPromptForGenerate(trimmed, attachments),
+          ...(images.length > 0 ? { images } : {})
+        }
+      ],
       controller.signal
     )
     this.logCall(result)
@@ -386,7 +941,7 @@ class AiForEditPlugin implements PluginRuntime {
     documentText: string,
     message: string,
     history: ChatMessage[],
-    attachments: AttachmentItem[],
+    attachments: ResolvedAttachment[],
     controller: AbortController
   ): Promise<AiTextResult> {
     const question = message.trim()
@@ -395,23 +950,30 @@ class AiForEditPlugin implements PluginRuntime {
       throw new AiError(`问题太长（${question.length} 字符），最多 ${MAX_CHAT_CHARS} 字符`)
     }
 
-    const cfg = await readAiConfig(this.imk)
-    this.imk.setState({
+    const cfg = await readAiConfig(this.configSource())
+    this.report({
       status: 'running',
-      lastMessage: `正在回答（${modelSummary(cfg.endpoints)}）…`
+      message: `正在回答（${modelSummary(cfg.endpoints)}）…`
     })
 
     const doc =
       documentText.length > MAX_INPUT_CHARS
         ? `${documentText.slice(0, MAX_INPUT_CHARS)}\n\n…（文档过长，已截断）`
         : documentText
+    const images = chatImages(attachments)
     const result = await requestChat(
       cfg,
       systemPromptForChat(doc, attachments),
-      [...history, { role: 'user', content: question }],
+      [
+        ...history,
+        {
+          role: 'user',
+          content: `${question}${imageNoteForAttachments(attachments)}`,
+          ...(images.length > 0 ? { images } : {})
+        }
+      ],
       controller.signal,
-      // 对话里文档 + 参考文件是跨轮次稳定的 system 前缀，值得标缓存断点。
-      // 美化/生成每次正文都变，不标，避免白付缓存写入费。
+      // 对话里文档 + 参考文件是跨轮次稳定的 system 前缀，值得标缓存断点
       { cacheSystem: true }
     )
     this.logCall(result)
@@ -421,101 +983,7 @@ class AiForEditPlugin implements PluginRuntime {
     if (answer.length > MAX_OUTPUT_CHARS) {
       throw new AiError(`AI 回答太长（${answer.length} 字符），超过插件上限`)
     }
-    // 对话回答被截断时仍然展示，由界面标注「可能不完整」；
-    // 美化/生成的结果则相反：宁可失败，也不写半篇文档。
     return { text: answer, model: result.model, truncated: result.truncated }
-  }
-
-  // ---------- 对话面板的请求/应答 ----------
-
-  /**
-   * render 层发来的消息入口。
-   *
-   * **这里不能 await AI 调用**：宿主给 render.onMessage 的 safeCall 只有 10 秒，
-   * 而一次美化可能跑 90 秒。所以处理器只负责启动后台任务并立刻返回，结果稍后
-   * 通过 `ai.reply` 送回面板。
-   */
-  private onRenderMessage(channel: string, data: unknown): void {
-    const payload = (data ?? {}) as Record<string, unknown>
-    const id = typeof payload.id === 'string' ? payload.id : ''
-
-    if (channel === 'ai.beautify') {
-      if (!id) return
-      const text = typeof payload.text === 'string' ? payload.text : ''
-      const instruction = typeof payload.instruction === 'string' ? payload.instruction : ''
-      if (!text) {
-        void this.replyAi(id, { ok: false, message: '没有收到文档内容' })
-        return
-      }
-      const attachments = readAttachments(payload.attachments)
-      void this.handlePanelAi(
-        id,
-        controller => this.runBeautify(text, instruction, attachments, controller),
-        '美化结果已生成，等待确认'
-      )
-      return
-    }
-
-    if (channel === 'ai.generate') {
-      if (!id) return
-      const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
-      const attachments = readAttachments(payload.attachments)
-      void this.handlePanelAi(
-        id,
-        controller => this.runGenerate(prompt, attachments, controller),
-        '生成结果已生成，等待确认'
-      )
-      return
-    }
-
-    if (channel === 'ai.chat') {
-      this.startChat(payload)
-      return
-    }
-
-    if (channel === 'ai.cancel') {
-      if (id) this.cancelAi(id)
-      return
-    }
-
-    if (channel !== 'doc.reply') return
-    const pending = id ? this.pending.get(id) : undefined
-    if (!pending) return
-    clearTimeout(pending.timer)
-    this.pending.delete(id)
-    pending.resolve(payload)
-  }
-
-  private startChat(payload: Record<string, unknown>): void {
-    const id = typeof payload.id === 'string' ? payload.id : ''
-    if (!id) return
-    const message = typeof payload.message === 'string' ? payload.message : ''
-    const text = typeof payload.text === 'string' ? payload.text : ''
-
-    const history: ChatMessage[] = []
-    const raw = Array.isArray(payload.history) ? payload.history : []
-    for (const item of raw) {
-      if (!item || typeof item !== 'object') continue
-      const entry = item as ChatHistoryItem
-      const role = entry.role === 'assistant' ? 'assistant' : entry.role === 'user' ? 'user' : null
-      const content = typeof entry.content === 'string' ? entry.content.trim() : ''
-      if (!role || !content) continue
-      history.push({ role, content: content.slice(0, MAX_HISTORY_TEXT) })
-    }
-
-    const attachments = readAttachments(payload.attachments)
-    void this.handlePanelAi(
-      id,
-      controller =>
-        this.runChat(
-          text,
-          message,
-          history.slice(-MAX_HISTORY_ITEMS),
-          attachments,
-          controller
-        ),
-      '对话回复已生成'
-    )
   }
 
   private async handlePanelAi(
@@ -533,8 +1001,8 @@ class AiForEditPlugin implements PluginRuntime {
 
     try {
       const result = await run(controller)
-      if (!this.imk.isEnabled()) return
-      this.imk.setState({ status: 'ok', lastRunAt: Date.now(), lastMessage: successMessage })
+      if (this.disposed) return
+      this.report({ status: 'ok', lastRunAt: Date.now(), message: successMessage })
       await this.replyAi(id, {
         ok: true,
         text: result.text,
@@ -544,24 +1012,23 @@ class AiForEditPlugin implements PluginRuntime {
     } catch (err) {
       if (controller.signal.aborted) {
         // 面板主动取消 / 插件停用：不把一次取消记成失败
-        if (this.imk.isEnabled()) {
-          this.imk.setState({
+        if (!this.disposed) {
+          this.report({
             status: 'idle',
             lastRunAt: Date.now(),
-            lastMessage: 'AI 请求已取消'
+            message: 'AI 请求已取消'
           })
         }
         await this.replyAi(id, { ok: false, message: '请求已取消' })
         return
       }
       const failure = this.toFailure(err)
-      if (this.imk.isEnabled()) {
-        // 面板仍开着，错误会显示在里面；状态卡保持可用（不要因为一次网络错误
-        // 让状态栏按钮被宿主的「出错去设置」规则接管）
-        this.imk.setState({
+      if (!this.disposed) {
+        // 面板仍开着，错误会显示在里面；状态卡保持可用
+        this.report({
           status: 'idle',
           lastRunAt: Date.now(),
-          lastMessage: `上次失败：${failure.message}`
+          message: `上次失败：${failure.message}`
         })
       }
       await this.replyAi(id, { ok: false, ...failure })
@@ -572,27 +1039,21 @@ class AiForEditPlugin implements PluginRuntime {
     }
   }
 
-  private async replyAi(id: string, payload: Omit<AiReplyMessage, 'id'>): Promise<void> {
-    const render = this.imk.render
-    if (!render) return
+  private async replyAi(
+    id: string,
+    payload: { ok: boolean; text?: string; message?: string; detail?: string; model?: string; truncated?: boolean }
+  ): Promise<void> {
+    if (!this.chatPanel) return
     const data = { id, ...payload }
     if (jsonLength(data) > MAX_MESSAGE_CHARS) {
-      try {
-        await render.send('ai.reply', {
-          id,
-          ok: false,
-          message: '结果太大，无法在预览窗口中显示'
-        })
-      } catch {
-        /* 面板已经关闭 */
-      }
+      this.postLegacy('ai.reply', {
+        id,
+        ok: false,
+        message: '结果太大，无法在预览窗口中显示'
+      })
       return
     }
-    try {
-      await render.send('ai.reply', data)
-    } catch {
-      /* 面板已经关闭 / 插件已停用 */
-    }
+    this.postLegacy('ai.reply', data)
   }
 
   private cancelAi(id: string): void {
@@ -602,51 +1063,178 @@ class AiForEditPlugin implements PluginRuntime {
     this.aiJobs.delete(id)
   }
 
-  // ---------- 文档快照（仅生成前判断是否为空） ----------
+  // ---------- 扫描页图片上传 ----------
 
-  private async requestDocument(): Promise<string> {
-    const id = randomUUID()
-    const reply = await this.request<DocReply>('doc.request', {
-      id,
-      maxChars: MAX_INPUT_CHARS
-    })
-    if (!reply.ok || typeof reply.text !== 'string') {
-      throw new AiError(reply.message || '读取当前文档失败', undefined, reply.code)
+  /**
+   * 收下一条 `attach.image`。
+   *
+   * 不信任消息里的任何字段：id / 序号 / base64 都按上限校验；坏数据直接丢弃。
+   * 图片本身不写日志、不落盘，取走或过期后从内存里删掉。
+   */
+  private acceptImageUpload(payload: Record<string, unknown>): void {
+    const id = typeof payload.id === 'string' ? payload.id : ''
+    if (!IMAGE_ID_RE.test(id)) return
+    const total = Number(payload.total)
+    const index = Number(payload.index)
+    if (!Number.isInteger(total) || !Number.isInteger(index)) return
+    if (total < 1 || total > MAX_SCAN_IMAGES || index < 0 || index >= total) return
+
+    const mediaType =
+      payload.mediaType === 'image/jpeg'
+        ? 'image/jpeg'
+        : payload.mediaType === 'image/png'
+          ? 'image/png'
+          : ''
+    if (!mediaType) return
+    const data = typeof payload.data === 'string' ? payload.data : ''
+    if (!data || data.length > MAX_SCAN_IMAGE_CHARS || data.length % 4 !== 0) return
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return
+
+    const page = Number(payload.page)
+    const width = Number(payload.width)
+    const height = Number(payload.height)
+    if (!Number.isInteger(page) || page < 1 || page > 100_000) return
+    if (!Number.isFinite(width) || width <= 0 || width > 20_000) return
+    if (!Number.isFinite(height) || height <= 0 || height > 20_000) return
+
+    const rawName = typeof payload.name === 'string' ? payload.name.trim() : ''
+    const name = (rawName || '参考文件').slice(0, 200)
+
+    this.sweepImageUploads()
+    let upload = this.imageUploads.get(id)
+    if (!upload) {
+      while (this.imageUploads.size >= MAX_IMAGE_UPLOADS) {
+        const oldest = [...this.imageUploads.values()].sort((a, b) => a.at - b.at)[0]
+        if (!oldest) break
+        this.imageUploads.delete(oldest.id)
+      }
+      upload = { id, total, name, images: new Map(), chars: 0, at: Date.now() }
+      this.imageUploads.set(id, upload)
     }
-    return reply.text
+    if (upload.total !== total || upload.images.has(index)) return
+    if (upload.chars + data.length > MAX_SCAN_IMAGE_TOTAL_CHARS) return
+
+    upload.images.set(index, {
+      page: Math.round(page),
+      mediaType,
+      data,
+      width: Math.round(width),
+      height: Math.round(height)
+    })
+    upload.chars += data.length
+    upload.at = Date.now()
   }
 
-  private request<T>(channel: string, payload: { id: string } & Record<string, unknown>): Promise<T> {
-    const render = this.imk.render
-    if (!render) {
-      return Promise.reject(new AiError('插件没有 render 层，无法操作当前文档'))
+  /** 删掉长时间没被请求取走的图片 */
+  private sweepImageUploads(): void {
+    const now = Date.now()
+    for (const [id, upload] of this.imageUploads) {
+      if (now - upload.at > IMAGE_UPLOAD_TTL_MS) this.imageUploads.delete(id)
     }
-    const id = payload.id
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new AiError('编辑器没有响应，请重试'))
-      }, DOC_TIMEOUT_MS)
-      this.pending.set(id, {
-        resolve: value => resolve(value as T),
-        reject,
-        timer
-      })
-      void render.send(channel, payload).catch(err => {
-        const pending = this.pending.get(id)
-        if (!pending) return
-        clearTimeout(pending.timer)
-        this.pending.delete(id)
-        reject(new AiError('无法与编辑器通信', errorText(err)))
-      })
-    })
+  }
+
+  /** 等一组图片到齐再返回 */
+  private async takeImageUpload(id: string, count: number): Promise<ResolvedImage[]> {
+    const upload = this.imageUploads.get(id)
+    if (!upload || upload.total !== count) {
+      this.imageUploads.delete(id)
+      throw new AiError(
+        '扫描页图片没有传完，请重试',
+        '这通常是面板刚刚重新加载导致的；重新添加这个 PDF 即可。'
+      )
+    }
+
+    const deadline = Date.now() + IMAGE_UPLOAD_WAIT_MS
+    while (upload.images.size < upload.total && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 20))
+    }
+    this.imageUploads.delete(id)
+    if (upload.images.size < upload.total) {
+      throw new AiError(
+        '扫描页图片没有传完，请重试',
+        '这通常是面板刚刚重新加载导致的；重新添加这个 PDF 即可。'
+      )
+    }
+    return [...upload.images.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, image]) => image)
+  }
+
+  /** 读取 webview 送来的参考文件；字段全部按上限校验 */
+  private async readAttachments(value: unknown): Promise<ResolvedAttachment[]> {
+    if (!Array.isArray(value)) return []
+    const out: ResolvedAttachment[] = []
+    let textTotal = 0
+    let imageCount = 0
+    let imageChars = 0
+
+    for (const item of value) {
+      if (out.length >= MAX_ATTACHMENTS) break
+      if (!item || typeof item !== 'object') continue
+      const entry = item as Record<string, unknown>
+      const rawText = typeof entry.text === 'string' ? entry.text : ''
+      const rawName = typeof entry.name === 'string' ? entry.name.trim() : ''
+      const name = (rawName || '参考文件').slice(0, 200)
+
+      let images: ResolvedImage[] = []
+      const ref = entry.imageUpload
+      if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
+        const upload = ref as AttachmentImageUploadRef
+        const uploadId = typeof upload.id === 'string' ? upload.id : ''
+        const count = Number(upload.count)
+        if (
+          IMAGE_ID_RE.test(uploadId) &&
+          Number.isInteger(count) &&
+          count >= 1 &&
+          count <= MAX_SCAN_IMAGES
+        ) {
+          images = await this.takeImageUpload(uploadId, count)
+        }
+      }
+
+      if (!rawText && images.length === 0) continue
+
+      let clipped = rawText
+      if (clipped.length > MAX_ATTACHMENT_CHARS) {
+        clipped = `${clipped.slice(0, MAX_ATTACHMENT_CHARS)}\n…（已截断）`
+      }
+      if (textTotal + clipped.length > MAX_ATTACHMENTS_TOTAL) {
+        const room = MAX_ATTACHMENTS_TOTAL - textTotal
+        clipped = room >= 200 ? `${clipped.slice(0, room)}\n…（已截断）` : ''
+      }
+
+      const roomCount = Math.max(0, MAX_SCAN_IMAGES - imageCount)
+      if (images.length > roomCount) images = images.slice(0, roomCount)
+      const keptImages: ResolvedImage[] = []
+      for (const image of images) {
+        if (imageChars + image.data.length > MAX_SCAN_IMAGE_TOTAL_CHARS) continue
+        keptImages.push(image)
+        imageChars += image.data.length
+      }
+      images = keptImages
+
+      if (!clipped && images.length === 0) continue
+      out.push({ name, text: clipped, images })
+      imageCount += images.length
+      textTotal += clipped.length
+    }
+    return out
   }
 
   // ---------- 内部 ----------
 
+  private report(update: imark.ImarkStatusUpdate): void {
+    imark.imark.reportStatus(update)
+  }
+
+  private log(level: string, message: string): void {
+    if (level === 'error') this.output.error(message)
+    else if (level === 'warn') this.output.warn(message)
+    else if (level === 'info') this.output.info(message)
+    else this.output.debug(message)
+  }
+
   private logCall(result: AiResult): void {
-    // 缓存用量来自服务端返回：命中说明上下文走了缓存价，写入说明下一轮可以命中。
-    // 服务不支持缓存时没有这段，日志里也就不会出现，不会误导成「0 命中」。
     const cache = result.cache
     const cacheNote = cache
       ? [
@@ -656,7 +1244,7 @@ class AiForEditPlugin implements PluginRuntime {
           .filter(Boolean)
           .join(' · ')
       : ''
-    this.imk.log(
+    this.log(
       'debug',
       `AI 请求完成：${result.provider} · ${result.endpointDisplay} · ${result.elapsedMs}ms${
         cacheNote ? ` · ${cacheNote}` : ''
@@ -675,15 +1263,6 @@ class AiForEditPlugin implements PluginRuntime {
     return { message: message || 'AI 操作失败' }
   }
 
-  private failure(err: unknown): PluginActionResult {
-    const failure = this.toFailure(err)
-    this.imk.log(
-      'warn',
-      `AI 操作失败：${failure.message}${failure.detail ? `（${failure.detail}）` : ''}`
-    )
-    return { ok: false, ...failure }
-  }
-
   private newAbort(): AbortController {
     const controller = new AbortController()
     this.aborts.add(controller)
@@ -694,48 +1273,96 @@ class AiForEditPlugin implements PluginRuntime {
     for (const controller of this.aborts) controller.abort()
     this.aborts.clear()
     this.aiJobs.clear()
-    for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer)
-      pending.reject(new AiError('请求已取消'))
-      this.pending.delete(id)
-    }
+    this.imageUploads.clear()
   }
 }
 
+// ---------- 插入 ----------
+
 /**
- * 读取 render 层送来的参考文件。
+ * 在指定行的下方插入一个块级内容（与宿主旧 `insertBlockBelow` 同一套规则）：
  *
- * 不信任消息里的任何字段：文件名只用于标示，文本按单文件与总量双重截断。
- * 截断比拒绝好 —— 用户至少还能带着大部分材料继续生成。
+ * - 默认落在光标所在行的下一行；
+ * - 光标停在表格里时，落到整张表的下方（在表格中间插内容会把表写坏）；
+ * - 下一行本来就是空行时，不再补第二个空行；
+ * - 光标放进插入内容里的 `cursorOffset`。
  */
-function readAttachments(value: unknown): AttachmentItem[] {
-  if (!Array.isArray(value)) return []
-  const out: AttachmentItem[] = []
-  let total = 0
+async function insertBlockBelow(
+  editor: imark.TextEditor,
+  requestedLine: number | undefined,
+  text: string,
+  cursorOffset = text.length
+): Promise<void> {
+  const document = editor.document
+  // 光标所在行（1 基）的下方；行号在异步生成结束后可能已经越界，下面仍会夹取
+  const requested =
+    requestedLine ?? Math.min(editor.selection.active.line + 1, document.lineCount)
+  const lineNumber = Math.min(Math.max(Math.trunc(requested), 1), document.lineCount)
+  const lineIndex = lineNumber - 1
 
-  for (const item of value) {
-    if (out.length >= MAX_ATTACHMENTS || total >= MAX_ATTACHMENTS_TOTAL) break
-    if (!item || typeof item !== 'object') continue
-    const entry = item as { name?: unknown; text?: unknown }
-    const text = typeof entry.text === 'string' ? entry.text : ''
-    if (!text) continue
-    const rawName = typeof entry.name === 'string' ? entry.name.trim() : ''
-    const name = (rawName || '参考文件').slice(0, 200)
+  const tableEnd = tableEndLine(document, lineIndex)
+  const at = document.lineAt(tableEnd === null ? lineIndex : tableEnd)
+  const atOffset = document.offsetAt(at.range.end)
 
-    let clipped = text
-    if (clipped.length > MAX_ATTACHMENT_CHARS) {
-      clipped = `${clipped.slice(0, MAX_ATTACHMENT_CHARS)}\n…（已截断）`
+  const lead = tableEnd !== null || eatsLineAbove(text) ? '\n\n' : '\n'
+  const next =
+    at.lineNumber + 1 < document.lineCount ? document.lineAt(at.lineNumber + 1) : null
+  const tail = next && next.text === '' ? '' : '\n'
+  const insert = `${lead}${text}${tail}`
+
+  const ok = await editor.edit(edit => {
+    edit.insert(document.positionAt(atOffset), insert)
+  })
+  if (!ok) throw new AiError('插入失败：文档拒绝修改')
+
+  const offset = Math.min(Math.max(cursorOffset, 0), text.length)
+  const cursor = document.positionAt(atOffset + lead.length + offset)
+  editor.setSelection(cursor)
+  editor.revealRange(
+    new imark.Range(cursor, cursor),
+    imark.TextEditorRevealType.InCenterIfOutsideViewport
+  )
+}
+
+/** 与宿主旧实现一致：分隔线 / Setext 下划线这种行后面需要空行 */
+function eatsLineAbove(text: string): boolean {
+  return /^[-=]+\s*$/.test(text.split('\n', 1)[0] ?? '')
+}
+
+/** 该行是否属于一张表；是则返回这张表最后一行的 0 基行号 */
+function tableEndLine(document: imark.TextDocument, lineNumber: number): number | null {
+  const line = document.lineAt(lineNumber)
+  if (line.text.trim().length === 0) return null
+  const isTableRow = (value: string): boolean => /^\s*\|/.test(value)
+  if (!isTableRow(line.text)) return null
+  let end = lineNumber
+  for (let i = lineNumber + 1; i < document.lineCount; i++) {
+    if (!isTableRow(document.lineAt(i).text)) break
+    end = i
+  }
+  return end
+}
+
+// ---------- 工具 ----------
+
+function chatImages(attachments: ResolvedAttachment[]): ChatImage[] {
+  const out: ChatImage[] = []
+  for (const item of attachments) {
+    const name = item.name.replace(/["\r\n]/g, ' ').trim() || '参考文件'
+    for (const image of item.images) {
+      out.push({
+        mediaType: image.mediaType,
+        data: image.data,
+        caption: `参考文件「${name}」第 ${image.page} 页（扫描图片）：`
+      })
     }
-    if (total + clipped.length > MAX_ATTACHMENTS_TOTAL) {
-      const room = MAX_ATTACHMENTS_TOTAL - total
-      if (room < 200) break
-      clipped = `${clipped.slice(0, room)}\n…（已截断）`
-    }
-
-    out.push({ name, text: clipped })
-    total += clipped.length
   }
   return out
+}
+
+function clampOffset(value: number, length: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(Math.max(Math.trunc(value), 0), length)
 }
 
 function jsonLength(value: unknown): number {
@@ -750,5 +1377,24 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-// 返回类型显式写成 PluginRuntime：生命周期签名写错时在插件自己的 typecheck 里就会报错
-export = (imk: ImkApi): PluginRuntime => new AiForEditPlugin(imk)
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+// ---------- 激活 ----------
+
+let instance: AiForEditExtension | null = null
+
+export function activate(context: imark.ExtensionContext): void {
+  instance = new AiForEditExtension(context)
+  instance.start()
+}
+
+export function deactivate(): void {
+  instance?.stop()
+  instance = null
+}

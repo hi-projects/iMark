@@ -1,6 +1,7 @@
 import { Menu, type MenuItemConstructorOptions } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { PluginCommand } from '@shared/plugins'
+import { normalizeKeybinding } from './extensions/contributions'
 import { getMainWindow } from './window'
 
 function send(id: MenuCommandId): void {
@@ -16,6 +17,8 @@ function fmt(label: string, id: MenuCommandId, accelerator?: string): MenuItemCo
  *
  * `available` 由宿主算好(`commandAvailable`),菜单据此灰掉 —— 菜单项灰不灰
  * 不该由这里猜:判断依据是「有没有文档 / 有没有仓库」,那是宿主的状态。
+ *
+ * @deprecated v1 插件运行时专用;阶段 7 删除。v2 用 ExtensionMenuCommand。
  */
 export interface PluginMenuGroup {
   pluginId: string
@@ -23,7 +26,7 @@ export interface PluginMenuGroup {
   commands: Array<Pick<PluginCommand, 'id' | 'label' | 'keybinding'> & { available: boolean }>
 }
 
-/** 因为撞车而被摘掉快捷键的一条(交给宿主写进插件日志) */
+/** v1:因为撞车而被摘掉快捷键的一条(交给宿主写进插件日志) */
 export interface DroppedKeybinding {
   pluginId: string
   commandId: string
@@ -32,7 +35,34 @@ export interface DroppedKeybinding {
   takenBy: string
 }
 
+/** v2:一条准备进「扩展」菜单的命令 */
+export interface ExtensionMenuCommand {
+  command: string
+  title: string
+  category?: string
+  keybinding?: string
+  available: boolean
+  /** 清单里的快捷键已经在贡献点快照里判定为冲突,菜单不再挂加速键 */
+  dropped?: boolean
+}
+
+export interface ExtensionMenuGroup {
+  extensionId: string
+  extensionName: string
+  commands: ExtensionMenuCommand[]
+}
+
+/** v2:因为撞车而被摘掉快捷键的一条 */
+export interface DroppedExtensionKeybinding {
+  extensionId: string
+  extensionName: string
+  command: string
+  key: string
+  takenBy: string
+}
+
 let pluginGroups: PluginMenuGroup[] = []
+let extensionGroups: ExtensionMenuGroup[] = []
 let built = false
 
 /**
@@ -50,7 +80,7 @@ export function setKeybindingDropReporter(fn: ((d: DroppedKeybinding) => void) |
 }
 
 /**
- * 更新插件命令(宿主在贡献点变化时调)。
+ * 更新插件命令(宿主在贡献点变化时调)。**v1**,阶段 7 删除。
  *
  * 菜单是**整体重建**的:Electron 没有"改某一项"的接口,只能换一份新模板。
  * 重建本身很便宜(几十个对象),而它顺带保证了一件事:菜单里看到的东西
@@ -58,19 +88,29 @@ export function setKeybindingDropReporter(fn: ((d: DroppedKeybinding) => void) |
  */
 export function setPluginCommands(groups: PluginMenuGroup[]): DroppedKeybinding[] {
   pluginGroups = groups
-  return built ? buildAppMenu() : []
+  return built ? buildAppMenu().pluginDropped : []
 }
 
 /**
- * 插件命令那一栏。
+ * 更新扩展命令(v2 服务在贡献点变化时调)。
+ *
+ * 返回本次**因为与别的菜单项撞车**而被摘掉的快捷键;清单级别的冲突
+ * (`dropped: true`)已经在贡献点快照里标好,不会重复报告。
+ */
+export function setExtensionCommands(groups: ExtensionMenuGroup[]): DroppedExtensionKeybinding[] {
+  extensionGroups = groups
+  return built ? buildAppMenu().extensionDropped : []
+}
+
+/**
+ * 插件命令那一栏(v1)。
  *
  * 命令进菜单,不只是为了好看:Electron 的原生加速键必须在菜单项上才会生效
  * (窗口的菜单栏是隐藏的,但菜单对象还在 —— 见 window.ts 里 setMenuBarVisibility 的说明),
  * 而渲染层的 keydown 根本收不到这些按键。所以"给命令加个快捷键"这件事,
  * 实现上就等于"往菜单里加一项"。顺带的好处是命令有了第二个入口。
  */
-function pluginMenu(): MenuItemConstructorOptions[] {
-  const groups = pluginGroups.filter(g => g.commands.length > 0)
+function pluginMenu(groups: PluginMenuGroup[]): MenuItemConstructorOptions[] {
   if (groups.length === 0) return []
   const items: MenuItemConstructorOptions[] = []
   for (const g of groups) {
@@ -94,32 +134,75 @@ function pluginMenu(): MenuItemConstructorOptions[] {
 }
 
 /**
+ * 扩展命令那一栏(v2)。
+ *
+ * 点击不在这里直接调 `executeCommand`:命令的真正执行入口统一在渲染层的
+ * `command.execute` 上(错误提示、忙碌状态、行首菜单参数都在那边),主进程
+ * 直接把命令 id 递过去即可。原生菜单存在的意义只是让快捷键有一个宿主。
+ */
+function extensionMenu(groups: ExtensionMenuGroup[]): MenuItemConstructorOptions[] {
+  if (groups.length === 0) return []
+  const items: MenuItemConstructorOptions[] = []
+  for (const g of groups) {
+    items.push({
+      label: g.extensionName,
+      submenu: g.commands.map(c => ({
+        label: c.category ? `${c.category}: ${c.title}` : c.title,
+        // 清单里已判定冲突的快捷键不再挂到这里:挂上去 Electron 会随机挑一个赢家
+        accelerator: c.dropped ? undefined : c.keybinding,
+        enabled: c.available,
+        click: () => {
+          getMainWindow()?.webContents.send(IPC.ExtensionCommand, {
+            command: c.command,
+            from: 'keybinding'
+          })
+        }
+      }))
+    })
+  }
+  return [{ label: '扩展', submenu: items }]
+}
+
+type AcceleratorOwner =
+  | { kind: 'plugin'; pluginId: string; commandId: string }
+  | { kind: 'extension'; extensionId: string; extensionName: string; command: string }
+
+/**
  * 同一份菜单里出现两次的快捷键,后者摘掉。
  *
- * **顺序即优先级**:应用自己的项排在最前,所以插件永远抢不走 Ctrl+S;
- * 插件之间先声明者优先。这不是为了公平,是因为 Electron 对重复快捷键的
+ * **顺序即优先级**:应用自己的项排在最前,所以扩展永远抢不走 Ctrl+S;
+ * 扩展与插件之间先声明者优先。这不是为了公平,是因为 Electron 对重复快捷键的
  * 处理是"未定义里挑一个"—— 与其让用户得到一个随机的赢家,不如我们自己定。
  *
  * 摘掉而不是报错:一个键冲突不该让整条命令消失,它照样能从命令面板里点到。
  */
 function dedupeAccelerators(
   template: MenuItemConstructorOptions[],
-  locate: Map<MenuItemConstructorOptions, { pluginId: string; commandId: string }>
-): DroppedKeybinding[] {
+  locate: Map<MenuItemConstructorOptions, AcceleratorOwner>
+): { pluginDropped: DroppedKeybinding[]; extensionDropped: DroppedExtensionKeybinding[] } {
   const owner = new Map<string, string>()
-  const dropped: DroppedKeybinding[] = []
+  const pluginDropped: DroppedKeybinding[] = []
+  const extensionDropped: DroppedExtensionKeybinding[] = []
   const walk = (items: MenuItemConstructorOptions[]): void => {
     for (const item of items) {
       if (item.accelerator) {
-        const key = item.accelerator.toLowerCase()
+        const key = normalizeKeybinding(item.accelerator)
         const prev = owner.get(key)
         if (prev) {
           const who = locate.get(item)
-          if (who) {
-            dropped.push({
+          if (who?.kind === 'plugin') {
+            pluginDropped.push({
               pluginId: who.pluginId,
               commandId: who.commandId,
               keybinding: item.accelerator,
+              takenBy: prev
+            })
+          } else if (who?.kind === 'extension') {
+            extensionDropped.push({
+              extensionId: who.extensionId,
+              extensionName: who.extensionName,
+              command: who.command,
+              key: item.accelerator,
               takenBy: prev
             })
           }
@@ -132,11 +215,12 @@ function dedupeAccelerators(
     }
   }
   walk(template)
-  return dropped
+  return { pluginDropped, extensionDropped }
 }
 
-export function buildAppMenu(): DroppedKeybinding[] {
-  const template: MenuItemConstructorOptions[] = [
+/** 帮助之前的那一段固定菜单(不含插件/扩展两栏) */
+function baseMenuTemplate(): MenuItemConstructorOptions[] {
+  return [
     {
       label: '文件',
       submenu: [
@@ -228,34 +312,78 @@ export function buildAppMenu(): DroppedKeybinding[] {
         }
       ]
     },
-    ...pluginMenu(),
     {
       label: '帮助',
       submenu: [{ label: '关于 iMark', role: 'about' }]
     }
   ]
+}
 
-  // 插件项在模板里的位置是确定的:按插件顺序展开,边展开边登记 id,
-  // 这样去重时能反查"是哪个插件的哪条命令被摘了快捷键"。
-  const locate = new Map<MenuItemConstructorOptions, { pluginId: string; commandId: string }>()
-  const pluginBar = template.find(i => i.label === '插件')
-  if (pluginBar && Array.isArray(pluginBar.submenu)) {
-    const groups = pluginGroups.filter(g => g.commands.length > 0)
-    pluginBar.submenu.forEach((sub, gi) => {
-      const g = groups[gi]
-      if (!g || !Array.isArray(sub.submenu)) return
-      sub.submenu.forEach((item, ci) => {
-        const c = g.commands[ci]
-        if (c) locate.set(item, { pluginId: g.pluginId, commandId: c.id })
-      })
+/**
+ * 应用自己占用的快捷键集合(规范形式)。
+ *
+ * 扩展服务用它给 `contributes.keybindings` 做第一道冲突判定:清单里就撞车的
+ * 条目会在贡献点快照里标成 `dropped`,设置页据此告诉用户"这条快捷键没生效",
+ * 而不是等菜单重建时才发现某一条被悄悄摘掉。
+ */
+export function reservedAccelerators(): ReadonlySet<string> {
+  const keys = new Set<string>()
+  const walk = (items: MenuItemConstructorOptions[]): void => {
+    for (const item of items) {
+      if (item.accelerator) keys.add(normalizeKeybinding(item.accelerator))
+      if (Array.isArray(item.submenu)) walk(item.submenu)
+    }
+  }
+  walk(baseMenuTemplate())
+  return keys
+}
+
+export function buildAppMenu(): {
+  pluginDropped: DroppedKeybinding[]
+  extensionDropped: DroppedExtensionKeybinding[]
+} {
+  const template = baseMenuTemplate()
+  const pluginGroupsShown = pluginGroups.filter(g => g.commands.length > 0)
+  const extensionGroupsShown = extensionGroups.filter(g => g.commands.length > 0)
+  const pluginBar = pluginMenu(pluginGroupsShown)
+  const extensionBar = extensionMenu(extensionGroupsShown)
+  const helpIndex = template.findIndex(item => item.label === '帮助')
+  template.splice(helpIndex < 0 ? template.length : helpIndex, 0, ...pluginBar, ...extensionBar)
+
+  // 插件/扩展项在模板里的位置是确定的:按分组顺序展开,边展开边登记 owner,
+  // 这样去重时能反查"是哪一条命令被摘了快捷键"。
+  const locate = new Map<MenuItemConstructorOptions, AcceleratorOwner>()
+  for (const [barIndex, bar] of pluginBar.entries()) {
+    const group = pluginGroupsShown[barIndex]
+    if (!group || !Array.isArray(bar.submenu)) continue
+    bar.submenu.forEach((item, itemIndex) => {
+      const command = group.commands[itemIndex]
+      if (command) {
+        locate.set(item, { kind: 'plugin', pluginId: group.pluginId, commandId: command.id })
+      }
+    })
+  }
+  for (const [barIndex, bar] of extensionBar.entries()) {
+    const group = extensionGroupsShown[barIndex]
+    if (!group || !Array.isArray(bar.submenu)) continue
+    bar.submenu.forEach((item, itemIndex) => {
+      const command = group.commands[itemIndex]
+      if (command) {
+        locate.set(item, {
+          kind: 'extension',
+          extensionId: group.extensionId,
+          extensionName: group.extensionName,
+          command: command.command
+        })
+      }
     })
   }
 
   const dropped = dedupeAccelerators(template, locate)
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-  // 没有这一句,setPluginCommands() 就永远走「还没建过,先记着」那条分支 ——
-  // 菜单会冻结在启动那一刻的内容:插件后来启停、注册新命令,菜单里一概看不见。
+  // 没有这一句,setExtensionCommands() 就永远走「还没建过,先记着」那条分支 ——
+  // 菜单会冻结在启动那一刻的内容:扩展后来启停、注册新命令,菜单里一概看不见。
   built = true
-  for (const d of dropped) reportDrop?.(d)
+  for (const d of dropped.pluginDropped) reportDrop?.(d)
   return dropped
 }

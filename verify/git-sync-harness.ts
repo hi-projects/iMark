@@ -1,33 +1,57 @@
 /**
- * git-sync 真跑一次上传 —— 本次改动碰过它的源码(加了 vault:read 的启动期检查),
- * 所以要证明「同步一次」这件事还是通的,而不是只看加载不报错。
+ * git-sync（v2 扩展模型）端到端验收。
  *
- * 真开一个裸仓库当远端、真让插件提交并推送,最后用 git 自己读回远端的分支内容。
- * 全程不 mock:插件跑的是打包出来的内置包,走的是生产的那条 loadExternal 路径。
+ * 真开一个裸仓库当远端，真让扩展在自己的宿主进程里 `git add / commit / push`，
+ * 最后用 git 自己读回远端分支 —— 不看扩展怎么说，只看远端有什么。
  *
- * 跑法(在仓库根目录):
+ * 覆盖：
+ *   1 v2 内置包安装、清单贡献点（命令/快捷键/配置/动作/状态栏）
+ *   2 `onStartupFinished` 激活、状态栏条目与初始文案
+ *   3 首次同步：远端建分支、文件与忽略项写入、提交信息模板生效
+ *   4 无改动不造空提交；有改动 +1 提交
+ *   5 `testAll` / `testTarget`（逐远端）与状态卡结果
+ *   6 密钥缺失时在动 git 之前失败，并说清是哪一行
+ *   7 多远端：一个成功一个失败 → partial，逐个远端结果可见
+ *   8 配置变更 → 防抖后自动补跑一轮（onDidChangeConfiguration）
+ *   9 停用释放宿主；重新启用后命令再激活；卸载清目录与贡献点
+ *
+ * 跑法（在仓库根目录）：
  *   node verify/run.mjs git-sync
  */
 
-import { app, dialog } from 'electron'
+import { app, dialog, protocol, type BrowserWindow } from 'electron'
 import { execFile } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { IPC } from '../src/shared/ipc-channels'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
+import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { getPluginHost, initPluginHost } from '../src/main/plugins/host'
-import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
-
-registerPluginScheme()
+import { installExtensionPackage } from '../src/main/extensions/installer'
+import {
+  initExtensions,
+  shutdownExtensions,
+  type ExtensionService
+} from '../src/main/extensions/service'
+import type { ExtensionView } from '../src/shared/extensions'
+import type { PluginStatus } from '../src/shared/plugins'
 
 const run = promisify(execFile)
+const REPO = join(__dirname, '..', '..')
+const EXT_ID = 'imark.git-sync'
+const APP_VERSION = '0.1.0'
+
+// 必须在 app ready 之前注册；主窗口加载 markdown 时用得到
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+])
 
 let pass = 0
 let fail = 0
+
 function check(label: string, ok: boolean, detail = ''): void {
   if (ok) {
     pass += 1
@@ -38,11 +62,13 @@ function check(label: string, ok: boolean, detail = ''): void {
   }
 }
 
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+
 /**
- * 在指定目录跑 git,返回 stdout(失败就把 stderr 抛出来,便于看清是哪一步)。
+ * 在指定目录跑 git，返回 stdout。
  *
- * `-c core.quotePath=false`:git 默认把非 ASCII 路径转义成 `"\347\254\224..."`,
- * 中文文件名在输出里就变成一串八进制,拿它做 includes 永远匹配不上。
+ * `-c core.quotePath=false`：git 默认把非 ASCII 路径转义成八进制，中文文件名
+ * 在输出里就变成一串 `\347\254\224`，拿它做 includes 永远匹配不上。
  */
 async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await run('git', ['-c', 'core.quotePath=false', ...args], {
@@ -58,16 +84,52 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout
 }
 
+interface TargetConfig {
+  id: string
+  url: string
+  auth: 'ssh' | 'token' | 'password'
+  username: string
+  localBranch: string
+  remoteBranch: string
+}
+
+const baseConfig = (targets: TargetConfig[]): Record<string, unknown> => ({
+  targets,
+  intervalMinutes: 0,
+  syncOnStart: false,
+  commitMessage: 'sync: {time}',
+  authorName: 'iMark',
+  authorEmail: 'imark@local',
+  autoInitRepo: true,
+  initBranch: 'main',
+  writeGitignore: true,
+  writeReadme: false,
+  // 本地路径远端不需要代理；固定直连，避免宿主机环境变量里的代理影响结果
+  proxyMode: 'off',
+  proxyUrl: 'http://127.0.0.1:7890'
+})
+
+const target1 = (remote: string): TargetConfig => ({
+  id: 't1',
+  url: remote,
+  auth: 'ssh',
+  username: '',
+  localBranch: 'main',
+  remoteBranch: 'main'
+})
+
 async function main(): Promise<void> {
   if (!app.commandLine.hasSwitch('user-data-dir')) {
-    console.error('拒绝运行:必须带 --user-data-dir(用 `node verify/run.mjs <名字>` 跑会自动带上)')
+    console.error('拒绝运行：必须带 --user-data-dir（用 `node verify/run.mjs git-sync` 跑会自动带上）')
     app.exit(2)
     return
   }
 
   await app.whenReady()
+
   ;(dialog as unknown as { showSaveDialog: unknown }).showSaveDialog = async () => ({
-    canceled: true
+    canceled: true,
+    filePath: undefined
   })
   ;(dialog as unknown as { showMessageBoxSync: unknown }).showMessageBoxSync = () => 1
   ;(dialog as unknown as { showMessageBox: unknown }).showMessageBox = async () => ({ response: 1 })
@@ -75,18 +137,18 @@ async function main(): Promise<void> {
   const ud = app.getPath('userData')
   const vault = join(ud, 'vault')
   const remote = join(ud, 'remote.git')
+  const badRemote = join(ud, 'no-such-remote.git')
+  const note = join(vault, '笔记.md')
 
-  for (const d of [vault, remote, join(ud, 'plugins')]) {
-    await rm(d, { recursive: true, force: true })
+  for (const dir of [vault, remote, badRemote, join(ud, 'plugins'), join(ud, 'extensions-data')]) {
+    await rm(dir, { recursive: true, force: true })
   }
   await mkdir(vault, { recursive: true })
   await mkdir(remote, { recursive: true })
-
-  // 远端:一个裸仓库。分支名刻意定成 main,和插件默认的 initBranch 对齐
   await git(remote, ['init', '--bare', '--initial-branch=main'])
-  // 仓库里放一篇笔记,插件的职责就是把它提交并推上去
-  await writeFile(join(vault, '笔记.md'), '# 第一篇\n\n同步我。\n', 'utf8')
+  await writeFile(note, '# 第一篇\n\n同步我。\n', 'utf8')
 
+  const config = baseConfig([target1(remote)])
   await writeFile(
     join(ud, 'settings.json'),
     JSON.stringify(
@@ -94,36 +156,11 @@ async function main(): Promise<void> {
         skipVaultPicker: true,
         vaultPath: vault,
         vaults: [vault],
-        lastFile: null,
+        lastFile: note,
         marketUrl: '',
         autoSave: false,
-        plugins: {
-          'git-sync': {
-            enabled: true,
-            config: {
-              targets: [
-                {
-                  id: 't1',
-                  url: remote,
-                  localBranch: 'main',
-                  remoteBranch: 'main',
-                  // auth 选 ssh:插件对 ssh 不做密钥校验,而本地路径远端本来也不需要凭据
-                  auth: 'ssh',
-                  username: ''
-                }
-              ],
-              intervalMinutes: 0,
-              // 关掉开机同步 —— 这一轮要自己控制时机,不然「什么时候跑的」说不清
-              syncOnStart: false,
-              commitMessage: 'sync: {time}',
-              authorName: 'iMark',
-              authorEmail: 'imark@local',
-              autoInitRepo: true,
-              initBranch: 'main',
-              writeGitignore: true,
-              writeReadme: false
-            }
-          }
+        extensions: {
+          [EXT_ID]: { enabled: true, config }
         }
       },
       null,
@@ -132,61 +169,293 @@ async function main(): Promise<void> {
     'utf8'
   )
 
+  const envelope = JSON.parse(
+    await readFile(join(REPO, 'src/main/market/builtin/imark.git-sync.imkpkg.json'), 'utf8')
+  ) as unknown
+  const installed = await installExtensionPackage(envelope, {
+    source: 'bundled',
+    appVersion: APP_VERSION
+  })
+  check('内置 v2 包通过校验并安装', installed.manifest.version === '2.0.0')
+
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost(ensureBundledProvisioned)
-  const win = createMainWindow(settings)
-  await new Promise<void>(resolve => win.webContents.once('did-finish-load', () => resolve()))
-  await new Promise(r => setTimeout(r, 1200))
+  const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
+  buildAppMenu()
+  const win: BrowserWindow = createMainWindow(settings)
+  const wc = win.webContents
+  service.setRendererSender(message => {
+    if (!win.isDestroyed()) wc.send(IPC.ExtensionToRenderer, message)
+  })
+  await new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))
+  await sleep(1200)
+  await service.startup()
+  await sleep(600)
 
-  const host = getPluginHost()!
-  const view = (await host.list()).find(v => v.descriptor.id === 'git-sync')
-  console.log('\n[依赖] git 与插件清单')
-  check('git-sync 从内置包加载成功', view !== undefined && view.loadError === undefined,
-    String(view?.loadError))
-  check('git-sync 是启用状态', view?.state.enabled === true)
-  check('远端是一个真的裸仓库', (await git(remote, ['rev-parse', '--is-bare-repository'])).trim() === 'true')
-  check('远端此刻还没有 main 分支', (await git(remote, ['branch', '--list'])).trim() === '')
+  const view = async (): Promise<ExtensionView | undefined> =>
+    (await service.getExtensionViews()).find(v => v.descriptor.id === EXT_ID)
 
-  console.log('\n[真跑] 点「立即上传」')
-  const result = await host.runAction('git-sync', 'sync-now')
-  check('动作返回成功', result.ok === true, `${result.message} / ${result.detail ?? ''}`)
-  console.log(`      插件自己说:${result.message}`)
+  async function waitStatus(status: PluginStatus, ms = 20_000): Promise<ExtensionView | undefined> {
+    const until = Date.now() + ms
+    let current = await view()
+    while (Date.now() < until) {
+      if (current?.status.status === status && !service.isActivated(EXT_ID)) return current
+      if (current?.status.status === status) return current
+      await sleep(150)
+      current = await view()
+    }
+    return current
+  }
 
-  // 不看插件怎么说,看 git 怎么说
-  console.log('\n[核对] 直接问远端仓库要答案')
+  const statusItem = () => service.getContributions().statusItems.find(i => i.extensionId === EXT_ID)
+
+  async function waitFor<T>(fn: () => T | Promise<T>, ok: (v: T) => boolean, ms = 8000): Promise<T> {
+    const until = Date.now() + ms
+    let value = await fn()
+    while (Date.now() < until) {
+      if (ok(value)) return value
+      await sleep(120)
+      value = await fn()
+    }
+    return value
+  }
+
+  // ---------- 1. 安装与贡献点 ----------
+
+  console.log('\n【1】v2 内置包：清单贡献点来自 package.json')
+  const v = await view()
+  check('扩展列表里有 imark.git-sync', !!v, JSON.stringify(service.listExtensions().map(x => x.descriptor.id)))
+  check('默认启用', v?.enabled === true)
+  check('来源标成内置（bundled）', v?.source === 'bundled', String(v?.source))
+  const commands = v?.descriptor.contributes.commands ?? []
+  for (const id of [
+    'imark.git-sync.syncNow',
+    'imark.git-sync.testAll',
+    'imark.git-sync.detectProxy',
+    'imark.git-sync.testTarget'
+  ]) {
+    check(`声明了命令 ${id}`, commands.some(c => c.command === id))
+  }
+  const keybindings = service.getContributions().keybindings.filter(k => k.extensionId === EXT_ID)
+  const syncKey = keybindings.find(k => k.command === 'imark.git-sync.syncNow')
+  check('声明了 ctrl+alt+s 快捷键且未被摘掉', syncKey?.key === 'ctrl+alt+s' && !syncKey.dropped, JSON.stringify(syncKey))
+  const actions = service.getContributions().actions.filter(a => a.extensionId === EXT_ID)
+  check('声明了 4 个设置页动作', actions.length === 4, JSON.stringify(actions.map(a => a.command)))
+  check(
+    '「测试连接」是每远端动作',
+    actions.some(a => a.command === 'imark.git-sync.testTarget' && a.scope === 'target')
+  )
+  const fields = v?.descriptor.settingsFields ?? []
+  check('配置翻译成 targets 字段', fields.some(f => f.key === 'targets' && f.kind === 'targets'))
+  check('代理模式是下拉选择', fields.some(f => f.key === 'proxyMode' && f.kind === 'select'))
+  check(
+    '同步间隔是数字且有 0–1440 限制',
+    fields.some(f => f.key === 'intervalMinutes' && f.kind === 'number' && f.min === 0 && f.max === 1440)
+  )
+
+  // ---------- 2. 启动激活与状态栏 ----------
+
+  console.log('\n【2】onStartupFinished 激活、状态栏条目')
+  check('启动后扩展已激活', service.isActivated(EXT_ID))
+  const groups = service.hostGroupsView().filter(g => g.extensionIds.includes(EXT_ID))
+  check('扩展有独立宿主进程（默认 isolated）', groups.length === 1 && groups[0]!.pid !== null, JSON.stringify(groups))
+  const item = await waitFor(statusItem, x => !!x)
+  check('状态栏出现 Git 同步条目', item?.text === '$(git) Git 同步', JSON.stringify(item))
+  check('点击执行立即同步', item?.command === 'imark.git-sync.syncNow')
+  check('悬停说明指向同步动作', (item?.tooltip ?? '').includes('立即上传'), String(item?.tooltip))
+  check('初始状态是 idle', (await view())?.status.status === 'idle', String((await view())?.status.status))
+
+  // ---------- 3. 首次同步 ----------
+
+  console.log('\n【3】首次同步：远端真的收到提交')
+  check(
+    '远端此刻还没有 main 分支',
+    (await git(remote, ['branch', '--list'])).trim() === ''
+  )
+  const first = (await service.executeCommand('imark.git-sync.syncNow')) as {
+    ok: boolean
+    message: string
+  }
+  check('命令返回 ok', first?.ok === true, JSON.stringify(first))
+  console.log(`      扩展自己说：${first?.message}`)
+
   const branches = await git(remote, ['branch', '--list', '--format=%(refname:short)'])
   check('远端有了 main 分支', branches.trim() === 'main', branches.trim())
-
   const files = await git(remote, ['ls-tree', '-r', '--name-only', 'main'])
   check('笔记被推上去了', files.includes('笔记.md'), files.trim())
-  check('插件的 .gitignore 也写进去了(writeGitignore: true)', files.includes('.gitignore'),
-    files.trim())
-
+  check('.gitignore 按配置写入', files.includes('.gitignore'), files.trim())
   const blob = await git(remote, ['show', 'main:笔记.md'])
-  check('远端那份笔记内容与本地一致', blob === '# 第一篇\n\n同步我。\n', JSON.stringify(blob))
+  check('远端内容与本地一致', blob === '# 第一篇\n\n同步我。\n', JSON.stringify(blob))
+  const subject = (await git(remote, ['log', '-1', '--format=%s', 'main'])).trim()
+  check('提交信息用了模板（sync: 时间）', /^sync: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(subject), subject)
 
-  // 第二次:没有改动时不应该造出空提交(插件靠 status --porcelain 判的)
-  console.log('\n[第二次] 没有新改动时不该造出空提交')
-  const before = (await git(remote, ['rev-list', '--count', 'main'])).trim()
-  const again = await host.runAction('git-sync', 'sync-now')
-  const after = (await git(remote, ['rev-list', '--count', 'main'])).trim()
-  check('第二次动作仍算成功', again.ok === true, `${again.message} / ${again.detail ?? ''}`)
-  check(`提交数没变(${before} → ${after})`, before === after)
+  const afterFirst = await waitStatus('ok')
+  console.log(`      status = ${JSON.stringify(afterFirst?.status)}`)
+  check('运行状态上报为 ok', afterFirst?.status.status === 'ok', JSON.stringify(afterFirst?.status))
+  check('状态文本说明已推送', (afterFirst?.status.lastMessage ?? '').includes('推送'), afterFirst?.status.lastMessage)
+  check('lastRunAt 有值', typeof afterFirst?.status.lastRunAt === 'number')
+  const okItem = await waitFor(statusItem, x => x?.text === '$(check) Git 同步')
+  check('状态栏切成成功图标', okItem?.text === '$(check) Git 同步', JSON.stringify(okItem?.text))
+  check('远端结果上报为 ok', afterFirst?.status.targetResults?.t1 === 'ok')
 
-  // 再来一轮:真的改了文件,应该多一个提交
-  console.log('\n[第三次] 改了文件就该多一个提交')
+  // ---------- 4. 空同步与有改动 ----------
+
+  console.log('\n【4】没有改动不造空提交；有改动 +1 提交')
+  const count = async (): Promise<number> =>
+    Number((await git(remote, ['rev-list', '--count', 'main'])).trim())
+  const before = await count()
+  const second = (await service.executeCommand('imark.git-sync.syncNow')) as { ok: boolean; message: string }
+  check('第二次仍成功', second?.ok === true, JSON.stringify(second))
+  check(`提交数没变（${before} → ${await count()}）`, (await count()) === before)
+  check('状态说明无改动', ((await waitStatus('ok'))?.status.lastMessage ?? '').includes('无改动'), (await view())?.status.lastMessage)
+
   await writeFile(join(vault, '第二篇.md'), '# 第二篇\n', 'utf8')
-  const third = await host.runAction('git-sync', 'sync-now')
-  const afterThird = (await git(remote, ['rev-list', '--count', 'main'])).trim()
-  check('第三次动作成功', third.ok === true, `${third.message} / ${third.detail ?? ''}`)
-  check(`提交数 +1(${after} → ${afterThird})`, Number(afterThird) === Number(after) + 1)
-  const files2 = await git(remote, ['ls-tree', '-r', '--name-only', 'main'])
-  check('新文件也推上去了', files2.includes('第二篇.md'), files2.trim())
+  const third = (await service.executeCommand('imark.git-sync.syncNow')) as { ok: boolean }
+  check('第三次成功', third?.ok === true)
+  check(`提交数 +1（${before} → ${await count()}）`, (await count()) === before + 1)
+  check(
+    '新文件也推上去了',
+    (await git(remote, ['ls-tree', '-r', '--name-only', 'main'])).includes('第二篇.md')
+  )
 
-  console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)
+  // ---------- 5. 测试连接 ----------
+
+  console.log('\n【5】测试全部远端 / 单远端')
+  const testAll = (await service.executeCommand('imark.git-sync.testAll')) as {
+    ok: boolean
+    message: string
+  }
+  check('testAll 成功', testAll?.ok === true, JSON.stringify(testAll))
+  check('提示里说明远端已有分支', (testAll?.message ?? '').includes('连接测试通过'), testAll?.message)
+  check('状态卡记录 t1 连接成功', (await waitStatus('ok'))?.status.targetResults?.t1 === 'ok', JSON.stringify((await view())?.status.targetResults))
+
+  const testOne = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
+    ok: boolean
+    message: string
+  }
+  check('testTarget 只测指定远端', testOne?.ok === true && (testOne.message ?? '').includes('第 1 个远端'), JSON.stringify(testOne))
+
+  // ---------- 6. 密钥缺失 ----------
+
+  console.log('\n【6】缺密钥：在动 git 之前失败，并指出是哪一行')
+  const tokenTarget: TargetConfig = {
+    id: 't2',
+    url: 'https://example.invalid/notes.git',
+    auth: 'token',
+    username: '',
+    localBranch: 'main',
+    remoteBranch: 'main'
+  }
+  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote), tokenTarget]))
+  const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
+    ok: boolean
+    message: string
+  }
+  check('命令返回失败', missing?.ok === false, JSON.stringify(missing))
+  check('错误指到第 2 个远端', (missing?.message ?? '').includes('第 2 个远端'), missing?.message)
+  check('错误说明缺的是访问令牌', (missing?.message ?? '').includes('访问令牌'), missing?.message)
+  const failedStatus = await waitStatus('error')
+  check('状态卡标记 error', failedStatus?.status.status === 'error', failedStatus?.status.status)
+
+  // ---------- 7. 多远端部分失败 ----------
+
+  console.log('\n【7】多远端：一个成功、一个失败 → partial')
+  const broken: TargetConfig = {
+    id: 'bad',
+    url: badRemote,
+    auth: 'ssh',
+    username: '',
+    localBranch: 'main',
+    remoteBranch: 'main'
+  }
+  await writeFile(join(vault, '第三篇.md'), '# 第三篇\n', 'utf8')
+  const beforePartial = await count()
+  // 配置变更会触发扩展内部的防抖补跑（3s），用它验证 onDidChangeConfiguration 链路
+  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote), broken]))
+  const partial = await waitStatus('partial', 25_000)
+  check('配置变更后自动跑了一轮并上报 partial', partial?.status.status === 'partial', JSON.stringify(partial?.status))
+  check('成功的远端记为 ok', partial?.status.targetResults?.t1 === 'ok', JSON.stringify(partial?.status.targetResults))
+  check('失败的远端记为 error', partial?.status.targetResults?.bad === 'error', JSON.stringify(partial?.status.targetResults))
+  check('状态文本列出两个远端的成败', (partial?.status.lastMessage ?? '').includes('推送失败'), partial?.status.lastMessage)
+  check(
+    '失败的详情里带分类提示',
+    (partial?.status.lastDetail ?? '').includes('仓库') ||
+      (partial?.status.lastDetail ?? '').includes('连接') ||
+      (partial?.status.lastDetail ?? '').includes('remote'),
+    partial?.status.lastDetail
+  )
+  check(`成功的那个远端收到了新提交（${beforePartial} → ${await count()}）`, (await count()) === beforePartial + 1)
+  const partialItem = await waitFor(statusItem, x => x?.text === '$(alert) Git 同步')
+  check('状态栏切成告警图标', partialItem?.text === '$(alert) Git 同步', JSON.stringify(partialItem?.text))
+
+  const testBad = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 'bad' }])) as {
+    ok: boolean
+    message: string
+  }
+  check('单测失败的远端返回失败', testBad?.ok === false, JSON.stringify(testBad))
+  check('失败结果也写进状态卡', (await waitStatus('error'))?.status.targetResults?.bad === 'error')
+
+  const testGoodAgain = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
+    ok: boolean
+  }
+  check('单测成功的远端返回成功', testGoodAgain?.ok === true, JSON.stringify(testGoodAgain))
+
+  // ---------- 8. 检测代理（直连模式） ----------
+
+  console.log('\n【8】检测本机代理：直连模式下如实说明')
+  const proxy = (await service.executeCommand('imark.git-sync.detectProxy')) as {
+    ok: boolean
+    message: string
+  }
+  check('detectProxy 返回成功', proxy?.ok === true, JSON.stringify(proxy))
+  check('说明当前为直连', (proxy?.message ?? '').includes('直连'), proxy?.message)
+
+  // ---------- 9. 停用 / 重新启用 / 卸载 ----------
+
+  console.log('\n【9】停用释放宿主，重新启用后可再次激活；卸载清理干净')
+  // 先回到单远端配置：下一步的「重新启用后执行命令」不应再撞上故意填坏的那个远端。
+  // 配置变更会触发 3 秒防抖补跑，等它跑完再停用，避免状态在断言之间跳变。
+  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote)]))
+  await sleep(4500)
+  check('恢复单远端配置后自动补跑成功', (await view())?.status.status === 'ok', JSON.stringify((await view())?.status))
+  await service.setEnabled(EXT_ID, false)
+  check('扩展标为停用', (await view())?.enabled === false)
+  check('宿主已释放', !service.isActivated(EXT_ID))
+  check('状态栏条目消失', await (async () => {
+    const until = Date.now() + 5000
+    while (Date.now() < until) {
+      if (!statusItem()) return true
+      await sleep(120)
+    }
+    return false
+  })())
+  check(
+    '命令从命令面板消失',
+    !service.getContributions().commands.some(c => c.command === 'imark.git-sync.syncNow')
+  )
+
+  await service.setEnabled(EXT_ID, true)
+  check('重新启用后尚未激活（onStartupFinished 只跑一次）', !service.isActivated(EXT_ID))
+  const revived = (await service.executeCommand('imark.git-sync.syncNow')) as { ok: boolean }
+  check('执行命令触发重新激活并成功', revived?.ok === true, JSON.stringify(revived))
+  check('状态栏条目回来了', await waitFor(statusItem, x => !!x, 8000) !== undefined)
+
+  await service.uninstallExtension(EXT_ID)
+  check('扩展列表里不再有它', !(await view()))
+  check('状态栏条目彻底消失', !statusItem())
+  const dirGone = await readFile(join(ud, 'plugins', EXT_ID, 'package.json'), 'utf8').then(
+    () => false,
+    () => true
+  )
+  check('安装目录被删除', dirGone)
+
+  await shutdownExtensions()
+  console.log(`\n${pass} 通过，${fail} 失败\n`)
   app.exit(fail === 0 ? 0 : 1)
 }
 
-void main()
+main().catch(err => {
+  console.error(err)
+  app.exit(1)
+})

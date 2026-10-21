@@ -3,7 +3,8 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { Search, Terminal, Zap } from 'lucide-vue-next'
 import { appStore, type VaultFileRef } from '../stores/app'
 import { closeSwitcher, openVaultFile, searchVaultFiles } from '../services/vaultService'
-import { invokeContrib, searchPluginCommands, type PaletteCommand } from '../services/pluginUi'
+import { runExtensionCommand } from '../services/extensionService'
+import { searchExtensionCommands, type PaletteCommand } from '../services/extensionUi'
 
 /**
  * 快速切换器 —— 一个面板,两种东西:文件与命令。
@@ -32,14 +33,14 @@ const fileResults = computed<VaultFileRef[]>(() =>
   isCommandMode.value ? [] : searchVaultFiles(keyword.value)
 )
 const commandResults = computed<PaletteCommand[]>(() =>
-  isCommandMode.value ? searchPluginCommands(keyword.value) : []
+  isCommandMode.value ? searchExtensionCommands(keyword.value) : []
 )
 
 /** 当前列出的条数 —— 上下键与回车的边界都由它决定 */
 const count = computed(() => (isCommandMode.value ? commandResults.value.length : fileResults.value.length))
 
 function pluginBadge(cmd: PaletteCommand): string {
-  return cmd.detail ? `${cmd.pluginName} · ${cmd.detail}` : cmd.pluginName
+  return cmd.detail ? `${cmd.extensionName} · ${cmd.detail}` : cmd.extensionName
 }
 
 watch(
@@ -81,7 +82,7 @@ function runCommand(cmd: PaletteCommand | undefined): void {
   closeSwitcher()
   // 不可用的命令照样可以点:主进程会给出「当前状态下不可用」,
   // 比在面板里静默失败强 —— 至少用户知道这条命令存在、只是现在用不了
-  void invokeContrib({ pluginId: cmd.pluginId, itemId: cmd.id, from: 'command' })
+  void runExtensionCommand(cmd.command, [], 'commandPalette')
 }
 
 function confirmActive(): void {
@@ -118,8 +119,8 @@ function onKeydown(e: KeyboardEvent): void {
           class="switcher-input"
           :placeholder="
             isCommandMode
-              ? '输入命令名或插件名...'
-              : '输入文件名模糊搜索,或输入 > 搜插件命令...'
+              ? '输入命令名或扩展名...'
+              : '输入文件名模糊搜索,或输入 > 搜扩展命令...'
           "
           @keydown="onKeydown"
         />
@@ -129,7 +130,7 @@ function onKeydown(e: KeyboardEvent): void {
         <template v-if="isCommandMode">
           <div
             v-for="(cmd, i) in commandResults"
-            :key="`${cmd.pluginId}:${cmd.id}`"
+            :key="cmd.command"
             class="switcher-item"
             :class="{ 'switcher-item-active': i === activeIndex, 'switcher-item-off': !cmd.usable }"
             :title="cmd.usable ? pluginBadge(cmd) : `${pluginBadge(cmd)} · 当前状态下不可用`"
@@ -137,13 +138,13 @@ function onKeydown(e: KeyboardEvent): void {
             @click="runCommand(cmd)"
           >
             <Zap :size="13" class="switcher-command-icon" />
-            <span class="switcher-name">{{ cmd.label }}</span>
+            <span class="switcher-name">{{ cmd.title }}</span>
             <span class="switcher-badge"
               >{{ pluginBadge(cmd) }}{{ cmd.usable ? '' : ' · 不可用' }}</span
             >
           </div>
           <div v-if="commandResults.length === 0" class="switcher-empty">
-            {{ keyword ? '没有匹配的命令' : '没有插件提供命令(装了插件后这里会出现它的命令)' }}
+            {{ keyword ? '没有匹配的命令' : '没有扩展提供命令(装了扩展后这里会出现它的命令)' }}
           </div>
         </template>
         <!-- 文件模式 -->

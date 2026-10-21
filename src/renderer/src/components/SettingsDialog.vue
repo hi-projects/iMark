@@ -22,14 +22,9 @@ import {
   setLineWrapping
 } from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
-import {
-  openMarketSettings,
-  pluginStore,
-  selectPluginSettings,
-  settingsNav,
-  type MarketNav
-} from '../services/pluginService'
-import { pluginStatusMessage, pluginStatusTone } from '../services/pluginStatus'
+import { openMarketSettings, settingsNav, type MarketNav } from '../services/pluginService'
+import { extensionStore, selectExtensionSettings } from '../services/extensionService'
+import { extensionTone } from '../services/extensionUi'
 import PluginSettings from './plugins/PluginSettings.vue'
 import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
@@ -38,15 +33,15 @@ import InstallConfirmDialog from './market/InstallConfirmDialog.vue'
 import MarketSource from './market/MarketSource.vue'
 
 /**
- * 「插件」分组标题旁那个问号的内容。
+ * 「扩展」分组标题旁那个问号的内容。
  *
- * 列表里已经不再挂形态标签,而两层之间的信任差着一个量级 ——
- * 这个区别总得有地方说清楚,所以就放在这一句提示里,不占列表的地。
+ * 信任模型是这一版最重要的一件事:扩展代码不是沙箱代码,它以当前用户权限运行。
+ * 这句话放在设置页入口,而不是只写在安装确认框里。
  */
 const LAYER_HELP = [
-  'node main：代码在主进程里跑，拥有完整 Node 权限 —— 能读写任意文件、执行命令。',
-  'restricted main：代码在隐藏沙箱页里跑，没有 Node、文件系统；权限逐条申请、由宿主门禁放行。',
-  'render 层：与主界面同 realm，能改界面、读当前文档，但没有系统能力；需要时消息给 main 层。'
+  '扩展代码以你的用户权限运行，能读写文件、执行命令、访问网络 —— 安装前请确认来源可信。',
+  '默认每个扩展跑在独立的扩展宿主进程中：一个扩展崩溃不会影响其他扩展。',
+  '可以在扩展设置页切换为共享宿主（省内存），或给扩展设置 affinity 分组。'
 ].join('\n')
 
 /** 右侧标题:选中的是插件就显示插件名,市场页则跟着它的页签走 */
@@ -60,7 +55,8 @@ const title = computed(() => {
   if (settingsNav.page === 'system') return '系统'
   if (settingsNav.page === 'plugin') {
     return (
-      pluginStore.list.find(p => p.descriptor.id === settingsNav.pluginId)?.descriptor.name ?? '插件'
+      extensionStore.list.find(ext => ext.descriptor.id === settingsNav.pluginId)?.descriptor
+        .displayName ?? '扩展'
     )
   }
   return '外观'
@@ -388,9 +384,9 @@ onBeforeUnmount(() => {
           <Settings2 :size="15" />
           <span>系统</span>
         </button>
-        <!-- 插件单独一行分组:市场排第一项,下面直接列出每个已安装插件 -->
+        <!-- 扩展单独一行分组:市场排第一项,下面直接列出每个已安装扩展 -->
         <div class="settings-nav-group">
-          <span>插件</span>
+          <span>扩展</span>
           <HelpTip :text="LAYER_HELP" :size="12" class="settings-nav-help" />
         </div>
         <button
@@ -406,28 +402,27 @@ onBeforeUnmount(() => {
           </span>
         </button>
         <button
-          v-for="plugin in pluginStore.list"
-          :key="plugin.descriptor.id"
+          v-for="ext in extensionStore.list"
+          :key="ext.descriptor.id"
           class="settings-nav-item"
           :class="{
             'settings-nav-active':
-              settingsNav.page === 'plugin' && settingsNav.pluginId === plugin.descriptor.id
+              settingsNav.page === 'plugin' && settingsNav.pluginId === ext.descriptor.id
           }"
-          @click="selectPluginSettings(plugin.descriptor.id)"
+          @click="selectExtensionSettings(ext.descriptor.id)"
         >
           <span
             class="plugin-status-dot"
-            :class="`plugin-status-${pluginStatusTone(plugin.state)}`"
-            :title="pluginStatusMessage(plugin.state)"
+            :class="`plugin-status-${extensionTone(ext.descriptor.id)}`"
+            :title="
+              ext.enabled
+                ? `宿主 ${ext.runtime.hostId ?? '未启动'} · ${ext.runtime.status}`
+                : '已停用'
+            "
           />
-          <span class="settings-nav-label">{{ plugin.descriptor.name }}</span>
-          <!--
-            这里刻意不挂形态标签(完整权限 / 沙箱 / 无代码):
-            形态之间的差别由分组标题旁的那个问号解释,权限明细在市场「已安装」里逐条列着 ——
-            列表只负责回答「装了哪几个、各自跑得怎么样」。
-          -->
+          <span class="settings-nav-label">{{ ext.descriptor.displayName }}</span>
         </button>
-        <div v-if="pluginStore.list.length === 0" class="settings-nav-empty">没有可用的插件</div>
+        <div v-if="extensionStore.list.length === 0" class="settings-nav-empty">没有可用的扩展</div>
       </aside>
 
       <section class="settings-main">

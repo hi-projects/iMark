@@ -1,5 +1,5 @@
 import { Compartment, EditorState, type Extension } from '@codemirror/state'
-import { EditorView, drawSelection, keymap } from '@codemirror/view'
+import { EditorView, drawSelection, keymap, type ViewUpdate } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { syntaxHighlighting } from '@codemirror/language'
 import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown'
@@ -10,6 +10,7 @@ import { enterAboveTable, selectAdjacentTable, tableInputFilter } from './wysiwy
 import { lineMenu } from './lineMenu'
 import { mathPreview } from './mathPreview'
 import { pluginExtensionsCompartment } from './pluginExtensions'
+import { extensionDecorationsExtension } from './extensionDecorations'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { imagePaste } from './imagePaste'
@@ -75,6 +76,19 @@ export interface EditorOptions {
   editable?: boolean
 }
 
+/**
+ * 编辑器更新观察者(扩展桥订阅)。
+ *
+ * 放在模块级而不是 buildExtensions 的参数里:每个标签的 state 都由同一组
+ * 监听器构建,而桥只有一个 —— 参数化会让"哪个 state 属于哪个标签"这件事
+ * 散到每个创建点。
+ */
+let updateObserver: ((update: ViewUpdate) => void) | null = null
+
+export function setEditorUpdateObserver(fn: ((update: ViewUpdate) => void) | null): void {
+  updateObserver = fn
+}
+
 /** 扩展组装:换行 / 历史 / markdown(GFM+嵌套语言) / WYSIWYG / 键位 */
 export function buildExtensions(
   onDocChange: (view: EditorView) => void,
@@ -102,6 +116,8 @@ export function buildExtensions(
     // render 层自己注册的 CM6 扩展(按插件分桶,可精确移除)。
     // 每次重建 state 都要重新装一遍 —— 所以它每次都从模块级注册表现读。
     pluginExtensionsCompartment(),
+    // 扩展的文本装饰随 state 走:切换标签后装饰还在,后台标签的偏移量也跟着变化映射
+    ...extensionDecorationsExtension,
     keymap.of([
       // 光标贴在表格上一行行尾 / 下一行行首时:第一次选中整表,第二次才删。
       // 必须排在默认删除之前 —— 否则第一次按键就把表格和正文间的换行删了
@@ -116,6 +132,8 @@ export function buildExtensions(
     ]),
     EditorView.updateListener.of(update => {
       if (update.docChanged) onDocChange(update.view)
+      // 桥只关心「文档变了」与「选区变了」;一次事务里两者都发生也只通知一次
+      if (update.docChanged || update.selectionSet) updateObserver?.(update)
     }),
     // 滚动/选区变化时跟随高亮大纲激活项
     EditorView.updateListener.of(update => {

@@ -11,7 +11,19 @@
  * 网络与密钥在 main 层，这里只通过消息请求。
  */
 
-import type { ImkRenderLayerApi } from '@shared/pluginApi'
+import type { ImkRenderLayerApi } from './legacy'
+import { characterStyleFrom, fillAvatar, type CharacterStyle } from './characters'
+import { extractPdfText, PdfExtractError } from './pdf'
+import {
+  hasTextAttachments,
+  imageNoteForAttachments,
+  splitFrontMatter,
+  systemPromptForBeautify,
+  systemPromptForChat,
+  systemPromptForGenerate,
+  userPromptForBeautify,
+  userPromptForGenerate
+} from './prompts'
 import type {
   AiBeautifyMessage,
   AiChatMessage,
@@ -21,6 +33,9 @@ import type {
   DocRequestMessage,
   PreviewOpenMessage
 } from './protocol'
+
+// webview/shim.ts 在 render.ts 之前把这个全局装好
+declare const imk: ImkRenderLayerApi
 
 type EditorViewT = NonNullable<ReturnType<ImkRenderLayerApi['editor']['getView']>>
 type ActionKind = 'generate' | 'beautify'
@@ -68,13 +83,28 @@ interface ChatMessageItem {
   action?: ActionState
 }
 
-/** 作为参考材料随请求发送的本地文本文件（正文已截断到插件上限） */
+/** 扫描件 PDF 的一页图片；只留在内存里，不写进 localStorage */
+interface AttachmentImage {
+  /** PDF 页码，从 1 开始 */
+  page: number
+  mediaType: 'image/jpeg'
+  /** 不带 `data:` 前缀的 base64 */
+  data: string
+  width: number
+  height: number
+}
+
+/** 作为参考材料随请求发送的本地文件（文本已截断到插件上限） */
 interface AttachmentItem {
   id: string
   name: string
-  /** 实际发送的字符数 */
+  /** 实际发送的文本字符数；纯扫描件为 0 */
   chars: number
   text: string
+  /** 扫描页图片；重启后不会恢复（base64 太大，不能塞进 localStorage） */
+  images: AttachmentImage[]
+  /** 上次运行时有过图片，但这次打开时图片数据已经不在了 */
+  imagesExpired?: boolean
   /** 原文件超过单文件上限，text 只是开头一段 */
   truncated: boolean
   addedAt: number
@@ -115,59 +145,9 @@ interface PersistedChatStore {
   docs: Record<string, DocEnvironment>
 }
 
-interface CharacterStyle {
-  label: string
-  /** 一个 emoji；与 svg 恰好有一个 */
-  emoji?: string
-  /** 内置的矢量动画形象；与 emoji 恰好有一个 */
-  svg?: string
-}
-
-/**
- * 内置的企鹅形象：黑色身体、白肚子、橙色嘴和脚、红围巾。
- * 眼睛与左翅膀带 CSS 动画（眨眼、挥手），外层的浮动由 .ai-char 负责。
- * 坐标全部用 viewBox 单位，尺寸由容器 CSS 控制。
- */
-const PENGUIN_SVG = `
-<svg class="ai-penguin" viewBox="0 0 64 64" aria-hidden="true">
-  <ellipse cx="32" cy="59" rx="14" ry="2.8" fill="rgba(0,0,0,.18)"/>
-  <path d="M32 8c-11.5 0-20 8.8-20 23 0 13.8 8.3 23.8 20 23.8s20-10 20-23.8C52 16.8 43.5 8 32 8Z" fill="#334155"/>
-  <path d="M32 9c-1.6-3.6 1.2-6.4 4.2-5.8 2.3.5 2.8 2.7 2.1 4.4" fill="none" stroke="#334155" stroke-width="2.3" stroke-linecap="round"/>
-  <ellipse cx="32" cy="28" rx="14.5" ry="13" fill="#fff8ec"/>
-  <ellipse cx="32" cy="45" rx="11.5" ry="10.5" fill="#fff8ec"/>
-  <ellipse cx="20.8" cy="33" rx="2.6" ry="1.7" fill="#ffb3c1" opacity=".9"/>
-  <ellipse cx="43.2" cy="33" rx="2.6" ry="1.7" fill="#ffb3c1" opacity=".9"/>
-  <g class="ai-penguin-eye">
-    <ellipse cx="26" cy="27.5" rx="3.4" ry="4.1" fill="#1f2937"/>
-    <circle cx="27.1" cy="26" r="1.2" fill="#fff"/>
-  </g>
-  <g class="ai-penguin-eye">
-    <ellipse cx="38" cy="27.5" rx="3.4" ry="4.1" fill="#1f2937"/>
-    <circle cx="39.1" cy="26" r="1.2" fill="#fff"/>
-  </g>
-  <path d="M30.2 32.4c1.1-1.6 2.5-1.6 3.6 0-1.1 2-2.5 2-3.6 0Z" fill="#ffb347"/>
-  <path d="M18.5 37.5c4.5 2.6 22.5 2.6 27 0l-1 4.2c-4.5 2.4-20.5 2.4-25 0Z" fill="#ff5c7a"/>
-  <path d="M42.5 40.5c3.5 1.5 5 4.5 4 7.2-.8 2-2.8 2.3-4 .5-1.1-1.7-.8-4.2-1.5-6.2Z" fill="#ff5c7a"/>
-  <circle cx="32" cy="39.5" r="2.4" fill="#ff6b86"/>
-  <ellipse cx="25.5" cy="57.5" rx="5.5" ry="2.6" fill="#ffb347"/>
-  <ellipse cx="38.5" cy="57.5" rx="5.5" ry="2.6" fill="#ffb347"/>
-  <path class="ai-penguin-flipper" d="M14 31c-3.5 4-3.8 9.5-1.2 13.3 1.3 1.9 3.2 1.6 4-.3 1.2-3 .8-7-.9-10.8-.9-2-1.5-2.7-1.9-2.2Z" fill="#334155"/>
-  <path d="M50 31c3.5 4 3.8 9.5 1.2 13.3-1.3 1.9-3.2 1.6-4-.3-1.2-3-.8-7 .9-10.8.9-2 1.5-2.7 1.9-2.2Z" fill="#334155"/>
-  <ellipse cx="32" cy="49.5" rx="6.5" ry="3.2" fill="#fff" opacity=".18"/>
-</svg>`
-
-const CHARACTERS: Record<string, CharacterStyle> = {
-  cat: { emoji: '🐱', label: '猫咪' },
-  penguin: { svg: PENGUIN_SVG, label: '企鹅' },
-  robot: { emoji: '🤖', label: '机器人' },
-  ghost: { emoji: '👻', label: '幽灵' },
-  star: { emoji: '✨', label: '星星' }
-}
-
 const MAX_MESSAGE_CHARS = 240 * 1024
 const MAX_INPUT_CHARS = 120_000
 const PLUGIN_ID = 'ai-for-edit'
-const CHARACTER_POS_KEY = 'ai-for-edit:character-position'
 const CHAT_STORE_KEY = 'ai-for-edit:chat-store:v1'
 const CHAT_STORE_VERSION = 1
 /** 每个文档保留的历史会话数；超出时丢掉最久没更新的 */
@@ -178,9 +158,23 @@ const MAX_ATTACHMENT_CHARS = 24_000
 const MAX_ATTACHMENT_TOTAL = 40_000
 /** 超过这个大小的文件不读：File.text() 会整个读进内存 */
 const MAX_ATTACHMENT_FILE_BYTES = 4 * 1024 * 1024
+/** PDF 里主要是图片，文件通常比纯文本大得多；32 MB 足够放下常见论文 */
+const MAX_ATTACHMENT_PDF_BYTES = 32 * 1024 * 1024
+/**
+ * 扫描页图片：每份 PDF 最多转 10 页、每篇文档最多 16 张；单张 base64 不超过
+ * 200,000 字符（宿主单条 render → main 消息只有 256 KiB）。
+ */
+const MAX_SCAN_PAGES_PER_PDF = 10
+const MAX_SCAN_IMAGES_TOTAL = 16
+const MAX_SCAN_IMAGE_CHARS = 200_000
+const MAX_SCAN_IMAGE_TOTAL_CHARS = 2_800_000
+/** 上传图片时每张一条消息；收到全部图片后 main 才开始发 AI 请求 */
+const IMAGE_UPLOAD_CHANNEL = 'attach.image'
 /** 落盘时单条消息/动作结果的字符上限，避免 localStorage 被一次长回答撑爆 */
 const MAX_PERSIST_MESSAGE_CHARS = 20_000
 const MAX_PERSIST_ACTION_CHARS = 40_000
+/** 提示词预览最多渲染这么多字符：对话的 system 里可能带着整篇文档 */
+const MAX_PROMPT_PREVIEW_CHARS = 20_000
 /** 输入区模式；顺序即按钮顺序，「对话」是默认模式 */
 const COMPOSE_MODES: ComposeMode[] = ['chat', 'generate', 'beautify']
 const COMPOSE_LABEL: Record<ComposeMode, string> = {
@@ -193,91 +187,12 @@ const COMPOSE_PLACEHOLDER: Record<ComposeMode, string> = {
   generate: '描述想生成的内容…（Enter 发送，Shift+Enter 换行）',
   beautify: '这次想怎么美化？可以留空，直接发送让 AI 自行整理（Enter 发送）'
 }
-/** 文件选择框只主动推荐文本类型；用户手动选「所有文件」时再按内容判断 */
-const ATTACHMENT_ACCEPT =
-  '.md,.markdown,.mdx,.txt,.text,.json,.jsonl,.csv,.tsv,.yaml,.yml,.toml,.ini,' +
-  '.xml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.py,.sh,.log,.rst,.org,.tex,.bib,text/*'
-const SPARKLES_SVG =
-  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+const INFO_SVG =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
   'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-  '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/>' +
-  '<path d="M19 3v4"/><path d="M21 5h-4"/><path d="M5 17v4"/><path d="M7 19H3"/></svg>'
+  '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>'
 
 const PANEL_CSS = `
-/* ---------- 编辑器里的浮动小人 ---------- */
-.ai-char {
-  position: absolute; right: 18px; bottom: 18px; z-index: 30;
-  width: 52px; height: 52px; padding: 0;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: radial-gradient(circle at 35% 30%,
-    color-mix(in srgb, var(--accent) 24%, var(--bg-toolbar)),
-    var(--bg-toolbar));
-  box-shadow: 0 6px 20px var(--shadow);
-  cursor: grab;
-  touch-action: none; user-select: none;
-  display: flex; align-items: center; justify-content: center;
-  animation: ai-char-float 3.2s ease-in-out infinite;
-}
-.ai-char:hover { filter: brightness(1.08); }
-.ai-char:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* 矢量小人（企鹅）：不套圆形气泡，就是一个透明背景的动画角色 */
-.ai-char-plain {
-  width: 64px; height: 72px;
-  background: transparent;
-  border: none; border-radius: 0; box-shadow: none;
-}
-.ai-char-plain::before { display: none; }
-.ai-char-plain .ai-char-emoji svg {
-  width: 58px; height: 58px;
-  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, .28));
-}
-.ai-char-plain .ai-char-label { right: 72px; }
-.ai-char-dragging { animation: none; cursor: grabbing; }
-.ai-char-dragging::before { display: none; }
-.ai-char-emoji svg { width: 38px; height: 38px; display: block; }
-.ai-penguin-eye {
-  transform-box: fill-box; transform-origin: center;
-  animation: ai-penguin-blink 4.2s infinite;
-}
-.ai-penguin-flipper {
-  transform-box: view-box; transform-origin: 16px 32px;
-  animation: ai-penguin-wave 2.8s ease-in-out infinite;
-}
-@keyframes ai-penguin-blink {
-  0%, 92%, 100% { transform: scaleY(1) }
-  95% { transform: scaleY(.08) }
-}
-@keyframes ai-penguin-wave {
-  0%, 100% { transform: rotate(0) }
-  50% { transform: rotate(-22deg) }
-}
-.ai-char::before {
-  content: ''; position: absolute; inset: -5px; border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
-  animation: ai-char-pulse 3.2s ease-out infinite; pointer-events: none;
-}
-.ai-char-emoji {
-  font-size: 26px; line-height: 1; pointer-events: none;
-  animation: ai-char-wiggle 4.2s ease-in-out infinite;
-}
-.ai-char-label {
-  position: absolute; right: 60px; top: 50%; transform: translateY(-50%);
-  padding: 5px 9px; border-radius: 6px;
-  background: var(--bg-toolbar); border: 1px solid var(--border);
-  color: var(--text-primary); font-family: var(--font-editor); font-size: 12px;
-  white-space: nowrap; opacity: 0; pointer-events: none;
-  transition: opacity .15s ease; box-shadow: 0 4px 12px var(--shadow);
-}
-.ai-char:hover .ai-char-label, .ai-char:focus-visible .ai-char-label { opacity: 1; }
-@keyframes ai-char-float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
-@keyframes ai-char-wiggle { 0%, 100% { transform: rotate(-5deg) } 50% { transform: rotate(5deg) } }
-@keyframes ai-char-pulse {
-  0% { opacity: .5; transform: scale(.9) }
-  70% { opacity: 0; transform: scale(1.25) }
-  100% { opacity: 0 }
-}
-
 /* ---------- 对话窗口 ---------- */
 .ai-chat-mask {
   position: fixed; inset: 0; z-index: 120;
@@ -309,20 +224,6 @@ const PANEL_CSS = `
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 .ai-chat-title { font-size: 14px; font-weight: 600; white-space: nowrap; }
-.ai-chat-file {
-  display: inline-flex; align-items: center;
-  min-width: 0; max-width: 200px; flex: 0 1 auto;
-  padding: 2px 9px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  color: var(--text-secondary);
-  font-size: 11.5px; white-space: nowrap;
-}
-.ai-chat-file.is-empty {
-  border-color: var(--border); background: transparent; color: var(--text-tertiary);
-}
-.ai-chat-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-chat-meta {
   flex: 1; min-width: 0;
   color: var(--text-tertiary); font-size: 12px;
@@ -416,11 +317,12 @@ const PANEL_CSS = `
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--text) 2.5%, transparent);
 }
+/* 当前文档用强调色描边，参考文件用琥珀色描边 —— 不靠「参考文件 N」标签区分 */
 .ai-chat-doc-chip {
   display: inline-flex; align-items: center;
   max-width: 320px;
   padding: 2px 9px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 9%, transparent);
   color: var(--text-secondary);
@@ -430,16 +332,28 @@ const PANEL_CSS = `
 .ai-chat-doc-chip.is-empty {
   border-color: var(--border); background: transparent; color: var(--text-tertiary);
 }
-.ai-chat-attach-title { color: var(--text-tertiary); font-size: 11.5px; margin-right: 2px; }
 .ai-chat-attach-chip {
   display: inline-flex; align-items: center;
   max-width: 240px;
   padding: 2px 4px 2px 9px;
-  border: 1px solid var(--border); border-radius: 999px;
-  background: var(--bg-toolbar);
+  border: 1px solid color-mix(in srgb, var(--warn) 58%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
   color: var(--text-secondary); font-size: 11.5px;
 }
 .ai-chat-attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chat-attach-badge {
+  flex: 0 0 auto;
+  margin-left: 5px; padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent);
+  font-size: 10px; line-height: 16px; white-space: nowrap;
+}
+.ai-chat-attach-badge.is-expired {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
 .ai-chat-attach-remove {
   padding: 0 4px; margin-left: 2px;
   border: none; border-radius: 50%;
@@ -612,6 +526,7 @@ const PANEL_CSS = `
 .ai-chat-action-buttons { display: flex; gap: 8px; margin-top: 10px; }
 .ai-chat-applied { margin-top: 8px; color: var(--success); font-size: 12px; }
 .ai-chat-compose {
+  position: relative;
   display: flex; flex-direction: column; gap: 7px;
   padding: 9px 14px 10px;
   border-top: 1px solid var(--border);
@@ -633,10 +548,62 @@ const PANEL_CSS = `
   color: var(--accent); font-weight: 600;
 }
 .ai-chat-mode:disabled { opacity: .4; cursor: not-allowed; }
+/* 提示紧跟在模式按钮后面；图标 + 文字整体可悬浮，用来预览本轮的系统提示词 */
 .ai-chat-mode-hint {
-  margin-left: auto; min-width: 0;
+  flex: 0 1 auto; min-width: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 2px; padding: 2px 5px;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-editor); font-size: 11.5px;
+  cursor: help;
+}
+.ai-chat-mode-hint:hover,
+.ai-chat-mode-hint:focus-visible {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  outline: none;
+}
+.ai-chat-mode-hint-icon { flex: 0 0 auto; display: inline-flex; }
+.ai-chat-mode-hint-icon svg { display: block; }
+.ai-chat-mode-hint-text {
+  min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-tertiary); font-size: 11.5px;
+}
+.ai-chat-prompt-pop {
+  position: absolute; left: 14px; bottom: calc(100% + 8px); z-index: 6;
+  width: min(620px, calc(100% - 28px));
+  max-height: min(50vh, 440px);
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-editor);
+  box-shadow: 0 18px 42px var(--shadow);
+}
+.ai-chat-prompt-pop[hidden] { display: none; }
+.ai-chat-prompt-pop-head {
+  padding: 9px 12px 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  border-radius: 10px 10px 0 0;
+}
+.ai-chat-prompt-pop-title { font-size: 12px; font-weight: 600; }
+.ai-chat-prompt-pop-meta {
+  margin-top: 2px;
+  color: var(--text-tertiary); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-chat-prompt-pop-body {
+  flex: 1; min-height: 0; margin: 0;
+  padding: 10px 12px; overflow: auto;
+  color: var(--text-secondary);
+  font-family: var(--font-editor); font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.ai-chat-prompt-pop-body.is-empty { color: var(--warn); }
+.ai-chat-prompt-pop-foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-tertiary); font-size: 11px;
 }
 .ai-chat-compose-row { display: flex; gap: 8px; align-items: flex-end; }
 .ai-chat-input {
@@ -658,16 +625,24 @@ const PANEL_CSS = `
 .ai-chat-send:disabled { opacity: .45; cursor: not-allowed; }
 .ai-chat-action-buttons .line-dialog-btn:disabled,
 .ai-chat-compose .ai-chat-send:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---------- webview 内嵌布局 ----------
+ * 页面本身就是面板内容：去掉遮罩与浮动窗口的尺寸/阴影，铺满 iframe。
+ */
+html, body { margin: 0; padding: 0; height: 100%; }
+body.ai-embedded { overflow: hidden; }
+body.ai-embedded .ai-chat-mask {
+  position: static; inset: auto; z-index: auto;
+  display: flex; align-items: stretch; justify-content: stretch;
+  background: transparent;
+}
+body.ai-embedded .ai-chat-panel {
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  border: none; border-radius: 0; box-shadow: none;
+}
 `
 
 let styleEl: HTMLStyleElement | null = null
-let statusButton: HTMLButtonElement | null = null
-let statusRetry: number | null = null
-let statusObserver: MutationObserver | null = null
-let characterEl: HTMLButtonElement | null = null
-let characterRetry: number | null = null
-/** 本次会话内的拖动位置缓存（localStorage 不可用时也能在关/开小人后恢复） */
-let cachedCharacterPos: { x: number; y: number } | null = null
 let offMessage: (() => void) | null = null
 let offDocChanged: (() => void) | null = null
 
@@ -692,11 +667,16 @@ let attachNoticeTimer: number | null = null
 let maskEl: HTMLDivElement | null = null
 let panelEl: HTMLDivElement | null = null
 let avatarEl: HTMLSpanElement | null = null
-let fileChipEl: HTMLSpanElement | null = null
-let fileChipNameEl: HTMLSpanElement | null = null
 let metaEl: HTMLSpanElement | null = null
 let modeButtons: Record<ComposeMode, HTMLButtonElement> | null = null
-let modeHintEl: HTMLSpanElement | null = null
+let modeHintEl: HTMLButtonElement | null = null
+let modeHintTextEl: HTMLSpanElement | null = null
+let promptPopEl: HTMLDivElement | null = null
+let promptPopTitleEl: HTMLSpanElement | null = null
+let promptPopMetaEl: HTMLSpanElement | null = null
+let promptPopBodyEl: HTMLPreElement | null = null
+let promptPopFootEl: HTMLDivElement | null = null
+let promptHideTimer: number | null = null
 let addFileBtn: HTMLButtonElement | null = null
 let messagesEl: HTMLDivElement | null = null
 let contextBarEl: HTMLDivElement | null = null
@@ -741,24 +721,11 @@ function nextMessageId(): string {
 /**
  * 当前文档的身份。
  *
- * render 层拿不到 appStore（插件源码只允许依赖 @shared），但标签栏把答案
- * 放在 DOM 里了：`.tab-active` 的 `title` 是绝对路径（未保存时是
- * 「未保存到磁盘」），`.tab-title` 是显示名。用路径作 key，未保存的新文档用
- * 标签名（「未命名 2」之类）区分。窗口在仓库选择页时没有标签 → 无关联文档。
+ * 对话历史按文档保存；webview 拿不到应用的标签/文件列表，由扩展宿主把活动
+ * 编辑器的路径与显示名随文档快照推过来。未打开文档时返回固定的无文档身份。
  */
 function currentDocumentRef(): { key: string; fileName: string; filePath: string | null } {
-  const active = document.querySelector('.tab-active')
-  if (!active) return { key: 'no-document', fileName: '未关联文档', filePath: null }
-  const label = active.querySelector('.tab-title')?.textContent?.trim() ?? ''
-  const tip = active.getAttribute('title') ?? ''
-  const filePath = tip && tip !== '未保存到磁盘' ? tip : null
-  const fileName = filePath ? filePath.split(/[\\/]/).pop() || label : label
-  const name = fileName || '未命名'
-  return {
-    key: filePath ? `file:${filePath}` : `untitled:${name}`,
-    fileName: name,
-    filePath
-  }
+  return imk.editor.getDocumentRef()
 }
 
 function emptyChatStore(): PersistedChatStore {
@@ -831,12 +798,16 @@ function sanitizeAttachment(value: unknown): AttachmentItem | null {
   const raw = value as Record<string, unknown>
   const text = typeof raw.text === 'string' ? raw.text : ''
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : ''
-  if (!text || !name) return null
+  // 图片数据不落盘；纯扫描件重载后没有可发送的内容，直接丢掉。
+  // 有文字的混排 PDF 仍保留，只是标记「扫描页图片已失效」。
+  if (!text.trim() || !name) return null
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : `a-${Date.now().toString(36)}`,
     name,
     chars: text.length,
     text,
+    images: [],
+    ...(raw.imagesExpired === true ? { imagesExpired: true } : {}),
     truncated: raw.truncated === true,
     addedAt: typeof raw.addedAt === 'number' ? raw.addedAt : Date.now()
   }
@@ -979,7 +950,13 @@ function trimPersistedStore(maxSessions: number, maxDocs = 20): PersistedChatSto
       doc.activeSessionId && sessions.some(session => session.id === doc.activeSessionId)
         ? doc.activeSessionId
         : null
-    const attachments = doc.attachments.slice(0, MAX_ATTACHMENTS)
+    // 扫描页图片的 base64 太大，写进 localStorage 会直接撑爆配额；落盘时只留
+    // 「曾经有图片」的标记，下次打开提示用户重新添加这个 PDF。
+    const attachments = doc.attachments.slice(0, MAX_ATTACHMENTS).map(item => ({
+      ...item,
+      images: [],
+      ...(item.images.length > 0 || item.imagesExpired ? { imagesExpired: true } : {})
+    }))
     if (sessions.length === 0 && attachments.length === 0) continue
     docs[key] = { ...doc, sessions, activeSessionId, attachments }
   }
@@ -1123,13 +1100,91 @@ function noteSessionActivity(): void {
   schedulePersist()
 }
 
-function attachmentPayload(): Array<{ name: string; text: string }> {
+/** 设置里的「把扫描页作为图片发送」；旧配置没有这个字段时默认开启 */
+function scannedPdfImagesEnabled(): boolean {
+  const config = imk.plugin.getConfig<{ scannedPdfImages?: unknown }>()
+  return config.scannedPdfImages !== false
+}
+
+/**
+ * 提示词预览用的附件形状。
+ *
+ * 只带页码，不带 base64 —— 预览里绝不能把整页图片数据渲染出来。
+ */
+function attachmentPromptRefs(): Array<{
+  name: string
+  text: string
+  images?: Array<{ page: number }>
+}> {
+  const enabled = scannedPdfImagesEnabled()
+  return documentAttachments().map(item => ({
+    name: item.name,
+    text: item.text,
+    ...(enabled && item.images.length > 0
+      ? { images: item.images.map(image => ({ page: image.page })) }
+      : {})
+  }))
+}
+
+let uploadSeq = 0
+
+/**
+ * 发送用的附件载荷：图片先按条上传，再在请求里引用上传 id。
+ *
+ * `imk.main.send` 是单向 IPC；main 层会等同一组图片到齐后再发 AI 请求。
+ * 每条消息只含一张图，base64 控制在 200,000 字符以内。
+ */
+function attachmentSendPayload(): Array<{
+  name: string
+  text: string
+  imageUpload?: { id: string; count: number }
+}> {
   if (!currentEnv) return []
-  return currentEnv.attachments.map(item => ({ name: item.name, text: item.text }))
+  const enabled = scannedPdfImagesEnabled()
+  return currentEnv.attachments.map(item => {
+    const images = enabled ? item.images : []
+    let imageUpload: { id: string; count: number } | undefined
+    if (images.length > 0) {
+      uploadSeq += 1
+      const id = `u${Date.now().toString(36)}-${uploadSeq}`
+      imageUpload = { id, count: images.length }
+      for (const [index, image] of images.entries()) {
+        void imk.main
+          .send(IMAGE_UPLOAD_CHANNEL, {
+            id,
+            index,
+            total: images.length,
+            name: item.name,
+            page: image.page,
+            mediaType: image.mediaType,
+            data: image.data,
+            width: image.width,
+            height: image.height
+          })
+          .catch(err => {
+            imk.plugin.log(
+              'warn',
+              `上传扫描页图片失败：${err instanceof Error ? err.message : String(err)}`
+            )
+          })
+      }
+    }
+    return {
+      name: item.name,
+      text: item.text,
+      ...(imageUpload ? { imageUpload } : {})
+    }
+  })
 }
 
 function documentAttachments(): AttachmentItem[] {
   return currentEnv?.attachments ?? []
+}
+
+/** 当前会随请求发出去的扫描页图片数 */
+function activeScanImageCount(): number {
+  if (!scannedPdfImagesEnabled()) return 0
+  return documentAttachments().reduce((total, item) => total + item.images.length, 0)
 }
 
 function formatSessionTime(ts: number): string {
@@ -1148,73 +1203,7 @@ function formatSessionTime(ts: number): string {
 
 function characterStyle(): CharacterStyle {
   const config = imk.plugin.getConfig<{ characterStyle?: unknown }>()
-  const key = typeof config.characterStyle === 'string' ? config.characterStyle : 'cat'
-  return CHARACTERS[key] ?? CHARACTERS.cat
-}
-
-function fillAvatar(el: HTMLElement, style: CharacterStyle): void {
-  if (style.svg) el.innerHTML = style.svg
-  else el.textContent = style.emoji ?? ''
-}
-
-function readCharacterPosition(): { x: number; y: number } | null {
-  if (cachedCharacterPos) return cachedCharacterPos
-  try {
-    const raw = localStorage.getItem(CHARACTER_POS_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { x?: unknown; y?: unknown }
-    if (
-      typeof parsed.x === 'number' &&
-      typeof parsed.y === 'number' &&
-      Number.isFinite(parsed.x) &&
-      Number.isFinite(parsed.y)
-    ) {
-      cachedCharacterPos = { x: parsed.x, y: parsed.y }
-      return cachedCharacterPos
-    }
-  } catch {
-    /* localStorage 不可用或内容坏了：用默认位置 */
-  }
-  return null
-}
-
-function saveCharacterPosition(x: number, y: number): void {
-  cachedCharacterPos = { x, y }
-  try {
-    localStorage.setItem(CHARACTER_POS_KEY, JSON.stringify({ x, y }))
-  } catch {
-    /* 隐私模式/配额：位置不持久化也不影响使用 */
-  }
-}
-
-function clampToHost(value: number, limit: number): number {
-  return Math.min(Math.max(value, 4), Math.max(4, limit))
-}
-
-function applySavedCharacterPosition(button: HTMLButtonElement, host: Element): void {
-  const pos = readCharacterPosition()
-  if (!pos) return
-  const rect = host.getBoundingClientRect()
-  const width = button.offsetWidth || 52
-  const height = button.offsetHeight || 52
-  button.style.left = `${clampToHost(pos.x * rect.width, rect.width - width - 4)}px`
-  button.style.top = `${clampToHost(pos.y * rect.height, rect.height - height - 4)}px`
-  button.style.right = 'auto'
-  button.style.bottom = 'auto'
-}
-
-function clampCharacterPosition(): void {
-  const button = characterEl
-  if (!button || !button.style.left) return
-  const host = button.parentElement
-  if (!host) return
-  const rect = host.getBoundingClientRect()
-  const width = button.offsetWidth || 52
-  const height = button.offsetHeight || 52
-  const left = Number.parseFloat(button.style.left) || 0
-  const top = Number.parseFloat(button.style.top) || 0
-  button.style.left = `${clampToHost(left, rect.width - width - 4)}px`
-  button.style.top = `${clampToHost(top, rect.height - height - 4)}px`
+  return characterStyleFrom(config.characterStyle)
 }
 
 function docInfo(): { hasView: boolean; empty: boolean; length: number } {
@@ -1225,7 +1214,7 @@ function docInfo(): { hasView: boolean; empty: boolean; length: number } {
   return { hasView: true, empty: length === 0, length }
 }
 
-// ---------- 状态栏按钮 ----------
+// ---------- 样式 ----------
 
 function ensureStyle(): void {
   if (styleEl) return
@@ -1233,208 +1222,7 @@ function ensureStyle(): void {
   styleEl.dataset.imkPlugin = PLUGIN_ID
   styleEl.textContent = PANEL_CSS
   document.head.append(styleEl)
-}
-
-function ensureStatusButton(): void {
-  if (statusButton?.isConnected) return
-  // 宿主在状态栏左下角留的空槽:和插件状态条目放在同一组(第二道竖线右边)。
-  // 不往 .status-toggles 里挤 —— 那是文件列表/大纲的开关组。
-  const slot = document.querySelector('.status-plugin-slot')
-  if (!slot) {
-    if (statusRetry === null) {
-      statusRetry = window.setTimeout(() => {
-        statusRetry = null
-        ensureStatusButton()
-      }, 400)
-    }
-    return
-  }
-
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.title = 'AI 对话 / 生成 / 美化'
-  button.setAttribute('aria-label', 'AI 对话 / 生成 / 美化')
-  button.innerHTML = SPARKLES_SVG
-  button.addEventListener('click', event => {
-    event.preventDefault()
-    openChatPanel()
-  })
-  slot.append(button)
-  statusButton = button
-
-  if (!statusObserver) {
-    statusObserver = new MutationObserver(() => {
-      if (!statusButton?.isConnected) ensureStatusButton()
-    })
-    // 盯状态栏整棵子树:宿主重渲染时可能连空槽一起换掉,只盯槽会漏掉那种情况
-    statusObserver.observe(slot.closest('.status-bar') ?? slot, { childList: true, subtree: true })
-  }
-}
-
-function removeStatusButton(): void {
-  if (statusRetry !== null) {
-    window.clearTimeout(statusRetry)
-    statusRetry = null
-  }
-  statusObserver?.disconnect()
-  statusObserver = null
-  statusButton?.remove()
-  statusButton = null
-}
-
-function setStatusButtonActive(active: boolean): void {
-  statusButton?.classList.toggle('status-toggle-on', active)
-}
-
-// ---------- 浮动小人 ----------
-
-function syncCharacter(): void {
-  const config = imk.plugin.getConfig<{ characterEnabled?: unknown }>()
-  if (config.characterEnabled === false) {
-    removeCharacter()
-    return
-  }
-
-  const host = document.querySelector('.editor-host')
-  if (!host) {
-    // 还在仓库选择页：编辑器挂载后再试，别把小人放到选择页上
-    if (characterRetry === null) {
-      characterRetry = window.setTimeout(() => {
-        characterRetry = null
-        syncCharacter()
-      }, 700)
-    }
-    return
-  }
-
-  const style = characterStyle()
-  if (!characterEl || !characterEl.isConnected) {
-    characterEl?.remove()
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'ai-char'
-    button.classList.toggle('ai-char-plain', Boolean(style.svg))
-    button.setAttribute('aria-label', '打开 AI 对话')
-
-    const avatar = document.createElement('span')
-    avatar.className = 'ai-char-emoji'
-    const label = document.createElement('span')
-    label.className = 'ai-char-label'
-    // 悬停提示只保留这一个:文案跟着当前形象走(和猫咪聊聊 / 和企鹅聊聊…),
-    // 不再设原生 title,否则停留一秒后会在下面再冒出一个提示框
-    label.textContent = `和${style.label}聊聊`
-    button.append(avatar, label)
-
-    // 拖动：按住小人移动；松手保存为相对编辑器区域的比例，窗口缩放后还能夹回来。
-    // 拖动结束后的 click 要吞掉，否则一次拖动会顺手把对话打开。
-    // 用时间戳而不是「布尔 + setTimeout」：窗口在后台时定时器会被节流，
-    // 布尔标记会一直留着，把用户下一次真正的点击也吞掉。
-    let suppressClickUntil = 0
-    let dragging: {
-      pointerId: number
-      offsetX: number
-      offsetY: number
-      startX: number
-      startY: number
-      moved: boolean
-    } | null = null
-
-    button.addEventListener('pointerdown', event => {
-      if (event.button !== 0) return
-      const rect = button.getBoundingClientRect()
-      dragging = {
-        pointerId: event.pointerId,
-        offsetX: event.clientX - rect.left,
-        offsetY: event.clientY - rect.top,
-        startX: event.clientX,
-        startY: event.clientY,
-        moved: false
-      }
-      suppressClickUntil = 0
-      button.classList.add('ai-char-dragging')
-      try {
-        button.setPointerCapture(event.pointerId)
-      } catch {
-        /* 合成事件没有真实指针可捕获 */
-      }
-    })
-
-    button.addEventListener('pointermove', event => {
-      if (!dragging || event.pointerId !== dragging.pointerId) return
-      const dx = event.clientX - dragging.startX
-      const dy = event.clientY - dragging.startY
-      if (!dragging.moved && Math.hypot(dx, dy) < 4) return
-      dragging.moved = true
-
-      const hostRect = host.getBoundingClientRect()
-      const width = button.offsetWidth || 52
-      const height = button.offsetHeight || 52
-      const left = clampToHost(
-        event.clientX - hostRect.left - dragging.offsetX,
-        hostRect.width - width - 4
-      )
-      const top = clampToHost(
-        event.clientY - hostRect.top - dragging.offsetY,
-        hostRect.height - height - 4
-      )
-      button.style.left = `${left}px`
-      button.style.top = `${top}px`
-      button.style.right = 'auto'
-      button.style.bottom = 'auto'
-    })
-
-    const finishDrag = (event: PointerEvent): void => {
-      if (!dragging || event.pointerId !== dragging.pointerId) return
-      const moved = dragging.moved
-      dragging = null
-      button.classList.remove('ai-char-dragging')
-      try {
-        button.releasePointerCapture(event.pointerId)
-      } catch {
-        /* 合成事件无需释放 */
-      }
-      if (!moved) return
-
-      suppressClickUntil = Date.now() + 300
-      const hostRect = host.getBoundingClientRect()
-      const left = Number.parseFloat(button.style.left) || 0
-      const top = Number.parseFloat(button.style.top) || 0
-      saveCharacterPosition(
-        hostRect.width > 0 ? left / hostRect.width : 0,
-        hostRect.height > 0 ? top / hostRect.height : 0
-      )
-    }
-    button.addEventListener('pointerup', finishDrag)
-    button.addEventListener('pointercancel', finishDrag)
-
-    button.addEventListener('click', event => {
-      if (Date.now() < suppressClickUntil) {
-        suppressClickUntil = 0
-        event.preventDefault()
-        return
-      }
-      openChatPanel()
-    })
-
-    host.append(button)
-    characterEl = button
-    applySavedCharacterPosition(button, host)
-  }
-
-  const avatarEl = characterEl.querySelector<HTMLSpanElement>('.ai-char-emoji')
-  if (avatarEl) fillAvatar(avatarEl, style)
-  const labelEl = characterEl.querySelector<HTMLSpanElement>('.ai-char-label')
-  if (labelEl) labelEl.textContent = `和${style.label}聊聊`
-  characterEl.classList.toggle('ai-char-plain', Boolean(style.svg))
-}
-
-function removeCharacter(): void {
-  if (characterRetry !== null) {
-    window.clearTimeout(characterRetry)
-    characterRetry = null
-  }
-  characterEl?.remove()
-  characterEl = null
+  document.body.classList.add('ai-embedded')
 }
 
 // ---------- 对话窗口骨架 ----------
@@ -1458,12 +1246,6 @@ function ensurePanelDom(): void {
   const title = document.createElement('span')
   title.className = 'ai-chat-title'
   title.textContent = 'AI for Edit'
-  // 关联文档：会话属于哪个文件，就在标题旁明确写出来
-  const fileChip = document.createElement('span')
-  fileChip.className = 'ai-chat-file'
-  const fileChipName = document.createElement('span')
-  fileChipName.className = 'ai-chat-file-name'
-  fileChip.append(document.createTextNode('📄 '), fileChipName)
   const meta = document.createElement('span')
   meta.className = 'ai-chat-meta'
   const history = document.createElement('button')
@@ -1483,7 +1265,7 @@ function ensurePanelDom(): void {
   close.title = '关闭'
   close.textContent = '×'
   close.addEventListener('click', () => closePanel())
-  head.append(avatar, title, fileChip, meta, history, newChat, close)
+  head.append(avatar, title, meta, history, newChat, close)
 
   // 当前环境：当前文档（非空时）与参考文件。生成 / 美化的入口已经挪到输入框上方，
   // 这里只说明「这次请求会带什么」。
@@ -1494,7 +1276,7 @@ function ensurePanelDom(): void {
   addFile.type = 'button'
   addFile.className = 'ai-chat-context-add ai-chat-add-file'
   addFile.textContent = '＋ 文件'
-  addFile.title = '添加本地文本文件，作为生成 / 美化 / 问答的参考'
+  addFile.title = '添加本地文本文件或 PDF；扫描页可转为图片，作为生成 / 美化 / 问答的参考'
   addFile.addEventListener('click', () => pickAttachments())
 
   const list = document.createElement('div')
@@ -1517,9 +1299,44 @@ function ensurePanelDom(): void {
     modeMap[mode] = button
     modes.append(button)
   }
-  const modeHint = document.createElement('span')
+  const modeHint = document.createElement('button')
+  modeHint.type = 'button'
   modeHint.className = 'ai-chat-mode-hint'
+  modeHint.setAttribute('aria-label', '查看本轮会发送给 AI 的提示词')
+  modeHint.setAttribute('aria-haspopup', 'dialog')
+  modeHint.setAttribute('aria-expanded', 'false')
+  const modeHintIcon = document.createElement('span')
+  modeHintIcon.className = 'ai-chat-mode-hint-icon'
+  modeHintIcon.innerHTML = INFO_SVG
+  const modeHintText = document.createElement('span')
+  modeHintText.className = 'ai-chat-mode-hint-text'
+  modeHint.append(modeHintIcon, modeHintText)
+  modeHint.addEventListener('mouseenter', () => showPromptPreview())
+  modeHint.addEventListener('mouseleave', () => hidePromptPreview())
+  modeHint.addEventListener('focus', () => showPromptPreview())
+  modeHint.addEventListener('blur', () => hidePromptPreview(0))
   modes.append(modeHint)
+
+  // 系统提示词预览：悬挂在输入区上方，不挡住模式按钮本身
+  const promptPop = document.createElement('div')
+  promptPop.className = 'ai-chat-prompt-pop'
+  promptPop.hidden = true
+  promptPop.setAttribute('role', 'dialog')
+  promptPop.setAttribute('aria-label', '发送给 AI 的初始提示词')
+  const promptHead = document.createElement('div')
+  promptHead.className = 'ai-chat-prompt-pop-head'
+  const promptTitle = document.createElement('div')
+  promptTitle.className = 'ai-chat-prompt-pop-title'
+  const promptMeta = document.createElement('div')
+  promptMeta.className = 'ai-chat-prompt-pop-meta'
+  promptHead.append(promptTitle, promptMeta)
+  const promptBody = document.createElement('pre')
+  promptBody.className = 'ai-chat-prompt-pop-body'
+  const promptFoot = document.createElement('div')
+  promptFoot.className = 'ai-chat-prompt-pop-foot'
+  promptPop.append(promptHead, promptBody, promptFoot)
+  promptPop.addEventListener('mouseenter', () => showPromptPreview())
+  promptPop.addEventListener('mouseleave', () => hidePromptPreview())
 
   const composeRow = document.createElement('div')
   composeRow.className = 'ai-chat-compose-row'
@@ -1546,7 +1363,7 @@ function ensurePanelDom(): void {
   send.textContent = '发送'
   send.addEventListener('click', () => submitCompose())
   composeRow.append(input, send)
-  compose.append(modes, composeRow)
+  compose.append(modes, composeRow, promptPop)
 
   // 历史会话浮层：挂在面板里、绝对定位在标题栏下方；不挡住输入框
   const historyPop = document.createElement('div')
@@ -1573,11 +1390,15 @@ function ensurePanelDom(): void {
   maskEl = mask
   panelEl = panel
   avatarEl = avatar
-  fileChipEl = fileChip
-  fileChipNameEl = fileChipName
   metaEl = meta
   modeButtons = modeMap
   modeHintEl = modeHint
+  modeHintTextEl = modeHintText
+  promptPopEl = promptPop
+  promptPopTitleEl = promptTitle
+  promptPopMetaEl = promptMeta
+  promptPopBodyEl = promptBody
+  promptPopFootEl = promptFoot
   addFileBtn = addFile
   contextBarEl = context
   messagesEl = list
@@ -1595,15 +1416,22 @@ function ensurePanelDom(): void {
       event.preventDefault()
       event.stopPropagation()
       // 浮层开着时，Escape 先收起它；再按一次才关面板
-      if (historyPopEl && !historyPopEl.hidden) closeSessionList()
+      if (promptPopEl && !promptPopEl.hidden) hidePromptPreview(0)
+      else if (historyPopEl && !historyPopEl.hidden) closeSessionList()
       else closePanel()
     }
   }
   document.addEventListener('keydown', keydownHandler, true)
-  setStatusButtonActive(true)
 }
 
-function closePanel(): void {
+/**
+ * 收走面板 DOM。
+ *
+ * `notifyHost` 为真时同时请扩展宿主 dispose 这个 webview：页面自己删掉 DOM
+ * 不会让 iframe 消失，只有宿主销毁面板才会。扩展停用/停用流程里宿主已经在
+ * 销毁面板，传 false 避免多发一条消息。
+ */
+function closePanel(notifyHost = true): void {
   if (keydownHandler) {
     document.removeEventListener('keydown', keydownHandler, true)
     keydownHandler = null
@@ -1613,17 +1441,25 @@ function closePanel(): void {
     window.clearTimeout(attachNoticeTimer)
     attachNoticeTimer = null
   }
+  if (promptHideTimer !== null) {
+    window.clearTimeout(promptHideTimer)
+    promptHideTimer = null
+  }
   attachNotice = ''
   fileInputEl = null
   maskEl?.remove()
   maskEl = null
   panelEl = null
   avatarEl = null
-  fileChipEl = null
-  fileChipNameEl = null
   metaEl = null
   modeButtons = null
   modeHintEl = null
+  modeHintTextEl = null
+  promptPopEl = null
+  promptPopTitleEl = null
+  promptPopMetaEl = null
+  promptPopBodyEl = null
+  promptPopFootEl = null
   addFileBtn = null
   contextBarEl = null
   messagesEl = null
@@ -1635,7 +1471,7 @@ function closePanel(): void {
   historyListEl = null
   historyScopeEl = null
   flushPersist()
-  setStatusButtonActive(false)
+  if (notifyHost) imk.plugin.close()
 }
 
 /**
@@ -1820,13 +1656,27 @@ function looksBinary(text: string): boolean {
   return text.slice(0, 8192).includes('\u0000')
 }
 
+/** PDF 走单独的文本提取路径（File.text() 只会得到乱码） */
+function isPdfFile(file: File): boolean {
+  return (
+    file.type === 'application/pdf' ||
+    file.type === 'application/x-pdf' ||
+    /\.pdf$/i.test(file.name)
+  )
+}
+
+function formatSize(bytes: number): string {
+  return `${Math.ceil(bytes / (1024 * 1024))} MB`
+}
+
 function ensureFileInput(): HTMLInputElement | null {
   if (fileInputEl?.isConnected) return fileInputEl
   if (!panelEl) return null
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-  input.accept = ATTACHMENT_ACCEPT
+  // 不设 accept：macOS / GTK 的文件框会按扩展名过滤，目录里明明有文件却显示为空。
+  // 是否可用改为选中后判断 —— 文本直接读，PDF 提取文字，其它二进制明确提示跳过。
   input.className = 'ai-chat-file-input'
   input.tabIndex = -1
   input.addEventListener('change', () => {
@@ -1844,14 +1694,18 @@ function pickAttachments(): void {
   ensureFileInput()?.click()
 }
 
-function setAttachNotice(text: string): void {
+function setAttachNotice(text: string, autoClear = true): void {
   attachNotice = text
   if (attachNoticeTimer !== null) window.clearTimeout(attachNoticeTimer)
-  attachNoticeTimer = window.setTimeout(() => {
-    attachNoticeTimer = null
-    attachNotice = ''
-    renderContextBar()
-  }, 6000)
+  attachNoticeTimer = null
+  // 解析 PDF 可能超过 6 秒：进度提示要一直留到解析结束，由下一次调用负责清掉
+  if (autoClear) {
+    attachNoticeTimer = window.setTimeout(() => {
+      attachNoticeTimer = null
+      attachNotice = ''
+      renderContextBar()
+    }, 6000)
+  }
   renderContextBar()
 }
 
@@ -1859,47 +1713,129 @@ async function addAttachments(files: File[]): Promise<void> {
   if (!currentEnv || files.length === 0) return
   const env = currentEnv
   const skipped: string[] = []
+  const notes: string[] = []
   const added: string[] = []
+  const visionEnabled = scannedPdfImagesEnabled()
+  let addedImages = 0
+  // 解析 PDF 期间用户可能切了文档：这一批后面的文件不再往旧文档里塞
+  const abandoned = (): boolean => {
+    if (currentEnv === env) return false
+    if (added.length > 0) {
+      env.updatedAt = Date.now()
+      schedulePersist()
+    }
+    setAttachNotice('', false)
+    return true
+  }
 
   for (const file of files) {
     if (env.attachments.length >= MAX_ATTACHMENTS) {
       skipped.push(`最多 ${MAX_ATTACHMENTS} 个参考文件`)
       break
     }
-    if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
-      skipped.push(`${file.name}（超过 4 MB）`)
-      continue
-    }
-
-    let text = ''
-    try {
-      text = await file.text()
-    } catch {
-      skipped.push(`${file.name}（读取失败）`)
-      continue
-    }
-    if (looksBinary(text)) {
-      skipped.push(`${file.name}（不是文本文件）`)
-      continue
-    }
-    if (!text.trim()) {
-      skipped.push(`${file.name}（内容为空）`)
-      continue
-    }
-
     const existingIndex = env.attachments.findIndex(item => item.name === file.name)
+    let text = ''
+    let images: AttachmentImage[] = []
+    if (isPdfFile(file)) {
+      if (file.size > MAX_ATTACHMENT_PDF_BYTES) {
+        skipped.push(`${file.name}（PDF 超过 ${formatSize(MAX_ATTACHMENT_PDF_BYTES)}）`)
+        continue
+      }
+      // 替换同名附件时，旧附件占用的图片额度要退回，否则重复添加会越来越紧
+      const others = env.attachments.filter((_, index) => index !== existingIndex)
+      const usedImages = others.reduce((total, item) => total + item.images.length, 0)
+      const usedImageChars = others.reduce(
+        (total, item) =>
+          total + item.images.reduce((sum, image) => sum + image.data.length, 0),
+        0
+      )
+      const imageRoom = Math.max(0, MAX_SCAN_IMAGES_TOTAL - usedImages)
+      const imageCharRoom = Math.max(0, MAX_SCAN_IMAGE_TOTAL_CHARS - usedImageChars)
+      const maxImages = Math.min(MAX_SCAN_PAGES_PER_PDF, imageRoom)
+      const maxImageChars = Math.min(imageCharRoom, maxImages * MAX_SCAN_IMAGE_CHARS)
+
+      // 解析与页面渲染都在主线程，先让「正在解析」画出来再开始
+      setAttachNotice(`正在解析 ${file.name}…`, false)
+      await new Promise<void>(resolve => window.setTimeout(resolve, 50))
+      try {
+        const result = await extractPdfText(await file.arrayBuffer(), {
+          images: visionEnabled,
+          maxImages,
+          maxImageChars,
+          onImage: progress => {
+            if (currentEnv !== env) return
+            setAttachNotice(
+              `正在解析 ${file.name}（转换扫描页 ${progress.rendered + 1}/${progress.max}）…`,
+              false
+            )
+          }
+        })
+        if (abandoned()) return
+        text = result.text
+        images = result.images
+        if (result.imagesSkipped > 0) {
+          notes.push(
+            visionEnabled
+              ? `${file.name} 有 ${result.imagesSkipped} 个扫描页未转图片（达到上限）`
+              : `${file.name} 跳过 ${result.imagesSkipped} 个扫描页（图片发送已关闭）`
+          )
+        }
+        if (!text.trim() && images.length === 0) {
+          if (result.scannedPages.length > 0) {
+            skipped.push(
+              visionEnabled
+                ? `${file.name}（扫描件；${
+                    imageRoom === 0 ? '图片数量已达上限' : '没有渲染出可用的页面图片'
+                  }）`
+                : `${file.name}（扫描件没有文字层；可在设置里开启「把扫描页作为图片发送」）`
+            )
+          } else {
+            skipped.push(`${file.name}（内容为空）`)
+          }
+          continue
+        }
+      } catch (err) {
+        if (abandoned()) return
+        skipped.push(
+          `${file.name}（${err instanceof PdfExtractError ? err.message : 'PDF 解析失败'}）`
+        )
+        continue
+      }
+    } else {
+      if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
+        skipped.push(`${file.name}（超过 4 MB）`)
+        continue
+      }
+      try {
+        text = await file.text()
+      } catch {
+        skipped.push(`${file.name}（读取失败）`)
+        continue
+      }
+      if (abandoned()) return
+      if (looksBinary(text)) {
+        skipped.push(`${file.name}（不是纯文本文件）`)
+        continue
+      }
+      if (!text.trim()) {
+        skipped.push(`${file.name}（内容为空）`)
+        continue
+      }
+    }
+
     let used = env.attachments.reduce((total, item) => total + item.text.length, 0)
     if (existingIndex >= 0) used -= env.attachments[existingIndex]!.text.length
     const room = MAX_ATTACHMENT_TOTAL - used
-    if (room <= 0) {
+    if (room <= 0 && images.length === 0) {
+      // 不能 break：同批后面的扫描件没有文字，只靠图片，仍可能加得进来
       skipped.push(`参考文件总长度已达 ${MAX_ATTACHMENT_TOTAL} 字符`)
-      break
+      continue
     }
 
-    const limit = Math.min(MAX_ATTACHMENT_CHARS, room)
+    const limit = Math.max(0, Math.min(MAX_ATTACHMENT_CHARS, room))
     const truncated = text.length > limit
     const kept = truncated ? text.slice(0, limit) : text
-    if (!kept.trim()) {
+    if (!kept.trim() && images.length === 0) {
       skipped.push(`${file.name}（没有可用内容）`)
       continue
     }
@@ -1910,12 +1846,14 @@ async function addAttachments(files: File[]): Promise<void> {
       name: file.name,
       chars: kept.length,
       text: kept,
+      images,
       truncated,
       addedAt: Date.now()
     }
     if (existingIndex >= 0) env.attachments.splice(existingIndex, 1, item)
     else env.attachments.push(item)
     added.push(file.name)
+    addedImages += images.length
   }
 
   if (added.length > 0) {
@@ -1924,10 +1862,14 @@ async function addAttachments(files: File[]): Promise<void> {
     if (currentSession) noteSessionActivity()
     renderContextBar()
   }
-  if (skipped.length > 0) {
-    setAttachNotice(`${added.length > 0 ? `已添加 ${added.length} 个；` : ''}跳过：${skipped.join('；')}`)
+  const imageNote = addedImages > 0 ? `（含 ${addedImages} 张扫描页图片，仅本次打开有效）` : ''
+  const details = [...notes, ...skipped]
+  if (details.length > 0) {
+    setAttachNotice(
+      `${added.length > 0 ? `已添加 ${added.length} 个${imageNote}；` : ''}跳过 / 提示：${details.join('；')}`
+    )
   } else if (added.length > 0) {
-    setAttachNotice(`已添加 ${added.length} 个参考文件`)
+    setAttachNotice(`已添加 ${added.length} 个参考文件${imageNote}`)
   }
 }
 
@@ -1942,10 +1884,11 @@ function removeAttachment(id: string): void {
 }
 
 /**
- * 渲染当前环境：当前文档（仅非空时展示篇幅）+ 参考文件 + 「＋ 文件」。
+ * 渲染当前环境：当前文档 + 参考文件 + 「＋ 文件」。
  *
  * 文档为空时只写「当前文档为空」，不把空文档当成环境的一部分；「＋ 文件」始终
- * 留在这一行，否则空文档 + 无附件时就没有添加入口了。
+ * 留在这一行，否则空文档 + 无附件时就没有添加入口了。文件名旁不再展示篇幅，
+ * 只保留文档身份。
  */
 function renderContextBar(): void {
   if (!contextBarEl) return
@@ -1964,32 +1907,49 @@ function renderContextBar(): void {
   } else {
     // 以标签栏当前活动文档为准：发送读的是 currentView()，不是会话绑定的旧文档
     const name = currentDocumentRef().fileName || '当前文档'
-    docChip.textContent = `📄 ${name} · ${info.length.toLocaleString('zh-CN')} 字符`
-    docChip.title = `对话 / 生成 / 美化会带上当前文档全文（${info.length} 字符）`
+    docChip.textContent = `📄 ${name}`
+    docChip.title = '对话 / 生成 / 美化会带上当前文档全文'
   }
   contextBarEl.append(docChip)
-
-  if (items.length > 0) {
-    const label = document.createElement('span')
-    label.className = 'ai-chat-attach-title'
-    label.textContent = `参考文件 ${items.length}`
-    contextBarEl.append(label)
-  }
 
   for (const item of items) {
     const chip = document.createElement('span')
     chip.className = 'ai-chat-attach-chip'
-    chip.title = `${item.name} · ${item.chars} 字符${item.truncated ? '（已截断）' : ''}`
+    const imageCount = item.images.length
+    const imagesEnabled = scannedPdfImagesEnabled()
+    const parts = [item.name, `${item.chars} 字符`]
+    if (imageCount > 0) {
+      parts.push(imagesEnabled ? `${imageCount} 张扫描页图片` : `${imageCount} 张扫描页图片（发送已关闭）`)
+    }
+    if (item.imagesExpired) {
+      parts.push('扫描页图片在重启后需重新添加')
+    }
+    if (item.truncated) parts.push('文本已截断')
+    chip.title = parts.join(' · ')
+
     const name = document.createElement('span')
     name.className = 'ai-chat-attach-name'
     name.textContent = item.name
+    chip.append(name)
+    if (imageCount > 0) {
+      const badge = document.createElement('span')
+      badge.className = 'ai-chat-attach-badge'
+      badge.textContent = `${imageCount} 图`
+      chip.append(badge)
+    } else if (item.imagesExpired) {
+      const badge = document.createElement('span')
+      badge.className = 'ai-chat-attach-badge is-expired'
+      badge.textContent = '图片需重加'
+      chip.append(badge)
+    }
+
     const remove = document.createElement('button')
     remove.type = 'button'
     remove.className = 'ai-chat-attach-remove'
     remove.title = `移除 ${item.name}`
     remove.textContent = '×'
     remove.addEventListener('click', () => removeAttachment(item.id))
-    chip.append(name, remove)
+    chip.append(remove)
     contextBarEl.append(chip)
   }
 
@@ -1997,7 +1957,7 @@ function renderContextBar(): void {
     addFileBtn.disabled = pendingId !== null
     addFileBtn.title = pendingId
       ? 'AI 正在处理，稍后再添加参考文件'
-      : '添加本地文本文件，作为生成 / 美化 / 问答的参考'
+      : '添加本地文本文件或 PDF；扫描页可转为图片，交给支持图像输入的模型'
     contextBarEl.append(addFileBtn)
   }
 
@@ -2016,15 +1976,6 @@ function renderPanel(): void {
   const avatar = avatarEl
   const meta = metaEl
   if (avatar) fillAvatar(avatar, characterStyle())
-
-  if (fileChipEl && fileChipNameEl) {
-    const env = currentEnv
-    const name = env?.fileName || '未关联文档'
-    fileChipNameEl.textContent = name
-    fileChipEl.title =
-      env?.filePath ?? (env && env.key !== 'no-document' ? '尚未保存到磁盘' : '当前没有打开文档')
-    fileChipEl.classList.toggle('is-empty', !env || env.key === 'no-document')
-  }
 
   if (historyBtn) {
     const count = currentEnv?.sessions.length ?? 0
@@ -2089,6 +2040,183 @@ function selectComposeMode(mode: ComposeMode): void {
   inputEl?.focus()
 }
 
+interface PromptPart {
+  label: string
+  text: string
+}
+
+interface PromptPreview {
+  modeLabel: string
+  meta: string
+  /** 本轮实际发出的 system 与用户消息；两者一起看才是完整的初始提示词 */
+  parts: PromptPart[]
+  /** 本轮随消息发送的扫描页图片数；图片数据本身不在预览里展开 */
+  imageCount: number
+}
+
+function configPrompt(key: 'generatePrompt' | 'beautifyPrompt'): string {
+  const config = imk.plugin.getConfig<Record<string, unknown>>()
+  const value = config[key]
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 复刻 main 层在发送时拼出的初始提示词。
+ *
+ * 只预览 system 会漏掉参考文件：对话把文档与附件放在 system，而生成/美化把
+ * 输入、文档与附件放在用户消息里。这里两段都拼出来，悬浮时才能看到文件内容
+ * 确实会随请求发出。
+ */
+function buildPromptPreview(): PromptPreview {
+  const attachments = attachmentPromptRefs()
+  const imageCount = activeScanImageCount()
+  const refs = attachments.length > 0 ? `${attachments.length} 个参考文件` : ''
+  const imageMeta = imageCount > 0 ? `${imageCount} 张扫描页图片` : ''
+
+  if (composeMode === 'generate') {
+    const base = configPrompt('generatePrompt')
+    const requirement = draft.trim()
+    return {
+      modeLabel: '生成',
+      meta: ['来自设置里的「生成提示词」', refs, imageMeta].filter(Boolean).join(' · '),
+      imageCount,
+      parts: [
+        {
+          label: '系统提示词',
+          text: base.trim() ? systemPromptForGenerate(base) : ''
+        },
+        {
+          label: '用户消息',
+          text: userPromptForGenerate(
+            requirement || '（尚未填写生成要求）',
+            attachments
+          )
+        }
+      ]
+    }
+  }
+
+  if (composeMode === 'beautify') {
+    const base = configPrompt('beautifyPrompt')
+    const instruction = draft.trim()
+    const view = currentView()
+    const body = view ? splitFrontMatter(view.state.doc.toString()).body : ''
+    return {
+      modeLabel: '美化',
+      meta: [
+        '来自设置里的「美化提示词」',
+        body.trim() ? '含当前文档' : '',
+        instruction ? '含本轮美化要求' : '',
+        refs,
+        imageMeta
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      imageCount,
+      parts: [
+        {
+          label: '系统提示词',
+          text: base.trim()
+            ? systemPromptForBeautify(base, instruction, hasTextAttachments(attachments))
+            : ''
+        },
+        {
+          label: '用户消息',
+          text: userPromptForBeautify(
+            body.trim() ? body : '（当前文档没有正文）',
+            attachments
+          )
+        }
+      ]
+    }
+  }
+
+  const view = currentView()
+  let doc = ''
+  if (view) {
+    const text = view.state.doc.toString()
+    doc =
+      text.length > MAX_INPUT_CHARS
+        ? `${text.slice(0, MAX_INPUT_CHARS)}\n\n…（文档过长，已截断）`
+        : text
+  }
+  return {
+    modeLabel: '对话',
+    meta: [doc.trim() ? `含当前文档（${doc.length} 字符）` : '当前文档为空', refs, imageMeta]
+      .filter(Boolean)
+      .join(' · '),
+    imageCount,
+    parts: [
+      { label: '系统提示词', text: systemPromptForChat(doc, attachments) },
+      {
+        label: '用户消息',
+        text: `${draft.trim() || '（尚未输入问题）'}${imageNoteForAttachments(attachments)}`
+      }
+    ]
+  }
+}
+
+/** 长提示词保留开头与结尾：附件通常排在用户消息末尾，只截开头会把它们藏起来 */
+function truncatePromptPart(text: string): string {
+  if (text.length <= MAX_PROMPT_PREVIEW_CHARS) return text
+  const head = Math.ceil(MAX_PROMPT_PREVIEW_CHARS * 0.55)
+  const tail = MAX_PROMPT_PREVIEW_CHARS - head
+  return (
+    `${text.slice(0, head)}\n\n…（中间省略 ${text.length - MAX_PROMPT_PREVIEW_CHARS} 字符）…\n\n` +
+    text.slice(text.length - tail)
+  )
+}
+
+function updatePromptPreview(): void {
+  if (!promptPopTitleEl || !promptPopMetaEl || !promptPopBodyEl || !promptPopFootEl) return
+  const preview = buildPromptPreview()
+  const total = preview.parts.reduce((sum, part) => sum + part.text.length, 0)
+  const truncated = preview.parts.some(part => part.text.length > MAX_PROMPT_PREVIEW_CHARS)
+  const missingPrompt = preview.parts.some(part => part.label === '系统提示词' && !part.text)
+
+  promptPopTitleEl.textContent = `${preview.modeLabel} · 初始提示词`
+  promptPopMetaEl.textContent = `${preview.meta} · 共 ${total} 字符`
+
+  promptPopBodyEl.classList.toggle('is-empty', missingPrompt)
+  promptPopBodyEl.textContent = preview.parts
+    .map(part => `【${part.label}】\n${part.text ? truncatePromptPart(part.text) : '（空）'}`)
+    .join('\n\n')
+
+  const imageNote =
+    preview.imageCount > 0
+      ? ` ${preview.imageCount} 张扫描页图片会作为图片内容发送，这里只显示文字说明。`
+      : ''
+  promptPopFootEl.textContent = `${
+    missingPrompt
+      ? '系统提示词为空，发送时会被拒绝。请到插件设置里填写，或点标题旁的恢复图标还原默认值。'
+      : truncated
+        ? `每段最多预览 ${MAX_PROMPT_PREVIEW_CHARS} 字符，过长时保留开头与结尾。`
+        : '这是本轮实际会发送的提示词。'
+  }${imageNote}`
+}
+
+function showPromptPreview(): void {
+  if (!promptPopEl) return
+  if (promptHideTimer !== null) {
+    window.clearTimeout(promptHideTimer)
+    promptHideTimer = null
+  }
+  updatePromptPreview()
+  promptPopEl.hidden = false
+  modeHintEl?.setAttribute('aria-expanded', 'true')
+}
+
+function hidePromptPreview(delay = 140): void {
+  if (!promptPopEl || promptPopEl.hidden) return
+  if (promptHideTimer !== null) window.clearTimeout(promptHideTimer)
+  promptHideTimer = window.setTimeout(() => {
+    promptHideTimer = null
+    if (!promptPopEl) return
+    promptPopEl.hidden = true
+    modeHintEl?.setAttribute('aria-expanded', 'false')
+  }, delay)
+}
+
 function renderModes(): void {
   if (!modeButtons) return
   const info = docInfo()
@@ -2122,8 +2250,8 @@ function renderModes(): void {
               : '输入框可以留空；点「发送」让 AI 自行整理'
   }
 
-  if (modeHintEl) {
-    modeHintEl.textContent = pendingId
+  if (modeHintTextEl) {
+    modeHintTextEl.textContent = pendingId
       ? 'AI 正在处理…'
       : !info.hasView
         ? '先打开一个文档；仍然可以直接提问'
@@ -2133,6 +2261,7 @@ function renderModes(): void {
             ? '生成只用于空文档：写清要求后发送'
             : '美化用于已有内容；输入框可以留空'
   }
+  if (promptPopEl && !promptPopEl.hidden) updatePromptPreview()
   if (inputEl) inputEl.placeholder = COMPOSE_PLACEHOLDER[composeMode]
 }
 
@@ -2408,6 +2537,8 @@ function syncComposeState(): void {
           : '发送（Enter）'
   }
   if (newChatBtn) newChatBtn.disabled = pendingId !== null
+  // 美化会把输入框里的要求追加进 system 提示词；预览开着时跟着更新
+  if (composeMode === 'beautify' && promptPopEl && !promptPopEl.hidden) updatePromptPreview()
 }
 
 /** 「发送」/ Enter 的唯一入口：按当前模式分发到对话、生成或美化 */
@@ -2524,7 +2655,7 @@ function startAction(kind: ActionKind, prompt: string, displayText: string): voi
     return
   }
 
-  const attachments = attachmentPayload()
+  const attachments = attachmentSendPayload()
   const payload: AiBeautifyMessage | AiGenerateMessage =
     kind === 'beautify'
       ? {
@@ -2650,7 +2781,7 @@ function retryAction(message: ChatMessageItem): void {
     return
   }
 
-  const attachments = attachmentPayload()
+  const attachments = attachmentSendPayload()
   const payload: AiBeautifyMessage | AiGenerateMessage =
     action.kind === 'beautify'
       ? {
@@ -2851,7 +2982,7 @@ function sendChat(): void {
   pendingId = requestId
   if (maskEl) renderPanel()
 
-  const attachments = attachmentPayload()
+  const attachments = attachmentSendPayload()
   const payload: AiChatMessage = {
     id: requestId,
     message: question,
@@ -3162,16 +3293,46 @@ function fallbackRows(a: string[], b: string[]): DiffRow[] {
 imk.plugin.handle({
   onEnable() {
     ensureStyle()
-    ensureStatusButton()
-    syncCharacter()
-    window.removeEventListener('resize', clampCharacterPosition)
-    window.addEventListener('resize', clampCharacterPosition)
     offMessage?.()
     offMessage = imk.main.onMessage(onMessage)
     offDocChanged?.()
     offDocChanged = imk.editor.onDocChanged(() => {
+      // 文档快照到达/内容变化：活动文档换了就整体换会话，否则只刷新上下文条
+      const ref = currentDocumentRef()
+      if (!currentEnv || currentEnv.key !== ref.key) {
+        // 切换文档时在途结果属于旧文档，取消掉，避免回包落进新会话
+        if (pendingId) {
+          const id = pendingId
+          void imk.main.send('ai.cancel', { id })
+          pendingId = null
+          for (const message of messages) {
+            if (message.requestId === id) {
+              message.requestId = null
+              message.loading = false
+              message.error = '已切换文档，本次请求已取消'
+              message.detail = undefined
+            }
+            const action = message.action
+            if (action && action.requestId === id) {
+              action.requestId = null
+              action.phase = 'error'
+              action.error = '已切换文档，本次请求已取消'
+              action.detail = ''
+            }
+          }
+        }
+        bindEnvironment()
+        if (maskEl) renderPanel()
+        return
+      }
+      if (currentEnv.fileName !== ref.fileName || currentEnv.filePath !== ref.filePath) {
+        currentEnv.fileName = ref.fileName
+        currentEnv.filePath = ref.filePath
+      }
       if (maskEl) refreshComposeEnvironment()
     })
+    // webview 页面一加载就展示对话；宿主关闭面板后页面随之销毁
+    openChatPanel()
   },
 
   onDisable() {
@@ -3179,17 +3340,13 @@ imk.plugin.handle({
     offMessage = null
     offDocChanged?.()
     offDocChanged = null
-    window.removeEventListener('resize', clampCharacterPosition)
     flushPersist()
-    closePanel()
-    removeStatusButton()
-    removeCharacter()
+    closePanel(false)
     styleEl?.remove()
     styleEl = null
   },
 
   onConfigChange() {
-    syncCharacter()
     if (maskEl) renderPanel()
   }
 })

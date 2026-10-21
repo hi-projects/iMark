@@ -7,12 +7,14 @@ import QuickSwitcher from './components/QuickSwitcher.vue'
 import VaultPicker from './components/VaultPicker.vue'
 import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
+import WebviewHost from './components/WebviewHost.vue'
 import PaneResizer from './components/PaneResizer.vue'
 import StatusBar from './components/StatusBar.vue'
 import NotificationCenter from './components/NotificationCenter.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import LineMenu from './components/LineMenu.vue'
 import LineActionDialog from './components/LineActionDialog.vue'
+import ExtensionDialogHost from './components/ExtensionDialogHost.vue'
 import ToastHost from './components/ToastHost.vue'
 import {
   appStore,
@@ -210,7 +212,11 @@ onBeforeUnmount(() => {
       <!-- 标签栏与编辑器同处一列:它只在编辑区上方,不横跨左右侧栏 -->
       <div class="editor-column">
         <TabBar />
-        <EditorPane />
+        <!-- webview 面板只覆盖编辑区，不压住标签栏 -->
+        <div class="editor-stage">
+          <EditorPane />
+          <WebviewHost />
+        </div>
       </div>
       <PaneResizer v-if="appStore.outlineVisible" side="outline" />
       <OutlineSidebar />
@@ -222,6 +228,8 @@ onBeforeUnmount(() => {
     <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->
     <LineMenu />
     <LineActionDialog />
+    <!-- 扩展要的模态框（消息/输入/快速选择），与行首菜单的参数框共用一套外观 -->
+    <ExtensionDialogHost />
     <SettingsDialog />
     <!-- 右下角通知:层级最高,插件在用户翻设置时报的错也要看得见 -->
     <ToastHost />

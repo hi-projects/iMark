@@ -1,0 +1,152 @@
+{
+  "_comment": [
+    "扩展包格式里那些**必须在多处保持一致**的数据。单独抽成一份纯 JSON,是因为消费它的",
+    "三处运行环境互不相通:应用(TS,打包后跑在 Electron)、scripts/build-plugins.mjs",
+    "(裸 Node ESM)、server/src/validate.mjs(裸 Node ESM,独立进程)。",
+    "放在 TS 模块里,后两者就 import 不了;让它们各抄一份,就是等着漂移。",
+    "",
+    "v2 与 v1 的关系是**硬切**:没有兼容分支,formatVersion 不是 2 的包一律拒绝。",
+    "integrity 改为递归键排序的 stable stringify,所以 manifest 的键序不再是格式的一部分;",
+    "manifestKeyOrder 只用于把清单重建为稳定、可读的形状。"
+  ],
+
+  "_format": ["信封标识;v1 也是这个值,靠 formatVersion 区分。"],
+  "format": "imk-plugin",
+
+  "_formatVersion": [
+    "信封格式版本。应用、打包器、服务端都从这里读。",
+    "v2 = package.json 清单 + stable integrity,不兼容 v1。"
+  ],
+  "formatVersion": 2,
+
+  "_manifestKeyOrder": [
+    "重建 package.json 清单时使用的键序。integrity 已改为 stable stringify,键序不影响",
+    "校验值;这里只保证写入磁盘的 package.json 与内置包里的清单逐字节稳定、可 diff。",
+    "未知键在校验阶段直接报错,不做静默丢弃 —— 安装到磁盘的清单必须与校验过的完全一致。"
+  ],
+  "manifestKeyOrder": [
+    "publisher",
+    "name",
+    "version",
+    "displayName",
+    "description",
+    "author",
+    "license",
+    "homepage",
+    "repository",
+    "bugs",
+    "engines",
+    "main",
+    "icon",
+    "activationEvents",
+    "extensionDependencies",
+    "extensionAffinity",
+    "capabilities",
+    "contributes",
+    "categories",
+    "keywords"
+  ],
+
+  "_contributesKeyOrder": [
+    "contributes 内部的键序。与 manifestKeyOrder 一样只用于稳定输出。",
+    "iMark 私有贡献点以 imark. 开头,避免与将来对齐 VS Code 的键名抢位。"
+  ],
+  "contributesKeyOrder": [
+    "commands",
+    "keybindings",
+    "menus",
+    "configuration",
+    "imark.lineMenu",
+    "imark.actions"
+  ],
+
+  "_capabilityKeys": [
+    "capabilities 只是**安装披露**,不是运行时门禁。扩展代码以当前用户权限运行。",
+    "未知键报错:作者以为申请了某项能力、实际没有人认识它,比报错更糟。"
+  ],
+  "capabilityKeys": ["filesystem", "network", "secrets", "git", "process", "shell"],
+
+  "_filesystemValues": ["workspace = 只读写当前仓库;user = 可读写用户目录下的其它位置"],
+  "filesystemValues": ["workspace", "user"],
+
+  "_activationEvents": [
+    "支持的激活事件。未知事件只记警告、不阻止安装(与 VS Code 一致:新事件可以让",
+    "旧版本安静地忽略)。带参数的事件在这里只校验前缀。"
+  ],
+  "activationEvents": {
+    "exact": ["*", "onStartupFinished", "onLanguage:markdown"],
+    "prefixes": ["onCommand:", "onWebviewPanel:"]
+  },
+
+  "_allowedExtensions": [
+    "允许出现在扩展包里的文件扩展名。**服务端、客户端、打包器共用这一份**:",
+    "服务端比客户端严 → 作者发不出本来能装的包;服务端比客户端松 → 包收下了但装不上。",
+    "webview 需要 html;PDF.js 需要 wasm 与字体/CMap 资源。"
+  ],
+  "allowedExtensions": [
+    "js",
+    "mjs",
+    "cjs",
+    "json",
+    "md",
+    "txt",
+    "css",
+    "html",
+    "htm",
+    "svg",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "otf",
+    "wasm",
+    "bcmap"
+  ],
+
+  "_textExtensions": [
+    "上面这些里,能当纯文本直接显示给用户看的(「查看源码」用)。",
+    "含代码的文本一律要在这里 —— 确认框承诺「显示的就是将要运行的字节」。"
+  ],
+  "textExtensions": ["js", "mjs", "cjs", "json", "md", "txt", "css", "html", "htm", "svg"],
+
+  "_reservedSegment": [
+    "包内路径里禁止出现的路径段。宿主会往扩展目录里放自己的保留资源",
+    "(webview 引导、主题令牌等),包内同名文件不得影子掉它。大小写不敏感。"
+  ],
+  "reservedSegment": "__imark",
+
+  "_limits": [
+    "体积与数量上限。AI 的 webview 入口内联 PDF.js 后约 2-3 MiB,所以入口上限是 8 MiB、",
+    "整包 16 MiB。数量上限防止一个扩展把命令面板/设置页/菜单挤爆。"
+  ],
+  "limits": {
+    "envelopeBytes": 16777216,
+    "fileBytes": 8388608,
+    "entryBytes": 8388608,
+    "readmeBytes": 524288,
+    "iconBytes": 131072,
+    "fileCount": 96,
+    "pathLength": 180,
+    "pathDepth": 4,
+    "commands": 50,
+    "keybindings": 50,
+    "configurationProperties": 80,
+    "lineMenuEntries": 12,
+    "lineMenuLabelChars": 40,
+    "lineMenuTemplateBytes": 4096,
+    "lineMenuTotalBytes": 16384,
+    "actions": 20,
+    "menuItems": 20,
+    "statusBarItems": 5
+  },
+
+  "_extensions": [
+    "配置文件属性名必须以 `<publisher>.<name>.` 开头。这不只是洁癖:扩展卸载时宿主按",
+    "前缀清理配置,没有这个约束就会误删别的扩展的设置。"
+  ]
+}

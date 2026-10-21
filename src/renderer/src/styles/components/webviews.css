@@ -1,0 +1,195 @@
+/*
+ * 扩展 webview 的宿主层。
+ *
+ * 整层不接收指针事件（pointer-events: none）：没有面板时它完全不挡编辑器；
+ * 每个面板自己重新打开 pointer-events。层级高于编辑器、低于模态框
+ * （设置/市场/通知在 100+）。
+ */
+.webview-host {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+/* 浮动面板拖动中：整窗接管指针，避免指针重新进入 iframe 后宿主收不到事件 */
+.webview-drag-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: auto;
+  cursor: grabbing;
+}
+
+.webview-panel {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 28px var(--shadow);
+  overflow: hidden;
+}
+
+.webview-panel-hidden {
+  display: none;
+}
+
+.webview-panel-transparent {
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+}
+
+/* ---------- 位置 ---------- */
+
+.webview-panel-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.webview-panel-overlay {
+  position: absolute;
+  inset: 0;
+  border: none;
+}
+
+.webview-panel-floating {
+  position: absolute;
+  border-radius: 8px;
+}
+
+.webview-anchor-top-left {
+  top: 16px;
+  left: 16px;
+}
+
+.webview-anchor-top-right {
+  top: 16px;
+  right: 16px;
+}
+
+.webview-anchor-bottom-left {
+  left: 16px;
+  bottom: 16px;
+}
+
+.webview-anchor-bottom-right {
+  right: 16px;
+  bottom: 16px;
+}
+
+/* ---------- 标题栏 ---------- */
+
+.webview-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+/*
+ * 透明面板（AI 小人）只是贴在编辑器上的一层形象：标题栏与缩放把手都会破坏
+ * 「页面上只有一个小人」的观感。关闭由设置里的开关负责，尺寸由扩展决定。
+ */
+.webview-panel-transparent .webview-titlebar,
+.webview-panel-transparent .webview-resize {
+  display: none;
+}
+
+.webview-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.webview-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.webview-close:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+/* ---------- iframe ---------- */
+
+.webview-frame-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-editor);
+}
+
+.webview-panel-transparent .webview-frame-wrap {
+  background: transparent;
+}
+
+.webview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+}
+
+/* ---------- 拖拽改尺寸 ---------- */
+
+.webview-resize {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+
+.webview-resize-column {
+  top: 0;
+  left: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.webview-resize-corner {
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  /* 右下角三条斜线，提示这里能拖 */
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--border) 45% 52%,
+    transparent 52% 62%,
+    var(--border) 62% 69%,
+    transparent 69%
+  );
+}

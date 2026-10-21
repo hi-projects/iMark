@@ -56,6 +56,9 @@ const DEFAULTS: Settings = {
   // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
   userStyle: null,
   plugins: {},
+  extensions: {},
+  extensionHost: { mode: 'isolated', affinity: {} },
+  legacyDataCleared: 0,
   // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
   marketUrl: 'http://127.0.0.1:8787',
   marketAutoCheck: true,
@@ -108,6 +111,28 @@ function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
   if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
     merged.plugins = {}
   }
+  if (!merged.extensions || typeof merged.extensions !== 'object' || Array.isArray(merged.extensions)) {
+    merged.extensions = {}
+  }
+  const host = merged.extensionHost
+  if (!host || typeof host !== 'object' || Array.isArray(host)) {
+    merged.extensionHost = { mode: 'isolated', affinity: {} }
+  } else {
+    const mode = host.mode === 'shared' ? 'shared' : 'isolated'
+    const affinity: Record<string, number> = {}
+    if (host.affinity && typeof host.affinity === 'object' && !Array.isArray(host.affinity)) {
+      for (const [id, value] of Object.entries(host.affinity)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue
+        const n = Math.trunc(value)
+        if (n >= 0) affinity[id] = n
+      }
+    }
+    merged.extensionHost = { mode, affinity }
+  }
+  merged.legacyDataCleared =
+    typeof merged.legacyDataCleared === 'number' && Number.isFinite(merged.legacyDataCleared)
+      ? Math.trunc(merged.legacyDataCleared)
+      : 0
   // 标签会话:只接受非空字符串。被手改成别的形状时当作「没有记住任何标签」,
   // 而不是让恢复流程拿着一串对象去读文件
   if (!Array.isArray(merged.openFiles)) merged.openFiles = []

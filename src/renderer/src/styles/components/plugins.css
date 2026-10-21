@@ -768,6 +768,33 @@
   color: var(--text-tertiary);
 }
 
+.plugin-ops-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 安装信息/宿主区里的说明文字:比 meta line 更小、更弱,不抢标签的视线 */
+.plugin-field-hint {
+  flex: 1;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.plugin-code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-code);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.plugin-meta-line .plugin-ops-list {
+  flex-basis: 100%;
+}
+
 .plugin-ops-list {
   display: flex;
   flex-direction: column;
@@ -906,4 +933,161 @@
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ---------- 扩展模态请求（消息 / 输入 / 快速选择） ---------- */
+
+/* 扩展弹的框要盖住设置面板(110)与市场确认框(120):它们往往是用户在设置页
+   点了「测试连接」之后才出现的。气泡(140)仍在上面,不该被框挡住。 */
+.line-dialog-mask:has(.ext-dialog) {
+  z-index: 125;
+}
+
+.ext-dialog {
+  width: min(460px, calc(100vw - 48px));
+  max-width: 460px;
+}
+
+.ext-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ext-dialog-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ext-dialog-level {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.ext-dialog-level-warning {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+
+.ext-dialog-level-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+
+.ext-dialog-message {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ext-dialog-detail {
+  max-height: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, var(--font-editor));
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ext-dialog-input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+}
+
+.ext-dialog-input:focus {
+  border-color: var(--accent);
+}
+
+.ext-dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.ext-dialog-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ext-dialog-item-active,
+.ext-dialog-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.ext-dialog-item-picked {
+  color: var(--accent);
+}
+
+.ext-dialog-check {
+  flex-shrink: 0;
+  width: 1em;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.ext-dialog-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ext-dialog-item-desc {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.ext-dialog-item-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ext-dialog-empty {
+  padding: 10px 9px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.ext-dialog .line-dialog-foot {
+  flex-wrap: wrap;
 }

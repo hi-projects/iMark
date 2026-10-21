@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "imark": ["../src/shared/extensionApi.ts"],
+      "@shared/*": ["../src/shared/*"]
+    }
+  },
+  "include": ["quick-edit/**/*.ts", "ai-for-edit/**/*.ts", "git-sync/**/*.ts"]
+}

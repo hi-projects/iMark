@@ -150,6 +150,34 @@ export async function deleteSecretsByPrefix(prefix: string): Promise<number> {
   return removed
 }
 
+/**
+ * 列出全部密钥键。
+ *
+ * 只有主进程的一次性清理会用到：它需要按「键前缀是不是合法扩展 ID」挑出 v1 残留，
+ * 而不是按某份配置推算槽位。渲染层没有、也不该有对应通道 —— 键名本身会泄露
+ * 用户配置过哪些插件/远端。
+ */
+export async function listSecretKeys(): Promise<string[]> {
+  const file = await load()
+  return Object.keys(file.entries)
+}
+
+/** 按键批量删除;不在列表里的条目原样保留。返回实际删除数 */
+export async function deleteSecretKeys(keys: readonly string[]): Promise<number> {
+  if (keys.length === 0) return 0
+  const file = await load()
+  const entries = { ...file.entries }
+  let removed = 0
+  for (const key of keys) {
+    if (!(key in entries)) continue
+    delete entries[key]
+    hintCache.delete(key)
+    removed += 1
+  }
+  if (removed > 0) await persist({ version: 1, entries })
+  return removed
+}
+
 /** 批量查询「是否已配置」,供 PluginView.secrets 使用 */
 export async function hasSecrets(keys: string[]): Promise<Record<string, boolean>> {
   const file = await load()

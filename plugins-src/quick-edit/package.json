@@ -1,0 +1,53 @@
+{
+  "name": "quick-edit",
+  "publisher": "imark",
+  "version": "2.0.0",
+  "displayName": "快速编辑",
+  "description": "在行首「+」菜单里插入一张 Markdown 表格",
+  "author": "iMark",
+  "engines": { "imark": "^0.1.0" },
+  "main": "./main.js",
+  "activationEvents": [
+    "onCommand:imark.quick-edit.insertTable"
+  ],
+  "capabilities": {},
+  "contributes": {
+    "commands": [
+      {
+        "command": "imark.quick-edit.insertTable",
+        "title": "插入表格",
+        "category": "快速编辑",
+        "detail": "在光标行下方插入一张空表，光标落在第一个表头单元格"
+      }
+    ],
+    "imark.lineMenu": [
+      {
+        "id": "table",
+        "label": "表格",
+        "command": "imark.quick-edit.insertTable",
+        "dialog": {
+          "title": "插入表格",
+          "confirmLabel": "插入",
+          "fields": [
+            {
+              "key": "rows",
+              "kind": "number",
+              "label": "行数（含表头）",
+              "default": 3,
+              "min": 1,
+              "max": 50
+            },
+            {
+              "key": "cols",
+              "kind": "number",
+              "label": "列数",
+              "default": 3,
+              "min": 1,
+              "max": 20
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -31,6 +31,7 @@ import { getSettings, saveSettings } from './settings'
 import { takePendingOpenFile } from './openFile'
 import { defaultEditorStatus, registerAsDefaultEditor } from './system'
 import { getPluginHost, type PluginHost } from './plugins/host'
+import { registerExtensionIpc } from './extensions/ipc'
 import { registerMarketIpc } from './market/ipc'
 import {
   createVaultDir,
@@ -106,8 +107,15 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.SettingsGet, () => getSettings())
 
   ipcMain.handle(IPC.SettingsSet, (_e, partial: Partial<Settings>) => {
-    // plugins 只由插件宿主写(它要保证归一化与生命周期),渲染层传来的这份一律忽略
-    const { plugins: _ignored, ...rest } = partial
+    // 扩展相关的三组设置只由扩展服务写(它要保证归一化、持久化与宿主生命周期),
+    // 渲染层把整份 settings 回传时这三组一律忽略 —— 否则设置面板保存一次主题
+    // 就可能把扩展的启用态/配置覆盖回旧值。
+    const {
+      plugins: _ignoredPlugins,
+      extensions: _ignoredExtensions,
+      extensionHost: _ignoredHost,
+      ...rest
+    } = partial
     return saveSettings(rest)
   })
 
@@ -211,7 +219,12 @@ export function registerIpc(): void {
     return win ? showConfirmDelete(win, o.name, o.isDir) : false
   })
 
-  // ---------- 插件 ----------
+  // ---------- 扩展(v2) ----------
+  registerExtensionIpc()
+
+  // ---------- 插件(v1,阶段 7 删除) ----------
+  // v1 宿主已经不再初始化，这些处理器暂时保留只为让市场/渲染层的旧调用
+  // 在阶段 3 期间编译通过；真正被点到的旧入口会在阶段 6 一并替换。
 
   ipcMain.handle(IPC.PluginList, () => requirePluginHost().list())
 

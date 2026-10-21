@@ -1,32 +1,35 @@
 /**
  * 光标行行首「+」菜单的状态与执行。
  *
- * 这一层是插件贡献点(`descriptor.lineMenu`)的落点:插件只声明「菜单里有什么、要问用户什么」,
- * 按钮与菜单由 editor/lineMenu.ts 画,对话框由 LineActionDialog.vue 画,文档由这里改。
- * 插件代码从头到尾碰不到编辑器。
+ * 条目的唯一来源是扩展清单的 `contributes['imark.lineMenu']`:主进程已经把
+ * 「启用中的扩展声明了哪些条目」算成快照,这里只负责显示、收集对话框参数、
+ * 调 `commands.executeCommand`。
+ *
+ * 与 v1 的区别:宿主不再替扩展插入文本。命令拿到
+ * `{ values, source: 'lineMenu', line, lineText, filePath }`,要改文档就走
+ * `window.activeTextEditor.edit` —— 插入位置和撤销栈由扩展自己负责。
  *
  * 刷新用**版本号 + StateEffect**驱动(见 lineMenuRefreshEffect):
- * CodeMirror 只在有事务时才会重算装饰,而「插件装好了」这件事本身不产生事务 ——
+ * CodeMirror 只在有事务时才会重算装饰,而「扩展装好了」这件事本身不产生事务 ——
  * 不推它一把,光标不动就永远看不到按钮出现。
  */
 
 import { StateEffect } from '@codemirror/state'
 import { reactive, watch } from 'vue'
-import type { PluginActionPayload, PluginLineMenuItem } from '@shared/plugins'
+import type { ExtensionLineMenuView } from '@shared/extensions'
 import { appStore, editorHolder } from '../stores/app'
-import { insertBlockBelow } from '../editor/commands'
-import { pluginStore, runPluginAction } from './pluginService'
-import { pushNotice } from './notice'
+import { extensionStore, runExtensionCommand } from './extensionService'
 
-/** 菜单里的一条 = 某个插件声明的某个条目 */
+/** 菜单里的一条 = 某个扩展声明的某个条目 */
 export interface LineMenuEntry {
-  pluginId: string
-  item: PluginLineMenuItem
+  extensionId: string
+  extensionName: string
+  item: ExtensionLineMenuView
 }
 
-/** 每一项的稳定标识:条目 id 只保证在**插件内部**唯一,多个插件会往同一个菜单里塞东西 */
+/** 条目 id 在快照里已经带上扩展 ID(`<extId>:<itemId>`),直接当 key */
 export function lineMenuKey(entry: LineMenuEntry): string {
-  return `${entry.pluginId}:${entry.item.id}`
+  return entry.item.id
 }
 
 export const lineMenuStore = reactive<{
@@ -44,18 +47,18 @@ export const lineMenuRefreshEffect = StateEffect.define<number>()
 let refreshVersion = 0
 
 /**
- * 当前可用的菜单条目:已启用、没被熔断、也没加载失败的插件说了算。
- * 没有任何条目时,编辑器里连「+」都不画 —— 插件没装就什么都不显示。
+ * 当前可用的菜单条目。
+ *
+ * 快照里只含启用中的扩展,这里不再判断启用态 —— 渲染层拿到的已经是
+ * 「这一秒能执行什么」的结论。
  */
 export function lineMenuEntries(): LineMenuEntry[] {
-  const out: LineMenuEntry[] = []
-  for (const plugin of pluginStore.list) {
-    if (!plugin.state.enabled || plugin.disabledByHost || plugin.loadError) continue
-    for (const item of plugin.descriptor.lineMenu ?? []) {
-      out.push({ pluginId: plugin.descriptor.id, item })
-    }
-  }
-  return out
+  const source = extensionStore.contribs?.lineMenu ?? []
+  return source.map(item => ({
+    extensionId: item.extensionId,
+    extensionName: item.extensionName,
+    item
+  }))
 }
 
 /** 按钮被点了。再点一次同一个按钮是收起(开合) */
@@ -76,20 +79,13 @@ export function closeLineMenu(): void {
 
 /** 用户点了菜单里的一条 */
 export function runLineMenuItem(entry: LineMenuEntry): void {
-  const item = entry.item
-  if (item.dialog) {
+  if (entry.item.dialog) {
     // 菜单收起、对话框接管:两个浮层同时开着,点哪个都说不清
     closeLineMenu()
     lineMenuStore.dialog = entry
     return
   }
   closeLineMenu()
-  if (item.template !== undefined) {
-    // 纯模板条目不过插件:没有要问的参数,也没有要算的东西
-    const view = editorHolder.view
-    if (view) insertBlockBelow(view, currentLine().line, item.template)
-    return
-  }
   void executeAction(entry)
 }
 
@@ -105,7 +101,7 @@ export function cancelLineDialog(): void {
   lineMenuStore.dialog = null
 }
 
-/** 按钮那一行现在的样子。文档在此期间变过也没关系,行号由 insertBlockBelow 夹取 */
+/** 按钮那一行现在的样子(行号按当前文档夹取,文档在菜单开着时可能变短) */
 function currentLine(): { line: number; text: string } {
   const view = editorHolder.view
   if (!view) return { line: lineMenuStore.line, text: '' }
@@ -114,46 +110,44 @@ function currentLine(): { line: number; text: string } {
 }
 
 /**
- * 走一趟插件:把对话框里填的值与这一行的快照交给它,拿回要插入的文本。
+ * 走一趟扩展命令。
  *
- * 插入由宿主执行 —— 插件返回的只是文本。失败(含被熔断)时宿主不会带上 `editor`,
- * 于是文档一个字符都不会变,这里再补一句提示,免得点了「表格」什么都没发生还没人吭声。
+ * 不在这里碰文档:命令可以异步、可以询问用户、也可以根本不改文本。
+ * 失败提示由 `runExtensionCommand` 统一弹 —— 用户点了「表格」却什么都没发生,
+ * 比一句直白的错误更让人困惑。
  */
-async function executeAction(entry: LineMenuEntry, values?: Record<string, unknown>): Promise<void> {
-  const action = entry.item.action
-  if (!action) return
-  const view = editorHolder.view
-  if (!view) return
-
+async function executeAction(
+  entry: LineMenuEntry,
+  values?: Record<string, unknown>
+): Promise<void> {
   const { line, text } = currentLine()
-  const payload: PluginActionPayload = {
+  const args = {
     ...(values ? { values } : {}),
-    editor: { line, lineText: text, filePath: appStore.filePath }
+    source: 'lineMenu',
+    line,
+    lineText: text,
+    filePath: appStore.filePath
   }
-
-  const result = await runPluginAction(entry.pluginId, action, undefined, payload)
-  if (!result) return
-  if (!result.ok) {
-    pushNotice(`${entry.item.label}失败:${result.message}`, { level: 'warn' })
-    return
-  }
-  if (!result.editor) return
-  insertBlockBelow(view, line, result.editor.text, result.editor.cursorOffset)
+  await runExtensionCommand(entry.item.command, [args], 'lineMenu')
 }
 
 /**
- * 贡献点变了(装/卸/启停插件):让编辑器重算一次装饰。
+ * 贡献点变了(装/卸/启停扩展):让编辑器重算一次装饰。
  *
- * 监听的是 `pluginStore.list` 这个**引用** —— 主进程每次广播都是整份列表换掉,
+ * 监听的是 `extensionStore.contribs` 这个**引用** —— 主进程每次广播都是整份快照换掉,
  * 引用变化即代表内容变化,不必开 deep。
  */
 export function initLineMenu(): () => void {
   return watch(
-    () => pluginStore.list,
-    () => {
-      const entries = lineMenuEntries()
-      // 菜单开着的时候插件被关掉/卸载:菜单里的条目已经不成立了,直接收起
+    () => extensionStore.contribs,
+    snapshot => {
+      const entries = snapshot?.lineMenu ?? []
+      // 菜单开着的时候扩展被关掉/卸载:菜单里的条目已经不成立了,直接收起
       if (lineMenuStore.open && entries.length === 0) closeLineMenu()
+      // 对话框对应的条目消失了(扩展被停用),不要留一个点了会报「未知命令」的表单
+      if (lineMenuStore.dialog && !entries.some(item => item.id === lineMenuStore.dialog?.item.id)) {
+        cancelLineDialog()
+      }
       const view = editorHolder.view
       if (view) view.dispatch({ effects: lineMenuRefreshEffect.of(++refreshVersion) })
     }

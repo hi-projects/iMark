@@ -15,6 +15,14 @@ import type {
 } from '@shared/plugins'
 import type { DefaultEditorStatus, SaveDialogOptions, Settings } from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
+import type {
+  ExtensionCommandInvocation,
+  ExtensionCommandResult,
+  ExtensionContributionsSnapshot,
+  ExtensionHostSettingsPatch,
+  ExtensionView
+} from '@shared/extensions'
+import type { MainToRendererMessage, RendererToMainMessage } from '@shared/extensionProtocol'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_e: unknown, payload: T): void => cb(payload)
@@ -91,7 +99,65 @@ const api = {
   trashPath: (path: string): Promise<void> => request(IPC.VaultDelete, { path }),
   confirmDelete: (name: string, isDir: boolean): Promise<boolean> =>
     request(IPC.VaultConfirmDelete, { name, isDir }),
-  // ---------- 插件 ----------
+  // ---------- 扩展(v2) ----------
+  listExtensions: (): Promise<ExtensionView[]> => request(IPC.ExtensionList),
+  setExtensionEnabled: (id: string, enabled: boolean): Promise<ExtensionView[]> =>
+    request(IPC.ExtensionSetEnabled, { id, enabled }),
+  setExtensionConfig: (
+    id: string,
+    config: Record<string, unknown>
+  ): Promise<ExtensionView[]> => request(IPC.ExtensionSetConfig, { id, config }),
+  /** value 为 null 时清除该密钥;key 是完整键(`<id>:<property>[:<slot>]`) */
+  setExtensionSecret: (
+    id: string,
+    key: string,
+    value: string | null
+  ): Promise<ExtensionView[]> => request(IPC.ExtensionSetSecret, { id, key, value }),
+  reloadExtension: (id: string): Promise<ExtensionView[]> => request(IPC.ExtensionReload, id),
+  reloadExtensionHost: (hostId: number): Promise<ExtensionView[]> =>
+    request(IPC.ExtensionReloadHost, hostId),
+  setExtensionHostSettings: (patch: ExtensionHostSettingsPatch): Promise<ExtensionView[]> =>
+    request(IPC.ExtensionSetHostSettings, patch),
+  uninstallExtension: (id: string): Promise<ExtensionView[]> =>
+    request(IPC.ExtensionUninstall, id),
+  openExtensionLog: (id: string): Promise<void> => request(IPC.ExtensionLogOpen, id),
+  /** 首次挂载时主动要一次贡献点快照(不必等下一次变更) */
+  getExtensionContributions: (): Promise<ExtensionContributionsSnapshot> =>
+    request(IPC.ExtensionContribGet),
+  /**
+   * 执行一条扩展命令。IPC 不抛错:失败以 `{ok:false, message}` 返回,
+   * 这样界面能原样显示主进程给出的中文说明。
+   */
+  runExtensionCommand: (
+    command: string,
+    args: unknown[] = [],
+    from: ExtensionCommandInvocation['from'] = 'code'
+  ): Promise<ExtensionCommandResult> =>
+    request(IPC.ExtensionCommandRun, { command, args, from }),
+  /** 主进程推来的编辑器桥/贡献点消息;渲染层按 `type` 分派 */
+  onExtensionMessage: (cb: (message: MainToRendererMessage) => void): (() => void) =>
+    subscribe<MainToRendererMessage>(IPC.ExtensionToRenderer, cb),
+  /** 只订阅贡献点快照(高频且形状固定的那一种) */
+  onExtensionContributions: (
+    cb: (snapshot: ExtensionContributionsSnapshot) => void
+  ): (() => void) => {
+    const listener = (_e: unknown, message: MainToRendererMessage): void => {
+      if (message && message.type === 'extensions.contributions') {
+        cb(message.snapshot as ExtensionContributionsSnapshot)
+      }
+    }
+    ipcRenderer.on(IPC.ExtensionToRenderer, listener as never)
+    return () => ipcRenderer.removeListener(IPC.ExtensionToRenderer, listener as never)
+  },
+  /** 渲染层 → 主进程的编辑器桥消息 */
+  sendExtensionMessage: (message: RendererToMainMessage): void =>
+    ipcRenderer.send(IPC.ExtensionToMain, message),
+  /** 原生菜单/快捷键触发的扩展命令(执行入口在渲染层) */
+  onExtensionCommand: (
+    cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
+  ): (() => void) =>
+    subscribe<Pick<ExtensionCommandInvocation, 'command' | 'from'>>(IPC.ExtensionCommand, cb),
+  // ---------- 插件(v1,阶段 7 删除) ----------
   listPlugins: () => request(IPC.PluginList),
   savePlugin: (id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request(IPC.PluginSave, { id, ...patch }),

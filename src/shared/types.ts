@@ -1,4 +1,5 @@
 import type { PluginConfigEntry } from './plugins'
+import type { ExtensionHostSettings, ExtensionPreference } from './extensions'
 import type { CodeIndentSize } from './editorSettings'
 
 /** light 亮色 / dark 深色(底色对齐 Obsidian Minimal,文字保持 iMark 默认) */
@@ -84,6 +85,15 @@ export interface Settings {
    * 密钥(token 等)不在这里,单独加密存于数据根下的 secrets.json(即 ~/.imark/secrets.json)。
    */
   plugins: Record<string, PluginConfigEntry>
+  /**
+   * 扩展配置:扩展 ID(`${publisher}.${name}`)→ { 是否启用, 非密配置 }。
+   * 密钥不在这里,只以掩码形式出现在视图层;明文由主进程 safeStorage 保管。
+   */
+  extensions: Record<string, ExtensionPreference>
+  /** 宿主拓扑:isolated(默认,每扩展一进程)或 shared;affinity 按扩展 ID 分组 */
+  extensionHost: ExtensionHostSettings
+  /** v1 数据清理是否已跑过(2 = 扩展模型);只用于避免重复扫描,不承载业务状态 */
+  legacyDataCleared: number
   /**
    * 插件市场的服务地址。默认指向本机的自托管服务(仓库里的 server/)。
    * 留空表示不使用市场 —— 浏览页会提示去设置里填地址,其余功能照常。

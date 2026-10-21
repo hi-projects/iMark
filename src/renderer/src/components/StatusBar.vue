@@ -19,15 +19,17 @@ import {
   toggleOutlineVisible,
   toggleTheme
 } from '../stores/app'
+import type { ExtensionStatusItemView } from '@shared/extensions'
 import { requestVaultSwitch } from '../services/vaultService'
-import { openPluginSettings, pluginById } from '../services/pluginService'
 import {
-  invokeContrib,
-  pluginIcon,
+  clickStatusItem,
+  statusColor,
   statusEntries,
+  statusIcon,
+  statusLabel,
   statusTitle,
-  type StatusEntry
-} from '../services/pluginUi'
+  statusTone
+} from '../services/extensionUi'
 import { noticeCenter, toggleNoticeCenter } from '../services/notice'
 
 function openVaultSwitcher(): void {
@@ -68,35 +70,32 @@ const notifyTitle = computed(() =>
 )
 
 /**
- * 插件状态条目的点击规则。
- *
- * 从前的「定时上传」按钮把这条规则写死在组件里(出错就进设置、正常就同步),
- * 现在它成了**所有**插件条目共用的规则 —— 而且不是规定,是唯一说得通的做法:
- * 插件处在错误状态时,它那条 action 自己也正是失败的那个,再点一次只会再失败一次;
- * 这时用户要的是"去设置里看看为什么"。
+ * 左右两组按 `alignment` 分开:扩展在 `createStatusBarItem(alignment)` 里
+ * 声明的就是「贴左」还是「贴右」,宿主替它决定位置就等于说谎。
  */
-function onStatusClick(entry: StatusEntry): void {
-  const view = pluginById(entry.pluginId)
-  if (
-    !view ||
-    !view.state.enabled ||
-    view.state.status === 'error' ||
-    view.state.status === 'partial'
-  ) {
-    openPluginSettings(entry.pluginId)
-    return
+const leftStatusEntries = computed(() =>
+  statusEntries.value.filter(entry => entry.alignment === 'left')
+)
+const rightStatusEntries = computed(() =>
+  statusEntries.value.filter(entry => entry.alignment === 'right')
+)
+
+function statusClass(entry: ExtensionStatusItemView): Record<string, boolean> {
+  const tone = statusTone(entry.status)
+  return {
+    'status-plug-error': tone === 'error',
+    'status-plug-ok': tone === 'ok',
+    'status-plug-running': tone === 'running'
   }
-  void invokeContrib({ pluginId: entry.pluginId, itemId: entry.item.id, from: 'status' })
 }
 
-/** 状态栏按钮的着色:成功/失败直接反映插件自己报的状态 */
-function statusClass(pluginId: string): Record<string, boolean> {
-  const status = pluginById(pluginId)?.state.status
-  return {
-    'status-plug-error': status === 'error' || status === 'partial',
-    'status-plug-ok': status === 'ok',
-    'status-plug-running': status === 'running'
-  }
+function statusStyle(entry: ExtensionStatusItemView): Record<string, string> {
+  const style: Record<string, string> = {}
+  const color = statusColor(entry.color)
+  if (color) style.color = color
+  const background = statusColor(entry.backgroundColor)
+  if (background) style.backgroundColor = background
+  return style
 }
 </script>
 
@@ -133,35 +132,30 @@ function statusClass(pluginId: string): Record<string, boolean> {
         <ListTree :size="14" />
       </button>
     </span>
-    <span class="status-sep" aria-hidden="true"></span>
     <!--
-      插件图标组:插件声明的状态条目 + render 层插件自画的按钮(AI for Edit)。
-      宿主不认识它们是什么(只认识一个 id 和一个动作):图标白名单里认得出的画图标,
-      认不出的显示文字 —— 插件给的是一个名字,不是一段界面。
+      扩展状态条目(贴左的那些):扩展只给文本、命令与状态,宿主只负责画。
+      文本里的 `$(icon)` 走图标白名单;认不出就原样显示文字 —— 扩展给的是名字,
+      不是一段要宿主渲染的界面。
     -->
-    <span class="status-plugin-group">
-      <button
-        v-for="entry in statusEntries"
-        :key="`${entry.pluginId}:${entry.item.id}`"
-        class="status-plug"
-        :class="{ ...statusClass(entry.pluginId), 'status-plug-text': !pluginIcon(entry.item.icon) }"
-        :title="statusTitle(entry)"
-        @click="onStatusClick(entry)"
-      >
-        <component
-          :is="pluginIcon(entry.item.icon)"
-          v-if="pluginIcon(entry.item.icon)"
-          :size="14"
-        />
-        <span v-else class="status-plug-label">{{ entry.item.label }}</span>
-      </button>
-      <!--
-        render 层插件自画的状态栏按钮落在这里(目前是 AI for Edit)。
-        它是一个**空槽**:Vue 不往里面放节点,插件挂进来的按钮就不会在
-        状态栏重渲染时被一起抹掉。
-      -->
-      <span class="status-plugin-slot"></span>
-    </span>
+    <template v-if="leftStatusEntries.length">
+      <span class="status-sep" aria-hidden="true"></span>
+      <span class="status-plugin-group">
+        <button
+          v-for="entry in leftStatusEntries"
+          :key="entry.id"
+          class="status-plug"
+          :class="{ ...statusClass(entry), 'status-plug-text': !statusIcon(entry.text) }"
+          :style="statusStyle(entry)"
+          :title="statusTitle(entry)"
+          @click="clickStatusItem(entry)"
+        >
+          <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
+          <span v-if="statusLabel(entry.text)" class="status-plug-label">
+            {{ statusLabel(entry.text) }}
+          </span>
+        </button>
+      </span>
+    </template>
     <button
       v-if="appStore.vaultName"
       class="status-vault"
@@ -178,6 +172,23 @@ function statusClass(pluginId: string): Record<string, boolean> {
       <span>行数 {{ appStore.lines }}</span>
     </template>
     <span class="status-spacer"></span>
+    <!-- 贴右的扩展条目:在自动保存提示与通知铃铛之前 -->
+    <span v-if="rightStatusEntries.length" class="status-plugin-group">
+      <button
+        v-for="entry in rightStatusEntries"
+        :key="entry.id"
+        class="status-plug"
+        :class="{ ...statusClass(entry), 'status-plug-text': !statusIcon(entry.text) }"
+        :style="statusStyle(entry)"
+        :title="statusTitle(entry)"
+        @click="clickStatusItem(entry)"
+      >
+        <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
+        <span v-if="statusLabel(entry.text)" class="status-plug-label">
+          {{ statusLabel(entry.text) }}
+        </span>
+      </button>
+    </span>
     <span
       v-if="appStore.autoSaveError"
       class="status-autosave status-autosave-error"

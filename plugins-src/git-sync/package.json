@@ -1,0 +1,240 @@
+{
+  "name": "git-sync",
+  "publisher": "imark",
+  "version": "2.0.0",
+  "displayName": "定时上传（Git）",
+  "description": "按固定间隔，将当前仓库提交并推送到 Git 远端，支持多个远端",
+  "author": "iMark",
+  "engines": {
+    "imark": "^0.1.0"
+  },
+  "main": "./main.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:imark.git-sync.syncNow",
+    "onCommand:imark.git-sync.testAll",
+    "onCommand:imark.git-sync.detectProxy",
+    "onCommand:imark.git-sync.testTarget"
+  ],
+  "capabilities": {
+    "filesystem": "user",
+    "network": true,
+    "secrets": true,
+    "git": true,
+    "process": true
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "imark.git-sync.syncNow",
+        "title": "立即上传到 Git 远端",
+        "category": "Git 同步",
+        "detail": "把当前仓库的改动提交并推送到所有远端"
+      },
+      {
+        "command": "imark.git-sync.testAll",
+        "title": "测试全部远端",
+        "category": "Git 同步"
+      },
+      {
+        "command": "imark.git-sync.detectProxy",
+        "title": "检测本机代理",
+        "category": "Git 同步"
+      },
+      {
+        "command": "imark.git-sync.testTarget",
+        "title": "测试连接",
+        "category": "Git 同步"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "imark.git-sync.syncNow",
+        "key": "ctrl+alt+s",
+        "when": "hasVault"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "imark.git-sync.targets": {
+          "type": "array",
+          "default": [],
+          "title": "远端仓库",
+          "description": "每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub、GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，插件也不改动你仓库的 remote 设置。",
+          "imark": {
+            "kind": "targets",
+            "section": "远程仓库",
+            "targetSecret": {
+              "label": "访问令牌",
+              "placeholder": "必填（私有仓库需要访问令牌）"
+            }
+          }
+        },
+        "imark.git-sync.intervalMinutes": {
+          "type": "number",
+          "default": 10,
+          "title": "自动同步间隔（分钟）",
+          "description": "0 表示关闭自动同步，只保留手动「立即上传」。",
+          "minimum": 0,
+          "maximum": 1440,
+          "imark": {
+            "kind": "number",
+            "section": "同步设置"
+          }
+        },
+        "imark.git-sync.syncOnStart": {
+          "type": "boolean",
+          "default": true,
+          "title": "启动后同步一次",
+          "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补上。",
+          "imark": {
+            "kind": "boolean",
+            "section": "同步设置"
+          }
+        },
+        "imark.git-sync.proxyMode": {
+          "type": "string",
+          "default": "auto",
+          "title": "连接方式",
+          "description": "git 不会读取 Windows 的系统代理，所以浏览器能打开 GitHub 时这里仍可能超时。自动模式会依次检查 HTTP_PROXY / HTTPS_PROXY 环境变量与 Windows 系统代理（Clash、FlClash 等客户端开启「系统代理」时写入）。代理只作用于 HTTP(S) 远端；SSH 地址不经过它。",
+          "enum": [
+            "auto",
+            "manual",
+            "off"
+          ],
+          "enumDescriptions": [
+            "自动检测本机代理",
+            "手动指定代理",
+            "直连（不使用代理）"
+          ],
+          "imark": {
+            "kind": "select",
+            "section": "网络代理"
+          }
+        },
+        "imark.git-sync.proxyUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:7890",
+          "title": "代理地址",
+          "description": "支持 http://、https://、socks5://。Clash / FlClash 的混合端口默认是 7890。",
+          "imark": {
+            "kind": "text",
+            "section": "网络代理",
+            "showWhen": {
+              "key": "proxyMode",
+              "value": "manual"
+            },
+            "placeholder": "http://127.0.0.1:7890"
+          }
+        },
+        "imark.git-sync.commitMessage": {
+          "type": "string",
+          "default": "sync: {time}",
+          "title": "提交信息模板",
+          "description": "可用占位符：{time}（本地时间）。",
+          "imark": {
+            "kind": "text",
+            "section": "同步信息设置",
+            "placeholder": "sync: {time}"
+          }
+        },
+        "imark.git-sync.authorName": {
+          "type": "string",
+          "default": "iMark",
+          "title": "提交作者名",
+          "description": "仅当仓库未配置 git user.name 时使用。",
+          "imark": {
+            "kind": "text",
+            "section": "同步信息设置"
+          }
+        },
+        "imark.git-sync.authorEmail": {
+          "type": "string",
+          "default": "imark@local",
+          "title": "提交作者邮箱",
+          "description": "仅当仓库未配置 git user.email 时使用。",
+          "imark": {
+            "kind": "text",
+            "section": "同步信息设置"
+          }
+        },
+        "imark.git-sync.autoInitRepo": {
+          "type": "boolean",
+          "default": true,
+          "title": "自动初始化仓库",
+          "description": "仓库还不是 git 仓库时自动执行 git init。",
+          "imark": {
+            "kind": "boolean",
+            "section": "本地仓库自动初始化"
+          }
+        },
+        "imark.git-sync.initBranch": {
+          "type": "string",
+          "default": "main",
+          "title": "自动创建的分支名",
+          "description": "初始化仓库时创建的分支名（git init -b）。建议与上面各远端的「本地分支」保持一致，否则推送时会找不到分支。",
+          "imark": {
+            "kind": "text",
+            "section": "本地仓库自动初始化",
+            "showWhen": {
+              "key": "autoInitRepo",
+              "value": true
+            }
+          }
+        },
+        "imark.git-sync.writeGitignore": {
+          "type": "boolean",
+          "default": true,
+          "title": "初始化时创建 .gitignore",
+          "description": "仅新建仓库时写入推荐忽略项；已有仓库、或已存在 .gitignore 时都不会改动。",
+          "imark": {
+            "kind": "boolean",
+            "section": "本地仓库自动初始化",
+            "showWhen": {
+              "key": "autoInitRepo",
+              "value": true
+            }
+          }
+        },
+        "imark.git-sync.writeReadme": {
+          "type": "boolean",
+          "default": false,
+          "title": "初始化时创建 README.md",
+          "description": "仅新建仓库时创建一个 README.md（标题取仓库文件夹名）；已存在则不覆盖。",
+          "imark": {
+            "kind": "boolean",
+            "section": "本地仓库自动初始化",
+            "showWhen": {
+              "key": "autoInitRepo",
+              "value": true
+            }
+          }
+        }
+      }
+    },
+    "imark.actions": [
+      {
+        "command": "imark.git-sync.syncNow",
+        "label": "立即上传",
+        "scope": "global",
+        "primary": true
+      },
+      {
+        "command": "imark.git-sync.testAll",
+        "label": "测试全部远端",
+        "scope": "global"
+      },
+      {
+        "command": "imark.git-sync.detectProxy",
+        "label": "检测本机代理",
+        "scope": "global"
+      },
+      {
+        "command": "imark.git-sync.testTarget",
+        "label": "测试连接",
+        "scope": "target",
+        "targetSetting": "imark.git-sync.targets"
+      }
+    ]
+  }
+}

@@ -39,8 +39,8 @@ try {
 
 export const LIMITS = {
   envelopeBytes: 8 * 1024 * 1024,
-  fileBytes: 2 * 1024 * 1024,
-  entryBytes: 1024 * 1024,
+  fileBytes: 4 * 1024 * 1024,
+  entryBytes: 4 * 1024 * 1024,
   readmeBytes: 256 * 1024,
   iconBytes: 64 * 1024,
   fileCount: 64,

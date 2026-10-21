@@ -26,6 +26,14 @@ import type {
 } from './plugins'
 import type { DefaultEditorStatus, ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
+import type {
+  ExtensionCommandInvocation,
+  ExtensionCommandResult,
+  ExtensionContributionsSnapshot,
+  ExtensionHostSettingsPatch,
+  ExtensionView
+} from './extensions'
+import type { MainToRendererMessage, RendererToMainMessage } from './extensionProtocol'
 
 /** preload 通过 contextBridge 暴露到 window.api 的接口 */
 export interface WindowApi {
@@ -84,7 +92,30 @@ export interface WindowApi {
   renamePath(from: string, to: string): Promise<void>
   trashPath(path: string): Promise<void>
   confirmDelete(name: string, isDir: boolean): Promise<boolean>
-  // ---------- 插件 ----------
+  // ---------- 扩展(v2) ----------
+  listExtensions(): Promise<ExtensionView[]>
+  setExtensionEnabled(id: string, enabled: boolean): Promise<ExtensionView[]>
+  setExtensionConfig(id: string, config: Record<string, unknown>): Promise<ExtensionView[]>
+  /** value 为 null 时清除该密钥;key 是完整键(`<id>:<property>[:<slot>]`) */
+  setExtensionSecret(id: string, key: string, value: string | null): Promise<ExtensionView[]>
+  reloadExtension(id: string): Promise<ExtensionView[]>
+  reloadExtensionHost(hostId: number): Promise<ExtensionView[]>
+  setExtensionHostSettings(patch: ExtensionHostSettingsPatch): Promise<ExtensionView[]>
+  uninstallExtension(id: string): Promise<ExtensionView[]>
+  openExtensionLog(id: string): Promise<void>
+  getExtensionContributions(): Promise<ExtensionContributionsSnapshot>
+  runExtensionCommand(
+    command: string,
+    args?: unknown[],
+    from?: ExtensionCommandInvocation['from']
+  ): Promise<ExtensionCommandResult>
+  onExtensionMessage(cb: (message: MainToRendererMessage) => void): () => void
+  onExtensionContributions(cb: (snapshot: ExtensionContributionsSnapshot) => void): () => void
+  sendExtensionMessage(message: RendererToMainMessage): void
+  onExtensionCommand(
+    cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
+  ): () => void
+  // ---------- 插件(v1,阶段 7 删除) ----------
   listPlugins(): Promise<PluginView[]>
   savePlugin(id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }): Promise<PluginView[]>
   /** value 为 null 时清除该密钥;返回值是最新的插件视图列表 */

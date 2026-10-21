@@ -37,15 +37,54 @@ export interface ChatHistoryItem {
   content: string
 }
 
+/** 附件里的一张扫描页图片；正文数据由 `attach.image` 单独上传，不进这条消息 */
+export interface AttachmentImageMeta {
+  /** PDF 页码，从 1 开始 */
+  page: number
+}
+
 /**
  * 用户添加的本地参考文件。
  *
  * 只包含文件名与文本内容 —— 插件不需要绝对路径，也不把路径发给模型。
  * render 层已经按上限截断，main 层仍会再校验一次。
+ *
+ * 扫描件 PDF 还能带一组页面图片：图片本身通过 `attach.image` 分条上传（宿主
+ * 对单条 render → main 消息有 256 KiB 上限），这里只留页码元数据，供提示词
+ * 说明「哪些页以图片形式附在消息里」。
  */
 export interface AttachmentItem {
   name: string
   text: string
+  images?: AttachmentImageMeta[]
+  /** 指向已经通过 `attach.image` 上传的图片；没有图片时为空 */
+  imageUpload?: AttachmentImageUploadRef
+}
+
+/** render → main：一组扫描页图片的上传引用 */
+export interface AttachmentImageUploadRef {
+  id: string
+  /** 这组图片的张数；main 层会等齐再开始请求 */
+  count: number
+}
+
+/**
+ * render → main：一条扫描页图片。
+ *
+ * 每张图片单独一条消息，base64 数据控制在 200,000 字符以内，避免触发宿主
+ * 256 KiB 的消息上限。`id` 由 render 层生成，main 层按 `index` 归组。
+ */
+export interface AttachmentImageMessage {
+  id: string
+  index: number
+  total: number
+  name: string
+  page: number
+  mediaType: string
+  /** 不带 `data:` 前缀的 base64 */
+  data: string
+  width: number
+  height: number
 }
 
 /** render → main：普通对话提问 */

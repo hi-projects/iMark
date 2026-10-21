@@ -23,6 +23,17 @@ export default defineConfig({
       alias: {
         '@shared': resolve('src/shared')
       }
+    },
+    build: {
+      rollupOptions: {
+        input: {
+          // 应用主进程
+          index: resolve('src/main/index.ts'),
+          // 扩展宿主入口：main 用 utilityProcess.fork(join(__dirname, ...)) 启动它。
+          // 它必须和 index.js 输出在同一目录（out/main/）。
+          extensionHostProcess: resolve('src/main/extensions/extensionHostProcess.ts')
+        }
+      }
     }
   },
   preload: {

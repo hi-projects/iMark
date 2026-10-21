@@ -6,6 +6,7 @@ import { appStore, editorHolder } from '../stores/app'
 import { openFileByPath } from '../services/fileService'
 import { noteDocChangeForAutoSave } from '../services/autoSave'
 import { attachActiveTab, handleEditorDocChange } from '../services/tabs'
+import { notifyEditorReady } from '../services/editorBridge'
 import { api } from '../services/api'
 
 const container = ref<HTMLElement | null>(null)
@@ -45,6 +46,8 @@ onMounted(() => {
   editorHolder.onDocChange = onDocChange
   // 极端情况下挂载前已经有当前标签(见 attachActiveTab 的说明)
   attachActiveTab()
+  // 视图与当前标签都就位后再向扩展宿主报「编辑器就绪」
+  notifyEditorReady()
   if (appStore.hasDocument) view.focus()
 })
 

@@ -66,6 +66,15 @@ body.pane-resizing * {
   min-height: 0;
 }
 
+/* 编辑区(不含标签栏):webview 面板的绝对定位以它为参照 */
+.editor-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* ---------- 文件浏览器 ---------- */
 
 .explorer {
