@@ -13,7 +13,7 @@ import { readFile, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dataRoot } from '../dataDir'
 import { deleteSecretKeys, listSecretKeys } from '../secrets'
-import { loadSettings, saveSettings } from '../settings'
+import { dropLegacySettingsKeys, loadSettings, saveSettings } from '../settings'
 import { extensionDataRoot, extensionsRoot, isValidExtensionId } from './paths'
 
 /** 清理逻辑的版本号；写进 settings.legacyDataCleared，避免每次启动重复扫描 */
@@ -120,8 +120,9 @@ export async function cleanupLegacyExtensionData(): Promise<boolean> {
     await removeLegacyExtensionData()
     await removeLegacySecrets()
     await rm(legacyLogsRoot(), { recursive: true, force: true })
-    // 旧配置/状态都挂在 settings.plugins 下；直接清空，不尝试读取或转换
-    await saveSettings({ plugins: {}, legacyDataCleared: LEGACY_CLEARED_VERSION })
+    // 旧配置/状态都挂在 settings.plugins 下；直接从磁盘上删掉这个键，不迁移任何值
+    await dropLegacySettingsKeys(['plugins'])
+    await saveSettings({ legacyDataCleared: LEGACY_CLEARED_VERSION })
   } catch (err) {
     console.error('[iMark] 清理旧插件数据失败（继续启动）:', err)
   }

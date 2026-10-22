@@ -1,45 +1,33 @@
 /**
- * 应用内置的「兜底」插件包。
+ * 应用内置的「兜底」扩展包。
  *
- * 「定时上传（Git）」现在是一个普通的市场插件,但应用仍然自带一份它的包:
- *   - 离线、或市场服务没起来时,用户依然能装上它;
- *   - 老用户升级到本版本时,它是**自动补装**的,配置与密钥一个字节都不用改。
+ * 官方扩展都随应用带一份 v2 包(由 `npm run plugins:build` 生成):
+ *   - quick-edit:开箱即用(行首「+」菜单);
+ *   - git-sync / ai-for-edit:要填仓库地址或 API 密钥才有意义,装上但默认关着;
+ *   - agent:要配置本机 Agent CLI(首个 provider 为 Claude Code),装上但默认关着。
  *
- * 「高级表格（Advanced Table）」也在这里,理由不同:它提供编辑器里那个「+」按钮,
- * 是**开箱即用**的一部分(见下面 `enable`)。
+ * 内置包走的是与市场下载**完全相同**的校验与安装路径
+ * (`ExtensionService.installPackage`)。这里没有任何「因为是内置的所以跳过校验」
+ * 的近道 —— 内置包坏了,用户看到的现象与下载到的包坏掉一模一样。
  *
- * 之所以用 `?raw` 字符串而不是 JSON 模块导入,见 src/main/env.d.ts 的说明。
- *
- * 关键:兜底包走的是与下载安装**完全相同**的校验与安装路径(verifyEnvelope →
- * installFromEnvelope)。这里没有任何「因为是内置的所以跳过校验」的近道 ——
- * 内置包坏了,用户看到的现象与下载到的包坏掉一模一样,这是有意的。
+ * 旧数据的迁移逻辑已经整个删掉:用户明确要求 v1 配置/密钥/安装记录直接丢弃,
+ * 三款官方扩展按全新安装处理(见 extensions/legacy.ts)。
  */
 
-import {
-  compareVersions,
-  isNewerVersion,
-  type PluginPermission
-} from '@shared/pluginPackage'
-import { secretKey } from '@shared/plugins'
-import { installFromEnvelope } from './installer'
-import { getRecord } from '../plugins/installed'
-import { getSettings, saveSettings } from '../settings'
-import { getSecret, hasSecret, setSecret } from '../secrets'
-import type { PluginHost } from '../plugins/host'
-import gitSyncPackage from './builtin/git-sync.imkpkg.json?raw'
-import quickEditPackage from './builtin/quick-edit.imkpkg.json?raw'
-import aiForEditPackage from './builtin/ai-for-edit.imkpkg.json?raw'
+import { extensionIdOf, isNewerVersion, type ExtensionManifest } from '@shared/extensionPackage'
+import type { ExtensionService } from '../extensions/service'
+import agentPackage from './builtin/imark.agent.imkpkg.json?raw'
+import aiForEditPackage from './builtin/imark.ai-for-edit.imkpkg.json?raw'
+import gitSyncPackage from './builtin/imark.git-sync.imkpkg.json?raw'
+import quickEditPackage from './builtin/imark.quick-edit.imkpkg.json?raw'
 
 interface BundledPackage {
   raw: string
   /**
-   * 补装后是否直接启用。
+   * 全新安装后是否直接启用。
    *
-   * 这是**宿主自己的策略**,不写进包 —— 「哪个自带插件默认开着」是应用的取舍,
-   * 不该由包自己声明(否则包换个说法就能给自己开权限)。
-   *
-   * git-sync 为 false:它要填仓库地址与令牌才有意义,装上但默认关着,
-   * 用户想用时在插件页打开即可(装之前它是配置对话框里的「去安装」)。
+   * 这是**宿主自己的策略**,不写进包 —— 「哪个自带扩展默认开着」是应用的取舍,
+   * 不该由包自己声明。
    */
   enable: boolean
 }
@@ -49,11 +37,13 @@ interface BundledPackage {
  * `builtin/<id>.imkpkg.json` 加进来。
  */
 const BUNDLED: BundledPackage[] = [
-  { raw: gitSyncPackage, enable: false },
   // 全新用户也开箱就有「+」:它不配置也能用
   { raw: quickEditPackage, enable: true },
-  // AI 需要用户填服务地址与密钥才有意义,和 git-sync 一样装上但默认关着
-  { raw: aiForEditPackage, enable: false }
+  // git-sync 要填仓库地址与令牌、AI 要填服务地址与密钥,装上但默认关着
+  { raw: gitSyncPackage, enable: false },
+  { raw: aiForEditPackage, enable: false },
+  // Agent 需要本机 CLI 与权限选择,装上但默认关着
+  { raw: agentPackage, enable: false }
 ]
 
 interface ParsedBundle {
@@ -61,22 +51,18 @@ interface ParsedBundle {
   raw: string
   id: string
   version: string
-  permissions: PluginPermission[]
 }
 
-function peekId(raw: string): ParsedBundle | null {
+function peek(raw: string): ParsedBundle | null {
   try {
-    const manifest = (
-      JSON.parse(raw) as { manifest?: { id?: unknown; version?: unknown; permissions?: unknown } }
-    ).manifest
-    if (!manifest || typeof manifest.id !== 'string' || !manifest.id) return null
+    const manifest = (JSON.parse(raw) as { manifest?: ExtensionManifest }).manifest
+    if (!manifest || typeof manifest.publisher !== 'string' || typeof manifest.name !== 'string') {
+      return null
+    }
     return {
       raw,
-      id: manifest.id,
-      version: typeof manifest.version === 'string' ? manifest.version : '',
-      permissions: Array.isArray(manifest.permissions)
-        ? (manifest.permissions as PluginPermission[])
-        : []
+      id: extensionIdOf(manifest),
+      version: typeof manifest.version === 'string' ? manifest.version : ''
     }
   } catch {
     // 包本身坏了:交给下面安装时的校验去报错,这里只是读不了 id 而已
@@ -84,265 +70,59 @@ function peekId(raw: string): ParsedBundle | null {
   }
 }
 
-/**
- * 已经在装的**内置**插件,版本落后就跟上。
- *
- * 为什么必须有这一段:内置插件的补装逻辑是「有同 id 就完全不碰」,而插件的新能力
- * (比如 git-sync 后来才有的状态栏条目与命令)是**跟着应用版本一起来**的。
- * 没有这段的后果不是「用户晚一点看到新功能」,而是**界面直接缺一块** ——
- * 应用这边已经把写死的按钮换成插件声明的了,插件那边还停在没声明的老版本。
- *
- * 三条自我约束:
- *   - **只升不降**,且只在应用自带的这一份更新的前提下动手。
- *   - **只碰从内置包装的那些**(`source === 'bundled'`)。从市场装的有市场自己的
- *     更新流程,拿应用自带的那份去盖,可能盖成一个**比市场还旧**的版本,
- *     还把 registryUrl 这些溯源信息一起抹了;手动放进去的目录同理,不动。
- *   - **授权集合原样继承,只做收缩不做扩张**。升个版本不该顺手把权限变大 ——
- *     新增的权限要等用户重新确认(阶段三的 `effective = granted ∩ declared`)。
- *
- * 启用态不用管:`host.install()` 会自己恢复原样,用户关掉的插件升级后仍是关着的。
- */
-async function upgradeBundled(host: PluginHost, parsed: ParsedBundle): Promise<void> {
-  const record = await getRecord(parsed.id)
-  // 没有登记 = 不是装进来的(开发模式挂的目录、手放的文件夹)。那是用户的安装,不碰
-  if (!record || record.source !== 'bundled') return
-  if (!parsed.version || !isNewerVersion(parsed.version, record.version)) return
-
-  // 默认值只在「这个字段从未保存过」时生效；插件启用过一次之后，整份配置就已经
-  // 落进了 settings.json。默认值变化必须在这里补一次，否则老用户会一直停在旧地址。
-  await migrateStoredConfig(parsed.id, record.version, parsed.version)
-
-  const granted = record.grantedPermissions ?? []
-  const added = parsed.permissions.filter(p => !granted.includes(p))
-  if (added.length > 0) {
-    console.warn(
-      `[iMark] 插件 ${parsed.id} 的新版本声明了新权限(${added.join('、')}),` +
-        `在你确认之前不会生效`
-    )
+async function provisionOne(service: ExtensionService, item: BundledPackage): Promise<void> {
+  const parsed = peek(item.raw)
+  if (!parsed) {
+    console.error('[iMark] 内置扩展包无法解析,已跳过')
+    return
   }
 
-  const outcome = await installFromEnvelope(host, JSON.parse(parsed.raw), {
-    source: 'bundled',
-    publisher: null,
-    registryUrl: null,
-    grantedPermissions: granted
-  })
-  console.log(`[iMark] 已升级插件 ${outcome.name} ${record.version} → ${outcome.version}`)
+  const existing = await service.getExtensionView(parsed.id)
+  if (existing) {
+    // 只碰「应用自己装进来的」那一份:市场来源有自己的更新流程,手动放进去的
+    // 目录是用户的安装。拿内置包去盖它们可能盖成一个更旧的版本,还会把来源抹掉。
+    if (existing.source !== 'bundled') return
+    const current = existing.installed?.version ?? ''
+    if (!parsed.version || !isNewerVersion(parsed.version, current)) return
+    await service.installPackage(JSON.parse(parsed.raw), { source: 'bundled' })
+    console.log(`[iMark] 已升级内置扩展 ${parsed.id} ${current} → ${parsed.version}`)
+    return
+  }
+
+  await service.installPackage(JSON.parse(parsed.raw), { source: 'bundled' })
+  // 默认偏好是 enabled=true,所以只有「默认关闭」的包需要显式落一次设置
+  if (!item.enable) await service.setEnabled(parsed.id, false)
+  console.log(`[iMark] 已补装内置扩展 ${parsed.id} ${parsed.version}`)
 }
 
 /**
- * 内置插件默认值的一次性迁移。
+ * 补装缺失的内置包 / 升级版本落后的内置包。
  *
- * 两类迁移，规则不同：
- *   - **换默认值**只在「整份配置仍然是旧默认值」时动手。用户只要改过端点或模型，
- *     哪怕又改回了同样的字符串，我们也无法区分，所以只认这对完整组合。
- *   - **改字段形状**（单地址 → 地址列表、毫秒 → 秒）总是迁移，并且原样保留用户
- *     填的值 —— 不迁移的话，旧配置会被新字段表整个丢掉。
- *
- * 迁移点用版本号卡住，之后的升级不会再跑第二遍。
+ * 由启动流程与「恢复自带扩展」按钮共同调用,所以要有并发保护:
+ * 两次调用复用同一个 Promise,不会把同一个包装两遍。
  */
-const CONFIG_MIGRATIONS: Record<
-  string,
-  {
-    /** 从低于这个版本升级上来时迁移一次 */
-    untilVersion: string
-    /** 返回 null 表示这套配置不该动 */
-    apply: (config: Record<string, unknown>) => Record<string, unknown> | null
-  }
-> = {
-  'ai-for-edit': {
-    untilVersion: '1.6.0',
-    apply: config => {
-      const next = { ...config }
-      let changed = false
+let provisioning: Promise<void> | null = null
 
-      // 1.1.0 换默认服务：旧默认是 OpenAI + gpt-4o-mini
-      if (
-        next.endpoint === 'https://api.openai.com/v1/chat/completions' &&
-        next.model === 'gpt-4o-mini'
-      ) {
-        next.endpoint = 'https://api.deepseek.com/chat/completions'
-        next.model = 'deepseek-flash'
-        changed = true
-      }
-
-      // 1.5.0：单个 endpoint 字符串 → endpoints 列表（值不改）
-      if (typeof next.endpoint === 'string') {
-        if (!Array.isArray(next.endpoints)) {
-          const url = next.endpoint.trim()
-          next.endpoints = url ? [{ id: 'legacy', url }] : []
-        }
-        delete next.endpoint
-        changed = true
-      }
-
-      // 1.6.0：模型从「全局一个」变成「每个地址一个」。
-      // 旧全局模型先原样填给每个地址，用户不用重新输；之后会删掉全局字段。
-      const legacyModel = typeof next.model === 'string' ? next.model.trim() : ''
-      if (Array.isArray(next.endpoints)) {
-        let modelsChanged = false
-        const rows = next.endpoints.map(item => {
-          if (!item || typeof item !== 'object') return item
-          const row = item as Record<string, unknown>
-          if (typeof row.model === 'string' && row.model.trim()) return row
-          modelsChanged = true
-          return { ...row, model: legacyModel }
-        })
-        if (modelsChanged) {
-          next.endpoints = rows
-          changed = true
-        }
-      }
-      if (next.model !== undefined) {
-        delete next.model
-        changed = true
-      }
-
-      // 1.6.0：apiKey 从全局字段变成每个地址的 targetSecret（密钥本身见下面的
-      // SECRET_MIGRATIONS）；config 里这个旧占位字段直接删掉
-      if (next.apiKey !== undefined) {
-        delete next.apiKey
-        changed = true
-      }
-
-      // 1.5.0：timeoutMs → timeoutSec（夹取范围与新字段一致）
-      if (next.timeoutMs !== undefined) {
-        if (next.timeoutSec === undefined) {
-          const ms = Number(next.timeoutMs)
-          if (Number.isFinite(ms)) {
-            next.timeoutSec = Math.min(90, Math.max(5, Math.round(ms / 1000)))
-          }
-        }
-        delete next.timeoutMs
-        changed = true
-      }
-
-      return changed ? next : null
-    }
-  }
-}
-
-/**
- * 与 CONFIG_MIGRATIONS 配套的**密钥**迁移。
- *
- * 配置在 settings.json，密钥在 secrets.json —— 后者不能靠一次对象改写完成，
- * 所以单独列在这里，并在配置落盘**之前**执行。顺序很关键：
- *   - 先复制密钥、失败就抛 → 配置还没保存，旧插件照常工作，下次启动重试；
- *   - 复制成功后删旧 key → 新插件只认每个地址自己的槽位，不留一份无人读的明文。
- */
-const SECRET_MIGRATIONS: Record<
-  string,
-  (id: string, config: Record<string, unknown>) => Promise<void>
-> = {
-  'ai-for-edit': async (id, config) => {
-    const endpoints = Array.isArray(config.endpoints) ? config.endpoints : []
-    if (endpoints.length === 0) return
-
-    // 1.5 及更早只有一个全局 apiKey；没有它就不需要迁移（新用户或已迁过）
-    const legacyKey = await getSecret(secretKey(id, 'apiKey'))
-    if (!legacyKey) return
-
-    let copied = false
-    for (const item of endpoints) {
-      if (!item || typeof item !== 'object') continue
-      const endpointId = (item as { id?: unknown }).id
-      if (typeof endpointId !== 'string' || !endpointId) continue
-      const slot = secretKey(id, 'endpoints', endpointId)
-      if (await hasSecret(slot)) {
-        copied = true
-        continue
-      }
-      await setSecret(slot, legacyKey)
-      copied = true
-    }
-    // 一个有效地址都没有时保留旧密钥，别把用户唯一的凭据删掉
-    if (copied) await setSecret(secretKey(id, 'apiKey'), null)
-  }
-}
-
-async function migrateStoredConfig(
-  id: string,
-  fromVersion: string,
-  toVersion: string
-): Promise<Record<string, unknown> | null> {
-  const migration = CONFIG_MIGRATIONS[id]
-  if (!migration) return null
-  if (compareVersions(fromVersion, migration.untilVersion) >= 0) return null
-  if (compareVersions(toVersion, migration.untilVersion) < 0) return null
-
-  const settings = await getSettings()
-  const entry = settings.plugins[id]
-  if (!entry) return null
-  const next = migration.apply(entry.config ?? {})
-  if (!next) return null
-
-  // 密钥迁移必须在配置落盘之前：它抛错时整个升级会中止，旧配置与旧插件
-  // 都完好，下次启动还能重试。
-  const migrateSecrets = SECRET_MIGRATIONS[id]
-  if (migrateSecrets) await migrateSecrets(id, next)
-
-  await saveSettings({
-    plugins: { ...settings.plugins, [id]: { ...entry, config: next } }
-  })
-  console.log(`[iMark] 插件 ${id} 的旧默认配置已迁移`)
-  return next
-}
-
-/**
- * 补装缺失的内置包。由插件宿主在启动流程里调用(扫描之后、启用之前)。
- *
- * 「已经有同 id 的插件」一律跳过安装 —— 不论它是从市场装的、还是用户手动放进去的。
- * 兜底包只在**真的什么都没有**的时候出现,绝不覆盖用户的安装。
- * 唯一的例外是同为内置来源、且版本落后的一份:那种情况交给上面的 upgradeBundled。
- */
-export async function ensureBundledProvisioned(host: PluginHost): Promise<void> {
-  for (const item of BUNDLED) {
-    const parsed = peekId(item.raw)
-    if (!parsed) {
-      console.error('[iMark] 插件包无法解析,已跳过')
-      continue
-    }
-    // 已经在里面了(从市场装的、用户手放的、或上一轮补装的)就不重新补装:
-    // 尤其是**不重新启用** —— 用户手动关掉的插件,不该被每次启动又打开
-    if (host.isInstalled(parsed.id)) {
+export function ensureBundledProvisioned(service: ExtensionService): Promise<void> {
+  if (provisioning) return provisioning
+  provisioning = (async () => {
+    for (const item of BUNDLED) {
       try {
-        await upgradeBundled(host, parsed)
+        await provisionOne(service, item)
       } catch (err) {
-        // 升级失败**必须吞掉**:installFromEnvelope 内部已经回滚到旧版本了,
-        // 一个起不来的新版插件不该拦着应用启动 —— 旧版本照常能用
-        console.error(`[iMark] 插件 ${parsed.id} 升级失败,继续用旧版本:`, err)
+        // 单个包失败不该拦着应用启动,也不该影响其它内置包
+        console.error('[iMark] 内置扩展补装失败:', err)
       }
-      continue
     }
-
-    try {
-      const outcome = await installFromEnvelope(host, JSON.parse(item.raw), {
-        source: 'bundled',
-        publisher: null,
-        registryUrl: null,
-        // 内置包没有安装确认环节,授权集合就是它自己声明的权限
-        grantedPermissions: parsed.permissions
-      })
-      console.log(`[iMark] 已补装插件 ${outcome.name} ${outcome.version}`)
-
-      // 必须走 save():它既置位又写进 settings.json。直接调私有的 enable()
-      // 是不落盘的,下次启动又变回关闭。
-      //
-      // 注意由此带来的一个已知副作用:save() 里的 enable() 对同一个 entry
-      // **不幂等**(host.enable 不看当前态直接跑生命周期),而 init() 结尾的启动循环
-      // 还会对 state.enabled 为真的 entry 再跑一次 —— 所以默认启用的内置插件
-      // 首次启动时 onEnable 会执行两遍。Advanced Table 的 onEnable 是空操作,无害;
-      // 将来若有自带插件要默认启用、且 onEnable 有副作用,先给 enable() 加幂等守卫。
-      if (item.enable) await host.save(outcome.id, { enabled: true })
-    } catch (err) {
-      console.error(`[iMark] 插件 ${parsed.id} 补装失败:`, err)
-    }
-  }
+  })().finally(() => {
+    provisioning = null
+  })
+  return provisioning
 }
 
 /** 设置界面用来区分「这是应用自带的」还是「从市场装的」 */
 export function bundledIds(): string[] {
-  return BUNDLED.map(item => peekId(item.raw))
+  return BUNDLED.map(item => peek(item.raw))
     .filter((x): x is ParsedBundle => x !== null)
     .map(x => x.id)
 }

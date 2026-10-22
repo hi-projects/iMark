@@ -20,11 +20,12 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
-- **插件系统**:插件是**可装可卸可升级的包**,由两层组成 —— **main 层**(`mode: node` 主进程完整 Node,或 `mode: restricted` 隐藏沙箱页、能力逐次审批)与可选的 **render 层**(跑在主窗口渲染进程,直接拿 EditorView/CM6/DOM,但没有系统能力)。无代码插件仍可绑定宿主内置能力(如 Webhook)。设置面板「插件」分类统一管理:启用/停用、按字段表自动渲染配置表单、动作按钮、运行状态与错误详情;密钥类字段经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层永远拿不到明文**
+- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认每个扩展一个宿主(`isolated`),也可切换 `shared` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮、宿主分组与运行日志;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
   - **定时上传(Git)**:市场里的官方插件(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
   - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方插件。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 插件只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,插件只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有插件的 `lineMenu` 会合进同一个「+」菜单
-  - **AI for Edit**:随应用预装、默认关闭的官方插件。配置一个或多个 OpenAI 兼容 / Anthropic 兼容服务地址,每个地址分别填模型与 API 密钥(DeepSeek / Moonshot / 智谱 / Ollama / Azure 等;请求按列表顺序自动回退)后,状态栏左下角的插件图标组里会多一枚 AI 按钮,编辑器里还有一个可在设置里开关、换形象、**按住拖动**的浮动小人(企鹅是透明背景的独立动画角色,不套圆形气泡);点开是对话窗口:输入框上方依次是「对话」(默认)/「生成」(空文档)/「美化」(已有内容)三个模式,选好模式、输入内容(美化可留空)后点「发送」;模式按钮右侧的提示带信息图标,悬浮即可预览本轮发送给 AI 的初始提示词(系统提示词 + 用户消息,生成/美化的用户消息里也包含当前文档与参考文件内容);生成/美化会在对话里先说一句展示消息,再把结果作为消息返回 —— 美化可以在输入框里直接提要求(如更正式、精简、分点),生成/美化结果都有「预览 / 源码」窗口(预览用宿主同一套 markdown-it / KaTeX / Mermaid 渲染),美化的预览直接用绿色标出新增/修改、红色划掉删除的内容(不再单独放一块逐行差异);只有点「写入文档 / 确认替换」才会改文档(关闭窗口、请求失败都不动一个字)。对话按**文档**归档,「会话」按钮列出该文档的历史会话并可恢复,「新对话」保留当前文档关联(标题栏不再标注文件,文档身份只显示在输入框上方的环境栏里);还可以给文档添加本地文本或 PDF 参考文件,当前文档名与参考文件一起显示在环境栏里(不展示篇幅),内容随对话/生成/美化一起提交(PDF 提取文字,没有文字层的扫描页可按页转成图片发给支持图像输入的模型,只发内容、不发路径);对话的稳定上下文会利用服务端上下文缓存(Anthropic 显式缓存断点、DeepSeek/OpenAI 兼容服务的自动前缀缓存),命中与写入的 token 数记入插件日志。行首「+」→「AI 生成内容」在空文档里走同一套对话;YAML front matter 原样保留,输出被截断或确认时文档已被修改则拒绝写回。文档正文只在主进程与 render 层之间传递,密钥经 safeStorage 加密;详见 `plugins-src/ai-for-edit/README.md`
-- **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;安装前有安全基线确认框(逐条中文权限解释、体积、可跨渠道核对的 sha256、main/render 入口哈希、来源与发布者;node main 与 render 层分别要求勾选风险确认),并可**先查看源码**。详见下文「五、插件市场」
+  - **AI for Edit**:随应用预装、默认关闭的官方插件。配置一个或多个 OpenAI 兼容 / Anthropic 兼容服务地址,每个地址分别填模型与 API 密钥(DeepSeek / Moonshot / 智谱 / Ollama / Azure 等;请求按列表顺序自动回退)后,状态栏左下角的插件图标组里会多一枚 AI 按钮,编辑器里还有一个可在设置里开关、换形象、**按住拖动**的浮动小人(企鹅是透明背景的独立动画角色,不套圆形气泡);点开是对话窗口:输入框上方依次是「对话」(默认)/「生成」(空文档)/「美化」(已有内容)三个模式,选好模式、输入内容(美化可留空)后点「发送」;模式按钮右侧的提示带信息图标,悬浮即可预览本轮发送给 AI 的初始提示词(系统提示词 + 用户消息,生成/美化的用户消息里也包含当前文档与参考文件内容);生成/美化会在对话里先说一句展示消息,再把结果作为消息返回 —— 美化可以在输入框里直接提要求(如更正式、精简、分点),生成/美化结果都有「预览 / 源码」窗口(预览用宿主同一套 markdown-it / KaTeX / Mermaid 渲染),美化的预览直接用绿色标出新增/修改、红色划掉删除的内容(不再单独放一块逐行差异);只有点「写入文档 / 确认替换」才会改文档(关闭窗口、请求失败都不动一个字)。对话按**文档**归档,「会话」按钮列出该文档的历史会话并可恢复,「新对话」保留当前文档关联(标题栏不再标注文件,文档身份只显示在输入框上方的环境栏里);还可以给文档添加本地文本或 PDF 参考文件,当前文档名与参考文件一起显示在环境栏里(不展示篇幅),内容随对话/生成/美化一起提交(PDF 提取文字,没有文字层的扫描页可按页转成图片发给支持图像输入的模型,只发内容、不发路径);对话的稳定上下文会利用服务端上下文缓存(Anthropic 显式缓存断点、DeepSeek/OpenAI 兼容服务的自动前缀缓存),命中与写入的 token 数记入插件日志。行首「+」→「AI 生成内容」在空文档里走同一套对话;YAML front matter 原样保留,输出被截断或确认时文档已被修改则拒绝写回。文档正文只在扩展宿主与 webview 之间传递,密钥经 safeStorage 加密;详见 `plugins-src/ai-for-edit/README.md`
+  - **Agent**:随应用预装、默认关闭的官方通用 Agent 面板。首个 provider 是 **Claude Code** 本机 CLI;插件本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给 Agent,由 Agent 自己决定 Read / Bash / 写脚本 / 调本机解析器。支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。启用前需要在设置里填 Claude Code 可执行文件(留空自动探测)或先安装 CLI;详见 `plugins-src/agent/README.md`
+- **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、插件市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 深色两档,状态栏一键切换(主题与设置按钮在状态栏最左边),或在 **设置面板**(状态栏左侧齿轮 / `Ctrl+,`)的「外观」中挑选;深色的底色与边框对齐 Obsidian 的 Minimal 主题深色档(`#262626` 编辑区 / `#212121` 侧栏),文字仍用 iMark 默认配色(`#dadada` 正文 / `#8a5cf5` 强调色)。偏好持久化到数据目录的 `settings.json`
 - **自定义样式**:把 `.css` 文件放进数据目录的 `css/`(默认 `<应用目录>/.imark/css/`)(首次启动自动创建,并附一份带注释的示例)就能改编辑器里的显示 —— 比如整张表格居中 `.cm-md-table { text-align: center }`。改完保存**即刻生效、不用重启**;设置面板「外观」里是**单选**:一份 .css,或一个**目录**(目录里所有 .css 一起生效),点一行选中、再点一次取消,可导入单个文件或整个文件夹、删除、一键打开样式目录。样式作用于整个界面,**只影响编辑器内显示,不影响导出的 HTML**;详见下文「三、样式模块」
@@ -218,8 +219,8 @@ src/shared/theme/
   (见 `services/userStyleService.ts`)。同时只有一项生效,所以没有「谁盖过谁」这回事 ——
   注册表的插入顺序在这里不影响任何东西。目录项送过来的是一份**拼好的**文本(主进程按
   相对路径顺序收齐),所以注入侧不必知道候选是文件还是目录。
-- **render 层与主界面同 realm,但它拿不到这个内部注册表**。render 入口是注入的普通脚本,没有模块解析,不能 `import` 应用内部模块,`registerStyle` 也不对外暴露。插件要用样式,直接创建自己的 `<style>`(建议带 `data-imk-plugin` 前缀与自己的类名前缀),停用时自己移除。
-- **样式约定**:插件若要注入 CSS,类名加 `imk-` 前缀(内置样式用语义化类名,不加前缀);颜色/边框一律用 `tokens.css` 的变量(亮/深色两档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
+- **扩展宿主与 webview 都拿不到这个内部注册表**。扩展代码没有应用内部的模块解析,`registerStyle` 也不对外暴露;webview 跑在 `imark-webview://` 的独立 origin 里,与宿主隔离。扩展要在 webview 里用样式,自己写 `<style>` 或用 `asWebviewUri` 引用包内 CSS(建议带自己的类名前缀),并自行负责清理;宿主会把当前主题的颜色令牌注入成 CSS 变量。
+- **样式约定**:扩展若要注入 CSS,类名加 `imk-` 前缀(内置样式用语义化类名,不加前缀);颜色/边框一律用 `tokens.css` 的变量(亮/深色两档主题自动适配);需要覆盖 CodeMirror base theme 已有属性时须走 `EditorView.theme`(外部 CSS 会因特异度不足被静默忽略)。
 
 #### 用户自定义样式(`<数据目录>/css`)
 
@@ -232,53 +233,53 @@ src/shared/theme/
 - CSS 里的 `var(--accent)` 这类变量在计算值阶段解析,所以**切主题时不需要重新注入**,自定义样式自动跟随两档主题。
 - 边界(如实写在设置面板与示例文件里):样式作用于**整个界面**;语法错误被浏览器静默丢弃;`.cm-cursor` / `.cm-scroller` / `.cm-content` 这类 base theme 写死的属性要加 `!important`;图片只能用 `data:` / `https:` / `imark://`(`@import` 远程样式表与 `file://` 图片会被 CSP 拦掉,相对路径也不工作)。**不影响导出的 HTML** —— 导出是另一套模板。
 
-### 四、插件系统
+### 四、扩展系统
 
-插件是**可以装、可以卸、可以升级的包**:一份清单(`manifest.json`)+ 若干文件,打包成 `.imkpkg.json` 信封(单文件 JSON,包内每个文件 base64 编码并带逐文件 sha256)。安装后落在数据目录的 `plugins/<id>/`(默认 `<应用目录>/.imark/plugins/<id>/`),启用态与配置在 `settings.json` 的 `plugins.<id>`,密钥在 `secrets.json` 且**明文不出主进程**。
+iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 拿到 API。没有 main/render 分层,没有 capability 绑定,也没有权限沙箱 —— 这是 **v2**,与旧版插件包格式**硬切**,不保留任何兼容。
 
-**清单格式**:没有 `kind` / `ui` / `backend`。插件由两层组成,均可不写,但至少要有一层:
+> **信任模型(请先读这一段)**
+>
+> **扩展代码以当前用户的权限运行,不做权限沙箱。** 含代码的扩展可以读写你的任意文件(笔记、SSH 密钥、`secrets.json`)、发起网络请求、启动其他程序。清单里的 `capabilities` 是**安装披露**,不是运行时门禁。安装确认框会要求你对含代码扩展主动勾选「我知道扩展代码将以我的用户权限运行」;详情页可以查看将要执行的源码。**只安装你信任来源的扩展。**
 
-- **main 层**——代码跑在宿主侧,`main.mode` 二选一:
-  - `node`:主进程 CommonJS,**完整 Node 权限**(与应用同权);
-  - `restricted`:隐藏沙箱页,无 Node/`fs`/`require`,能力逐次经宿主闸门。
-- **render 层**——代码跑在主窗口渲染进程,与 Obsidian 插件一致:能直接拿真实 `EditorView`、共享 CM6 kit 与 DOM。它**没有系统能力**,需要文件/网络/git/密钥时只能给 main 层发消息。
-- **无代码 `capability`**——不含第三方代码,绑定宿主内置能力(目前 `webhook`);它可以单独存在,不能与 main/render 并存。
+#### 包与安装
 
-| 层 | 信任 | 系统能力 |
+- 扩展目录根部是一份 `package.json`(唯一清单),可选 `main` 入口(CommonJS)与 `webview/**` 资源;
+- 打包成单文件信封 `.imkpkg.json`:`files` 记路径/size/sha256,`data` 存 base64;`integrity = sha256(stableStringify({ manifest, files }))`(递归键排序,打包器、服务端、客户端三处同构);
+- 安装后落在数据目录的 `plugins/<publisher>.<name>/`,启用态与配置在 `settings.json` 的 `extensions.<id>`,密钥经 `safeStorage` 加密后存 `secrets.json` 且**明文不出主进程与扩展宿主**;
+- 安装是原子的:先解到 `.staging/`,全部校验通过后 rename 就位;失败回滚,不留半份目录;
+- 卸载会删除程序文件、配置、密钥、`globalState` 与日志。
+
+#### 宿主拓扑
+
+扩展代码**永远不 require 在主进程里**。宿主有两种拓扑:
+
+| 模式 | 行为 | 崩溃半径 |
 |---|---|---|
-| `main.mode: 'node'` | 全权(主进程任意代码) | 完整 Node |
-| `main.mode: 'restricted'` | 不信任 | 真门禁:清单声明 ∩ 用户同意,每次调用审查 |
-| `render` | 与主界面同 realm(可改 UI/读当前文档/看键盘) | 无;只能消息给 main |
-| 无代码 + `capability` | 无第三方代码 | 宿主内置能力 |
+| `isolated`(默认) | 每个扩展一个 `utilityProcess` 宿主 | 只影响该扩展;按 1s/2s/4s 退避重启,60 秒三次后停止 |
+| `shared` | 所有扩展共用一个宿主 | 同宿主内的**所有扩展**一起重启 |
 
-**插件没有自有窗口/停靠页。** 界面只有两种:render 层自己创建的 DOM(它自己负责清理),以及清单声明的主机贡献点(`lineMenu` / `commands` / `statusBar` / `menus`)。清单里没有 `ui` 权限、`ui.entry`、`window.show()`、`ui.mount` 这些通道。
+`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(0 也算一个组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。设置页的「宿主」区可以切换模式、设置 affinity,并查看每个宿主的 PID/内存/状态。
+
+启用态驱动全部界面:扩展被禁用后,它贡献的命令、快捷键、状态栏、行首菜单会立即消失;没有激活过的扩展不会 fork 宿主。
+
+#### 关键代码
 
 | 文件 | 职责 |
 |---|---|
-| `shared/pluginPackage.ts` | 包格式、清单校验、版本比较、路径/体积/图标规则 —— 主进程、服务端、渲染层共用同一份 |
-| `shared/pluginApi.ts` | main(node/restricted)与 render 的 API 契约,主进程实现与插件源码 import 的是同一份 |
-| `shared/pluginRpc.ts` | restricted 页面与宿主之间的线上契约(通道名、错误码、事件类型) |
-| `main/plugins/host.ts` | 宿主:两层层装配、生命周期、动作路由、安装/升级/回滚/卸载、熔断、状态广播 |
-| `main/plugins/script.ts` | node main 加载:`createRequire` + 清 `require.cache` |
-| `main/plugins/restrictedRuntime.ts` | restricted main 的隐藏执行页通道:身份反查、能力调用、反向调用、调度器 |
-| `main/plugins/restrictedPage.ts` | 隐藏执行页、独立 session、`imk-plugin://` 协议、CSP、路径三重校验 |
-| `main/plugins/renderLayer.ts` | render 层:一次性 nonce 注入、就绪/重载后重新注入、两半消息中继 |
-| `main/plugins/ops.ts` / `gate.ts` | **唯一权威的能力表**与闸门(两条 main 通道共用) |
-| `main/plugins/api.ts` | node main 的 `imk` 实现:方法名 → 能力表 |
-| `preload/plugin.ts` | restricted 页面的 preload —— 作者看到的 `window.imark` 就是它造出来的 |
-| `main/plugins/installed.ts` | 安装登记表(只存来源与入口哈希,磁盘目录才是权威) |
+| `shared/extensionPackage.ts` | v2 清单/信封、校验、stable integrity、`configuration → 设置字段` 翻译;主进程、构建脚本、服务端共用同一套规则 |
+| `shared/extensionApi.ts` | 扩展作者看到的 `imark` 模块(类型 + `Uri` / `Position` / `Range` / `EventEmitter` / `Disposable` 等纯工具类) |
+| `shared/extensionProtocol.ts` | 宿主 ↔ 主进程的协议 DTO |
+| `main/extensions/service.ts` | `ExtensionService`:安装/启用/配置/密钥/激活事件/宿主规划/命令路由/崩溃重启 |
+| `main/extensions/installer.ts` | v2 包校验与安装(`validateEnvelope` + 逐文件 sha256 + integrity) |
+| `main/extensions/hostPlanner.ts` / `hostProcess.ts` | `isolated` / `shared` / affinity 分组与 `utilityProcess.fork` |
+| `main/extensions/hostRuntime.ts` | 宿主内运行时:`require('imark')` 注入、命令/配置/密钥/文档/装饰/webview |
+| `main/extensions/installedStore.ts` / `paths.ts` | `installed.json` v2 登记、磁盘布局 |
+| `main/extensions/legacy.ts` | 旧版数据一次性清理(不做迁移) |
 | `main/market/*` | 市场客户端(见 §五) |
-| `main/git.ts` / `secrets.ts` / `dataDir.ts` | git 子进程、safeStorage、数据目录权威 |
 
-**权限语义取决于 main.mode**:restricted 的每一项都是真门禁(没声明的能力连命名空间都不存在,每次调用再审一次);node 的权限是**告知 + API 塑形**(它本来就有完整 Node);render 层没有权限概念,它与主界面同 realm,只能靠安装时的知情确认兜底。`settings` / `shell` 只在 node main 有意义,restricted 声明它们会直接报错。
+**激活事件**:`*`、`onStartupFinished`、`onLanguage:markdown`、`onCommand:<命令>`、`onWebviewPanel:<viewType>`。没有命中的扩展保持未激活;命令执行、面板恢复、依赖激活都会按需拉起宿主。
 
-**动作路由**:有 main 走 main;只有 render 走 render;两者都有但 main 没实现时返回"未实现",**不回退到 render**。需要 render 处理的动作,由 main 在自己的 `runAction` 里用 `imk.render.send(...)` 请求。这样每个动作只有一个权威执行者。
-
-**每次调用都有护栏**:宿主对插件的每一次调用都过 `safeCall`(try/catch + 10 秒超时 + 失败计数);连续 3 次失败自动停用,**绝不自动恢复**。restricted 的隐藏页与 render 的注入会一起收掉。
-
-**配置与密钥**仍由 `PluginField[]` 声明式描述,设置面板通用渲染表单。`password` 与 `targets.targetSecret` 经 `safeStorage` 加密后存 `secrets.json`;插件只能读自己名下的密钥,key 由宿主用插件自己的 id 拼出。**密钥作用域防的是误用与 API 卫生,不是安全边界** —— node main 本来就能直接读磁盘;真正的边界是安装时那一次知情确认。
-
-**内置兜底包**:「定时上传(Git)」「Advanced Table」与「AI for Edit」以 `?raw` 内联进主进程,启动时若没装过就走**完全相同的校验与安装路径**补装一次。补装后是否默认启用是宿主策略(写在 `bundled.ts` 里),不写进包。git-sync 与 ai-for-edit 默认关(都要先填配置才有意义),quick-edit 默认开。卸载顺序:停用 → 移出运行时 → 删目录 → **删这个 id 名下的全部密钥** → 删登记 →(可选)删配置。
+**内置扩展**:`quick-edit`、`git-sync`、`ai-for-edit`、`agent` 随应用带一份 v2 包,启动时由 `ensureBundledProvisioned()` 补装(走**完全相同**的校验与安装路径)。已是 `bundled` 来源且版本更旧时会跟随应用升级;市场/本地来源一律不碰。默认启用策略写在 `main/market/bundled.ts`:quick-edit 开箱启用,git-sync、AI 与 Agent 默认关闭(Agent 需要先配置 Claude Code CLI)。
 
 ### 五、插件市场
 
@@ -301,190 +302,221 @@ IMK_MARKET_PORT=8787 HOST=127.0.0.1 DATA=./server/data ADMIN_TOKEN=… node serv
 | POST | `/api/v1/auth/register` \| `/login` | – | → `{user, token}` |
 | GET | `/api/v1/auth/me` | Bearer | 当前账号与发布令牌列表 |
 | POST · DELETE | `/api/v1/auth/tokens[/:id]` | Bearer | 长期发布令牌(明文只在创建时返回一次,服务端只留 sha256) |
-| GET | `/api/v1/search?q=&page=&sort=&mainMode=&render=` | – | 搜索 / 排序 / 按 main 模式与是否有 render 层过滤 |
+| GET | `/api/v1/search?q=&page=&sort=&hasMain=` | – | 搜索 / 排序 / 按「含代码 / 纯声明」过滤 |
 | GET | `/api/v1/packages/:id` \| `/latest` \| `/versions/:v` | – | 详情(含 README、版本列表、下架标记) |
 | GET | `/api/v1/packages/:id/versions/:v/download` | – | 信封字节 + `X-Imk-Integrity` 响应头,下载计数 +1 |
-| GET | `/api/v1/packages/:id/icon` | – | 图标字节(≤64 KiB) |
+| GET | `/api/v1/packages/:id/icon` | – | 图标字节(≤128 KiB) |
 | POST | `/api/v1/packages` | Bearer | 发布:信封 JSON |
 | POST | `/api/v1/packages/:id/versions/:v/yank` \| `/unyank` | Bearer(owner) | 下架 / 恢复 |
 
-另有 `GET /api/v1/users/:username/packages`(某作者的全部插件)与 `/api/v1/admin/*`(统计、把被抢注的 id 转移给真正的作者,需 `ADMIN_TOKEN`)。
+列表/详情返回 v2 字段:`displayName`、`main`、`hasMain`、`activationEvents`、`capabilities`、`contributesSummary`(命令/快捷键/设置项/行首菜单/动作计数)。另有 `GET /api/v1/users/:username/packages`(某作者的全部扩展)与 `/api/v1/admin/*`(统计、把被抢注的 id 转移给真正的作者,需 `ADMIN_TOKEN`)。
 
-**发布**:注册账号(scrypt 加盐哈希,密码 ≥8 位)→ 在「发布插件」页选目录 → 打包预览(文件清单、权限、体积、整包 sha256)→ 发布。服务端会**重算**逐文件 sha256 与整包 integrity,不符就 400。`manifest.id` 首次发布即被该账号认领,别人再发同 id → 403;同一个 `(id, 版本)` 不能重发(409)—— 已发布的版本不可变,要改就升版本号。版本可以**下架**(yanked):下架后从搜索、`latest` 与版本列表里消失,但按精确版本号仍能下载 —— 已经锁定了这个版本的安装不会被破坏;下架当前最新版时,次高的非下架版本会自动成为 latest。**没有硬删除。**
+**发布**:注册账号(scrypt 加盐哈希,密码 ≥8 位)→ 在「发布扩展」页选目录 → 打包预览(文件清单、形态、体积、整包 sha256、入口 sha256、激活事件与贡献摘要)→ 发布。服务端会**重算**逐文件 sha256 与整包 integrity,不符就 400;`formatVersion` 必须是 2。`<publisher>.<name>` 首次发布即被该账号认领,别人再发同 id → 403;同一个 `(id, 版本)` 不能重发(409)—— 已发布的版本不可变,要改就升版本号。版本可以**下架**(yanked):下架后从搜索、`latest` 与版本列表里消失,但按精确版本号仍能下载;下架当前最新版时,次高的非下架版本会自动成为 latest。**没有硬删除。**
 
-**安装**:下载 → 把响应头声明的 integrity 与自算的比对 → `verifyEnvelope()`(结构、路径、扩展名、体积、逐文件 sha256)→ 检查「这个包在这台机器上装不装得上」(绑定的能力是否存在、声明的 `engines.imark` 是否满足)→ 解到 `.staging/` → 交给宿主原子就位。任何一步失败都不落盘。更新检查在启动后、打开市场页时、手动刷新时各跑一次,结果缓存 10 分钟;**绝不循环重试** —— 离线是正常状态,界面安静降级。
+**安装**:下载 → 把响应头声明的 integrity 与自算的比对 → `validateEnvelope()`(结构、路径、扩展名、体积、逐文件 sha256、integrity)→ 检查 `engines.imark` 是否满足 → 解到 `.staging/` → 原子就位 → 写 `installed.json` → 重新扫描并热加载。任何一步失败都不落盘。更新检查在启动后、打开市场页时、手动刷新时各跑一次,结果缓存 10 分钟;**绝不循环重试** —— 离线是正常状态,界面安静降级。
 
-**安装确认框是安全基线**。按下按钮之前,它必须摆出:插件名 / 版本 / 发布者 / 来源地址、**逐条中文解释的权限清单**、文件数与总体积、可跨渠道核对的整包 sha256、main 与 render 入口各自的 sha256。风险确认按层给:**node main** 一条红字(主进程任意代码、完整 Node),**render 层**一条红字(与界面同 realm,可改界面/读文档/看键盘);两层都有时两条都要勾选。restricted main 不给红字,但逐条权限说明"没声明就不存在、每次调用审查"。无代码 capability 会点名它借的是哪个内置能力。详情页另配「**查看源码**」:显示的内容与将要安装的那份**来自同一次下载、过了同一套校验**,不是另取的一份「参考源码」。
+**安装确认框是安全基线**。按下按钮之前,它必须摆出:扩展名 / 版本 / 发布者 / 来源地址、含代码还是纯声明、文件数与总体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要。**含代码扩展必须主动勾选**「我知道扩展代码将以我的用户权限运行,可以读写我的文件、访问网络」,否则安装按钮不可用;纯声明式扩展不需要勾选。详情页另配「**查看源码**」:显示的内容与将要安装的那份**来自同一次下载、过了同一套校验**,不是另取的一份「参考源码」。
 
 **要如实说明的边界**
 
-- **node main = 主进程里的任意代码执行。** 它能读写你电脑上的任意文件(笔记、SSH 密钥、`secrets.json`)、发起网络请求、启动其他程序。上面那一整套(sha256、发布者、权限清单、确认框、失败熔断、失败回滚)降低的是**误装**的概率、让**决策知情**,它们**不做沙箱**。
-- 默认市场地址 `http://127.0.0.1:8787` 是**明文**的(且只监听回环)。填非回环的 `http://` 地址时界面会给一次性警告;正式部署必须自己前置 TLS 终止 —— 否则「下载的包没被篡改」这件事就只靠一次明文 HTTP 撑着。
+- **含代码扩展 = 当前用户权限下的任意代码执行。** 它能读写你电脑上的任意文件、发起网络请求、启动其他程序。sha256、发布者、能力声明、确认框、崩溃重启降低的是**误装**的概率、让**决策知情**,它们**不做沙箱**。
+- 默认市场地址 `http://127.0.0.1:8787` 是**明文**的(且只监听回环)。填非回环的 `http://` 地址时界面会给一次性警告;正式部署必须自己前置 TLS 终止。
 - 发布是「**已认证但不审计**」:任何能注册的人都能认领一个还没被占用的 id。共享的注册表上,官方 id 应当先占掉。
 - 服务端按 IP 的内存限流(10 次失败 / 5 分钟)只够自托管;公开部署需要真正的限流组件与审计。
-- **插件能往界面里放什么,取决于层。** 只声明 main 的插件,界面全部由宿主来画:清单里的 `lineMenu` 让宿主在光标行左边画一个「+」,`commands` / `statusBar` / `menus` 分别进命令面板、状态栏、文件列表右键菜单 —— 按钮、菜单、对话框以及**改动文档**都由宿主执行。**render 层直接跑在主界面里**:它拿得到真正的 CM6 对象与 DOM,能深度定制编辑器与界面 —— 代价是安装确认框必须如实告知"它与应用界面同权",并且要求用户勾选。没有任何插件自有窗口/停靠页。
 
-**官方插件:定时上传(Git)**
+**官方扩展:定时上传(Git)**
 
-按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意远端,可配置**多个远端**(一次提交推全部);动作有「立即上传」「测试连接」,状态栏有同步图标(成功 / 失败 / 进行中 / 未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交。
+按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意远端,可配置**多个远端**(一次提交推全部);动作有「立即上传」「测试连接」「检测代理」,状态栏有同步图标(成功 / 失败 / 进行中 / 未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交。
 
-- **凭据既不落盘也不进命令行**:推送时 URL 保持干净(不带 `user:token`),而是临时挂一个一次性 credential helper(`-c credential.helper=` + `-c credential.helper=!f(){…}`),用户名与 token 从子进程**环境变量**读取(`GIT_IMK_USER` / `GIT_IMK_TOKEN`)。这样既不会把 token 写进 `.git/config`,也不出现在进程命令行里;同时固定 `GIT_TERMINAL_PROMPT=0` 与 `GCM_INTERACTIVE=never`,缺凭据时快速失败,而不是弹一个凭据窗口把同步卡死。**用户名可留空**:留空按 `oauth2` 认证(GitLab / GitHub 通用),Gitee 建议填真实用户名;未填 token 时完全不注入凭据(公开仓库或无凭据场景)。
+- **凭据既不落盘也不进命令行**:推送时 URL 保持干净(不带 `user:token`),而是临时挂一个一次性 credential helper(`-c credential.helper=` + `-c credential.helper=!f(){…}`),用户名与 token 从子进程**环境变量**读取(`GIT_IMK_USER` / `GIT_IMK_TOKEN`)。这样既不会把 token 写进 `.git/config`,也不出现在进程命令行里;同时固定 `GIT_TERMINAL_PROMPT=0` 与 `GCM_INTERACTIVE=never`,缺凭据时快速失败。
 - **全链路脱敏**:任何要展示、写状态或落盘的 git 输出都先过 `redactUrl()`,把 `://user:token@host` 洗成 `://user:***@host`;失败按类型翻成可操作的中文提示(远端有新提交被拒 / 认证失败 / 连不上 / 仓库不存在)。
-- **远端配置项**(每个远端一行):**远程仓库**(必填,HTTPS 或 SSH 地址)+ **本地分支**(必填)/ **远程分支**(留空则与本地分支同名)+ **认证方式**:
+- **远端配置项**(每个远端一行):**远程仓库**(必填,HTTPS 或 SSH 地址)+ **本地分支**(必填)/ **远程分支**(留空则与本地分支同名)+ **认证方式**(访问令牌 / 账号密码 / SSH)。密钥经 safeStorage 加密保存,界面上只显示**掩码**;点「更换」才展开输入框。
+- **首次同步会做的事**(都可在扩展设置里关闭):不是 git 仓库时 `git init -b <分支>`;写入推荐 `.gitignore`(`.obsidian/`、`node_modules/`、`.imark-tmp` 等,**已存在则不覆盖**)。**扩展不改动仓库的 remote 配置**。
+- **它只做上传**:不替你处理仓库层面的疑难(远端已有无关历史、两边都改过同一文件、需要合并或变基等)。遇到这类情况会**如实报错**,请你在仓库目录自己用 git 处理完再点「立即上传」。
+- **配置改完会自动试跑一次**(3 秒后),避免「先启用(还没填远端)→ 启动同步当场失败并被消耗 → 干等一个间隔」。
+- **边界**:定时器跑在扩展宿主进程里,而应用是「窗口全关即退出」(无托盘),所以**关掉应用期间不会上传** —— 用「启动后同步一次」弥补。
 
-  | 认证方式 | 说明 |
-  |---|---|
-  | 访问令牌 | 默认。GitHub / GitLab 的 personal access token,按 `oauth2:<令牌>` 认证;私有仓库必填(界面提示会写明) |
-  | 账号密码 | 填账号 + 密码(如 Gitee 用账号名 + 私人令牌) |
-  | SSH | 用本机 SSH 密钥,不需要填写密钥;地址写成 `git@host:用户名/仓库.git` |
-
-  密钥经 safeStorage 加密保存,界面上只显示**掩码**(`ab****23`,由主进程算好下发),旁边是「更换 / 清除」;点「更换」才展开输入框。地址是 `file://` 这类本地路径时不需要凭据。
-- **首次同步会做的事**(都可在插件设置里关闭):不是 git 仓库时 `git init -b <分支>`;写入推荐 `.gitignore`(`.obsidian/`、`node_modules/`、`.imark-tmp` 等,**已存在则不覆盖**)。**插件不改动仓库的 remote 配置** —— 推送直接推给配置里的地址,你的 `origin` 是谁、命令行 `git pull` 认哪一套,由你自己决定。作者身份仅在仓库与全局都没配 `user.name/user.email` 时用插件配置兜底,否则尊重你的 git 配置。
-- **它只做上传**:不替你处理仓库层面的疑难(远端已有无关历史、两边都改过同一文件、需要合并或变基等)。遇到这类情况插件会**如实报错**(状态变红、详情里给出 git 的原始信息),请你在仓库目录自己用 git 处理完再点「立即上传」—— 插件保持简单,行为可预期。
-- **配置改完会自动试跑一次**(3 秒后):否则容易出现「先启用插件(还没填远端)→「启动后同步一次」当场失败并被消耗 → 要干等一个完整间隔才再试」的错觉。
-- **边界**:定时器跑在主进程,而应用是「窗口全关即退出」(无托盘),所以**关掉应用期间不会上传** —— 用「启动后同步一次」弥补;仓库切换后始终同步 `settings.vaultPath` 指向的当前仓库。
-
-### 六、插件开发
+### 六、扩展开发
 
 #### 目录与构建
 
 ```text
-my-plugin/
-├── manifest.json     # 清单(id、版本、main/render、权限、字段、动作)
-├── main.ts           # node main 或 restricted main(二选一)
-├── render.ts         # 可选:render 层
+my-extension/
+├── package.json     # 清单:ID、版本、engines、main、activationEvents、contributes
+├── main.ts          # 可选入口 → 构建成 main.js(CommonJS)
+├── webview/         # 可选:webview 的 ts/html/css(ts 打成 IIFE)
 └── README.md
 ```
 
-官方插件用三份独立 TS 工程编译,作者也可以直接写普通 `.js`:
+官方扩展用 `plugins-src/tsconfig.json` 一份工程编译,作者也可以直接写普通 `.js`:
 
-- `plugins-src/tsconfig.node.json` → CommonJS,输出 `dist/node`(git-sync、ai-for-edit main);
-- `plugins-src/tsconfig.restricted.json` → ES module,输出 `dist/restricted`(quick-edit、note-embed main);
-- `plugins-src/tsconfig.render.json` → ES2022,输出 `dist/render`(todo-marks、note-embed、ai-for-edit 的 render 入口)。
+```bash
+npm run plugins:build   # esbuild 打包 → src/main/market/builtin/<publisher>.<name>.imkpkg.json
+npm run typecheck:plugins
+```
 
-`npm run plugins:build` 会依次跑三份 tsc、把入口与静态资源打进内置包。render 入口会被宿主包进 `(function (imk) { … })`,**不能有 import/export/require/eval**;构建脚本会把 tsc 补的 `export {}` 剥掉,其余模块语法直接报错。
+- `main.ts` 用 esbuild 打成 CommonJS,`imark` 外置(由宿主注入),Node 内置模块自动外置;
+- `webview/*.ts` 打成 IIFE(依赖全部内联),`webview/shim.ts` / `shared.ts` 不作为入口;
+- 静态资源原样复制;`package.json` 只进 `envelope.manifest`,不作为包内文件;
+- 文本文件以 LF 进包,保证 Windows/Linux 构建逐字节一致。
 
-#### 清单字段
+#### 清单(`package.json`)
+
+```json
+{
+  "publisher": "your-name",
+  "name": "my-extension",
+  "version": "1.0.0",
+  "displayName": "我的扩展",
+  "description": "一句话说明",
+  "engines": { "imark": "^0.1.0" },
+  "main": "./main.js",
+  "activationEvents": ["onCommand:your-name.my-extension.hello"],
+  "capabilities": { "filesystem": "workspace", "network": true, "secrets": true },
+  "contributes": {
+    "commands": [
+      { "command": "your-name.my-extension.hello", "title": "打招呼", "category": "示例" }
+    ],
+    "keybindings": [
+      { "command": "your-name.my-extension.hello", "key": "ctrl+alt+h" }
+    ],
+    "menus": {
+      "commandPalette": [{ "command": "your-name.my-extension.hello", "when": "editorTextFocus" }]
+    },
+    "configuration": {
+      "title": "我的扩展",
+      "properties": {
+        "your-name.my-extension.greeting": {
+          "type": "string",
+          "default": "你好",
+          "title": "问候语",
+          "imark": { "kind": "text", "section": "常规" }
+        }
+      }
+    },
+    "imark.lineMenu": [
+      { "id": "hello", "label": "打招呼", "command": "your-name.my-extension.hello" }
+    ],
+    "imark.actions": [
+      { "command": "your-name.my-extension.hello", "label": "打招呼" }
+    ]
+  }
+}
+```
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `id` | ✔ | `^[a-z0-9][a-z0-9._-]{1,63}$`,**禁止 `:`**;保留字 `imk`/`market`/`system`/`core`/`node`/`electron` |
-| `name` / `description` / `version` | ✔ | 界面名、一句话说明、语义化版本 |
-| `main` | 与 `render`/`capability` 至少一个 | `{ "mode": "node" \| "restricted", "entry": "main.js" }`。node 入口 `.js/.cjs`;restricted 入口 `.js/.mjs` |
-| `render` | 同上 | `{ "entry": "render.js" }`,包内 `.js` 普通脚本 |
-| `capability` | 同上 | 无代码形态绑定的内置能力 id(如 `webhook`);**只能单独出现** |
-| `permissions` | | 只与 `main` 或 `capability` 一起出现;render-only 声明权限会被拒 |
-| `author` / `homepage` / `icon` / `engines` | | 署名、主页(https)、包内图标、依赖的 iMark 版本 |
-| `fields` | ✔ | 配置字段表;设置面板据此通用渲染 |
-| `actions` / `targetActions` / `targetFieldKey` | | 插件级/目标级动作 |
-| `lineMenu` / `commands` / `statusBar` / `menus` | | 主机贡献点,任何形态都可以声明;动作按 §四 的规则路由 |
+| `publisher` / `name` | ✔ | 各自 `^[a-z0-9][a-z0-9-]{1,63}$`;扩展 ID 是 `<publisher>.<name>` |
+| `version` | ✔ | 语义化版本(可带预发布后缀) |
+| `engines.imark` | ✔ | 依赖的 iMark 版本范围,如 `^0.1.0` / `>=0.1.0` |
+| `main` | | 包内 `.js` / `.cjs` 入口。不填 = 纯声明式 |
+| `displayName` / `description` / `author` / `license` / `homepage` / `icon` | | 展示与署名;`homepage` 必须是 https |
+| `activationEvents` | | `*`、`onStartupFinished`、`onLanguage:markdown`、`onCommand:<命令>`、`onWebviewPanel:<viewType>` |
+| `extensionDependencies` | | 依赖的扩展 ID;激活时先激活依赖 |
+| `extensionAffinity` | | 希望与哪些扩展分到同一宿主(参与 affinity 分组) |
+| `capabilities` | | 安装披露:`filesystem: workspace\|user`、`network`、`secrets`、`git`、`process`、`shell` |
+| `contributes` | | 命令 / 快捷键 / 命令面板菜单 / 设置 / 行首菜单 / 动作 |
+| `categories` / `keywords` | | 市场展示用 |
 
-权限词表:`git`、`secrets`、`vault:read`、`vault:write`、`network`、`settings`、`shell`。**restricted main 只能声明前五个**,`settings`/`shell` 会报错。旧的 `ui`、`editor:read`、`editor:write` 已删除。
+`configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/targets/endpoints)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
 
-包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤3、扩展名白名单(`js/mjs/cjs/json/md/txt/css/svg/png/jpg/jpeg/gif/webp/woff/woff2`)、单文件 ≤4 MiB、入口 ≤4 MiB、README ≤256 KiB、整包 ≤8 MiB、文件数 ≤64。路径里任何一段都不能是 `__imark`。render 入口如果有运行时 `import`,构建时用 esbuild 打成单文件 IIFE 再进包(例如 AI for Edit 内联 PDF.js)。
+包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤4、扩展名白名单(`js/mjs/cjs/json/md/txt/css/html/htm/svg/png/jpg/jpeg/gif/webp/ico/woff/woff2/ttf/otf/wasm/bcmap`)、单文件 ≤8 MiB、入口 ≤8 MiB、README ≤512 KiB、图标 ≤128 KiB、整包 ≤16 MiB、文件数 ≤96。路径里任何一段都不能是 `__imark`。
 
-#### node main
+#### 入口与 API
 
 ```ts
-// main.ts —— CommonJS 工厂
-import type { ImkApi, PluginRuntime } from '@shared/pluginApi'
+// main.ts
+import * as imark from 'imark'
 
-class MyPlugin implements PluginRuntime {
-  constructor(private imk: ImkApi) {}
-  onEnable(): void { /* 定时器、连接… */ }
-  onDisable(): void { /* 收尾 */ }
-  async runAction(actionId: string): Promise<{ ok: boolean; message: string }> {
-    return { ok: true, message: 'pong' }
-  }
+export function activate(context: imark.ExtensionContext): void {
+  context.subscriptions.push(
+    imark.commands.registerCommand('your-name.my-extension.hello', () => {
+      imark.window.showInformationMessage('你好')
+    })
+  )
+
+  const channel = imark.window.createOutputChannel('我的扩展')
+  channel.appendLine('已激活')
+  context.subscriptions.push(channel)
 }
 
-export = (imk: ImkApi) => new MyPlugin(imk)
+export function deactivate(): void {
+  // 所有挂在 context.subscriptions 上的东西会被自动 dispose;这里只收尾
+}
 ```
 
-清单:`"main": { "mode": "node", "entry": "main.js" }`。
-
-`imk` 上的能力:
+`require('imark')` 提供的命名空间:
 
 | 命名空间 | 内容 |
 |---|---|
-| `imk.plugin` | `id` / `name` / `version` / `dir` |
-| `imk.getConfig` / `setState` / `flushDocument` / `isEnabled` / `isDisabledByHost` / `log` | 配置、状态、落盘、日志 |
-| `imk.vault` | 需 `vault:read`。`path()` / `exists(p?)`(完整 Node 下这只是便利) |
-| `imk.git` | 需 `git`。`available` / `run(args, opts)` / `credentialArgs` / `credentialEnv` / `redact` / `summarize`;`opts.env` 只对 node main 开放 |
-| `imk.secrets` | 需 `secrets`。`get` / `has` |
-| `imk.ui` | `notify` / `statusItem`(宿主画的界面,不要权限) |
-| `imk.commands` / `imk.menus` | 命令面板 / 右键菜单(带本地回调) |
-| `imk.on(event, handler)` | 宿主事件;停用/重载时整体清掉 |
-| `imk.render` | 有 render 层时:`send(channel, data)` / `onMessage(fn)` |
+| `commands` | `registerCommand` / `executeCommand` / `getCommands` |
+| `window` | 消息框、输入框、QuickPick、状态栏、输出通道、装饰类型、文本编辑器、`createWebviewPanel` / `registerWebviewPanelSerializer` |
+| `workspace` | `workspaceFolders`、`getConfiguration`、文档打开/保存/变更事件、`openTextDocument`、`saveAll`、`workspace.fs` |
+| `extensions` | `getExtension(id)` / `extensions.all` |
+| `env` | `appName` / `appVersion` / `language` / `uriScheme` / `machineId` / `sessionId` |
+| `imark` | iMark 私有入口:`reportStatus()`、`renderMarkdown()`、`flushActiveDocument()`、`onDidChangeTheme` |
+| 工具类 | `Uri`、`Position`、`Range`、`Selection`、`EventEmitter`、`Disposable`、`ThemeColor`、`StatusBarAlignment`、`ViewColumn`、`TextEditorRevealType`、`ConfigurationTarget` 等 |
 
-#### restricted main
+与 VS Code 的差异:模块名是 `imark`;没有 TreeView / 终端 / 任务 / 调试 / LSP / notebook / 多根工作区;`imark.imark` 是私有命名空间。
+
+#### 配置、密钥与状态
+
+- **配置**:`workspace.getConfiguration('your-name.my-extension')` 读;`update(key, value)` 写回 `settings.extensions.<id>.config`。设置页由 `contributes.configuration` 自动渲染,不需要写界面。`password` 字段与 `targets` / `endpoints` 的目标级密钥走 `secrets`。
+- **密钥**:`context.secrets.get/store/delete(key)`。值只在主进程 `safeStorage` 与扩展宿主内存里;渲染层与 webview 永远拿不到明文。界面只显示掩码。
+- **状态**:`context.globalState` / `context.workspaceState`(跨启动保留)、`context.globalStorageUri` / `context.storageUri`(扩展私有文件目录)、`context.logUri` / `context.logPath`(日志)。`globalState` 在退出前异步刷盘。
+- **输出与日志**:`window.createOutputChannel(name)` 写入扩展日志;`context.logPath` 是原始日志文件。设置页可直接打开日志。
+
+#### webview
 
 ```ts
-// main.ts —— 页面顶层同步登记;没有 ctx,能力都从 window.imark 取
-const imk = window.imark
-
-imk.plugin.handle({
-  onEnable() { imk.setState({ status: 'ok', lastMessage: 'ready' }) },
-  runAction(actionId, targetId, payload) {
-    if (actionId !== 'ping') return { ok: false, message: `未知动作:${actionId}` }
-    return { ok: true, message: 'pong' }
+const panel = imark.window.createWebviewPanel(
+  'your-name.my-extension.chat',
+  '我的面板',
+  imark.ViewColumn.Beside,
+  {
+    enableScripts: true,
+    retainContextWhenHidden: true,
+    localResourceRoots: [context.extensionUri],
+    imark: { presentation: 'sidebar', width: 420 }
   }
-})
+)
+panel.webview.html = `<!doctype html><html><body>…</body></html>`
+panel.webview.onDidReceiveMessage(message => { /* … */ })
+panel.webview.postMessage({ type: 'hello' })
 ```
 
-清单:`"main": { "mode": "restricted", "entry": "main.js" }`。
-
-`window.imark` 的能力:插件身份与 `handle`、`log`/`getConfig`/`setState`/`on`、`ui.notify/statusItem`、`commands`/`menus`、`document.flush`、`schedule.every/clear`、按权限塑形的 `vault`/`secrets`/`net`/`git`、有 render 时的 `render`。**没有 `editor`、没有 `window`、没有 `halves`。** 页面里没有 `require`/`process`,CSP 掐死裸 `fetch`;联网只能走 `imark.net.fetch`,git 只能用受限子命令白名单且不能传 `env`。
-
-#### render 层
-
-```ts
-// render.js —— 普通脚本,不能有 import/export/require/eval
-const view = imk.editor.getView()
-imk.plugin.handle({
-  onEnable() {
-    imk.editor.registerExtension(imk.editor.kit.view.EditorView.updateListener.of(...))
-    imk.editor.onDocChanged(() => { /* … */ })
-    imk.plugin.setState({ status: 'ok', lastMessage: 'render-ready' })
-  },
-  onDisable() { /* 移除自己挂的 DOM/定时器 */ }
-})
-```
-
-清单:`"render": { "entry": "render.js" }`。
-
-`imk` 的形状:
-
-| 命名空间 | 内容 |
-|---|---|
-| `imk.plugin` | `id` / `name` / `version` / `getConfig` / `setState` / `handle` / `log` |
-| `imk.editor` | `getView(): EditorView \| null`(宿主同一个实例)、`onDocChanged(fn)`、`registerExtension(ext)`、`kit { state, view, language, commands }` |
-| `imk.main` | `send(channel, data)` / `onMessage(fn)`;没有 main 层时 `send` 明确失败 |
-
-- **必须用 `kit` 里的构造器构建 CM6 扩展**,不要自己 bundle `@codemirror/*` —— facet 靠模块实例身份匹配,两份实例会让扩展静默失效。
-- 每次用时重新 `getView()`;打开文件会 `view.setState` 重建 state,不要缓存跨文件的 `EditorView` 引用。
-- render 层直接操作 DOM、自己的 `<style>`、自己的事件;停用时自己清理。它没有 `vault`/`net`/`git`/`secrets`,需要时 `imk.main.send(...)`。
-- 官方样板:`plugins-src/todo-marks/`(render-only,自己画 CM6 装饰与面板)、`plugins-src/note-embed/`(restricted main + render,两层消息 + 分块传输长笔记)、`plugins-src/ai-for-edit/`(node main + render,请求/应答关联 id + 文档快照校验 + 整篇写回)。
-
-#### 两层消息
-
-- render → main:`imk.main.send(channel, data)`;宿主按 `main.mode` 投递给 restricted 页面的 `imk.render.onMessage` 或 node main 的 `imk.render.onMessage`。没有 main 层时消息被丢弃。
-- main → render:restricted 走 `imk.render.send` op,node 走 `imk.render.send`(同一个 op)。消息只传数据,不传能力;通道名 ≤64 字符、单条 ≤256 KiB、限流 120/分钟。
-- 生命周期顺序:启用 = main 先起 → render 注入;停用 = render 先收 → main 停。render 层要主动在 `onEnable` 里发第一条消息,不要假设 main 启动时 render 已经就绪。
+- webview 跑在独立的 `imark-webview://<扩展 id>/…` origin 与独立 session 里,**与宿主隔离**;脚本只能通过 `postMessage` 与扩展通信。
+- `webview.asWebviewUri(uri)` 把包内资源变成可加载的 URL;`webview.cspSource` 用于拼 CSP。`localResourceRoots` 之外的路径会被协议层拒绝。
+- `presentation` 支持 `sidebar` / `overlay` / `floating`;`panel.imark.setPresentation/setSize/setPosition` 可在运行时调整。
+- 用 `window.registerWebviewPanelSerializer(viewType, serializer)` 让面板在重启后恢复(`deserializeWebviewPanel` 重新生成 HTML)。
 
 #### 行首「+」菜单与动作
 
-清单里声明 `lineMenu` 后,宿主会在光标行左边画「+」;条目要么给 `template`(固定文本,不惊动插件),要么给 `action`(+ 可选 `dialog` 参数表单)。插件在 `runAction` 里收到 `values` 与这一行的快照,返回 `editor: { text, cursorOffset }` 由宿主插入。**文档始终由宿主改**(除了 render 层,它可以直接操作 `EditorView`)。
+清单里声明 `imark.lineMenu` 后,宿主会在光标行左边画「+」;条目指向一个必须在 `contributes.commands` 里声明过的命令,可选 `dialog` 参数表单(字段 kind 限 text/number/boolean/select):
 
-动作路由规则:有 main 走 main,只有 render 走 render;两者都有时 main 没实现就返回"未实现",不会偷偷回退。混合插件需要 render 处理某个动作时,在 main 的 `runAction` 里 `imk.render.send('do-action', { actionId })`,由 render 的 `onMessage` 接住。
+```json
+{
+  "id": "table",
+  "label": "表格",
+  "command": "your-name.my-extension.insert-table",
+  "dialog": {
+    "title": "插入表格",
+    "confirmLabel": "插入",
+    "fields": [
+      { "key": "rows", "kind": "number", "label": "行数", "default": 3 },
+      { "key": "cols", "kind": "number", "label": "列数", "default": 3 }
+    ]
+  }
+}
+```
 
-#### 无代码 capability
-
-不用写代码:清单里写 `capability: "webhook"` 与它要求的字段/动作,行为完全由宿主内置能力执行。它不能与 main/render 并存。安装确认框会点名"借的是哪个能力"。
+命令回调收到 `(args)`;需要改文档时用 `workspace.openTextDocument` + `window.showTextDocument` + `TextEditor.edit`,或 `imark.imark.flushActiveDocument()` 先落盘。`imark.actions` 让设置页出现动作按钮;`scope: "target"` + `targetSetting` 指向一个 `targets` / `endpoints` 配置键,可按目标逐个执行。
 
 #### 发布
 
-在「发布插件」页选目录 → 预览(文件清单、权限、体积、整包 sha256、main/render 入口哈希)→ 发布。服务端重算逐文件 sha256 与整包 integrity,不符就 400。`manifest.id` 首次发布即被账号认领;同一 `(id, 版本)` 不可重发。版本可以下架,没有硬删除。
+在「发布扩展」页选目录 → 预览(文件清单、形态、体积、整包 sha256、入口 sha256、激活事件、贡献摘要)→ 发布。服务端重算逐文件 sha256 与整包 integrity,不符就 400。`<publisher>.<name>` 首次发布即被账号认领;同一 `(id, 版本)` 不可重发。版本可以下架,没有硬删除。
+
+**再次提醒**:扩展代码以当前用户权限运行,市场上架与安装确认只保证「知情」,不提供沙箱。请只发布、安装可信来源的扩展。
 
 ### 七、其他子系统
 
@@ -506,7 +538,7 @@ iMark 的所有数据都在**应用自己所在的目录**里:安装版是 `<安
 ├── plugins/           插件包 + installed.json + .staging/ + <id>.old/
 ├── settings.json      仓库列表、上次打开的文件、界面偏好、插件启用态与配置
 ├── secrets.json       插件访问令牌、市场登录令牌(**safeStorage 加密**,不是明文)
-└── profile/           Chromium 自己的 profile:缓存、Cookie、restricted main 隐藏页的分区存储……
+└── profile/           Chromium 自己的 profile:缓存、Cookie、webview 的分区存储……
                        ↑ 解密密钥(Local State)也在里面,别单独删它
 ```
 

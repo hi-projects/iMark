@@ -96,7 +96,9 @@ export function handleExtensionUiMessage(message: MainToRendererMessage): boolea
       if (!message.options.modal && message.options.items.length === 0) {
         pushNotice(message.options.message, {
           title,
-          level: noticeLevel(message.options.level)
+          level: noticeLevel(message.options.level),
+          // 通知中心据此区分「扩展说的」与「应用自己说的」
+          source: message.extensionId ? 'plugin' : 'app'
         })
         respond(message.requestId, null)
         return true

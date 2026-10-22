@@ -3,14 +3,14 @@
  * 插件市场页 —— 设置面板里的第三个页面(外观 / 插件 / 市场)。
  *
  * 只做外壳:页签、当前市场地址、顶部错误条,具体内容交给各个 tab 组件。
- * 页签状态存在 pluginService 的 settingsNav.market 里,所以从菜单打开市场、
+ * 页签状态存在 settingsNav 的 market 里,所以从菜单打开市场、
  * 点到某个插件详情再关掉设置、重新打开,看到的还是原来那一屏。
  */
 
 import { computed, onMounted } from 'vue'
 import { Store } from 'lucide-vue-next'
 import { checkUpdates, marketStore, refreshInstalled, remoteStore } from '../../services/marketService'
-import { settingsNav } from '../../services/pluginService'
+import { settingsNav } from '../../services/settingsNav'
 import MarketBrowse from './MarketBrowse.vue'
 import MarketDetail from './MarketDetail.vue'
 import MarketInstalled from './MarketInstalled.vue'

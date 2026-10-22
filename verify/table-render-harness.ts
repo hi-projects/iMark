@@ -21,10 +21,9 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 // 仓库根:打包产物固定落在 <仓库>/out/main/ 下(见文件头),所以由 __dirname 往上两级。
 // 截图一类的临时产物都放这儿,别写到家目录去 —— 换个机器就没有了
@@ -62,8 +61,6 @@ const TABLE_3x3 = [
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 async function main(): Promise<void> {
   /*
    * 没有 --user-data-dir 就直接退出。
@@ -112,7 +109,8 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost(ensureBundledProvisioned)
+  const service = await initExtensions({ appVersion: '0.1.0' })
+  await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
@@ -191,7 +189,22 @@ async function main(): Promise<void> {
   /** 写盘 + 重载窗口,拿到一个光标在文首的干净编辑器 */
   async function loadDoc(content: string, expectLines?: number): Promise<boolean> {
     await writeFile(note, content, 'utf8')
-    const done = new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))
+    // 页面重载偶尔在 Windows 上等不到 did-finish-load:加超时,免得整轮验收静默挂死
+    const done = new Promise<void>(resolve => {
+      const timer = setTimeout(() => {
+        console.log('    (页面重载超时:did-finish-load 没到)')
+        resolve()
+      }, 15000)
+      wc.once('did-finish-load', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      wc.once('did-fail-load', (_e, code, desc) => {
+        clearTimeout(timer)
+        console.log(`    (页面重载失败:${code} ${desc})`)
+        resolve()
+      })
+    })
     wc.reload()
     await done
     await sleep(1000)

@@ -1,43 +1,41 @@
 /**
- * 内置插件的「跟着应用一起升级」验收。
+ * 内置扩展的补装与「跟着应用一起升级」验收(v2)。
  *
- * 为什么需要这一段:应用自带的插件包在补装时是「有同 id 就完全不碰」的,而插件的新
- * 能力(比如 git-sync 后来才有的状态栏条目与命令)是随应用版本一起发出去的。
- * 没有升级这条路,用户升了应用却拿不到新能力 —— 而且这次的表现不是"少个新功能",
- * 是**状态栏上那个按钮直接不见了**(应用这边已经改成插件声明,插件那边还停在没声明的版本)。
+ * 为什么需要这一段:应用自带的扩展包在补装时是「有同 id 就不碰」的,而扩展的新
+ * 能力是随应用版本一起发出去的。没有升级这条路,用户升了应用却拿不到新能力。
  *
- * 这一段不用开窗口:补装与升级是纯主进程的事,判据全在**磁盘上的登记**与**目录里的文件**上。
- * 判据取"登记 + 目录"两处,而不是只读内存里的 entry —— 因为「下次启动还会不会这样」才是
+ * 判据取「登记 + 目录」两处,而不是只读内存 —— 因为「下次启动还会不会这样」才是
  * 用户真正的体验,而那取决于磁盘。
  *
- * 跑法(在仓库根目录):
- *   node verify/run.mjs bundled-upgrade
+ * 覆盖:
+ *   - 全新环境:四款都补装;quick-edit 默认启用,git-sync / ai-for-edit / agent 默认关闭;
+ *   - 并发/重复调用幂等;
+ *   - bundled 来源的旧版本 → 升到应用自带版本,启用态不变;
+ *   - market 来源的旧版本 → 不被内置包覆盖;
+ *   - 比内置包还新的 bundled 记录 → 不降级。
+ *
+ * 跑法:node verify/run.mjs bundled-upgrade
  */
 
-import { app, dialog } from 'electron'
-import { existsSync } from 'node:fs'
-import { mkdir, rm, writeFile, readFile } from 'node:fs/promises'
+import { app } from 'electron'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { registerIpc } from '../src/main/ipc'
-import { loadSettings } from '../src/main/settings'
-import {
-  getPluginHost,
-  initPluginHost,
-  type PluginHost
-} from '../src/main/plugins/host'
+import type { ExtensionManifest, ExtensionPackageEnvelope } from '../src/shared/extensionPackage'
+import { extensionIdOf } from '../src/shared/extensionPackage'
+import type { ExtensionRecord, ExtensionSource } from '../src/shared/extensions'
+import { initExtensions, shutdownExtensions, type ExtensionService } from '../src/main/extensions/service'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import {
-  getRecord,
-  pluginDir,
-  setRecord,
-  removeRecord
-} from '../src/main/plugins/installed'
-import gitSyncPackage from '../src/main/market/builtin/git-sync.imkpkg.json?raw'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
-
-// quick-edit 现在是 restricted main,隐藏执行页走 imk-plugin:// —— 必须在 ready 之前注册
-registerPluginScheme()
+  invalidateInstalledCache,
+  setRecord
+} from '../src/main/extensions/installedStore'
+import { extensionDir, installedPath } from '../src/main/extensions/paths'
+import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
+import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
+import aiForEditPackage from '../src/main/market/builtin/imark.ai-for-edit.imkpkg.json?raw'
+import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
 
 let pass = 0
 let fail = 0
@@ -52,61 +50,80 @@ function check(label: string, ok: boolean, detail = ''): void {
   }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+const sha256 = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex')
 
-/** 应用里自带的那份 git-sync 包的清单信息(判据的真值来源) */
-const bundled = JSON.parse(gitSyncPackage) as {
-  manifest: { id: string; version: string; permissions: string[]; main: string }
-  /** 包内路径 → 该文件的 sha256(内容是另一个字段里的 base64 大块) */
-  files: Record<string, { encoding: string; size: number; sha256: string }>
-  integrity: string
+interface Bundled {
+  envelope: ExtensionPackageEnvelope
+  manifest: ExtensionManifest
+  id: string
+  entry: string
 }
 
-async function sha256File(path: string): Promise<string> {
-  return createHash('sha256')
-    .update(await readFile(path))
-    .digest('hex')
-}
-
-/** 这一份装上去的文件,是不是就是应用自带的那份(逐字节) */
-async function installedMatchesBundled(): Promise<boolean> {
-  const dir = pluginDir(bundled.manifest.id)
-  for (const [rel, meta] of Object.entries(bundled.files)) {
-    const p = join(dir, rel)
-    if (!existsSync(p)) return false
-    if ((await sha256File(p)) !== meta.sha256) return false
+function parse(raw: string): Bundled {
+  const envelope = JSON.parse(raw) as ExtensionPackageEnvelope
+  const manifest = envelope.manifest
+  return {
+    envelope,
+    manifest,
+    id: extensionIdOf(manifest),
+    entry: (manifest.main ?? '').replace(/^\.\//, '')
   }
-  return true
 }
 
-/** 把已装的登记改成「一个更旧的版本」,模拟老用户升级应用之后的那台机器 */
-async function fakeOldVersion(
-  id: string,
+const QUICK = parse(quickEditPackage)
+const GIT = parse(gitSyncPackage)
+const AI = parse(aiForEditPackage)
+const AGENT = parse(agentPackage)
+
+interface InstalledFile {
+  version: number
+  extensions: Record<string, ExtensionRecord>
+}
+
+async function readInstalled(): Promise<InstalledFile> {
+  return JSON.parse(await readFile(installedPath(), 'utf8')) as InstalledFile
+}
+
+/** 把磁盘上的扩展伪装成一个更老的版本(文件与登记同时改,扫描才不会把它纠回来) */
+async function fakeOld(
+  bundled: Bundled,
   version: string,
-  patch: Partial<{ source: string; registryUrl: string | null }> = {}
+  source: ExtensionSource
 ): Promise<void> {
-  const rec = await getRecord(id)
-  if (!rec) throw new Error(`没有 ${id} 的登记,装不上这一步`)
-  await setRecord({
-    ...rec,
-    version,
-    ...(patch.source ? { source: patch.source as typeof rec.source } : {}),
-    ...(patch.registryUrl !== undefined ? { registryUrl: patch.registryUrl } : {})
-  })
-}
+  const dir = extensionDir(bundled.id)
+  await mkdir(dir, { recursive: true })
+  const manifest: ExtensionManifest = { ...bundled.manifest, version }
+  await writeFile(join(dir, 'package.json'), JSON.stringify(manifest, null, 2), 'utf8')
+  const mainBytes = Buffer.from(bundled.envelope.data[bundled.entry]!, 'base64')
+  await writeFile(join(dir, bundled.entry), mainBytes)
 
-const existing = (p: string): boolean => existsSync(p)
+  invalidateInstalledCache()
+  const file = await readInstalled()
+  const previous = file.extensions[bundled.id]
+  const record: ExtensionRecord = {
+    id: bundled.id,
+    publisher: bundled.manifest.publisher,
+    name: bundled.manifest.name,
+    version,
+    main: bundled.entry || null,
+    activationEvents: bundled.manifest.activationEvents ?? [],
+    capabilities: bundled.manifest.capabilities ?? {},
+    integrity: previous?.integrity ?? sha256(JSON.stringify(manifest)),
+    mainSha256: previous?.mainSha256 ?? sha256(mainBytes),
+    installedAt: previous?.installedAt ?? Date.now(),
+    source: source === 'dev' ? 'local' : source,
+    registryUrl: source === 'market' ? 'https://example.com' : null
+  }
+  await setRecord(record)
+}
 
 async function main(): Promise<void> {
-  if (!process.argv.some(a => a.startsWith('--user-data-dir'))) {
-    console.error('必须显式指定 --user-data-dir(否则会写进真实用户目录)')
+  if (!app.commandLine.hasSwitch('user-data-dir')) {
+    console.error('拒绝运行:必须带 --user-data-dir')
     app.exit(2)
     return
   }
   await app.whenReady()
-  ;(dialog as unknown as { showMessageBoxSync: unknown }).showMessageBoxSync = () => 1
-  ;(dialog as unknown as { showMessageBox: unknown }).showMessageBox = async () => ({ response: 1 })
-
   const ud = app.getPath('userData')
   await rm(join(ud, 'plugins'), { recursive: true, force: true })
   const vault = join(ud, 'vault')
@@ -118,124 +135,113 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  registerIpc()
-  await loadSettings()
-  // 这就是应用启动时的那一步:补装缺失的内置包
-  await initPluginHost(ensureBundledProvisioned)
-  const host = getPluginHost() as PluginHost
-  await sleep(300)
+  const service: ExtensionService = await initExtensions({ appVersion: '0.1.0' })
 
-  // ---- 1. 全新环境:该装的都装了 ----
+  // ---------- [A] 全新环境:补装 ----------
   console.log('\n[A] 全新环境:补装')
-  const fresh = await getRecord('git-sync')
-  check('内置包被补装上了', fresh !== null && fresh.version === bundled.manifest.version,
-    JSON.stringify(fresh?.version))
-  check('装上去的文件就是应用自带的那份(逐字节)', await installedMatchesBundled())
+  // 并发调用复用同一个 Promise —— 启动流程与「恢复自带扩展」按钮可能同时触发
+  await Promise.all([
+    ensureBundledProvisioned(service),
+    ensureBundledProvisioned(service)
+  ])
+
+  const installed = await readInstalled()
+  check('登记表是 v2 形状', installed.version === 2)
+  for (const bundled of [QUICK, GIT, AI, AGENT]) {
+    const record = installed.extensions[bundled.id]
+    check(`${bundled.id} 已补装`, Boolean(record), Object.keys(installed.extensions).join(','))
+    check(
+      `${bundled.id} 版本等于内置版本`,
+      record?.version === bundled.manifest.version,
+      String(record?.version)
+    )
+    check(`${bundled.id} 来源是 bundled`, record?.source === 'bundled', String(record?.source))
+    const dir = extensionDir(bundled.id)
+    check(`${bundled.id} 目录里有 package.json`, existsSync(join(dir, 'package.json')))
+    if (bundled.entry) {
+      const onDisk = sha256(await readFile(join(dir, bundled.entry)))
+      check(
+        `${bundled.id} 入口文件逐字节等于内置包`,
+        onDisk === bundled.envelope.files[bundled.entry]?.sha256,
+        onDisk.slice(0, 12)
+      )
+    }
+  }
+
+  const quickView = await service.getExtensionView(QUICK.id)
+  const gitView = await service.getExtensionView(GIT.id)
+  const aiView = await service.getExtensionView(AI.id)
+  const agentView = await service.getExtensionView(AGENT.id)
+  check('quick-edit 默认启用', quickView?.enabled === true)
+  check('git-sync 默认关闭', gitView?.enabled === false)
+  check('ai-for-edit 默认关闭', aiView?.enabled === false)
+  check('agent 默认关闭', agentView?.enabled === false)
+
+  // ---------- [B] 重复调用幂等 ----------
+  console.log('\n[B] 重复调用幂等')
+  const before = await readInstalled()
+  await ensureBundledProvisioned(service)
+  await ensureBundledProvisioned(service)
+  const after = await readInstalled()
+  const same = [QUICK, GIT, AI, AGENT].every(
+    bundled =>
+      after.extensions[bundled.id]?.installedAt === before.extensions[bundled.id]?.installedAt &&
+      after.extensions[bundled.id]?.version === before.extensions[bundled.id]?.version
+  )
+  check('重复调用不会重装任何扩展', same)
+  check('重复调用没有改变默认启用态', (await service.getExtensionView(GIT.id))?.enabled === false)
+
+  // ---------- [C] bundled 来源的旧版本:升级 ----------
+  console.log('\n[C] bundled 来源的旧版本 → 升级')
+  const oldVersion = '0.0.1'
+  await fakeOld(QUICK, oldVersion, 'bundled')
+  await service.refreshInstalled()
   check(
-    '补装时是「装上但关着」(git-sync 要填仓库地址才有意义)',
-    (await host.list()).find(v => v.descriptor.id === 'git-sync')?.state.enabled === false
+    '前提:服务看到的确实是旧版本',
+    (await service.getExtensionView(QUICK.id))?.installed?.version === oldVersion,
+    String((await service.getExtensionView(QUICK.id))?.installed?.version)
+  )
+  await ensureBundledProvisioned(service)
+  const upgraded = (await readInstalled()).extensions[QUICK.id]
+  check('升到内置版本', upgraded?.version === QUICK.manifest.version, String(upgraded?.version))
+  check('来源仍是 bundled', upgraded?.source === 'bundled', String(upgraded?.source))
+  check('登记 integrity 等于内置包', upgraded?.integrity === QUICK.envelope.integrity)
+  const upgradedPkg = JSON.parse(
+    await readFile(join(extensionDir(QUICK.id), 'package.json'), 'utf8')
+  ) as { version: string }
+  check('磁盘清单也升到了内置版本', upgradedPkg.version === QUICK.manifest.version, upgradedPkg.version)
+  check('升级不改变用户开着的状态', (await service.getExtensionView(QUICK.id))?.enabled === true)
+
+  // ---------- [D] market 来源:不碰 ----------
+  console.log('\n[D] market 来源的旧版本 → 不碰')
+  await fakeOld(GIT, oldVersion, 'market')
+  await service.refreshInstalled()
+  await ensureBundledProvisioned(service)
+  const market = (await readInstalled()).extensions[GIT.id]
+  check('版本保持旧版', market?.version === oldVersion, String(market?.version))
+  check('来源仍是 market', market?.source === 'market', String(market?.source))
+  check(
+    '市场来源的 registryUrl 没被抹掉',
+    market?.registryUrl === 'https://example.com',
+    String(market?.registryUrl)
   )
 
-  // 默认启用的那个兜底包(quick-edit)在启动时只能被启用一次 ——
-  // 「补装时 save() 启用一次」和「启动循环对已启用项再启用一次」本来会撞在一起,
-  // 一个在 onEnable 里 setInterval 的插件会因此拿到两个定时器
-  const qeStartup = ((await host.list()).find(v => v.descriptor.id === 'quick-edit')?.logs ?? [])
-    .filter(l => l.message.includes('Advanced Table 已就绪')).length
-  check('启动时插件只被启用一次(onEnable 不跑两遍)', qeStartup === 1, String(qeStartup))
-
-  // ---- 2. 老用户:装的是旧版,应用是新的 ----
-  console.log('\n[B] 老用户升级应用:内置插件跟着升')
-  await fakeOldVersion('git-sync', '0.1.0')
-  await ensureBundledProvisioned(host)
-  const upgraded = await getRecord('git-sync')
-  check('内置来源 + 版本更旧 → 升到应用自带的那一版',
-    upgraded?.version === bundled.manifest.version, String(upgraded?.version))
-  check('升完目录里就是新版的文件(逐字节)', await installedMatchesBundled())
+  // ---------- [E] 比内置包新:不降级 ----------
+  console.log('\n[E] 比内置包还新 → 不降级')
+  await fakeOld(GIT, '9.9.9', 'bundled')
+  await service.refreshInstalled()
+  await ensureBundledProvisioned(service)
   check(
-    '登记里记的 integrity 就是应用自带那份包的 integrity(下次启动不会再想升一遍)',
-    upgraded?.integrity === bundled.integrity,
-    `${String(upgraded?.integrity?.slice(0, 12))} vs ${bundled.integrity.slice(0, 12)}`
-  )
-  check('来源仍是「应用自带」', upgraded?.source === 'bundled', String(upgraded?.source))
-  check(
-    '授权集合一个都没变(升个版本不该顺手把权限变大)',
-    JSON.stringify(upgraded?.grantedPermissions) ===
-      JSON.stringify(bundled.manifest.permissions),
-    JSON.stringify(upgraded?.grantedPermissions)
-  )
-  check('升级后依然是关着的(用户没让它碰过他的仓库)',
-    (await host.list()).find(v => v.descriptor.id === 'git-sync')?.state.enabled === false)
-
-  // ---- 3. 用户开着这个插件时升级 ----
-  console.log('\n[C] 插件正开着的时候升级')
-  // 关掉自动同步:harness 的仓库不是 git 仓库,别在这里真的跑 git
-  await host.save('git-sync', {
-    enabled: true,
-    config: { intervalMinutes: 0, syncOnStart: false }
-  })
-  await sleep(200)
-  // 「插件真的有反应」得问插件自己:没配远端时它会**带着原因**拒绝这次同步,
-  // 这声应答就是活着的证据(宿主自己的 state 不区分"跑过"和"没跑过")
-  const statusItem = { pluginId: 'git-sync', itemId: 'sync-now-status', from: 'status' as const }
-  const before = await host.invokeContrib(statusItem)
-  await sleep(20) // 让时间戳能区分开(不然同一毫秒看不出先后)
-  await fakeOldVersion('git-sync', '0.1.0')
-  await ensureBundledProvisioned(host)
-  const rightAfterUpgrade = (await host.list()).find(v => v.descriptor.id === 'git-sync')
-  const after = await host.invokeContrib(statusItem)
-  check('升级不会把用户开着的插件关掉', rightAfterUpgrade?.state.enabled === true,
-    JSON.stringify(rightAfterUpgrade?.state))
-  check('升级后没有加载错误', rightAfterUpgrade?.loadError === undefined,
-    String(rightAfterUpgrade?.loadError))
-  check(
-    '升级之后插件答得上话(新的那份代码活着,能跑到它自己的判断逻辑)',
-    after.message === before.message && after.message === '尚未配置远端仓库',
-    `${JSON.stringify(before.message)} → ${JSON.stringify(after.message)}`
-  )
-  // 升级会重造 runtime(状态清成 idle、lastRunAt 清零),所以这个时间戳**只能是**
-  // 升级之后那一次跑出来的 —— 它是"新代码真的在跑"的第二个证据
-  check(
-    '升级重置了运行状态(证明换的是真的一个新的运行实例)',
-    rightAfterUpgrade?.state.lastRunAt === null,
-    String(rightAfterUpgrade?.state.lastRunAt)
-  )
-  const afterState = (await host.list()).find(v => v.descriptor.id === 'git-sync')?.state
-  check(
-    '升级之后插件自己的状态又动了起来(不是一份躺着的旧登记)',
-    typeof afterState?.lastRunAt === 'number' && afterState.lastRunAt > 0,
-    JSON.stringify(afterState)
-  )
-
-  // ---- 4. 不该被碰的三种情况 ----
-  console.log('\n[D] 三种「不归它管」的情况')
-  await fakeOldVersion('git-sync', '0.1.0', { source: 'market', registryUrl: 'https://example.com' })
-  await ensureBundledProvisioned(host)
-  const market = await getRecord('git-sync')
-  check(
-    '从市场装的那份不归内置包管(拿自带的去盖,可能盖成一个比市场还旧的版本)',
-    market?.version === '0.1.0' && market?.source === 'market',
-    JSON.stringify({ v: market?.version, s: market?.source })
-  )
-
-  await fakeOldVersion('git-sync', '9.9.9', { source: 'bundled' })
-  await ensureBundledProvisioned(host)
-  check('装着的比自带的还新 → 不降级', (await getRecord('git-sync'))?.version === '9.9.9',
-    String((await getRecord('git-sync'))?.version))
-
-  // 没有登记 = 不是"装"进来的(开发模式挂的目录、手工放的文件夹)
-  await removeRecord('git-sync')
-  await ensureBundledProvisioned(host)
-  check(
-    '没有登记的那份不碰它(不新装、也不覆盖),它还得留在原地',
-    (await getRecord('git-sync')) === null && existing(join(pluginDir('git-sync'), 'manifest.json'))
+    '版本保持 9.9.9',
+    (await readInstalled()).extensions[GIT.id]?.version === '9.9.9',
+    String((await readInstalled()).extensions[GIT.id]?.version)
   )
 
   console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)
+  await shutdownExtensions()
   app.exit(fail === 0 ? 0 : 1)
 }
 
-// 断言里抛了异常要**当场退出**,不能悬在那儿等外部超时 ——
-// 那样看到的是一份没写完的日志,还得先排除"是不是卡住了"
 void main().catch(err => {
   console.error('[harness] 崩了:', err)
   app.exit(3)

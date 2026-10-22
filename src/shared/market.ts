@@ -2,21 +2,18 @@
  * 插件市场的共享类型 —— 跨 IPC 的那些。主进程产出、渲染层展示。
  *
  * 只有**进度**是单向播报,其余都是一问一答。
- */
-
-import type { PluginPermission } from './pluginPackage'
-import type { PluginDescriptor, PluginView } from './plugins'
-
-/**
- * 市场视角的插件层信息。
  *
- * 与清单的 `main:{mode}` / `render` / `capability` 一一对应,由服务端从 manifest
- * 派生后下发;界面只认这三个字段,不再按旧的四种 kind 分支。
+ * v2 的市场形状只描述 VS Code 式扩展:一个包要么含代码(`hasMain`),要么是
+ * 纯声明式配置。没有 main 模式、没有 render 层、没有 capability —— 那些是 v1
+ * 的层模型,已经从类型里整个删掉了。
  */
+
+import type { ExtensionContributesSummary, ExtensionCapabilities } from './extensionPackage'
+import type { ExtensionDescriptor, ExtensionView } from './extensions'
+
+/** 市场视角的扩展形态:是否有 main 入口(false = 纯声明式) */
 export interface MarketPluginShape {
-  mainMode: 'restricted' | 'node' | null
-  hasRender: boolean
-  capability: string | null
+  hasMain: boolean
 }
 
 // ---------- 进度 ----------
@@ -26,15 +23,13 @@ export type MarketPhase =
   | 'download'
   /** 校验结构、逐文件 sha256 与整体 integrity */
   | 'verify'
-  /** 解包到 .staging/ */
-  | 'extract'
-  /** 交由宿主加载并注册(会真的跑插件的 main.js) */
-  | 'load'
+  /** 交给扩展服务落盘、登记、重载 */
+  | 'install'
   | 'done'
   | 'error'
 
 export interface MarketProgress {
-  /** 插件 id;从本地文件安装且清单还没读出来时为空串 */
+  /** 扩展 id;从本地文件安装且清单还没读出来时为空串 */
   id: string
   phase: MarketPhase
   /** 0-100 */
@@ -55,25 +50,29 @@ export interface PackageFileInfo {
  * 安装确认框要看到的一切。
  *
  * 这是**安全基线**:用户在按下「安装」之前必须能看清自己将要同意什么 ——
- * 谁做的、装的是什么、要哪些权限、多大、以及那个可以拿去和别人核对的 sha256。
+ * 谁做的、装的是什么、会不会执行代码、多大、以及那个可以拿去和别人核对的 sha256。
+ *
+ * v2 没有权限沙箱:含代码扩展以当前用户权限运行。清单里的 `capabilities` 只是
+ * **告知**,不构成门禁 —— 因此它是 `ExtensionCapabilities` 而不是权限数组。
  */
 export interface PackagePreview {
   id: string
   name: string
+  displayName: string
   version: string
   /** 清单里的作者署名。**不是**发布者用户名(那是市场账号,本地安装时没有) */
   author: string | null
   description: string
-  /** main 层模式;没有 main 层时为 null */
-  mainMode: 'restricted' | 'node' | null
-  /** 是否有 render 层 */
-  hasRender: boolean
-  /** 无代码插件绑定的内置能力 id;有代码插件为 null */
-  capability: string | null
-  /** 声明式插件绑定的内置能力显示名(会替它执行的那只手);有代码插件为 null */
-  capabilityName: string | null
-  permissions: PluginPermission[]
-  descriptor: PluginDescriptor
+  /** 市场发布者;本地安装为 null */
+  publisher: string | null
+  descriptor: ExtensionDescriptor
+  /** 是否有 main 入口(false = 纯声明式) */
+  hasMain: boolean
+  /** 清单里的 main 字段(含 `./` 前缀);纯声明式为 null */
+  main: string | null
+  activationEvents: string[]
+  capabilities: ExtensionCapabilities
+  contributesSummary: ExtensionContributesSummary
   /** 整包 sha256,供用户跨渠道核对 */
   integrity: string
   fileCount: number
@@ -81,24 +80,15 @@ export interface PackagePreview {
   files: PackageFileInfo[]
   /** main 入口的 sha256 —— 「跑的是不是这一份代码」的凭据 */
   mainSha256: string | null
-  /** render 入口的 sha256(没有 render 层时为 null) */
-  renderSha256: string | null
   /** 本地已装的版本(用于把按钮文案变成「更新」并展示版本变化),没装过为 null */
   installed: { version: string; integrity: string } | null
+  installedVersion: string | null
   /** 这次安装是降级(本地版本更新) */
   downgraded: boolean
   /** 包从哪来:市场下载 / 本地文件 / 本地目录(内置兜底包走的是安装路径,不产生预览) */
   origin: 'market' | 'local-file' | 'local-dir'
   /** 来源描述:市场地址、文件路径或目录路径(仅展示用) */
   originLabel: string
-  /**
-   * 用户已有的授权里没有的新权限。
-   * 非空即表示这是**权限扩大**,确认框必须重新逐条确认 —— 升级时最容易
-   * 被忽略的风险就是「包还是那个包,但它现在要读你的整个仓库了」。
-   */
-  newPermissions: PluginPermission[]
-  /** 本地已装版本(用于升级时对比展示),与 installed.version 相同,独立列出便于阅读 */
-  installedVersion: string | null
 }
 
 /** 待确认的安装:确认框拿着令牌,主进程拿着那份已校验的字节 */
@@ -110,7 +100,7 @@ export interface PendingInstall {
 // ---------- 已安装 ----------
 
 export interface MarketInstalledData {
-  plugins: PluginView[]
+  extensions: ExtensionView[]
   /** 应用自带的兜底包有哪些(界面据此区分「自带」与「自己装的」) */
   bundled: string[]
 }
@@ -122,10 +112,7 @@ export interface MarketUpdate {
   name: string
   currentVersion: string
   latestVersion: string
-  /** 新版本要求的权限里,比本地已授权的多出来的那些 */
-  newPermissions: PluginPermission[]
-  mainMode: 'restricted' | 'node' | null
-  hasRender: boolean
+  hasMain: boolean
 }
 
 // ---------- 市场(服务端返回的形状) ----------
@@ -134,12 +121,13 @@ export interface MarketUpdate {
  * 列表页看到的一条。
  *
  * 这里**没有**「本地是否已装」「有没有更新」—— 那些是客户端拿本地状态与
- * 这份服务端数据join 出来的,不归服务端回答。服务端并不知道谁装了什么,
+ * 这份服务端数据 join 出来的,不归服务端回答。服务端并不知道谁装了什么,
  * 也不该知道。
  */
 export interface MarketEntry extends MarketPluginShape {
   id: string
   name: string
+  displayName: string
   description: string
   /** 最新非下架版本 */
   version: string
@@ -147,19 +135,14 @@ export interface MarketEntry extends MarketPluginShape {
   author: string | null
   /** 发布者账号(市场用户名)—— 与 author 不是一回事,界面上要分开写 */
   publisher: string
-  /**
-   * 声明式插件绑定的内置能力 id;有代码插件为 null。
-   * 名字不在这里 —— 能力注册表在主进程,名字由它翻好再下发(见 capabilityName)。
-   */
-  capability: string | null
-  /**
-   * 上面那个能力的**显示名**,由主进程查能力注册表得到。
-   *
-   * 「不含代码」这句话本身是空的:一个声称是笔记统计的插件完全可以绑 webhook。
-   * 用户要判断的恰恰是「它借的是哪只别人的手」,所以名字必须跟着 id 一起下来。
-   */
-  capabilityName: string | null
-  permissions: PluginPermission[]
+  /** 清单里的 main 入口(含 `./` 前缀);纯声明式为 null */
+  main: string | null
+  /** 清单声明的激活事件(懒激活的依据) */
+  activationEvents: string[]
+  /** 清单声明的能力(告知用,不是门禁) */
+  capabilities: ExtensionCapabilities
+  /** 贡献点计数:命令 / 快捷键 / 设置项 / 行首菜单 / 动作 */
+  contributesSummary: ExtensionContributesSummary
   homepage: string | null
   hasIcon: boolean
   downloads: number
@@ -182,7 +165,6 @@ export interface MarketVersionInfo {
   yanked: boolean
   size: number | null
   mainSha256: string | null
-  renderSha256: string | null
 }
 
 export interface MarketDetail extends MarketEntry {
@@ -206,10 +188,10 @@ export interface MarketSourceFile {
 /**
  * 某个版本包里的可读文件。
  *
- * 这份东西存在的唯一理由是**知情**:装脚本插件等于让作者的代码拿到完整权限,
- * 而 README 是作者写的、详情页是市场给的,只有源码是作者真正要跑的东西。
- * 因此这里展示的内容与**真要装进去的那份字节**来自同一个信封,且同样过了
- * `verifyEnvelope` 与 integrity 校验 —— 不是另取的一份「参考源码」。
+ * 这份东西存在的唯一理由是**知情**:装含代码扩展等于让作者的代码拿到当前用户
+ * 的全部权限,而 README 是作者写的、详情页是市场给的,只有源码是作者真正要跑的
+ * 东西。因此这里展示的内容与**真要装进去的那份字节**来自同一个信封,且同样过了
+ * `validateEnvelope` 与 integrity 校验 —— 不是另取的一份「参考源码」。
  */
 export interface MarketSource {
   id: string
@@ -228,9 +210,8 @@ export interface MarketQuery {
   page: number
   pageSize: number
   sort: MarketSort
-  /** 'none' = 没有 main 层;null = 不筛选 */
-  mainMode: 'restricted' | 'node' | 'none' | null
-  hasRender: boolean | null
+  /** null = 不筛选;true = 只看含代码;false = 只看纯声明 */
+  hasMain: boolean | null
 }
 
 export interface MarketAuthStatus {
@@ -248,17 +229,19 @@ export interface MarketAuthStatus {
 export interface PublishPreview {
   id: string
   name: string
+  displayName: string
   version: string
-  mainMode: 'restricted' | 'node' | null
-  hasRender: boolean
-  capability: string | null
+  author: string | null
+  hasMain: boolean
+  main: string | null
+  activationEvents: string[]
+  capabilities: ExtensionCapabilities
+  contributesSummary: ExtensionContributesSummary
   integrity: string
   mainSha256: string | null
-  renderSha256: string | null
   fileCount: number
   totalBytes: number
   files: PackageFileInfo[]
-  permissions: PluginPermission[]
   /** 服务端上这个 id 目前的最高版本;这个 id 还没被发布过则为 null */
   existingVersion: string | null
   /** 服务端上这个 id 的拥有者;与当前登录用户不同时界面要警告 */

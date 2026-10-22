@@ -26,7 +26,6 @@
 import { ChangeSet, type EditorState, type TransactionSpec } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { applyWrapping, buildDocumentState } from '../editor/setup'
-import { refreshPluginExtensions } from '../editor/pluginExtensions'
 import { extractOutline, updateActiveOutline } from '../editor/outline'
 import { flushTableEdits } from '../editor/wysiwyg/widgets'
 import { appStore, editorHolder, type OutlineItem } from '../stores/app'
@@ -248,8 +247,6 @@ function mountTabState(id: string, view: EditorView): void {
   const rt = runtime.get(id)
   if (!rt) return
   view.setState(rt.state)
-  // setState 换上的 state 可能建于插件装卸/换行开关变化之前;补一次对齐
-  refreshPluginExtensions(view)
   applyWrapping(view, appStore.lineWrapping)
   if (rt.scrollEffect) view.dispatch({ effects: rt.scrollEffect })
 }
@@ -537,7 +534,6 @@ export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRL
   const view = editorHolder.view
   if (id === appStore.activeTabId && view) {
     view.setState(state)
-    refreshPluginExtensions(view)
   }
   syncMirror()
   if (id === appStore.activeTabId && view) updateActiveOutline(view)

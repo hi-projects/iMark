@@ -305,6 +305,12 @@ async function main(): Promise<void> {
       '重新启用后命令重新出现(清单声明)',
       service.getContributions().commands.some(item => item.command === 'test.alpha.hello')
     )
+    // 关键回归:启动之后再启用，onStartupFinished 已经过去；扩展仍应被立即激活，
+    // 否则 AI for Edit 这类「激活里创建状态栏/浮动面板」的扩展在启用后什么都不出现
+    check(
+      '重新启用后 onStartupFinished 扩展自动激活(不必等命令)',
+      await waitFor('alpha auto activated', () => service.isActivated('test.alpha'))
+    )
     check('重新启用后命令可执行', (await service.executeCommand('test.alpha.hello', ['y'])) === 'alpha:你好:y')
     check('重新启用后扩展状态为 active', service.isActivated('test.alpha'))
     check('配置与 globalState 跨停用保留', (await service.executeCommand('test.alpha.count')) === 3)

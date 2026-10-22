@@ -12,18 +12,6 @@ import type {
   PublishPreview,
   PublishResult
 } from './market'
-import type {
-  PluginActionPayload,
-  PluginActionResult,
-  PluginContribInvoke,
-  PluginContribsSnapshot,
-  PluginNotice,
-  PluginState,
-  RenderHalfMessage,
-  RendererOpReply,
-  RendererOpRequest,
-  PluginView
-} from './plugins'
 import type { DefaultEditorStatus, ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
 import type {
@@ -115,66 +103,8 @@ export interface WindowApi {
   onExtensionCommand(
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): () => void
-  // ---------- 插件(v1,阶段 7 删除) ----------
-  listPlugins(): Promise<PluginView[]>
-  savePlugin(id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }): Promise<PluginView[]>
-  /** value 为 null 时清除该密钥;返回值是最新的插件视图列表 */
-  setPluginSecret(
-    id: string,
-    fieldKey: string,
-    targetId: string | null,
-    value: string | null
-  ): Promise<PluginView[]>
-  /** restricted main:放开/收回「允许访问本机地址」(默认拒) */
-  setPluginNetAccess(id: string, allow: boolean): Promise<PluginView[]>
-  /** 用系统默认程序打开某个插件的完整日志文件(不存在则先创建) */
-  openPluginLog(id: string): Promise<void>
-  /**
-   * targetId 只在 descriptor.targetActions 的动作上出现(对目标列表的某一行执行);
-   * payload 只在行首菜单的动作上出现(对话框里填的值 + 触发那一行的快照)。
-   */
-  runPluginAction(
-    id: string,
-    action: string,
-    targetId?: string,
-    payload?: PluginActionPayload
-  ): Promise<PluginActionResult>
-  /** 主进程要求保存脏文档时的回执 */
-  notifyPluginFlushed(): void
-  onPluginFlushDoc(cb: () => void): () => void
-  onPluginStatus(cb: (plugins: PluginView[]) => void): () => void
-  /** 首次挂载时主动要一次贡献点快照(不必等下一次变更) */
-  getPluginContribs(): Promise<PluginContribsSnapshot>
-  /** 执行一次界面贡献点(命令面板/状态栏/右键菜单共用一条通道) */
-  runPluginContrib(invoke: PluginContribInvoke): Promise<PluginActionResult>
-  onPluginContribs(cb: (snapshot: PluginContribsSnapshot) => void): () => void
-  onPluginNotice(cb: (notice: PluginNotice) => void): () => void
-  /** 某个文件被插件改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
+  /** 某个文件被外部/扩展改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
   onFileExternalChange(cb: (filePath: string) => void): () => void
-  // ---------- render 层 ----------
-  /**
-   * render 层 → main 层的一条消息(主进程中转;没有 main 层时主进程只记一条日志)。
-   * 页面上传不了函数/循环引用 —— 数据必须可以 JSON 化。
-   */
-  sendRenderMessage(pluginId: string, channel: string, data: unknown): void
-  /** main 层 → render 层的消息(主进程推过来;渲染层按 pluginId 分发给对应的插件) */
-  onRenderMessage(cb: (message: RenderHalfMessage) => void): () => void
-  /** render 层更新自己的状态卡(与插件 API 的 setState 同义,主进程会再校验一次) */
-  notifyRenderState(pluginId: string, patch: Partial<PluginState>): void
-  /** render 层写一行日志(进该插件的日志缓冲与主进程控制台) */
-  notifyRenderLog(
-    pluginId: string,
-    level: 'debug' | 'info' | 'warn' | 'error',
-    message: string
-  ): void
-  // ---------- render 层生命周期 ----------
-  /** 主→渲染:render.prepare/enable/config/runAction/unload。**必须**回执,否则主进程那边会超时 */
-  onPluginHostRequest(cb: (req: RendererOpRequest) => void): () => void
-  replyHostRequest(reply: RendererOpReply): void
-  /** 界面这边准备好了 —— 主进程收到之后才会开始发 render.prepare */
-  notifyPluginUiReady(): void
-  /** 「插件」菜单(含快捷键)点了某条命令 */
-  onPluginCommand(cb: (o: { pluginId: string; itemId: string }) => void): () => void
   /** 文档内容变了。**调用方负责节流** —— 每次按键都过一次 IPC 是不可接受的 */
   notifyDocChanged(o: { dirty: boolean; words: number; chars: number }): void
   setEditorPresence(present: boolean): void
@@ -197,16 +127,16 @@ export interface WindowApi {
   /** 用户点了取消:把待确认项丢掉 */
   dropMarketPending(token: string): Promise<void>
   /** 确认安装,返回最新的插件视图列表 */
-  installMarketPending(token: string): Promise<PluginView[]>
+  installMarketPending(token: string): Promise<ExtensionView[]>
   /**
    * 卸载插件。**密钥一定会被删除**(见 host.uninstall 的说明),与 `removeConfig` 无关;
    * 该选项只决定插件的配置是否一起删掉。
    */
-  uninstallPlugin(id: string, options: { removeConfig: boolean }): Promise<PluginView[]>
+  uninstallPlugin(id: string): Promise<ExtensionView[]>
   /** 已安装插件 + 哪些是应用自带的 */
   listMarketInstalled(): Promise<MarketInstalledData>
   /** 把应用自带的兜底插件重新装回来(离线可用) */
-  restoreBundledPlugins(): Promise<PluginView[]>
+  restoreBundledPlugins(): Promise<ExtensionView[]>
   onMarketProgress(cb: (p: MarketProgress) => void): () => void
   /** 设置市场地址;返回规范化后的地址。空串表示不使用市场 */
   setMarketRegistry(url: string): Promise<string>

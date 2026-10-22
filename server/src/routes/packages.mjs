@@ -22,22 +22,50 @@ const PUBLISH_BODY_LIMIT = Math.ceil(LIMITS.envelopeBytes * 1.5)
 
 const ICON_MIME = { png: 'image/png', svg: 'image/svg+xml' }
 
+/** 清单里的作者署名(对象形态取 name) */
+function authorName(author) {
+  if (typeof author === 'string') return author.trim() || null
+  if (author && typeof author === 'object' && typeof author.name === 'string') {
+    return author.name.trim() || null
+  }
+  return null
+}
+
+/** 贡献点计数 —— 与客户端 contributesSummaryOf 同口径 */
+function contributesSummaryOf(manifest) {
+  const contributes = manifest.contributes ?? {}
+  const config = contributes.configuration
+  let configuration = 0
+  if (config) {
+    for (const section of Array.isArray(config) ? config : [config]) {
+      configuration += Object.keys(section?.properties ?? {}).length
+    }
+  }
+  return {
+    commands: contributes.commands?.length ?? 0,
+    keybindings: contributes.keybindings?.length ?? 0,
+    configuration,
+    lineMenu: contributes['imark.lineMenu']?.length ?? 0,
+    actions: contributes['imark.actions']?.length ?? 0
+  }
+}
+
 /** 详情页/搜索结果里的公开字段 —— 不含包体、不含 readme(列表页用不上) */
 function entryOf(id, pkg, latest) {
   const m = latest.manifest
   return {
     id,
     name: m.name,
+    displayName: m.displayName?.trim() || m.name,
     description: m.description ?? '',
     version: latest.version,
-    author: m.author ?? null,
+    author: authorName(m.author),
     publisher: pkg.owner,
-    mainMode: m.main?.mode ?? null,
-    hasRender: Boolean(m.render),
-    // 无代码插件绑定的内置能力 id。客户端拿它去自己的能力注册表里查名字
-    // (客户端才是「这个名字叫什么、这个能力能干什么」的权威,服务端不重复一份)
-    capability: m.capability ?? null,
-    permissions: m.permissions ?? [],
+    main: m.main ?? null,
+    hasMain: Boolean(m.main),
+    activationEvents: m.activationEvents ?? [],
+    capabilities: m.capabilities ?? {},
+    contributesSummary: contributesSummaryOf(m),
     homepage: m.homepage ?? null,
     hasIcon: Boolean(latest.iconName),
     downloads: pkg.downloads,
@@ -69,8 +97,7 @@ export function register(router, app) {
 
   router.get('/api/v1/search', async ({ query, res }) => {
     const q = (query.get('q') ?? '').trim().toLowerCase()
-    const mainMode = query.get('mainMode')
-    const render = query.get('render')
+    const hasMain = query.get('hasMain')
     const sort = query.get('sort') ?? 'updated'
     const page = intParam(query, 'page', 1, 1, 10000)
     const pageSize = intParam(query, 'pageSize', 20, 1, 100)
@@ -80,20 +107,16 @@ export function register(router, app) {
     for (const [id, pkg] of Object.entries(data.packages)) {
       const latest = latestVersion(pkg)
       if (!latest) continue // 全部版本已下架 → 等于不存在
-      if (mainMode === 'none') {
-        if (latest.manifest.main) continue
-      } else if (mainMode && latest.manifest.main?.mode !== mainMode) {
-        continue
-      }
-      if (render === 'true' && !latest.manifest.render) continue
-      if (render === 'false' && latest.manifest.render) continue
+      if (hasMain === 'true' && !latest.manifest.main) continue
+      if (hasMain === 'false' && latest.manifest.main) continue
       if (q) {
         // 作者(author,清单里写的人)与发布者(owner,市场账号)是两回事,
         // 但用户搜「iMark」时通常指的是作者署名 —— 两边都放进搜索范围。
         // 括号不能省:否则 toLowerCase 只作用在第二个模板串上,作者/名称会变成
         // 大小写敏感(搜 iMark 搜不到 iMark 的插件)
         const hay = (
-          `${id} ${latest.manifest.name} ${latest.manifest.author ?? ''} ` +
+          `${id} ${latest.manifest.name} ${latest.manifest.displayName ?? ''} ` +
+          `${authorName(latest.manifest.author) ?? ''} ` +
           `${latest.manifest.description ?? ''} ${pkg.owner}`
         ).toLowerCase()
         if (!hay.includes(q)) continue
@@ -133,8 +156,7 @@ export function register(router, app) {
           publishedAt: v.publishedAt,
           yanked: Boolean(v.yanked),
           size: v.size ?? null,
-          mainSha256: v.mainSha256 ?? null,
-          renderSha256: v.renderSha256 ?? null
+          mainSha256: v.mainSha256 ?? null
         }))
         .sort((a, b) => compareVersions(b.version, a.version)),
       readme: latest.readme ?? null
@@ -161,7 +183,6 @@ export function register(router, app) {
       publishedAt: v.publishedAt,
       yanked: Boolean(v.yanked),
       mainSha256: v.mainSha256 ?? null,
-      renderSha256: v.renderSha256 ?? null,
       manifest: v.manifest
     })
   })
@@ -272,7 +293,6 @@ export function register(router, app) {
           version,
           integrity: pkgValue.integrity,
           mainSha256: pkgValue.mainSha256,
-          renderSha256: pkgValue.renderSha256,
           size: pkgValue.size,
           manifest: pkgValue.manifest,
           readme: extractReadme(raw),

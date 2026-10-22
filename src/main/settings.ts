@@ -55,7 +55,6 @@ const DEFAULTS: Settings = {
   skipVaultPicker: false,
   // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
   userStyle: null,
-  plugins: {},
   extensions: {},
   extensionHost: { mode: 'isolated', affinity: {} },
   legacyDataCleared: 0,
@@ -101,16 +100,14 @@ function normalizeAutoSave(
 }
 
 /**
- * 磁盘数据只做顶层合并,这里补一层浅校验:嵌套结构(目前只有 plugins)
- * 若被手改成非法形状,就地落回默认值,避免各处读取时崩。
- * 插件内部的字段级默认值由插件宿主负责补(那里才知道各插件的字段表)。
+ * 磁盘数据只做顶层合并,这里补一层浅校验:嵌套结构若被手改成非法形状,
+ * 就地落回默认值,避免各处读取时崩。扩展内部的字段级默认值由扩展服务负责补
+ * (那里才知道各扩展的字段表)。
  */
 function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
   const merged = { ...DEFAULTS, ...raw } as Settings & Record<string, unknown>
-  const plugins = merged.plugins
-  if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) {
-    merged.plugins = {}
-  }
+  // v1 的扩展配置键已经不在类型里:读到就丢掉,下一次 saveSettings 不会再写出去
+  delete merged.plugins
   if (!merged.extensions || typeof merged.extensions !== 'object' || Array.isArray(merged.extensions)) {
     merged.extensions = {}
   }
@@ -236,4 +233,38 @@ export async function saveSettings(partial: Partial<Settings>): Promise<Settings
     }
   }
   return next
+}
+
+/**
+ * 从磁盘上删掉已经废弃的顶层键(v1 的 `plugins` 等)。
+ *
+ * 只删键、不迁移值:`normalize()` 已经把内存里的 `plugins` 丢掉了,这里补的是
+ * 「磁盘上的那一份也别再留着」。写入走同一条串行队列,避免与 saveSettings 抢跑。
+ */
+export async function dropLegacySettingsKeys(keys: readonly string[]): Promise<void> {
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(await readFile(settingsPath(), 'utf8')) as Record<string, unknown>
+  } catch {
+    return
+  }
+  let changed = false
+  for (const key of keys) {
+    if (key in raw) {
+      delete raw[key]
+      changed = true
+    }
+  }
+  if (!changed) return
+  const snapshot = JSON.stringify(raw, null, 2)
+  const write = writeChain.then(async () => {
+    try {
+      await mkdir(dirname(settingsPath()), { recursive: true })
+      await writeFile(settingsPath(), snapshot, 'utf8')
+    } catch {
+      /* 落盘失败不影响本次会话;下次清理前会再试 */
+    }
+  })
+  writeChain = write
+  await write
 }

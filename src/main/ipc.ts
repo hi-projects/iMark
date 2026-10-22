@@ -1,12 +1,9 @@
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type { PluginActionPayload, PluginContribInvoke } from '@shared/plugins'
 import type { SaveDialogOptions, Settings } from '@shared/types'
 import {
-  currentDocPath,
   getMainWindow,
   handleSaveDone,
-  hasEditor,
   setCurrentDocPath,
   setDocDirty,
   setEditorPresent,
@@ -30,7 +27,6 @@ import {
 import { getSettings, saveSettings } from './settings'
 import { takePendingOpenFile } from './openFile'
 import { defaultEditorStatus, registerAsDefaultEditor } from './system'
-import { getPluginHost, type PluginHost } from './plugins/host'
 import { registerExtensionIpc } from './extensions/ipc'
 import { registerMarketIpc } from './market/ipc'
 import {
@@ -54,13 +50,6 @@ function safeOpenExternal(url: string): void {
   if (/^https?:\/\//i.test(url)) {
     void shell.openExternal(url)
   }
-}
-
-/** 插件系统由 index.ts 在窗口创建前初始化,这里只做兜底断言 */
-function requirePluginHost(): PluginHost {
-  const host = getPluginHost()
-  if (!host) throw new Error('插件系统尚未就绪')
-  return host
 }
 
 export function registerIpc(): void {
@@ -110,12 +99,7 @@ export function registerIpc(): void {
     // 扩展相关的三组设置只由扩展服务写(它要保证归一化、持久化与宿主生命周期),
     // 渲染层把整份 settings 回传时这三组一律忽略 —— 否则设置面板保存一次主题
     // 就可能把扩展的启用态/配置覆盖回旧值。
-    const {
-      plugins: _ignoredPlugins,
-      extensions: _ignoredExtensions,
-      extensionHost: _ignoredHost,
-      ...rest
-    } = partial
+    const { extensions: _ignoredExtensions, extensionHost: _ignoredHost, ...rest } = partial
     return saveSettings(rest)
   })
 
@@ -146,33 +130,11 @@ export function registerIpc(): void {
   })
 
   ipcMain.on(IPC.DocPath, (_e, p: unknown) => {
-    const path = typeof p === 'string' ? p : null
-    // 换了文件要告诉插件。放在这里而不是窗口那一层:插件事件的触发点应当集中在
-    // 一处,不然「哪些事插件能知道」就要满仓找 ipcMain.on 才说得清。
-    const changed = currentDocPath() !== path
-    setCurrentDocPath(path)
-    if (changed) {
-      void getPluginHost()?.emit('file:open', { filePath: path })
-      // 有了路径就意味着编辑器里有东西 —— 命令的可用性变了(见 contextChanged)
-      getPluginHost()?.contextChanged()
-    }
+    setCurrentDocPath(typeof p === 'string' ? p : null)
   })
 
   ipcMain.on(IPC.EditorPresence, (_e, value: unknown) => {
-    // 比的是**结论**而不是这个布尔值本身:路径也在参与判断,文档没变时
-    // 这个字段怎么翻都不会改变结论,那就没必要重算一遍菜单
-    const before = hasEditor()
     setEditorPresent(Boolean(value))
-    if (hasEditor() !== before) getPluginHost()?.contextChanged()
-  })
-
-  ipcMain.on(IPC.DocChanged, (_e, o: { dirty?: boolean; words?: number; chars?: number }) => {
-    void getPluginHost()?.emit('document:change', {
-      filePath: currentDocPath(),
-      dirty: Boolean(o?.dirty),
-      words: Number(o?.words) || 0,
-      chars: Number(o?.chars) || 0
-    })
   })
 
   ipcMain.on(IPC.SaveDone, (_e, o: { ok: boolean }) => {
@@ -180,11 +142,9 @@ export function registerIpc(): void {
   })
 
   // 一次真的写盘完成了(手动保存、自动保存、另存为都走这儿)。
-  // 关闭前那次保存走的是上面的 SaveDone —— 那条路上渲染层调用 saveCurrentFile,
-  // 于是这里照样会收到一条,不必在那边重复发。
-  ipcMain.on(IPC.DocSaved, (_e, path: unknown) => {
-    const saved = typeof path === 'string' && path ? path : currentDocPath()
-    void getPluginHost()?.emit('document:save', { filePath: saved, ok: true })
+  // 扩展侧的文档事件由渲染层的 editor bridge 直接发 `editor.documentSaved`。
+  ipcMain.on(IPC.DocSaved, () => {
+    /* 保留通道:主进程无需额外动作 */
   })
 
   // ---------- 仓库 ----------
@@ -221,83 +181,6 @@ export function registerIpc(): void {
 
   // ---------- 扩展(v2) ----------
   registerExtensionIpc()
-
-  // ---------- 插件(v1,阶段 7 删除) ----------
-  // v1 宿主已经不再初始化，这些处理器暂时保留只为让市场/渲染层的旧调用
-  // 在阶段 3 期间编译通过；真正被点到的旧入口会在阶段 6 一并替换。
-
-  ipcMain.handle(IPC.PluginList, () => requirePluginHost().list())
-
-  ipcMain.handle(
-    IPC.PluginSave,
-    async (_e, o: { id: string; enabled?: boolean; config?: Record<string, unknown> }) => {
-      const host = requirePluginHost()
-      await host.save(o.id, { enabled: o.enabled, config: o.config })
-      return host.list()
-    }
-  )
-
-  ipcMain.handle(
-    IPC.PluginSetSecret,
-    async (_e, o: { id: string; fieldKey: string; targetId: string | null; value: string | null }) => {
-      const host = requirePluginHost()
-      await host.setSecretValue(o.id, o.fieldKey, o.targetId, o.value)
-      return host.list()
-    }
-  )
-
-  ipcMain.handle(
-    IPC.PluginRun,
-    (_e, o: { id: string; action: string; targetId?: string; payload?: PluginActionPayload }) =>
-      requirePluginHost().runAction(o.id, o.action, o.targetId, o.payload)
-  )
-
-  ipcMain.handle(
-    IPC.PluginSetNetAccess,
-    async (_e, o: { id: string; allow: boolean }) => {
-      const host = requirePluginHost()
-      await host.setNetAccess(o.id, o.allow)
-      return host.list()
-    }
-  )
-
-  ipcMain.handle(IPC.PluginLogOpen, async (_e, id: unknown) => {
-    if (typeof id !== 'string' || !id) throw new Error('插件 id 不合法')
-    const problem = await shell.openPath(requirePluginHost().ensureLogFile(id))
-    if (problem) throw new Error(`打开插件日志失败：${problem}`)
-  })
-
-  ipcMain.on(IPC.PluginFlushDone, () => {
-    getPluginHost()?.handleFlushDone()
-  })
-
-  // ---------- render 层 ----------
-  // 三条都是渲染层单向告知(消息 / 状态 / 日志),没有回执 —— 容量与频率校验
-  // 在主进程再做一次(渲染层里可能有插件代码,不能默认它是礼貌的)
-  ipcMain.on(IPC.PluginRenderMessage, (_e, o: unknown) => {
-    void getPluginHost()?.handleRenderMessage(o)
-  })
-  ipcMain.on(IPC.PluginRenderState, (_e, o: unknown) => {
-    void getPluginHost()?.applyRenderState(o)
-  })
-  ipcMain.on(IPC.PluginRenderLog, (_e, o: unknown) => {
-    getPluginHost()?.logRenderLayer(o)
-  })
-
-  // ---------- 插件界面贡献点 ----------
-
-  ipcMain.handle(IPC.PluginContribGet, async () => {
-    const host = getPluginHost()
-    if (!host) return { contribs: [], context: { hasEditor: false, hasVault: false } }
-    // 可用性判定要在主进程算:渲染层拿到的每条命令已经带上了「现在能不能用」,
-    // 这样两边看到的结论天生一致(渲染层无法只靠自己的状态算出同一个答案 ——
-    // 它不知道主进程视角的仓库状态)
-    return { contribs: await host.contributions(), context: host.commandContext() }
-  })
-
-  ipcMain.handle(IPC.PluginContribRun, (_e, o: PluginContribInvoke) => {
-    return requirePluginHost().invokeContrib(o)
-  })
 
   // ---------- 插件市场 ----------
 

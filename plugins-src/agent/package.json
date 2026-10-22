@@ -1,0 +1,202 @@
+{
+  "name": "agent",
+  "publisher": "imark",
+  "version": "1.0.0",
+  "displayName": "Agent",
+  "description": "通用 Agent 对话面板：把附件交给本机 Agent（首个 provider 为 Claude Code），由 Agent 自行读取与解析文件",
+  "author": "iMark",
+  "engines": { "imark": "^0.1.0" },
+  "main": "./main.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:imark.agent.openChat",
+    "onCommand:imark.agent.generate",
+    "onCommand:imark.agent.beautify",
+    "onCommand:imark.agent.checkProvider",
+    "onCommand:imark.agent.stop",
+    "onWebviewPanel:imark.agent.chat"
+  ],
+  "capabilities": {
+    "filesystem": "user",
+    "network": true,
+    "secrets": true,
+    "process": true,
+    "shell": true
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "imark.agent.openChat",
+        "title": "打开 Agent 对话",
+        "category": "Agent"
+      },
+      {
+        "command": "imark.agent.generate",
+        "title": "Agent 生成内容",
+        "category": "Agent",
+        "detail": "在对话面板里根据一句话描述生成 Markdown"
+      },
+      {
+        "command": "imark.agent.beautify",
+        "title": "Agent 整理当前文档",
+        "category": "Agent"
+      },
+      {
+        "command": "imark.agent.checkProvider",
+        "title": "检查 Agent 可用性",
+        "category": "Agent"
+      },
+      {
+        "command": "imark.agent.stop",
+        "title": "停止 Agent 运行",
+        "category": "Agent"
+      }
+    ],
+    "configuration": {
+      "title": "Agent",
+      "properties": {
+        "imark.agent.provider": {
+          "type": "string",
+          "default": "claude-code",
+          "enum": ["claude-code"],
+          "title": "Provider",
+          "description": "当前使用的 Agent。首个内置 provider 是 Claude Code；后续会增加其它 Agent。",
+          "imark": {
+            "kind": "select",
+            "section": "Agent"
+          }
+        },
+        "imark.agent.mode": {
+          "type": "string",
+          "default": "read+parse",
+          "enum": ["read+parse", "read-only"],
+          "title": "权限模式",
+          "description": "read+parse：允许 Agent 运行解析命令并写入会话目录，附件由 Agent 自行读取。read-only：只允许读取，PDF 需要模型原生支持；无法解析时 Agent 会明确说明。",
+          "imark": {
+            "kind": "select",
+            "section": "Agent"
+          }
+        },
+        "imark.agent.claudeCode.command": {
+          "type": "string",
+          "default": "",
+          "title": "Claude Code 可执行文件",
+          "description": "留空自动探测 PATH、%USERPROFILE%\\.local\\bin\\claude.exe。也可以填本机 claude.exe / claude.cmd 的完整路径。",
+          "imark": {
+            "kind": "text",
+            "section": "Claude Code",
+            "placeholder": "留空自动探测"
+          }
+        },
+        "imark.agent.claudeCode.model": {
+          "type": "string",
+          "default": "",
+          "title": "模型",
+          "description": "留空使用 Claude Code 自己的默认模型。可填 sonnet / opus / haiku 或完整模型名。",
+          "imark": {
+            "kind": "text",
+            "section": "Claude Code",
+            "placeholder": "留空使用 CLI 默认"
+          }
+        },
+        "imark.agent.claudeCode.isolation": {
+          "type": "string",
+          "default": "safe",
+          "enum": ["safe", "restricted", "off"],
+          "title": "隔离",
+          "description": "safe：禁用 CLAUDE.md/技能/hooks 等自定义，保留登录态；restricted：进一步限制文件工具与设置文件（可能影响自定义认证配置）；off：完全交给 Claude Code 自己的设置。",
+          "imark": {
+            "kind": "select",
+            "section": "Claude Code"
+          }
+        },
+        "imark.agent.claudeCode.timeoutSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 1800,
+          "title": "单轮超时（秒）",
+          "description": "超过这个时间会终止 Agent 子进程；文档和会话不会改动。",
+          "imark": {
+            "kind": "number",
+            "section": "Claude Code"
+          }
+        },
+        "imark.agent.claudeCode.maxTurns": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 100,
+          "title": "单轮最大工具轮数",
+          "description": "Agent 单次回答最多允许多少个 assistant 轮次；超过后宿主会终止子进程。",
+          "imark": {
+            "kind": "number",
+            "section": "Claude Code"
+          }
+        },
+        "imark.agent.claudeCode.extraArgs": {
+          "type": "string",
+          "default": "",
+          "title": "额外参数",
+          "description": "每行一个参数，追加到 claude 命令行。会拒绝会改变协议/权限/会话的参数（如 -p、--output-format、--dangerously-*）。",
+          "imark": {
+            "kind": "textarea",
+            "section": "Claude Code",
+            "rows": 3
+          }
+        },
+        "imark.agent.claudeCode.apiKey": {
+          "type": "string",
+          "default": "",
+          "title": "API 密钥",
+          "description": "可选。留空则复用本机 Claude Code 的登录态；填写后只通过子进程环境变量注入，不进入界面、日志或会话文件。",
+          "imark": {
+            "kind": "password",
+            "section": "Claude Code"
+          }
+        },
+        "imark.agent.attachmentMaxMB": {
+          "type": "number",
+          "default": 32,
+          "minimum": 1,
+          "maximum": 100,
+          "title": "单个附件上限（MB）",
+          "description": "超过上限的文件会在上传阶段被拒绝；插件不解析附件内容。",
+          "imark": {
+            "kind": "number",
+            "section": "附件"
+          }
+        }
+      }
+    },
+    "imark.lineMenu": [
+      {
+        "id": "agent-generate",
+        "label": "Agent 生成内容",
+        "command": "imark.agent.generate",
+        "dialog": {
+          "title": "Agent 生成内容",
+          "confirmLabel": "生成",
+          "fields": [
+            {
+              "key": "prompt",
+              "kind": "text",
+              "label": "生成要求",
+              "default": "",
+              "placeholder": "例如：根据附件论文写一篇综述",
+              "description": "打开 Agent 对话，并把这条要求填进输入框。"
+            }
+          ]
+        }
+      }
+    ],
+    "imark.actions": [
+      {
+        "command": "imark.agent.checkProvider",
+        "label": "检查 Agent",
+        "scope": "global",
+        "primary": true
+      }
+    ]
+  }
+}

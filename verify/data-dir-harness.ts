@@ -166,7 +166,7 @@ async function main(): Promise<void> {
   const fixture: Record<string, string> = {
     'settings.json': '{"marker":"settings"}',
     'secrets.json': '{"version":1,"entries":{"p:f:x":{"enc":false,"v":"tok"}}}',
-    'plugin-ui.json': '{"p":{"x":1}}',
+    'css/demo.css': 'body{}',
     'plugins/demo/manifest.json': '{"id":"demo"}',
     'Local State': 'dummy-key-material',
     'Cache/foo.bin': 'cache-bytes'
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
   check('缓存也跟着走', readFileSync(join(root, 'profile', 'Cache', 'foo.bin'), 'utf8') === fixture['Cache/foo.bin'])
   check(
     '四项应用自有数据都到了数据根,内容一字不差',
-    ['settings.json', 'secrets.json', 'plugin-ui.json', 'plugins/demo/manifest.json'].every(
+    ['settings.json', 'secrets.json', 'css/demo.css', 'plugins/demo/manifest.json'].every(
       n => readFileSync(join(root, n), 'utf8') === fixture[n]
     )
   )

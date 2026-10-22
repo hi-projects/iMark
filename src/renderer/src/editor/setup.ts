@@ -9,7 +9,6 @@ import { wysiwyg } from './wysiwyg'
 import { enterAboveTable, selectAdjacentTable, tableInputFilter } from './wysiwyg/widgets'
 import { lineMenu } from './lineMenu'
 import { mathPreview } from './mathPreview'
-import { pluginExtensionsCompartment } from './pluginExtensions'
 import { extensionDecorationsExtension } from './extensionDecorations'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
@@ -112,11 +111,9 @@ export function buildExtensions(
     // 光标进入公式后源码态旁边浮一块实时预览
     mathPreview(),
     lineMenu(),
-    // 插件的编辑器扩展点(读/改由宿主代劳,这里只负责把它们的标记画出来)
-    // render 层自己注册的 CM6 扩展(按插件分桶,可精确移除)。
-    // 每次重建 state 都要重新装一遍 —— 所以它每次都从模块级注册表现读。
-    pluginExtensionsCompartment(),
-    // 扩展的文本装饰随 state 走:切换标签后装饰还在,后台标签的偏移量也跟着变化映射
+    // 扩展的文本装饰随 state 走:切换标签后装饰还在,后台标签的偏移量也跟着变化映射。
+    // v2 里扩展代码只跑在独立的宿主进程,不能往渲染层注入 CM6 扩展 —— 装饰统一走
+    // 主进程的 extension bridge(见 services/editorBridge.ts / extensionDecorations.ts)。
     ...extensionDecorationsExtension,
     keymap.of([
       // 光标贴在表格上一行行尾 / 下一行行首时:第一次选中整表,第二次才删。

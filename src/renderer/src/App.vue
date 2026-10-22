@@ -52,7 +52,7 @@ import {
   restoreLastDocument,
   toggleSwitcher
 } from './services/vaultService'
-import { openMarketSettings } from './services/pluginService'
+import { openMarketSettings } from './services/settingsNav'
 import { initEditorSettings, installFontSizeWheelZoom } from './services/editorSettings'
 import { api } from './services/api'
 

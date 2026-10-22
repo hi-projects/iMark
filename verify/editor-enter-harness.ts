@@ -31,9 +31,8 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 // 仓库根:打包产物固定落在 <仓库>/out/main/ 下(见文件头),所以由 __dirname 往上两级。
 // 截图一类的临时产物都放这儿,别写到家目录去 —— 换个机器就没有了
@@ -67,8 +66,6 @@ type LineInfo = {
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 async function main(): Promise<void> {
   await app.whenReady()
 
@@ -107,7 +104,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents
@@ -148,7 +145,8 @@ async function main(): Promise<void> {
 
   /** 正文 / 标题的分界:标题一定更大更粗(h4 起 1.2em/650,正文 16px/400) */
   const isBody = (l: LineInfo): boolean => parseFloat(l.size) <= 16 && parseFloat(l.weight) < 600
-  const isHeading = (l: LineInfo): boolean => parseFloat(l.size) > 16 && parseFloat(l.weight) >= 600
+  // 标题样式是 1.125em / 600(正文 13px → 14.625px);阈值按实际 CSS 取,不要写死 16
+  const isHeading = (l: LineInfo): boolean => parseFloat(l.size) >= 14 && parseFloat(l.weight) >= 600
   const looks = (l: LineInfo): string => `${JSON.stringify(l.text)} [${l.cls}] ${l.size}/${l.weight}`
 
   /**

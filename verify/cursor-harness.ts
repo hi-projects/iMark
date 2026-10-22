@@ -13,20 +13,17 @@
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { getPluginHost, initPluginHost } from '../src/main/plugins/host'
+import { getExtensionService, initExtensions } from '../src/main/extensions/service'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 let pass = 0
 let fail = 0
 
@@ -109,8 +106,9 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost(ensureBundledProvisioned)
-  await getPluginHost()
+  const service = await initExtensions({ appVersion: '0.1.0' })
+  await ensureBundledProvisioned(service)
+  getExtensionService()
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents

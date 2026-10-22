@@ -18,7 +18,7 @@ import type {
 } from '@shared/extensions'
 import { openSettings } from '../stores/app'
 import { notifyError, pushNotice } from './notice'
-import { settingsNav } from './pluginService'
+import { settingsNav } from './settingsNav'
 import { api } from './api'
 
 export const extensionStore = reactive<{

@@ -1847,20 +1847,41 @@ export class ExtensionService {
     const nextHost = next.extensionHost ?? { mode: 'isolated' as const, affinity: {} }
     const hostChanged = !sameHostSettings(this.hostSettings, nextHost)
     this.hostSettings = nextHost
-    const { toDeactivate, enabledChanged } = this.applyPreferenceChanges(next.extensions ?? {})
+    const { toDeactivate, toActivate, enabledChanged } = this.applyPreferenceChanges(
+      next.extensions ?? {}
+    )
     for (const id of toDeactivate) void this.deactivateExtension(id, { forget: true })
     if (hostChanged || enabledChanged) this.applyHostPlan()
+    // 启动之后才被启用的扩展:onStartupFinished / * 已经过去了，但用户点「启用」
+    // 的意图就是让它现在跑起来。不补这一次激活，状态栏、webview 与任何在
+    // activate() 里注册的东西都要等到下一次重启或命令触发才出现。
+    if (this.startupDone) {
+      for (const id of toActivate) {
+        const entry = this.entries.get(id)
+        const events = entry?.manifest.activationEvents ?? []
+        const missedStartup = events.includes('*') || events.includes('onStartupFinished')
+        const missedLanguage =
+          events.includes('onLanguage:markdown') &&
+          this.documents.list().some(doc => doc.languageId === 'markdown')
+        if (!entry || !entryFileOf(entry.manifest) || (!missedStartup && !missedLanguage)) continue
+        void this.activateExtension(id, missedStartup ? 'startup' : 'language').catch(err => {
+          this.logStore.add(id, 'error', `启用后激活失败：${errorMessage(err)}`)
+        })
+      }
+    }
     if (next.vaultPath !== prev.vaultPath) this.refreshWorkspaceFolders()
     this.scheduleContributions()
   }
 
   private applyPreferenceChanges(nextPrefs: Record<string, ExtensionPreference>): {
     toDeactivate: string[]
+    toActivate: string[]
     enabledChanged: boolean
   } {
     const previous = this.preferences
     this.preferences = nextPrefs
     const toDeactivate: string[] = []
+    const toActivate: string[] = []
     let enabledChanged = false
     for (const entry of this.entries.values()) {
       const before = entry.enabled
@@ -1869,6 +1890,7 @@ export class ExtensionService {
       if (before !== entry.enabled) {
         enabledChanged = true
         if (!entry.enabled) toDeactivate.push(entry.id)
+        if (entry.enabled) toActivate.push(entry.id)
         if (entry.enabled && this.runtime.get(entry.id)?.status === 'disabled') {
           this.setRuntimeStatus(entry.id, 'inactive', { lastError: null, activationFailures: 0 })
         }
@@ -1883,7 +1905,7 @@ export class ExtensionService {
     // 声明命令的归属只含启用中的扩展；启用/禁用后必须重算，否则命令面板
     // 里刚出现的命令会因为“没有 owner”而执行失败
     if (enabledChanged) this.rebuildDeclaredCommands()
-    return { toDeactivate, enabledChanged }
+    return { toDeactivate, toActivate, enabledChanged }
   }
 
   private async writePreference(

@@ -1,21 +1,27 @@
 /**
- * 验收:安装确认框拿到的层信息。
+ * 验收:安装确认框拿到的 v2 字段。
  *
- * 不打开界面,只钉住 `previewEnvelope` 的产出 —— 界面组件是它的纯函数投影。
- * 四个内置包覆盖 node / restricted / render-only / both;另外造一个无代码
- * capability 包与一个未知形态包。
+ * 不打开界面,只钉住 `previewEnvelope` 的产出与「需不需要风险确认」这条规则 ——
+ * 界面组件是它们的纯函数投影。
+ *
+ * 覆盖:
+ *   - 含代码包(git-sync):hasMain=true、有 mainSha256、需要勾选「以用户权限运行」;
+ *   - 纯声明包:hasMain=false、没有 mainSha256、不需要勾选;
+ *   - PackagePreview 里不再有权限数组;
+ *   - 所有内置包都能生成预览。
  *
  * 跑法:node verify/run.mjs install-confirm
  */
 
 import { app } from 'electron'
-import { createHash } from 'node:crypto'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { previewEnvelope } from '../src/main/market/installer'
-import { integrityInput } from '../src/shared/pluginPackage'
-import gitSyncPackage from '../src/main/market/builtin/git-sync.imkpkg.json?raw'
-import quickEditPackage from '../src/main/market/builtin/quick-edit.imkpkg.json?raw'
-import noteEmbedPackage from '../src/main/market/builtin/note-embed.imkpkg.json?raw'
-import todoMarksPackage from '../src/main/market/builtin/todo-marks.imkpkg.json?raw'
+import { packDirectory } from '../src/main/market/pack'
+import { needsTrustAck } from '../src/renderer/src/services/pluginShape'
+import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
+import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
+import aiForEditPackage from '../src/main/market/builtin/imark.ai-for-edit.imkpkg.json?raw'
 
 let pass = 0
 let fail = 0
@@ -29,148 +35,106 @@ function check(label: string, ok: boolean, detail = ''): void {
   }
 }
 
-const sha256 = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex')
-
-function envelopeOf(
-  manifest: Record<string, unknown>,
-  extraFiles: Record<string, string> = {}
-): unknown {
-  const contents: Record<string, Buffer> = {
-    'README.md': Buffer.from('# 测试包\n', 'utf8')
-  }
-  for (const [name, text] of Object.entries(extraFiles)) {
-    contents[name] = Buffer.from(text, 'utf8')
-  }
-  const files: Record<string, { encoding: 'base64'; size: number; sha256: string }> = {}
-  const data: Record<string, string> = {}
-  for (const [name, buf] of Object.entries(contents)) {
-    files[name] = { encoding: 'base64', size: buf.byteLength, sha256: sha256(buf) }
-    data[name] = buf.toString('base64')
-  }
-  return {
-    format: 'imk-plugin',
-    formatVersion: 1,
-    manifest,
-    files,
-    data,
-    integrity: sha256(integrityInput(manifest as never, files as never))
-  }
-}
-
 async function main(): Promise<void> {
   await app.whenReady()
-  const origin = { kind: 'local-file' as const, label: '测试包' }
+  const origin = { kind: 'local-file' as const, label: '测试包', publisher: null }
 
-  console.log('\n[A] node main')
+  // ---------- [A] 含代码扩展 ----------
+  console.log('\n[A] 含代码扩展(git-sync)')
   const git = previewEnvelope(JSON.parse(gitSyncPackage), origin)
-  check('git-sync 预览成功', git.ok, git.ok ? '' : git.errors.join(';'))
+  check('预览成功', git.ok, git.ok ? '' : git.errors.join(';'))
   if (git.ok) {
-    check('mainMode=node', git.value.mainMode === 'node', String(git.value.mainMode))
-    check('没有 render 层', git.value.hasRender === false)
-    check('有 main 入口哈希', Boolean(git.value.mainSha256))
-    check('没有 render 入口哈希', git.value.renderSha256 === null)
-    check('四权限原样带出', git.value.permissions.length === 4, git.value.permissions.join(','))
+    check('hasMain = true', git.value.hasMain === true)
+    check('main 指向 ./main.js', git.value.main === './main.js', String(git.value.main))
+    check('有 main 入口哈希', Boolean(git.value.mainSha256) && git.value.mainSha256!.length === 64)
+    check('激活事件非空', git.value.activationEvents.length > 0)
+    check('能力声明带出(含 git/network)', git.value.capabilities.git === true && git.value.capabilities.network === true)
+    check('贡献摘要非全零', git.value.contributesSummary.commands > 0, JSON.stringify(git.value.contributesSummary))
+    check('需要勾选「以用户权限运行」', needsTrustAck(git.value) === true)
+    check('没有 render 入口哈希字段', !('renderSha256' in git.value))
+    check('没有权限数组', !('permissions' in git.value))
+    check('没有 v1 的 mainMode', !('mainMode' in git.value))
+    check('没有 v1 的 capability', !('capability' in git.value))
+    check('本地安装时 publisher 为 null', git.value.publisher === null)
   }
 
-  console.log('\n[B] restricted main')
-  const restricted = previewEnvelope(
-    envelopeOf(
-      {
-        id: 'restricted-demo',
-        name: '受限示例',
-        description: '',
-        version: '1.0.0',
-        main: { mode: 'restricted', entry: 'main.js' },
-        permissions: ['vault:read'],
-        fields: [],
-        actions: []
-      },
-      { 'main.js': 'window.imark.plugin.handle({})\n' }
-    ),
-    origin
-  )
-  check('restricted-only 预览成功', restricted.ok, restricted.ok ? '' : restricted.errors.join(';'))
-  if (restricted.ok) {
-    check('mainMode=restricted', restricted.value.mainMode === 'restricted', String(restricted.value.mainMode))
-    check('没有 render 层', restricted.value.hasRender === false)
-    check('有 main 入口哈希', Boolean(restricted.value.mainSha256))
-    check('没有 render 入口哈希', restricted.value.renderSha256 === null)
-  }
-
-  console.log('\n[C] render-only')
-  const todo = previewEnvelope(JSON.parse(todoMarksPackage), origin)
-  check('todo-marks 预览成功', todo.ok, todo.ok ? '' : todo.errors.join(';'))
-  if (todo.ok) {
-    check('没有 main 层', todo.value.mainMode === null, String(todo.value.mainMode))
-    check('有 render 层', todo.value.hasRender === true)
-    check('没有 main 入口哈希', todo.value.mainSha256 === null)
-    check('有 render 入口哈希', Boolean(todo.value.renderSha256))
-    check('没有权限', todo.value.permissions.length === 0)
-  }
-
-  console.log('\n[D] restricted main + render')
-  const note = previewEnvelope(JSON.parse(noteEmbedPackage), origin)
-  check('note-embed 预览成功', note.ok, note.ok ? '' : note.errors.join(';'))
-  if (note.ok) {
-    check('mainMode=restricted', note.value.mainMode === 'restricted')
-    check('有 render 层', note.value.hasRender === true)
-    check('两个入口哈希都有', Boolean(note.value.mainSha256 && note.value.renderSha256))
-    check(
-      '权限只有读取仓库',
-      JSON.stringify(note.value.permissions) === JSON.stringify(['vault:read']),
-      note.value.permissions.join(',')
-    )
-  }
+  // ---------- [B] 另一个含代码包 ----------
+  console.log('\n[B] 含代码扩展(quick-edit)')
   const quick = previewEnvelope(JSON.parse(quickEditPackage), origin)
-  check('quick-edit 预览成功', quick.ok, quick.ok ? '' : quick.errors.join(';'))
+  check('预览成功', quick.ok, quick.ok ? '' : quick.errors.join(';'))
   if (quick.ok) {
-    check('quick-edit 是 restricted-only', quick.value.mainMode === 'restricted' && !quick.value.hasRender)
-    check('quick-edit 只有 main 入口哈希', Boolean(quick.value.mainSha256) && quick.value.renderSha256 === null)
+    check('hasMain = true', quick.value.hasMain === true)
+    check('有入口哈希', Boolean(quick.value.mainSha256))
+    check('需要风险确认', needsTrustAck(quick.value) === true)
   }
 
-  console.log('\n[E] 无代码 capability')
-  const capability = previewEnvelope(
-    envelopeOf({
-      id: 'hook-demo',
-      name: 'Webhook 示例',
-      description: '',
-      version: '1.0.0',
-      capability: 'webhook',
-      permissions: ['network'],
-      fields: [{ key: 'targets', kind: 'targets', label: 't', default: [] }],
-      actions: [{ id: 'test', label: '测试' }],
-      targetActions: [{ id: 'test-target', label: '测试目标' }],
-      targetFieldKey: 'targets'
-    }),
-    origin
-  )
-  check('capability 预览成功', capability.ok, capability.ok ? '' : capability.errors.join(';'))
-  if (capability.ok) {
-    check('没有 main/render', capability.value.mainMode === null && capability.value.hasRender === false)
-    check('capability 字段带出', capability.value.capability === 'webhook')
-    check('capability 显示名查到了', capability.value.capabilityName === 'Webhook 推送', String(capability.value.capabilityName))
+  // ---------- [C] AI 扩展 ----------
+  console.log('\n[C] 含代码扩展(ai-for-edit)')
+  const ai = previewEnvelope(JSON.parse(aiForEditPackage), origin)
+  check('预览成功', ai.ok, ai.ok ? '' : ai.errors.join(';'))
+  if (ai.ok) {
+    check('hasMain = true', ai.value.hasMain === true)
+    check('activationEvents 含 onWebviewPanel', ai.value.activationEvents.some(e => e.startsWith('onWebviewPanel:')), JSON.stringify(ai.value.activationEvents))
+    check('能力声明含 network/secrets', ai.value.capabilities.network === true && ai.value.capabilities.secrets === true)
   }
 
-  console.log('\n[F] 未知形态')
-  const unknown = previewEnvelope(
-    envelopeOf({
-      id: 'unknown-demo',
-      name: '未知',
-      description: '',
-      version: '1.0.0',
-      fields: [],
-      actions: []
-    }),
-    origin
+  // ---------- [D] 纯声明扩展 ----------
+  console.log('\n[D] 纯声明扩展')
+  const ud = app.getPath('userData')
+  const dir = join(ud, 'declarative-fixture')
+  await rm(dir, { recursive: true, force: true })
+  await mkdir(dir, { recursive: true })
+  await writeFile(
+    join(dir, 'package.json'),
+    JSON.stringify(
+      {
+        publisher: 'harness',
+        name: 'declarative-demo',
+        version: '1.2.3',
+        displayName: '纯声明示例',
+        engines: { imark: '^0.1.0' },
+        contributes: {
+          commands: [{ command: 'harness.declarative-demo.run', title: '运行' }],
+          configuration: {
+            properties: {
+              'harness.declarative-demo.mode': { type: 'string', default: 'a', title: '模式' }
+            }
+          }
+        }
+      },
+      null,
+      2
+    ),
+    'utf8'
   )
-  check(
-    '没有层的包被校验拒绝',
-    unknown.ok === false && unknown.errors.some(e => e.includes('至少声明')),
-    unknown.ok ? '(意外通过)' : unknown.errors.join(';')
-  )
+  await writeFile(join(dir, 'README.md'), '# declarative\n', 'utf8')
+  const packed = await packDirectory(dir)
+  const decl = previewEnvelope(packed.envelope, origin)
+  check('预览成功', decl.ok, decl.ok ? '' : decl.errors.join(';'))
+  if (decl.ok) {
+    check('hasMain = false', decl.value.hasMain === false)
+    check('main 为 null', decl.value.main === null)
+    check('没有入口哈希', decl.value.mainSha256 === null)
+    check('不需要风险确认', needsTrustAck(decl.value) === false)
+    check('贡献摘要仍带出', decl.value.contributesSummary.configuration === 1)
+    check('没有权限数组', !('permissions' in decl.value))
+  }
+
+  // ---------- [E] 来源字段 ----------
+  console.log('\n[E] 来源')
+  const market = previewEnvelope(JSON.parse(gitSyncPackage), {
+    kind: 'market',
+    label: 'http://127.0.0.1:8787',
+    publisher: 'imark-publisher'
+  })
+  check('市场来源带出 publisher', market.ok && market.value.publisher === 'imark-publisher', market.ok ? String(market.value.publisher) : market.errors.join(';'))
+  check('origin 正确', market.ok && market.value.origin === 'market')
 
   console.log(`\n${fail === 0 ? '全部通过' : '有失败'} —— 通过 ${pass} / 失败 ${fail}\n`)
   app.exit(fail === 0 ? 0 : 1)
 }
 
-void main()
+void main().catch(err => {
+  console.error('[harness] 崩了:', err)
+  app.exit(3)
+})

@@ -2,105 +2,81 @@
 /**
  * 安装确认框 —— 整个插件市场里**最重要的一块界面**。
  *
- * 它不是什么「再点一次的弹窗」,而是这项功能唯一的安全边界:脚本插件拿到的是
- * 完整的 Node 权限,能读写用户磁盘上的任何文件、发起任何网络请求。系统层面
- * 拦不住它(那正是脚本插件的定义),所以防线只能是「用户知情」——
+ * 它不是什么「再点一次的弹窗」,而是这项功能唯一的安全边界:含代码扩展拿到的是
+ * 当前用户的完整权限,能读写用户磁盘上的任何文件、发起任何网络请求。系统层面
+ * 拦不住它(那正是扩展的定义),所以防线只能是「用户知情」——
  * 而用户知情的唯一机会,就是这个框。
  *
  * 因此这里刻意不做减法:
- *   - 权限逐条给出中文解释,而不是扔一个 'git' 给用户猜;
- *   - 升级时把**新增的权限**单独顶到最前面(「包还是那个包,但它现在要读你的整个仓库了」
- *     是最容易被忽略的一种风险);
- *   - sha256 等宽可复制,用户能拿去和发布页、和别人核对;
- *   - 脚本插件必须**主动勾选**风险确认才能按下安装按钮,默认不勾。
+ *   - 含代码扩展必须**主动勾选**风险确认才能按下安装按钮,默认不勾;
+ *   - 纯声明式扩展不需要勾选,只展示它贡献了什么;
+ *   - capability 是**告知**,不是权限门禁 —— 文案必须这么说;
+ *   - sha256 等宽可复制,用户能拿去和发布页、和别人核对。
  */
 
 import { computed, ref, watch } from 'vue'
-import { AlertTriangle, FileCode2, Layers, Puzzle, ShieldCheck } from 'lucide-vue-next'
-import { PERMISSION_INFO } from '@shared/pluginPackage'
+import { AlertTriangle, FileCode2, Puzzle, ShieldCheck } from 'lucide-vue-next'
 import { formatBytes } from '../../utils/text'
 import { copyText } from '../../utils/clipboard'
 import { cancelInstall, confirmInstall, marketStore } from '../../services/marketService'
 
 const preview = computed(() => marketStore.pending?.preview ?? null)
 
-/** 展开文件清单(默认收起;确认框的正文应当是权限而不是文件列表) */
+/** 展开文件清单(默认收起;确认框的正文应当是风险与贡献,而不是文件列表) */
 const showFiles = ref(false)
 const copied = ref(false)
 
 // 换了一个包就重置勾选:上一个包勾过的不能替下一个包背书
 watch(preview, () => {
-  ackNode.value = false
-  ackRender.value = false
+  ackCode.value = false
   showFiles.value = false
   copied.value = false
 })
 
-const hasNodeMain = computed(() => preview.value?.mainMode === 'node')
-const hasRestrictedMain = computed(() => preview.value?.mainMode === 'restricted')
-const hasRender = computed(() => preview.value?.hasRender === true)
-const hasCapability = computed(() => Boolean(preview.value?.capability))
-const unknownShape = computed(
-  () =>
-    Boolean(preview.value) &&
-    !hasNodeMain.value &&
-    !hasRestrictedMain.value &&
-    !hasRender.value &&
-    !hasCapability.value
-)
-/** 需要用户勾选风险确认的层:node main(完整 Node)与 render(同 realm) */
-const needsAck = computed(() => hasNodeMain.value || hasRender.value)
-const ackNode = ref(false)
-const ackRender = ref(false)
-const acked = computed(
-  () =>
-    (!hasNodeMain.value || ackNode.value) &&
-    (!hasRender.value || ackRender.value)
-)
-/** 权限扩大:非空时界面必须把它当成一个独立的、更重的提示 */
-const added = computed(() => preview.value?.newPermissions ?? [])
+const hasMain = computed(() => preview.value?.hasMain === true)
+const ackCode = ref(false)
 
-/**
- * 界面贡献点(目前只有行首菜单)。
- *
- * 与权限是两件不同的事:权限说的是「它能碰你的东西」,贡献点说的是「它会往你眼前
- * 加东西」。后者是个**静默能力** —— 不说的话,用户装完只会发现编辑器里凭空多出一个
- * 按钮,而不知道该去哪儿关。
- */
-const editorItems = computed(() => preview.value?.descriptor.lineMenu ?? [])
-const editorLabels = computed(() => {
-  const labels = editorItems.value.map(i => i.label)
-  return labels.length > 4 ? `${labels.slice(0, 4).join('、')} 等` : labels.join('、')
+const canInstall = computed(
+  () => Boolean(preview.value) && !marketStore.busy && (!hasMain.value || ackCode.value)
+)
+
+/** 贡献点摘要:用户装完会在哪儿看到它 */
+const contributes = computed(() => {
+  const summary = preview.value?.contributesSummary
+  if (!summary) return []
+  return [
+    { label: '命令', count: summary.commands },
+    { label: '快捷键', count: summary.keybindings },
+    { label: '设置项', count: summary.configuration },
+    { label: '行首菜单', count: summary.lineMenu },
+    { label: '动作', count: summary.actions }
+  ].filter(item => item.count > 0)
+})
+
+/** 清单声明的能力 —— 只是告知 */
+const capabilityLines = computed(() => {
+  const caps = preview.value?.capabilities ?? {}
+  const out: { label: string; text: string }[] = []
+  if (caps.filesystem) {
+    out.push({
+      label: '文件系统',
+      text: caps.filesystem === 'user' ? '可读写用户目录下的其它位置' : '只读写当前仓库'
+    })
+  }
+  if (caps.network) out.push({ label: '网络', text: '会发起网络请求' })
+  if (caps.secrets) out.push({ label: '密钥', text: '会保存或读取密钥' })
+  if (caps.git) out.push({ label: 'Git', text: '会调用 git' })
+  if (caps.process) out.push({ label: '子进程', text: '会启动子进程' })
+  if (caps.shell) out.push({ label: 'Shell', text: '会执行 shell 命令' })
+  return out
 })
 
 const heading = computed(() => {
   const p = preview.value
   if (!p) return ''
-  if (!p.installed) return '安装插件'
-  return p.downgraded ? '安装旧版本插件' : '更新插件'
+  if (!p.installed) return '安装扩展'
+  return p.downgraded ? '安装旧版本扩展' : '更新扩展'
 })
-
-const permTitle = computed(() => {
-  if (hasNodeMain.value) return '声明权限（完整 Node，以下为告知）'
-  if (hasRestrictedMain.value) return '申请权限（逐项门禁）'
-  if (hasCapability.value) return '能力所需权限'
-  return '系统能力（不申请）'
-})
-
-const emptyPermText = computed(() => {
-  if (hasNodeMain.value) return '清单没有声明任何权限（但 node main 仍然拥有完整 Node）。'
-  if (hasRestrictedMain.value) return '此插件没有申请任何权限，受限层也拿不到任何系统能力。'
-  if (hasCapability.value) return '这个内置能力不需要额外权限。'
-  return '它只有 render 层，不申请系统能力。'
-})
-
-const canInstall = computed(
-  () =>
-    Boolean(preview.value) &&
-    !unknownShape.value &&
-    !marketStore.busy &&
-    (!needsAck.value || acked.value)
-)
 
 async function copyIntegrity(): Promise<void> {
   if (!preview.value) return
@@ -115,17 +91,15 @@ async function copyIntegrity(): Promise<void> {
       <header class="market-confirm-head">
         <span
           class="market-kind-icon"
-          :class="`market-kind-${hasNodeMain ? 'script' : hasRestrictedMain ? 'sandboxed' : hasRender ? 'renderer' : 'declarative'}`"
+          :class="`market-kind-${hasMain ? 'script' : 'declarative'}`"
         >
-          <Layers v-if="hasRender" :size="16" />
-          <FileCode2 v-else-if="hasNodeMain" :size="16" />
-          <ShieldCheck v-else-if="hasRestrictedMain" :size="16" />
+          <FileCode2 v-if="hasMain" :size="16" />
           <Puzzle v-else :size="16" />
         </span>
         <div class="market-confirm-title">
           <h1>{{ heading }}</h1>
           <p>
-            <b>{{ preview.name }}</b>
+            <b>{{ preview.displayName || preview.name }}</b>
             <span class="market-mono">v{{ preview.version }}</span>
             <template v-if="preview.installed">
               <span class="market-confirm-arrow">←</span>
@@ -136,116 +110,81 @@ async function copyIntegrity(): Promise<void> {
       </header>
 
       <div class="market-confirm-body">
-        <!-- node main 的红字警告:这是本框存在的主要理由 -->
-        <div v-if="hasNodeMain" class="market-alert market-alert-danger">
+        <!-- 含代码扩展的红字警告:这是本框存在的主要理由 -->
+        <div v-if="hasMain" class="market-alert market-alert-danger">
           <AlertTriangle :size="15" />
           <div>
-            <b>它的 main 层在主进程里执行代码，将获得与 iMark 相同的权限。</b>
+            <b>这个扩展包含代码，将以你的用户权限运行。</b>
             <p>
               它能读取或修改你电脑上的任意文件（包括你的笔记、SSH 密钥与已保存的登录令牌），
-              也能发起网络请求、启动其他程序。下面的权限清单是**告知**，不构成沙箱。
-              请只安装你信任来源的插件。
+              也能发起网络请求、启动其他程序。下面的能力声明是<b>告知</b>，不构成沙箱。
+              请只安装你信任来源的扩展。
             </p>
             <label class="market-ack">
-              <input v-model="ackNode" type="checkbox" />
-              <span>我已了解 node main 的完整权限风险，并信任该插件的来源</span>
+              <input v-model="ackCode" type="checkbox" />
+              <span>我知道扩展代码将以我的用户权限运行，可以读写我的文件、访问网络</span>
             </label>
           </div>
         </div>
-        <!-- render 层的红字警告:同 realm,能改界面/读文档/看键盘 -->
-        <div v-if="hasRender" class="market-alert market-alert-danger">
-          <AlertTriangle :size="15" />
-          <div>
-            <b>它的 render 层在主界面里执行代码，可直接修改界面与你正在编辑的文档。</b>
-            <p>
-              它与 iMark 的界面跑在同一个 realm：能遮挡或伪造界面、读取当前文档、
-              看到你在这个窗口里的键盘输入。<b>它拿不到 iMark 的系统能力</b> ——
-              文件、网络、git、密钥都必须由 main 层经 iMark 逐项授权后转发；
-              没有 main 层时，它连这些能力都没有。请只安装你信任来源的插件。
-            </p>
-            <label class="market-ack">
-              <input v-model="ackRender" type="checkbox" />
-              <span>我已了解 render 层与界面同权的风险，并信任该插件的来源</span>
-            </label>
-          </div>
-        </div>
-        <!-- restricted main:真门禁,不需要额外勾选 -->
-        <div v-if="hasRestrictedMain" class="market-alert market-alert-safe">
+        <!-- 纯声明式:不执行第三方代码,不需要勾选 -->
+        <div v-else class="market-alert market-alert-safe">
           <ShieldCheck :size="15" />
           <div>
-            <b>它的 main 层包含代码，但运行在受限沙箱页里。</b>
-            <p>
-              它没有 Node、没有文件系统：下面的每一条权限都要<b>经 iMark 转发</b>，
-              没申请的权限连调用入口都不存在，而且每一次调用都会再审查一遍。
-            </p>
-          </div>
-        </div>
-        <!-- 无代码 capability -->
-        <div v-if="hasCapability && !hasNodeMain && !hasRestrictedMain && !hasRender" class="market-alert market-alert-safe">
-          <ShieldCheck :size="15" />
-          <div>
-            <b>此插件不含任何代码。</b>
-            <p v-if="preview.capabilityName">
-              它是一份纯配置，不会执行第三方程序 —— 真正干活的，是 iMark 自带的
-              <b>「{{ preview.capabilityName }}」</b>。
-            </p>
-            <p v-else>它是一份纯配置，只会调用 iMark 自带的功能，不会执行第三方程序。</p>
-          </div>
-        </div>
-        <!-- 未知形态:明确拒绝,绝不显示成“不含代码” -->
-        <div v-if="unknownShape" class="market-alert market-alert-danger">
-          <AlertTriangle :size="15" />
-          <div>
-            <b>未知的插件形态，拒绝安装。</b>
-            <p>这份清单既没有 main、render，也没有绑定内置能力。</p>
+            <b>这个扩展是纯声明式的，不会执行第三方代码。</b>
+            <p>它只向 iMark 贡献命令、菜单与设置项，真正执行动作的是编辑器本身。</p>
           </div>
         </div>
 
         <dl class="market-meta">
           <div><dt>来源</dt><dd>{{ preview.originLabel }}</dd></div>
           <div v-if="preview.author"><dt>作者</dt><dd>{{ preview.author }}</dd></div>
+          <div v-if="preview.publisher"><dt>发布者</dt><dd>{{ preview.publisher }}</dd></div>
           <div>
-            <dt>插件 id</dt>
+            <dt>扩展 id</dt>
             <dd class="market-mono">{{ preview.id }}</dd>
+          </div>
+          <div>
+            <dt>形态</dt>
+            <dd>{{ hasMain ? `含代码（入口 ${preview.main}）` : '纯声明式' }}</dd>
           </div>
           <div>
             <dt>体积</dt>
             <dd>{{ preview.fileCount }} 个文件，共 {{ formatBytes(preview.totalBytes) }}</dd>
           </div>
-          <div v-if="editorItems.length">
-            <dt>编辑器</dt>
-            <dd>
-              往光标行左侧的「+」菜单添加 {{ editorItems.length }} 项（{{ editorLabels }}）
-            </dd>
-          </div>
         </dl>
 
-        <!-- 权限 -->
+        <div v-if="contributes.length > 0" class="market-block">
+          <div class="market-block-title">它为你添加了什么</div>
+          <p class="market-empty-line">
+            {{ contributes.map(item => `${item.label} ${item.count}`).join(' · ') }}
+          </p>
+        </div>
+
+        <div v-if="preview.activationEvents.length > 0" class="market-block">
+          <div class="market-block-title">何时启动</div>
+          <p class="market-empty-line market-mono">
+            {{ preview.activationEvents.join(' · ') }}
+          </p>
+        </div>
+
         <div class="market-block">
           <div class="market-block-title">
-            {{ permTitle }}
-            <span class="market-dim">（{{ preview.permissions.length }}）</span>
+            能力声明
+            <span class="market-dim">（{{ capabilityLines.length }}）</span>
           </div>
-          <p v-if="preview.permissions.length === 0" class="market-empty-line">
-            {{ emptyPermText }}
+          <p v-if="capabilityLines.length === 0" class="market-empty-line">
+            {{
+              hasMain
+                ? '清单没有声明任何能力（但含代码扩展仍然拥有当前用户的全部权限）。'
+                : '纯声明式扩展不需要系统能力。'
+            }}
           </p>
           <ul v-else class="market-perms">
-            <li
-              v-for="perm in preview.permissions"
-              :key="perm"
-              class="market-perm"
-              :class="{ 'market-perm-new': added.includes(perm) }"
-            >
-              <span class="market-perm-label">
-                {{ PERMISSION_INFO[perm]?.label ?? perm }}
-                <span v-if="added.includes(perm)" class="market-badge market-badge-warn">新增</span>
-              </span>
-              <span class="market-perm-desc">{{ PERMISSION_INFO[perm]?.description ?? '' }}</span>
+            <li v-for="cap in capabilityLines" :key="cap.label" class="market-perm">
+              <span class="market-perm-label">{{ cap.label }}</span>
+              <span class="market-perm-desc">{{ cap.text }}</span>
             </li>
           </ul>
-          <p v-if="added.length > 0" class="market-new-perms-note">
-            这个新版本比已安装的版本多要 {{ added.length }} 项权限（上面标「新增」的几条）。
-          </p>
         </div>
 
         <!-- 校验值:用户能拿去核对的那个数 -->
@@ -262,12 +201,8 @@ async function copyIntegrity(): Promise<void> {
             说明这份包在路上被改过。
           </p>
           <div v-if="preview.mainSha256" class="market-hash market-hash-sub">
-            <span class="market-dim">main 入口</span>
+            <span class="market-dim">入口 {{ preview.main }}</span>
             <code>{{ preview.mainSha256.slice(0, 32) }}…</code>
-          </div>
-          <div v-if="preview.renderSha256" class="market-hash market-hash-sub">
-            <span class="market-dim">render 入口</span>
-            <code>{{ preview.renderSha256.slice(0, 32) }}…</code>
           </div>
         </div>
 
@@ -290,7 +225,7 @@ async function copyIntegrity(): Promise<void> {
         <button
           class="plugin-btn plugin-btn-action"
           :disabled="!canInstall"
-          :title="!canInstall && needsAck ? '请先勾选风险确认' : ''"
+          :title="!canInstall && hasMain ? '请先勾选风险确认' : ''"
           @click="confirmInstall()"
         >
           {{ marketStore.busy ? '安装中…' : preview.installed ? '更新' : '安装' }}

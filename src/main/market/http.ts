@@ -10,7 +10,7 @@
  */
 
 import { net } from 'electron'
-import { LIMITS } from '@shared/pluginPackage'
+import { EXTENSION_LIMITS } from '@shared/extensionPackage'
 
 export type MarketFailure =
   /** 连不上(服务未启动、地址写错、断网) */
@@ -214,7 +214,7 @@ export async function postJson<T>(url: string, body: unknown, opts: RequestOptio
 
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text()
-  if (text.length > LIMITS.envelopeBytes * 2) {
+  if (text.length > EXTENSION_LIMITS.envelopeBytes * 2) {
     // 一个接口不该回这么大的正文;真回了说明对面不是我们的服务端
     throw new MarketError('bad-response', '服务端返回的内容异常地大')
   }
@@ -258,18 +258,18 @@ export async function downloadEnvelope(
   if (!res.ok) throw await httpError(res, url)
 
   const declared = Number(res.headers.get('content-length') ?? '0')
-  if (declared > LIMITS.envelopeBytes) {
+  if (declared > EXTENSION_LIMITS.envelopeBytes) {
     throw new MarketError(
       'bad-response',
-      `插件包过大(${(declared / 1024 / 1024).toFixed(1)} MiB,上限 ${LIMITS.envelopeBytes / 1024 / 1024} MiB)`
+      `插件包过大(${(declared / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
     )
   }
 
   const buf = Buffer.from(await res.arrayBuffer())
-  if (buf.byteLength > LIMITS.envelopeBytes) {
+  if (buf.byteLength > EXTENSION_LIMITS.envelopeBytes) {
     throw new MarketError(
       'bad-response',
-      `插件包过大(${(buf.byteLength / 1024 / 1024).toFixed(1)} MiB,上限 ${LIMITS.envelopeBytes / 1024 / 1024} MiB)`
+      `插件包过大(${(buf.byteLength / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
     )
   }
   onBytes?.(buf.byteLength, declared || null)
@@ -303,7 +303,7 @@ export async function downloadIcon(url: string): Promise<string | null> {
     const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
     if (type !== 'image/png' && type !== 'image/svg+xml') return null
     const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.byteLength > LIMITS.iconBytes) return null
+    if (buf.byteLength > EXTENSION_LIMITS.iconBytes) return null
     // 魔数校验:content-type 是服务端说的,魔数是字节自己说的
     if (type === 'image/png' && !(buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)) {
       return null

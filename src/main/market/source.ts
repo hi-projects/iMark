@@ -2,11 +2,11 @@
  * 源码查看器 —— 在装之前把包里要跑的代码给用户看。
  *
  * 与 README 的区别值得说清楚:README 是**作者写的散文**,详情页是**市场给的元信息**,
- * 而这里是作者真正要执行的那段字节。一个插件完全可以有漂亮的 README 和一段
+ * 而这里是作者真正要执行的那段字节。一个扩展完全可以有漂亮的 README 和一段
  * 顺手读 ~/.ssh 的 main.js,前者不能替代后者。
  *
  * 因此这里刻意不做「另取一份参考源码」这种事:显示的内容与真要装进去的那份
- * **来自同一个下载、过了同一套校验**(verifyEnvelope + 逐文件 sha256 + integrity
+ * **来自同一个下载、过了同一套校验**(validateEnvelope + 逐文件 sha256 + integrity
  * 与响应头比对)。界面上那句「这就是将要在你电脑上跑的东西」才站得住。
  *
  * 数据只在主进程里流转,渲染层拿到的已经是解码后的文本,而且只拿得到文本 ——
@@ -14,10 +14,16 @@
  */
 
 import type { MarketSource, MarketSourceFile } from '@shared/market'
-import { LIMITS, isTextFile, type PluginPackageEnvelope } from '@shared/pluginPackage'
+import { isTextFile, type ExtensionPackageEnvelope } from '@shared/extensionPackage'
 import { getRegistryUrl } from './config'
 import { detail, fetchEnvelope } from './registry'
 import { previewEnvelope } from './installer'
+
+/**
+ * 源码查看器里单个文件最多显示多少字节。
+ * 入口文件的上限是 8 MiB,一整个塞进 `<pre>` 会让界面卡住;超出的部分截断并明确标注。
+ */
+const SOURCE_TEXT_BYTES = 256 * 1024
 
 /**
  * 读某个版本包里的文本文件。
@@ -37,16 +43,16 @@ export async function fetchSource(id: string, version: string | null = null): Pr
   // 与安装路径用**同一个**校验函数:这里放过去的东西,安装时也一定放得过去
   const checked = previewEnvelope(fetched.envelope, { kind: 'market', label: registry }, null)
   if (!checked.ok) {
-    throw new Error(`插件包校验失败:${checked.errors.slice(0, 4).join(';')}`)
+    throw new Error(`扩展包校验失败:${checked.errors.slice(0, 4).join(';')}`)
   }
   const integrity = checked.value.integrity
 
   // 响应头说的和自算的对不上,说明路上被换过 —— 那么下面读到的文本也不可信
   if (fetched.integrity && fetched.integrity !== integrity) {
-    throw new Error('下载到的插件包与市场声明的不一致(sha256 对不上),已拒绝显示')
+    throw new Error('下载到的扩展包与市场声明的不一致(sha256 对不上),已拒绝显示')
   }
 
-  const envelope = fetched.envelope as PluginPackageEnvelope
+  const envelope = fetched.envelope as ExtensionPackageEnvelope
   const files: MarketSourceFile[] = []
   let truncated = false
 
@@ -58,14 +64,14 @@ export async function fetchSource(id: string, version: string | null = null): Pr
     // 按字节截断会把多字节字符劈成半个,所以先解码再按字符切,并且只切在安全的地方。
     // 这里的取舍是:宁可少显示一点,也不要在界面上留一串乱码 U+FFFD
     const full = buf.toString('utf8')
-    const cut = full.length > LIMITS.sourceTextBytes
+    const cut = full.length > SOURCE_TEXT_BYTES
     if (cut) truncated = true
     // 截断处尽量退到最后一个换行(免得把一行代码拦腰截断);一行都没有就只能硬切
-    const breakAt = cut ? full.lastIndexOf('\n', LIMITS.sourceTextBytes) + 1 : 0
+    const breakAt = cut ? full.lastIndexOf('\n', SOURCE_TEXT_BYTES) + 1 : 0
     files.push({
       name: info.name,
       size: info.size,
-      text: cut ? full.slice(0, breakAt > 0 ? breakAt : LIMITS.sourceTextBytes) : full,
+      text: cut ? full.slice(0, breakAt > 0 ? breakAt : SOURCE_TEXT_BYTES) : full,
       truncated: cut
     })
   }

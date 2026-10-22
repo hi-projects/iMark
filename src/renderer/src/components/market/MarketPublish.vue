@@ -13,7 +13,6 @@
 
 import { computed, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, FileCode2, Info, Package } from 'lucide-vue-next'
-import { PERMISSION_INFO } from '@shared/pluginPackage'
 import { formatBytes } from '../../utils/text'
 import { copyText } from '../../utils/clipboard'
 import {
@@ -95,10 +94,6 @@ async function copyHash(text: string): Promise<void> {
   window.setTimeout(() => {
     copied.value = false
   }, 1500)
-}
-
-function permLabel(p: string): string {
-  return PERMISSION_INFO[p as keyof typeof PERMISSION_INFO]?.label ?? p
 }
 
 onMounted(async () => {
@@ -218,7 +213,7 @@ onMounted(async () => {
 
       <template v-if="preview">
         <p class="market-detail-desc">
-          {{ preview.name }}
+          {{ preview.displayName || preview.name }}
           <span class="market-mono market-dim">{{ preview.id }}@{{ preview.version }}</span>
           <span
             v-for="s in shapeLabels(shapeOf(preview))"
@@ -235,19 +230,28 @@ onMounted(async () => {
             <dd>{{ preview.fileCount }} 个，共 {{ formatBytes(preview.totalBytes) }}</dd>
           </div>
           <div>
-            <dt>权限</dt>
+            <dt>入口</dt>
+            <dd class="market-mono">{{ preview.main ?? '（纯声明式，无入口）' }}</dd>
+          </div>
+          <div>
+            <dt>入口 sha256</dt>
+            <dd class="market-mono">{{ preview.mainSha256 ?? '（纯声明式，无入口）' }}</dd>
+          </div>
+          <div>
+            <dt>激活事件</dt>
             <dd>
-              <template v-if="preview.permissions.length === 0">无</template>
-              <template v-else>{{ preview.permissions.map(permLabel).join('、') }}</template>
+              <template v-if="preview.activationEvents.length === 0">无</template>
+              <template v-else class="market-mono">{{ preview.activationEvents.join('、') }}</template>
             </dd>
           </div>
           <div>
-            <dt>main 入口 sha256</dt>
-            <dd class="market-mono">{{ preview.mainSha256 ?? '（无 main 层）' }}</dd>
-          </div>
-          <div>
-            <dt>render 入口 sha256</dt>
-            <dd class="market-mono">{{ preview.renderSha256 ?? '（无 render 层）' }}</dd>
+            <dt>贡献点</dt>
+            <dd>
+              命令 {{ preview.contributesSummary.commands }} · 快捷键
+              {{ preview.contributesSummary.keybindings }} · 设置项
+              {{ preview.contributesSummary.configuration }} · 行首菜单
+              {{ preview.contributesSummary.lineMenu }} · 动作 {{ preview.contributesSummary.actions }}
+            </dd>
           </div>
         </dl>
 
@@ -275,7 +279,7 @@ onMounted(async () => {
             <b>版本 {{ preview.version }} 已经发布过了。</b>
             <p>
               已发布的版本<b>不可覆盖</b> —— 同一个版本号底下的字节如果能悄悄换人，
-              那个 sha256 就失去了意义。请把 <code class="market-mono">manifest.json</code>
+              那个 sha256 就失去了意义。请把 <code class="market-mono">package.json</code>
               里的版本号升一位（比如 {{ preview.version }} → 下一版）再发布。
               <template v-if="preview.identical">当前的包与已发布的那个内容完全相同，这次发布没有意义。</template>
             </p>
@@ -321,8 +325,8 @@ onMounted(async () => {
       </div>
 
       <p class="market-hint">
-        目录里要有 <code class="market-mono">manifest.json</code>；脚本插件还要有已编译好的入口文件
-        （TypeScript 写的插件先编译再发）。<code class="market-mono">README.md</code> 会显示在详情页。
+        目录里要有 <code class="market-mono">package.json</code>；含代码扩展还要有已编译好的入口文件
+        （TypeScript 写的扩展先编译再发）。<code class="market-mono">README.md</code> 会显示在详情页。
       </p>
       <p class="market-hint">
         <FileCode2 :size="13" />

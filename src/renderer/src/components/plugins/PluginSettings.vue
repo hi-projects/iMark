@@ -30,7 +30,7 @@ import {
   setExtensionHostSettings,
   uninstallExtension
 } from '../../services/extensionService'
-import { settingsNav } from '../../services/pluginService'
+import { settingsNav } from '../../services/settingsNav'
 import { notifyError } from '../../services/notice'
 import {
   pluginStatusLabel,
@@ -547,8 +547,8 @@ const busy = computed(() => extensionStore.busy !== null)
             <code class="plugin-code">{{ selected.installed.mainSha256.slice(0, 24) }}…</code>
           </div>
           <div class="plugin-meta-line">
-            <span class="plugin-field-label">权限</span>
-            <span>{{ capabilityLabels.length > 0 ? capabilityLabels.join('、') : '仅声明式贡献' }}</span>
+            <span class="plugin-field-label">能力声明</span>
+            <span>{{ capabilityLabels.length > 0 ? capabilityLabels.join('、') : '未声明' }}</span>
           </div>
           <div class="plugin-meta-line">
             <span class="plugin-field-label">激活事件</span>

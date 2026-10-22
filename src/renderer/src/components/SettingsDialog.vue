@@ -22,7 +22,7 @@ import {
   setLineWrapping
 } from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
-import { openMarketSettings, settingsNav, type MarketNav } from '../services/pluginService'
+import { openMarketSettings, settingsNav, type MarketNav } from '../services/settingsNav'
 import { extensionStore, selectExtensionSettings } from '../services/extensionService'
 import { extensionTone } from '../services/extensionUi'
 import PluginSettings from './plugins/PluginSettings.vue'

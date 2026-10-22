@@ -21,7 +21,7 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { createMainWindow } from '../src/main/window'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 
 let pass = 0
 let fail = 0
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     '旧字段不再留在内存设置里',
     !('autoSave' in settings) && !('autoSaveRealtime' in settings) && !('autoSaveInterval' in settings)
   )
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
 
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents

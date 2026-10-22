@@ -25,17 +25,14 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { loadSettings, saveSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 import { IPC } from '../src/shared/ipc-channels'
 
 // 特权 scheme 必须在 app ready 之前注册(与 src/main/index.ts 一致)
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 let pass = 0
 let fail = 0
 
@@ -98,7 +95,7 @@ async function main(): Promise<void> {
     marketAutoCheck: false
   })
 
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
 
   const settingsFile = join(ud, 'settings.json')
 

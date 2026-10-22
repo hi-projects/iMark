@@ -10,8 +10,8 @@
 
 import type { PublishPreview, PublishResult } from '@shared/market'
 import { packDirectory } from './pack'
+import { previewEnvelope } from './installer'
 import { publish as upload, detail } from './registry'
-import { verifyEnvelope } from './verify'
 
 /**
  * 打包一个目录并生成发布预览。不写盘、不上传。
@@ -21,12 +21,12 @@ export async function previewPublish(dir: string): Promise<PublishPreview> {
   const packed = await packDirectory(dir)
 
   // 自己打出来的包也要过一遍校验器 —— 打包端与校验端是两份实现,
-  // 让它们在这里对一次账,比等服务端回一句「插件包校验失败」再排查强得多
-  const verified = verifyEnvelope(packed.envelope)
-  if (!verified.ok) {
-    throw new Error(`打包结果未通过校验:${verified.errors.slice(0, 4).join(';')}`)
+  // 让它们在这里对一次账,比等服务端回一句「扩展包校验失败」再排查强得多
+  const preview = previewEnvelope(packed.envelope, { kind: 'local-dir', label: dir })
+  if (!preview.ok) {
+    throw new Error(`打包结果未通过校验:${preview.errors.slice(0, 4).join(';')}`)
   }
-  const { manifest, envelope, mainSha256, renderSha256 } = verified.value
+  const value = preview.value
 
   let existingVersion: string | null = null
   let existingOwner: string | null = null
@@ -34,31 +34,33 @@ export async function previewPublish(dir: string): Promise<PublishPreview> {
   let identical = false
 
   try {
-    const remote = await detail(manifest.id)
+    const remote = await detail(value.id)
     existingVersion = remote.version
     existingOwner = remote.publisher
-    const same = remote.versions.find(v => v.version === manifest.version)
+    const same = remote.versions.find(v => v.version === value.version)
     versionExists = Boolean(same)
-    identical = Boolean(same && same.integrity === envelope.integrity)
+    identical = Boolean(same && same.integrity === value.integrity)
   } catch (err) {
     // 404 = 这个 id 还没人发布过,这是最常见的情况,不是错误
     if ((err as { kind?: string }).kind !== 'not-found') throw err
   }
 
   return {
-    id: manifest.id,
-    name: manifest.name,
-    version: manifest.version,
-    mainMode: manifest.main?.mode ?? null,
-    hasRender: Boolean(manifest.render),
-    capability: manifest.capability ?? null,
-    integrity: envelope.integrity,
-    mainSha256,
-    renderSha256,
-    fileCount: packed.files.length,
-    totalBytes: packed.totalBytes,
-    files: packed.files,
-    permissions: manifest.permissions ?? [],
+    id: value.id,
+    name: value.name,
+    displayName: value.displayName,
+    version: value.version,
+    author: value.author,
+    hasMain: value.hasMain,
+    main: value.main,
+    activationEvents: value.activationEvents,
+    capabilities: value.capabilities,
+    contributesSummary: value.contributesSummary,
+    integrity: value.integrity,
+    mainSha256: value.mainSha256,
+    fileCount: value.fileCount,
+    totalBytes: value.totalBytes,
+    files: value.files,
     existingVersion,
     existingOwner,
     versionExists,

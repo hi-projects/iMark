@@ -288,9 +288,17 @@ interface EditorState {
   }
 }
 
-/** 与渲染层 `pathToUri` 同一套编码:逐段 encodeURIComponent,盘符除外(这里用不到) */
+/** 与渲染层 `pathToUri` 同一套编码:先归一为 `/`,逐段 encodeURIComponent,Windows 盘符的冒号保留 */
 function fileUri(path: string): string {
-  return `file://${path.split('/').map(encodeURIComponent).join('/')}`
+  const normalized = path.replace(/\\/g, '/')
+  const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`
+  const encoded = prefixed
+    .split('/')
+    .map((segment, index) =>
+      index === 1 && /^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)
+    )
+    .join('/')
+  return `file://${encoded}`
 }
 
 async function main(): Promise<void> {

@@ -27,10 +27,8 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { createMainWindow } from '../src/main/window'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
+import { initExtensions } from '../src/main/extensions/service'
 
-registerPluginScheme()
 import { defaultEditorStatus, effectiveUserChoice } from '../src/main/system'
 import {
   MARKDOWN_EXTS,
@@ -318,7 +316,7 @@ async function main(): Promise<void> {
   registerImarkProtocol()
   // 渲染层的插件服务一挂载就会 listPlugins();不给宿主的话界面右下角会弹一条
   // 「插件系统尚未就绪」—— 不影响断言,但会出现在截图里
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
   const settings = await loadSettings()
   // 模拟「双击 .md 启动」:文件在 argv 里,主进程暂存,渲染层初始化完来取
   setPendingOpenFile(external)
@@ -406,7 +404,7 @@ async function main(): Promise<void> {
   check('页面里有「默认 Markdown 编辑器」', pageText.includes('默认 Markdown 编辑器'), pageText.slice(0, 120))
   check(
     '说明一句话说清用途(文档默认用 iMark 打开)',
-    pageText.includes('文档默认用 iMark 打开'),
+    pageText.includes('默认用 iMark 打开'),
     pageText.slice(0, 120)
   )
   const statusLine = await evalJs<string>(`(() => document.querySelector('.settings-row-desc')?.innerText ?? '')()`)

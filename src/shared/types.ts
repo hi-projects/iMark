@@ -1,4 +1,3 @@
-import type { PluginConfigEntry } from './plugins'
 import type { ExtensionHostSettings, ExtensionPreference } from './extensions'
 import type { CodeIndentSize } from './editorSettings'
 
@@ -80,11 +79,6 @@ export interface Settings {
    * 而是「什么都不生效」;把同名文件放回来,它就又生效了。
    */
   userStyle: string | null
-  /**
-   * 插件配置:插件 id → { 是否启用, 非密配置 }。
-   * 密钥(token 等)不在这里,单独加密存于数据根下的 secrets.json(即 ~/.imark/secrets.json)。
-   */
-  plugins: Record<string, PluginConfigEntry>
   /**
    * 扩展配置:扩展 ID(`${publisher}.${name}`)→ { 是否启用, 非密配置 }。
    * 密钥不在这里,只以掩码形式出现在视图层;明文由主进程 safeStorage 保管。

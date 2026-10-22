@@ -1,7 +1,9 @@
 # iMark 插件系统 v2 改造 · 交接文档
 
-> 更新时间：2026-10-21 晚
-> 当前状态：**阶段 1–5 已完成；阶段 6（市场/构建/文档）未开始；阶段 7（清理/全量回归）未开始**
+> 更新时间：2026-10-21 深夜（续作）
+> 当前状态：**阶段 1–7 已完成**。市场/服务端/文档已切到 v2，v1 运行时与旧包已删除；
+> typecheck、构建、13 套 v2 验收与既有编辑器 harness 均已跑过（唯一遗留是 `table-render`
+> 在本机的一次既有卡死，见 §11）。
 > 完整设计计划已随仓库保存：[docs/plugin-system-v2-plan.md](docs/plugin-system-v2-plan.md)（这就是此前批准的七阶段计划）
 
 这份文档给**换机器后接手的人 / Claude**。先读第 1、2、3 节，再按第 5、6 节的清单往下做。不要重新设计架构，也不要做旧版本兼容。
@@ -34,27 +36,34 @@
 
 - 分支 `main`；**约有 100 个已修改/未跟踪文件，且尚未 commit**。换机器前必须先 `git add -A && git commit` 再 push，或整体拷贝工作树（不要漏掉未跟踪文件）。
 - `.verify-ud/`、`out/`、`.imark/`、`node_modules/` 都是本机产物，不要拷、不要提交（已在 `.gitignore`）。
-- **v1 与 v2 代码目前共存**：v2 已完整可用，但旧的 `src/main/plugins/**`、`src/preload/plugin.ts`、旧 renderer 服务、旧 `src/shared/plugin*.ts`、旧内置包 JSON 还在，等阶段 7 删除。
-- `src/main/index.ts` 目前只调用 `initExtensions()`；**尚未调用 v2 的 `ensureBundledProvisioned`**（见 [index.ts:161-167](src/main/index.ts#L161-L167) 的注释）。这是阶段 6 的明确任务。
-- 旧的 `src/main/market/builtin/{ai-for-edit,git-sync,quick-edit,note-embed,todo-marks}.imkpkg.json` 仍在；新的三份 `imark.*.imkpkg.json` 也已生成。阶段 7 删除旧五份。
-- 旧的 `src/main/market/bundled.ts` 仍是 v1（`PluginHost`、权限、配置迁移），**当前没有被 index.ts 调用**；阶段 6 整体重写。
-- 最近确认：`npm run typecheck:node` 通过。`typecheck:web` / `typecheck:plugins` 尚未在本次收尾里重跑；UI 改动后要重跑全套。
+- **v1 运行时已删除**：`src/main/plugins/**`、`src/preload/plugin.ts`、旧 renderer 服务
+  （`pluginService` / `pluginUi` / `renderLayer` / `pluginHostOps` / `pluginExtensions` / `pluginSdk`）、
+  旧 `src/shared/plugin*.ts`、旧内置包 JSON 与旧 harness 均已不存在。共享类型只剩
+  `src/shared/plugins.ts`（字段/目标/状态/日志）与 `extensionPackage.ts` / `extensionApi.ts` 等 v2 模块。
+- `src/main/index.ts` 在 `initExtensions()` 之后调用 `ensureBundledProvisioned(service)`，再 `buildAppMenu()`。
+- `src/main/market/builtin/` 只剩三份 `imark.*.imkpkg.json`；`npm run plugins:build` 可重新生成。
+- `src/main/market/bundled.ts` 已重写为 v2（三款内置包、`source: 'bundled'` 才升级、并发复用同一个 Promise）。
+- 最近确认：`npm run typecheck`（node/web/plugins）、`npx electron-vite build`、`npm run plugins:build` 全绿。
 - 已验证通过（本机后台跑）：
 
-| 验收 | 结果 |
+| 验收 | 结果（2026-10-21 续作，本机 Windows） |
 | --- | --- |
-| `extensions-model` | 绿（此前阶段 2） |
-| `extensions-host-groups` | 绿（此前阶段 2） |
-| `extensions-editor` | 绿（此前阶段 3） |
-| `quick-edit` | 绿（此前阶段 3） |
-| `extensions-webview` | 绿（此前阶段 4） |
-| `ai-for-edit` | 绿（此前阶段 4） |
-| `git-sync` | 绿（阶段 5） |
-| `git-sync-auth` | 绿（21/21，阶段 5） |
-| `git-sync-proxy` | 绿（29/29，阶段 5） |
-| `legacy-cleanup` | 绿（阶段 5，最后重跑退出码 0） |
-
-> 注意：上表是各阶段完成时的结果。阶段 6/7 改动后必须重跑。
+| `extensions-model` | 绿（37/37；含运行时启用补激活回归） |
+| `extensions-host-groups` | 绿（33/33） |
+| `extensions-editor` | 绿（67/67；修正了 harness 的 Windows `file://` 拼法） |
+| `extensions-webview` | 绿（51/51） |
+| `quick-edit` | 绿（48/48） |
+| `git-sync` | 绿（69/69） |
+| `git-sync-auth` | 绿（21/21） |
+| `git-sync-proxy` | 绿（29/29） |
+| `ai-for-edit` | 绿（164/164） |
+| `market-v2` | 绿（39/39，新增） |
+| `install-confirm` | 绿（30/30，重写） |
+| `bundled-upgrade` | 绿（31/31，重写） |
+| `legacy-cleanup` | 绿（38/38） |
+| `market-ui` | 绿（13/13，新增；市场/已安装/发布/设置/卸载确认） |
+| 编辑器既有 harness | `editor-enter`、`code-block`、`code-indent`、`math-block`、`mermaid`、`tabs`、`session-restore`、`autosave-modes`、`image-paste`、`cursor`、`font-zoom`、`settings-system`、`settings-reflow`、`userstyle-dir`、`data-dir` 绿 |
+| `table-render` | **红/卡死（既有问题）**：在当前 CSS 下断言期望 2px 内边距、<30px 行高，实际是 8px / 34.9px；随后在「两张表的文档 + 页面 reload」处渲染进程 100% CPU。与插件改造无关，未在本轮修。 |
 
 ## 4. 环境与命令（本机踩过的坑）
 
@@ -80,7 +89,7 @@ env -u ELECTRON_RUN_AS_NODE xvfb-run -a node verify/run.mjs legacy-cleanup
 - 新机器：`npm ci`；如果 `src/main/market/builtin/*.imkpkg.json` 缺失或过期，跑 `npm run plugins:build`（当前构建脚本已经是 v2）。
 - start-up 需要 `--user-data-dir`；用 `verify/run.mjs` 跑会自动带上。
 
-## 5. 阶段 6：市场、构建、文档（下一步从 5.1 开始）
+## 5. 阶段 6：市场、构建、文档（已完成）
 
 ### 5.1 重写共享市场类型 [src/shared/market.ts](src/shared/market.ts)
 
@@ -341,7 +350,7 @@ export interface MarketInstalledData {
 
 旧的 `market-search` / `market-detail` harness 目前是 v1 断言：要么改写成 v2（可以合并进 `market-v2`），要么删除，不能留着假装通过。
 
-## 6. 阶段 7：清理与全量回归
+## 6. 阶段 7：清理与全量回归（已完成）
 
 ### 6.1 删除 v1 运行时与旧模型
 
@@ -468,22 +477,70 @@ legacy-cleanup
 
 ## 9. 完成定义（DoD）
 
-- [ ] `npm run typecheck` 全绿。
-- [ ] `npx electron-vite build` 成功。
-- [ ] 三款官方扩展都能从全新 userData 自动补装；quick-edit 默认启用，git-sync/AI 默认关闭。
-- [ ] 市场能打包、预览、安装、更新、卸载 v2 扩展；v1 信封被明确拒绝。
-- [ ] 安装含代码扩展时必须勾选“以当前用户权限运行”的确认项。
-- [ ] 设置页、命令面板、状态栏、行首菜单、快捷键都从 `contributes` 驱动。
-- [ ] 13 套新验收 + 编辑器既有 harness 全绿（后台跑）。
-- [ ] `src/main/plugins/**`、旧 `pluginPackage`/`pluginApi`/`pluginFormat`、旧内置包、旧 harness 全部删除。
-- [ ] `note-embed` / `todo-marks` 在代码、内置包、文档里都没有残留。
-- [ ] README 已改成 v2 作者文档，并写明完整信任警告。
+- [x] `npm run typecheck` 全绿。
+- [x] `npx electron-vite build` 成功。
+- [x] 三款官方扩展都能从全新 userData 自动补装；quick-edit 默认启用，git-sync/AI 默认关闭。
+- [x] 市场能打包、预览、安装、更新、卸载 v2 扩展；v1 信封被明确拒绝。
+- [x] 安装含代码扩展时必须勾选“以当前用户权限运行”的确认项。
+- [x] 设置页、命令面板、状态栏、行首菜单、快捷键都从 `contributes` 驱动。
+- [x] 13 套新验收 + 编辑器既有 harness 全绿（后台跑）；`table-render` 的既有失败/卡死见 §11。
+- [x] `src/main/plugins/**`、旧 `pluginPackage`/`pluginApi`/`pluginFormat`、旧内置包、旧 harness 全部删除。
+- [x] `note-embed` / `todo-marks` 在代码、内置包、文档里都没有残留（历史计划/交接文档与 legacy-cleanup harness 中的旧 ID 除外）。
+- [x] README 已改成 v2 作者文档，并写明完整信任警告。
 
-## 10. 建议的下一条动作
+## 10. 下一条动作
 
-1. 先把本机工作树提交/推送到新机器能拉到的位置（当前未提交）。
-2. 新机器 `npm ci`，确认 `env -u ELECTRON_RUN_AS_NODE npm run typecheck:node` 通过。
-3. 从 **5.1 `src/shared/market.ts`** 开始，按 5.2 → 5.3 → 5.4 → 5.5 → 5.6 → 5.7 顺序做。
-4. 每完成一个小节跑一次 `typecheck:node`；阶段 6 结束后再进入阶段 7 的删除。
+阶段 6/7 已完成。后续只剩两件事：
 
-不要在一开始就删 `src/main/plugins/**`：市场模块与部分设置页/旧 harness 还在 import 它，先完成 v2 市场替换，再统一清理。
+1. **处理 `table-render` 的既有问题**（与插件系统无关）：
+   - harness 里 2px 内边距 / <30px 行高的期望已与当前 CSS（8px / 34.9px）脱节；
+   - 「两张表的文档 + 页面 reload」会让渲染进程 100% CPU。先用 `verify/twotable` 式的
+     最小 harness 复现（启动直接打开两张表是正常的），再定位是 reload 时的表格 widget
+     自动聚焦/测量循环，还是 harness 的等待时序。
+2. 需要时把工作树提交（当前改动未提交）。
+
+## 11. 阶段 6/7 完成记录（2026-10-21 续作）
+
+### 阶段 6
+
+- `src/shared/market.ts` 全部换成 v2 形状：`hasMain` / `main` / `activationEvents` /
+  `capabilities` / `contributesSummary`；删除 `mainMode`、`hasRender`、`capability`、
+  `permissions`、`newPermissions`、`renderSha256`。
+- 主进程市场：`verify.ts` 委托 `verifyExtensionPackage`；`installer.ts` 调
+  `service.installPackage()`；`pack.ts` 读 `package.json`；`publish.ts` / `updates.ts` /
+  `registry.ts` / `source.ts` / `ipc.ts` 全部切 v2。`http.ts` 的上限改用 `EXTENSION_LIMITS`。
+- `bundled.ts` 重写：三份 `imark.*` 包、并发复用 Promise、只升级 `source === 'bundled'`、
+  quick-edit 默认启用 / 另两个默认关闭；`src/main/index.ts` 在 `buildAppMenu()` 前调用。
+- 渲染层：marketService 改用 `ExtensionView` + `extensionStore`；已安装/详情/安装确认/
+  发布/浏览/页面全部重写；含代码扩展必须勾选风险确认；筛选「全部 / 含代码 / 纯声明」。
+  新增 `services/settingsNav.ts` 承担原 `pluginService.ts` 的导航职责。
+- 服务端：`validate.mjs` 独立实现 v2 校验（stable stringify、package.json 清单、
+  contributes/activationEvents/limits），`packages.mjs` 输出 v2 字段、搜索参数 `hasMain`。
+- README 四/五/六节重写为 v2 作者文档；插件构建脚本已在本机跑通。
+
+### 阶段 7
+
+- 删除 `src/main/plugins/**`、`src/preload/plugin.ts`、`src/main/git.ts`、
+  `src/shared/pluginApi.ts|pluginPackage.ts|pluginFormat.json|pluginRpc.ts`、
+  渲染层 `pluginService.ts|pluginUi.ts|renderLayer.ts|pluginHostOps.ts`、
+  `editor/pluginExtensions.ts|pluginSdk.ts`、旧内置包五份、旧 harness 十份。
+- 清理旧 IPC 通道/类型/菜单栏（v1 Plugin* 全部移除）；`Settings.plugins` 从类型与
+  默认值删除，`legacy.ts` 用 `dropLegacySettingsKeys(['plugins'])` 从磁盘删键。
+- 编辑器和 UI harness 的初始化统一改为 `initExtensions({ appVersion: '0.1.0' })`；
+  需要内置扩展的再调 `ensureBundledProvisioned(service)`。
+- 顺手修了几个与本机平台/既有 UI 文案相关的 harness 期望：Windows `file://` 路径、
+  标题字号阈值（1.125em）、设置页说明文案、data-dir 迁移项（`css/` 取代 v1 `plugin-ui.json`）。
+- 新增 `verify/market-ui-harness.ts`：市场已安装列表、离线浏览、发布区块、扩展设置页、
+  卸载两段式确认。
+- **运行时启用扩展的补激活**：`service.onSettingsChanged` 现在会对「启动后才从关闭变成启用」
+  且带 `*` / `onStartupFinished`（或当前有 Markdown 文档时的 `onLanguage:markdown`）
+  的扩展立即 `activateExtension()`。没有这一步，AI for Edit 这类在 `activate()` 里创建
+  状态栏与浮动 webview 的扩展，在设置页启用后要等下一次重启或命令触发才出现。
+  `extensions-model` 的 `[5]` 已加回归断言。
+
+### 已知遗留
+
+- `table-render` 见 §10；其余 harness 均绿。
+- `src/shared/plugins.ts` 仍保留少量 v1 时代命名（`PluginField` 等），但只包含 v2
+  仍在使用的字段/目标/状态/日志类型，不是 v1 运行时。
+- `plugins-src/dist/` 与 `.verify-ud/` 是本机产物，未提交。

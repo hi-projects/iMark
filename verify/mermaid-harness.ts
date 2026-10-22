@@ -22,10 +22,9 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 const REPO = join(__dirname, '..', '..')
 
@@ -96,8 +95,6 @@ const MULTI = [
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 async function main(): Promise<void> {
   if (!app.commandLine.hasSwitch('user-data-dir')) {
     console.error('拒绝运行:必须带 --user-data-dir(用 `node verify/run.mjs mermaid` 跑会自动带上)')
@@ -140,7 +137,8 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost(ensureBundledProvisioned)
+  const service = await initExtensions({ appVersion: '0.1.0' })
+  await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents

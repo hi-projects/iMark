@@ -1,18 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
-import type {
-  PluginActionPayload,
-  PluginActionResult,
-  PluginContribInvoke,
-  PluginContribsSnapshot,
-  PluginNotice,
-  PluginState,
-  PluginView,
-  RenderHalfMessage,
-  RendererOpReply,
-  RendererOpRequest
-} from '@shared/plugins'
 import type { DefaultEditorStatus, SaveDialogOptions, Settings } from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
 import type {
@@ -157,76 +145,23 @@ const api = {
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): (() => void) =>
     subscribe<Pick<ExtensionCommandInvocation, 'command' | 'from'>>(IPC.ExtensionCommand, cb),
-  // ---------- 插件(v1,阶段 7 删除) ----------
-  listPlugins: () => request(IPC.PluginList),
-  savePlugin: (id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }) =>
-    request(IPC.PluginSave, { id, ...patch }),
-  setPluginSecret: (id: string, fieldKey: string, targetId: string | null, value: string | null) =>
-    request(IPC.PluginSetSecret, { id, fieldKey, targetId, value }),
-  /** restricted main:是否为它放开「允许访问本机地址」 */
-  setPluginNetAccess: (id: string, allow: boolean) =>
-    request(IPC.PluginSetNetAccess, { id, allow }),
-  openPluginLog: (id: string): Promise<void> => request(IPC.PluginLogOpen, id),
-  runPluginAction: (id: string, action: string, targetId?: string, payload?: PluginActionPayload) =>
-    request(IPC.PluginRun, { id, action, targetId, payload }),
-  notifyPluginFlushed: (): void => ipcRenderer.send(IPC.PluginFlushDone),
-  onPluginFlushDoc: (cb: () => void): (() => void) => subscribe<void>(IPC.PluginFlushDoc, cb),
-  onPluginStatus: (cb: (plugins: PluginView[]) => void): (() => void) =>
-    subscribe<PluginView[]>(IPC.PluginStatus, cb),
-  // ---------- 插件界面贡献点 ----------
-  getPluginContribs: (): Promise<PluginContribsSnapshot> =>
-    request(IPC.PluginContribGet),
-  runPluginContrib: (invoke: PluginContribInvoke): Promise<PluginActionResult> =>
-    request(IPC.PluginContribRun, invoke),
-  onPluginContribs: (cb: (snapshot: PluginContribsSnapshot) => void): (() => void) =>
-    subscribe<PluginContribsSnapshot>(IPC.PluginContrib, cb),
-  onPluginNotice: (cb: (notice: PluginNotice) => void): (() => void) =>
-    subscribe<PluginNotice>(IPC.PluginNotice, cb),
-  /** 「插件」菜单或它的快捷键点了某条命令 —— 回到渲染层来执行(它才知道光标在哪) */
-  onPluginCommand: (cb: (o: { pluginId: string; itemId: string }) => void): (() => void) =>
-    subscribe<{ pluginId: string; itemId: string }>(IPC.PluginCommand, cb),
   /** 文档内容变了(渲染层已节流,最快约 400ms 一次) */
   notifyDocChanged: (o: { dirty: boolean; words: number; chars: number }): void =>
     ipcRenderer.send(IPC.DocChanged, o),
   /** 编辑器里有没有文档 —— 与「有没有文件路径」是两件事,未命名文档没有路径 */
   setEditorPresence: (present: boolean): void => ipcRenderer.send(IPC.EditorPresence, present),
-  /** 一份文档成功写进了磁盘(插件的 document:save 钩子靠它触发) */
+  /** 一份文档成功写进了磁盘 */
   notifyDocSaved: (filePath: string): void => ipcRenderer.send(IPC.DocSaved, filePath),
-  /** 主→渲染:这个文件被插件改了(是正开着的就重新加载) */
+  /** 主→渲染:这个文件被外部改了(是正开着的就重新加载) */
   onFileExternalChange: (cb: (filePath: string) => void): (() => void) =>
     subscribe<string>(IPC.FileExternalChange, cb),
-  // ---------- 编辑器扩展点与界面注入(宿主请渲染层办事) ----------
-  /** 主→渲染:替某个插件做一件事(读/改文档、加装饰、挂界面);做完要 replyHostRequest */
-  onPluginHostRequest: (cb: (req: RendererOpRequest) => void): (() => void) =>
-    subscribe<RendererOpRequest>(IPC.PluginHostRequest, cb),
-  /** 渲染→主:上面那件事的结果 */
-  replyHostRequest: (reply: RendererOpReply): void => ipcRenderer.send(IPC.PluginHostReply, reply),
-  /** 渲染→主:界面这边准备好了(见 IPC.PluginUiReady 的说明) */
-  notifyPluginUiReady: (): void => ipcRenderer.send(IPC.PluginUiReady),
-  // ---------- render 层 ----------
-  /** render 层 → main 层(主进程中转;没有 main 层时主进程只记日志) */
-  sendRenderMessage: (pluginId: string, channel: string, data: unknown): void =>
-    ipcRenderer.send(IPC.PluginRenderMessage, { pluginId, channel, data }),
-  /** main 层 → render 层(主进程推过来) */
-  onRenderMessage: (cb: (message: RenderHalfMessage) => void): (() => void) =>
-    subscribe<RenderHalfMessage>(IPC.PluginRenderMessage, cb),
-  /** render 层更新自己的状态卡 */
-  notifyRenderState: (pluginId: string, patch: Partial<PluginState>): void =>
-    ipcRenderer.send(IPC.PluginRenderState, { pluginId, patch }),
-  /** render 层写日志 */
-  notifyRenderLog: (
-    pluginId: string,
-    level: 'debug' | 'info' | 'warn' | 'error',
-    message: string
-  ): void => ipcRenderer.send(IPC.PluginRenderLog, { pluginId, level, message }),
   // ---------- 插件市场 ----------
   pickMarketPackage: () => request(IPC.MarketPickPackage),
   packMarketDir: () => request(IPC.MarketPackDir),
   dropMarketPending: (token: string): Promise<void> =>
     request(IPC.MarketDropPending, token),
   installMarketPending: (token: string) => request(IPC.MarketInstallPending, token),
-  uninstallPlugin: (id: string, options: { removeConfig: boolean }) =>
-    request(IPC.MarketUninstall, { id, ...options }),
+  uninstallPlugin: (id: string) => request(IPC.MarketUninstall, id),
   listMarketInstalled: () => request(IPC.MarketInstalled),
   restoreBundledPlugins: () => request(IPC.MarketRestoreBundled),
   onMarketProgress: (cb: (p: MarketProgress) => void): (() => void) =>

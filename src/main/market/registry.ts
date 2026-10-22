@@ -18,25 +18,8 @@ import type {
   MarketVersionInfo,
   PublishResult
 } from '@shared/market'
-import { getCapability } from '../plugins/capabilities'
 import { authStatus, clearSession, getDevToken, getRegistryUrl, invalidateSession, registryKey, setSession } from './config'
 import { downloadEnvelope, downloadIcon, getJson, postJson, resolveUrl } from './http'
-
-/**
- * 把服务端给的 `capability` id 翻成**显示名**发下去。
- *
- * 服务端只存 id —— 「这个能力叫什么、它能干什么」以主进程的能力注册表为权威,
- * 那边多一份副本迟早会漂移。认不出来的 id 一律留 null,而不是把裸 id 摆给用户看:
- * 那种包在安装时会被 checkAgainstCapability 直接拒掉,列表页不必为它编个名字。
- *
- * 顺带把老服务端(**没有 capability 字段**)也兼容掉:缺字段按声明式以外处理。
- */
-function withCapability<T extends { capability?: string | null }>(
-  entry: T
-): T & { capabilityName: string | null } {
-  const id = entry.capability ?? null
-  return { ...entry, capability: id, capabilityName: id ? (getCapability(id)?.name ?? null) : null }
-}
 
 /** 每个需要地址的接口都先过这里,好让「没配置市场地址」是一句人话而不是一个 URL 错误 */
 async function base(): Promise<string> {
@@ -55,37 +38,32 @@ export async function search(query: MarketQuery): Promise<MarketSearchResult> {
     pageSize: String(query.pageSize),
     sort: query.sort
   })
-  if (query.mainMode) params.set('mainMode', query.mainMode)
-  if (query.hasRender !== null) params.set('render', String(query.hasRender))
-  const result = await getJson<MarketSearchResult>(
+  if (query.hasMain !== null) params.set('hasMain', String(query.hasMain))
+  return getJson<MarketSearchResult>(
     resolveUrl(registry, `/api/v1/search?${params.toString()}`)
   )
-  return { ...result, items: result.items.map(withCapability) }
 }
 
 export async function detail(id: string): Promise<MarketDetail> {
   const registry = await base()
-  const info = await getJson<MarketDetail>(
+  return getJson<MarketDetail>(
     resolveUrl(registry, `/api/v1/packages/${encodeURIComponent(id)}`)
   )
-  return withCapability(info)
 }
 
 /** 只要最新版那一条(更新检查用,不必把 readme 和版本列表也拖回来) */
 export async function latest(id: string): Promise<MarketEntry> {
   const registry = await base()
-  const info = await getJson<MarketEntry>(
+  return getJson<MarketEntry>(
     resolveUrl(registry, `/api/v1/packages/${encodeURIComponent(id)}/latest`)
   )
-  return withCapability(info)
 }
 
 export async function byAuthor(username: string): Promise<MarketSearchResult> {
   const registry = await base()
-  const result = await getJson<MarketSearchResult>(
+  return getJson<MarketSearchResult>(
     resolveUrl(registry, `/api/v1/users/${encodeURIComponent(username)}/packages`)
   )
-  return { ...result, items: result.items.map(withCapability) }
 }
 
 export async function iconDataUrl(id: string): Promise<string | null> {

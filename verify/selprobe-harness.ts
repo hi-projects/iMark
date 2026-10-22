@@ -4,15 +4,12 @@ import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { loadSettings, saveSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
+import { initExtensions } from '../src/main/extensions/service'
 import { createMainWindow } from '../src/main/window'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 ;(dialog as unknown as { showMessageBoxSync: unknown }).showMessageBoxSync = () => 1
 
@@ -40,7 +37,7 @@ async function main(): Promise<void> {
     lineWrapping: true,
     editorFontSize: 15
   })
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
 
   const win = createMainWindow(await loadSettings())
   win.setSize(1280, 800)

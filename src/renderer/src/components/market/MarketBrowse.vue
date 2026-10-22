@@ -22,7 +22,7 @@ import {
   remoteStore,
   searchMarket
 } from '../../services/marketService'
-import { settingsNav } from '../../services/pluginService'
+import { settingsNav } from '../../services/settingsNav'
 import { shapeLabels, shapeOf } from '../../services/pluginShape'
 import MarketProgress from './MarketProgress.vue'
 
@@ -34,6 +34,20 @@ const SORTS = [
   { id: 'downloads', label: '下载最多' },
   { id: 'name', label: '按名称' }
 ] as const
+
+/** 形态筛选:全部 / 含代码 / 纯声明 */
+const SHAPES = [
+  { id: 'all', label: '全部' },
+  { id: 'code', label: '含代码' },
+  { id: 'declarative', label: '纯声明' }
+] as const
+
+const shapeFilter = computed({
+  get: () => (nav.hasMain === null ? 'all' : nav.hasMain ? 'code' : 'declarative'),
+  set: (value: string) => {
+    nav.hasMain = value === 'all' ? null : value === 'code'
+  }
+})
 
 const totalPages = computed(() => {
   const r = result.value
@@ -130,6 +144,9 @@ onMounted(async () => {
         />
       </label>
       <button class="plugin-btn" :disabled="marketStore.loading" @click="applyQuery()">搜索</button>
+      <select v-model="shapeFilter" class="market-select" @change="applyQuery()">
+        <option v-for="s in SHAPES" :key="s.id" :value="s.id">{{ s.label }}</option>
+      </select>
       <select v-model="nav.sort" class="market-select" @change="applyQuery()">
         <option v-for="s in SORTS" :key="s.id" :value="s.id">{{ s.label }}</option>
       </select>
@@ -182,7 +199,7 @@ onMounted(async () => {
 
           <div class="market-card-main">
             <div class="market-card-name">
-              <b>{{ item.name }}</b>
+              <b>{{ item.displayName || item.name }}</b>
               <span class="market-badge market-mono">v{{ item.version }}</span>
               <!-- 层徽标:main 模式 / render / 无代码能力。未知形态明确标出来,
                    绝不退化成“不含代码” -->

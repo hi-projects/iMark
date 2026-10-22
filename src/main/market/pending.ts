@@ -1,7 +1,7 @@
 /**
  * 「待确认的安装」暂存区。
  *
- * 为什么要有它:确认框显示的东西(清单、权限、体积、sha256)与最终装进去的东西
+ * 为什么要有它:确认框显示的东西(清单、体积、sha256)与最终装进去的东西
  * 必须是**同一份字节**。如果让渲染层先把包读出来展示、再把路径传回来安装,
  * 中间就有两个窗口:文件可能被换掉;而且渲染层还能传一个它自己编的路径,
  * 让主进程去读任意文件。
@@ -14,15 +14,13 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import type { PluginSource } from '@shared/plugins'
 
 /** 待安装项的有效期:用户可能对着确认框想很久,但不能无限期挂着 */
 const TTL = 5 * 60_000
 
 interface Pending {
   envelope: unknown
-  source: PluginSource
-  publisher: string | null
+  source: 'local' | 'market'
   registryUrl: string | null
   /** 下载时从市场拿到的期望 integrity;本地文件为 null */
   expectedIntegrity: string | null

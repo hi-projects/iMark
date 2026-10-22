@@ -9,6 +9,7 @@ import { registerExtensionWebviewProtocol } from './extensions/webviewProtocol'
 import { EXTENSION_WEBVIEW_SCHEME } from '@shared/extensionProtocol'
 import type { ExtensionContributionsSnapshot } from '@shared/extensions'
 import { checkUpdates } from './market/updates'
+import { ensureBundledProvisioned } from './market/bundled'
 import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from './userStyles'
 import { describeDataPaths, prepareDataDirs } from './dataDir'
 import { fileFromArgv, setPendingOpenFile } from './openFile'
@@ -159,12 +160,13 @@ if (!app.requestSingleInstanceLock()) {
     const settings = await loadSettings()
 
     // 扩展服务要先于窗口就绪:渲染层首个 editor.ready 到达时它必须已经在听。
-    // 官方内置扩展的补装配(ensureBundledProvisioned)留到市场 v2 阶段 ——
-    // 现在装进来的旧包格式会被 v2 校验拒绝,不如不装。
     const service = await initExtensions({
       reservedKeys: reservedAccelerators,
       onContributions: applyContributionMenu
     })
+    // 三款官方扩展按 v2 内置包补装(已是 bundled 来源的会跟随应用版本升级;
+    // 市场/本地来源一律不碰)。必须在建菜单之前:它们贡献的命令与快捷键是菜单来源。
+    await ensureBundledProvisioned(service)
     // 窗口出现之前先建一次菜单:扩展贡献的快捷键是靠原生菜单加速键生效的,
     // 等窗口建完再建菜单的话,首屏那几十毫秒里按键会丢。
     buildAppMenu()

@@ -27,7 +27,8 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { createMainWindow } from '../src/main/window'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
+import { IPC } from '../src/shared/ipc-channels'
 
 let pass = 0
 let fail = 0
@@ -44,7 +45,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-const PROBE_ID = 'notice-probe'
+const PROBE_ID = 'harness.notice-probe'
 const PROBE_NAME = '通知探针'
 const PLUGIN_TEXT = '来自插件的通知'
 const PLUGIN_TEXT_2 = '第二条插件通知'
@@ -57,20 +58,25 @@ const BROWSER_BODY = '浏览器通知正文'
  * 不在 `onEnable` 里直接发:那时窗口还没建,宿主会(正确地)把通知丢掉,
  * 断言就会变成一条永远等不到的红灯。
  */
-const PROBE_MAIN = `module.exports = function (imk) {
-  return {
-    onEnable: function () {
-      imk.commands.register(
-        { id: 'probe-notify', label: '发一条插件通知' },
-        function () { imk.ui.notify(${JSON.stringify(PLUGIN_TEXT)}, 'success') }
-      )
-      imk.commands.register(
-        { id: 'probe-notify-2', label: '再发一条插件通知' },
-        function () { imk.ui.notify(${JSON.stringify(PLUGIN_TEXT_2)}, 'warn') }
-      )
-    }
-  }
+const PROBE_MAIN = `const imark = require('imark')
+exports.activate = function (context) {
+  context.subscriptions.push(
+    imark.commands.registerCommand('harness.notice-probe.probe-notify', function () {
+      imark.window.showInformationMessage('来自插件的通知')
+    })
+  )
+  context.subscriptions.push(
+    imark.commands.registerCommand('harness.notice-probe.probe-notify-2', function () {
+      imark.window.showWarningMessage('第二条插件通知')
+    })
+  )
+  // 状态栏条目:布局断言需要一个真实的「扩展图标组」
+  const item = imark.window.createStatusBarItem(imark.StatusBarAlignment.Left, 0)
+  item.text = '$(bell) 探针'
+  item.show()
+  context.subscriptions.push(item)
 }
+exports.deactivate = function () {}
 `
 
 /** 小框里的一条通知,按界面上的文字与来源标签取 */
@@ -135,34 +141,54 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  // 探针插件目录:与 `--plugin-dev=` 加载的是同一条路径
-  const devDir = join(ud, 'dev-notice')
-  await rm(devDir, { recursive: true, force: true })
-  await mkdir(devDir, { recursive: true })
+  // 探针扩展:直接放进 v2 的安装目录,由 initExtensions 扫描加载
+  const probeDir = join(ud, 'plugins', PROBE_ID)
+  await mkdir(probeDir, { recursive: true })
   await writeFile(
-    join(devDir, 'manifest.json'),
+    join(probeDir, 'package.json'),
     JSON.stringify(
       {
-        id: PROBE_ID,
-        name: PROBE_NAME,
-        description: 'harness 用:发插件通知',
+        publisher: 'harness',
+        name: 'notice-probe',
         version: '1.0.0',
-        main: { mode: 'node', entry: 'main.js' },
-        fields: []
+        displayName: PROBE_NAME,
+        description: 'harness 用:发扩展通知',
+        engines: { imark: '^0.1.0' },
+        main: './main.js',
+        activationEvents: [
+          'onCommand:harness.notice-probe.probe-notify',
+          'onCommand:harness.notice-probe.probe-notify-2'
+        ],
+        contributes: {
+          commands: [
+            { command: 'harness.notice-probe.probe-notify', title: '发一条扩展通知' },
+            { command: 'harness.notice-probe.probe-notify-2', title: '再发一条扩展通知' }
+          ]
+        }
       },
       null,
       2
     ),
     'utf8'
   )
-  await writeFile(join(devDir, 'main.js'), PROBE_MAIN, 'utf8')
+  await writeFile(join(probeDir, 'main.js'), PROBE_MAIN, 'utf8')
 
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
   // 不补装内置插件:这一轮只需要一个干净的窗口 + 探针,少一个变量少一处噪音
-  const host = await initPluginHost(undefined, [devDir])
+  const service = await initExtensions({ appVersion: '0.1.0' })
+  // 先激活探针:它贡献的状态栏条目要在首帧就出现在布局里(这时还没有任何通知)
+  try {
+    await service.activateExtension(PROBE_ID)
+  } catch (err) {
+    console.error('[harness] 激活探针扩展失败:', err)
+  }
   const win: BrowserWindow = createMainWindow(settings)
+  // 与 index.ts 一样:主进程的 UI 请求要能送到渲染层
+  service.setRendererSender(message => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.ExtensionToRenderer, message)
+  })
   const wc = win.webContents
   await new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))
 
@@ -197,9 +223,12 @@ async function main(): Promise<void> {
   /** 执行探针命令,直到通知真的送达渲染层(宿主刚启用时可能还没挂好命令) */
   async function firePluginNotice(itemId: string): Promise<boolean> {
     for (let i = 0; i < 20; i++) {
-      const r = await host.invokeContrib({ pluginId: PROBE_ID, itemId, from: 'command' })
-      if (r.ok) return true
-      await sleep(100)
+      try {
+        await service.executeCommand(`${PROBE_ID}.${itemId}`, [], 'code')
+        return true
+      } catch {
+        await sleep(100)
+      }
     }
     return false
   }
@@ -258,7 +287,7 @@ async function main(): Promise<void> {
         hasSettingsInLeft: !!appActions && !!appActions.querySelector('button[title^="设置"]'),
         settingsInRight: !!actions && !!actions.querySelector('button[title^="设置"]'),
         themeInRight: !!actions && !!actions.querySelector('button[title*="主题"]'),
-        slotInPluginGroup: !!pluginGroup && !!pluginGroup.querySelector('.status-plugin-slot'),
+        slotInPluginGroup: !!pluginGroup && !!pluginGroup.querySelector('.status-plug'),
         bellInActions: !!bell && !!actions && actions.contains(bell),
         bellIsLast: !!bell && !!actions && actions.lastElementChild === bell,
         bellTitle: (bell && bell.getAttribute('title')) || ''
@@ -311,7 +340,7 @@ async function main(): Promise<void> {
     JSON.stringify({ sep: layout.seps[1], toggles: layout.toggles, pluginGroup: layout.pluginGroup })
   )
   check(
-    '插件图标组在状态栏左半边,且留出了 render 层插件的空槽',
+    '插件图标组在状态栏左半边,且里面是扩展自己贡献的条目',
     layout.pluginGroup !== null && layout.pluginGroup.left < layout.viewportWidth / 2 && layout.slotInPluginGroup,
     JSON.stringify({ pluginGroup: layout.pluginGroup, slotInPluginGroup: layout.slotInPluginGroup })
   )
@@ -407,7 +436,8 @@ async function main(): Promise<void> {
     items[0]?.source === '插件' && items[0]?.name === PROBE_NAME && items[0]?.message === PLUGIN_TEXT,
     JSON.stringify(items)
   )
-  check('通知等级沿用插件的 success', items[0]?.levelClass === 'notif-success', JSON.stringify(items[0]))
+  // v2 的 showInformationMessage 没有 success 这一档;info 是它与通知中心的对应等级
+  check('通知等级沿用扩展消息的 info', items[0]?.levelClass === 'notif-info', JSON.stringify(items[0]))
   check('打开后未读角标消失', (await waitFor(`!document.querySelector('.status-notify-badge')`, 2000)))
 
   // 小框开着时来的通知:直接算已读,不再让铃铛冒红点

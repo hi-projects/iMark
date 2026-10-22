@@ -140,7 +140,7 @@ async function main(): Promise<void> {
   const settings = await loadSettings()
 
   check('清理标记写成 2', settings.legacyDataCleared === 2, String(settings.legacyDataCleared))
-  check('settings.plugins 已清空', Object.keys(settings.plugins).length === 0, JSON.stringify(settings.plugins))
+  check('settings.plugins 已从类型/内存中移除', !('plugins' in settings), JSON.stringify(settings))
   check(
     '合法的 v2 扩展偏好保留',
     Boolean(settings.extensions['imark.keep-me']),
@@ -149,8 +149,7 @@ async function main(): Promise<void> {
   const disk = await readJson(settingsPath)
   check(
     '磁盘上的 settings.json 也不再含旧插件配置',
-    Object.keys((disk.plugins as object) ?? {}).length === 0 &&
-      disk.legacyDataCleared === 2,
+    !('plugins' in disk) && disk.legacyDataCleared === 2,
     JSON.stringify({ plugins: disk.plugins, legacyDataCleared: disk.legacyDataCleared })
   )
 

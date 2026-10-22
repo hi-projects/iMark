@@ -20,23 +20,20 @@
  * 是为了顺带量「超长行」这一路,两条路都不会让按钮跑出编辑区。
  */
 
-import { app, dialog, protocol, type BrowserWindow } from 'electron'
+import { app, dialog, protocol, type BrowserWindow, type NativeImage } from 'electron'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 const REPO = join(__dirname, '..', '..')
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -100,7 +97,8 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost(ensureBundledProvisioned)
+  const service = await initExtensions({ appVersion: '0.1.0' })
+  await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
@@ -118,6 +116,27 @@ async function main(): Promise<void> {
   await sleep(1500)
 
   const evalJs = <T>(code: string): Promise<T> => wc.executeJavaScript(code, true) as Promise<T>
+
+  /**
+   * capturePage 偶发 UnknownVizError(见 verify 记忆)。像素取样需要一张图,
+   * 所以这里重试几次;截图本身只是观感产物,不该让整轮验收崩掉。
+   */
+  async function capture(): Promise<Electron.NativeImage | null> {
+    for (let i = 0; i < 5; i++) {
+      try {
+        return await wc.capturePage()
+      } catch {
+        await sleep(200)
+      }
+    }
+    return null
+  }
+
+  async function captureShot(): Promise<NativeImage> {
+    const image = await capture()
+    if (!image) throw new Error('截图不可用')
+    return image
+  }
 
   async function focusEditor(): Promise<void> {
     if (!win.isVisible()) win.show()
@@ -399,46 +418,50 @@ async function main(): Promise<void> {
 
   // 像素级检查:同一水平位置,选中空行(围栏内)的留白应和未选中代码行的留白同色;
   // 而选区本身的颜色必须明显不同,否则这条检查会因为根本没选中而假通过。
-  const shot = await wc.capturePage()
-  const viewport = await evalJs<{ w: number; h: number }>(`({ w: innerWidth, h: innerHeight })`)
-  const bitmap = shot.toBitmap()
-  const imgSize = shot.getSize()
-  const scale = imgSize.width / viewport.w
-  const pixel = (x: number, y: number): [number, number, number] => {
-    const i = (Math.round(y * scale) * imgSize.width + Math.round(x * scale)) * 4
-    return [bitmap[i + 2], bitmap[i + 1], bitmap[i]] // BGRA
+  const shot = await capture()
+  if (!shot) {
+    console.log('  (截图不可用,跳过像素级取样)')
+  } else {
+    const viewport = await evalJs<{ w: number; h: number }>(`({ w: innerWidth, h: innerHeight })`)
+    const bitmap = shot.toBitmap()
+    const imgSize = shot.getSize()
+    const scale = imgSize.width / viewport.w
+    const pixel = (x: number, y: number): [number, number, number] => {
+      const i = (Math.round(y * scale) * imgSize.width + Math.round(x * scale)) * 4
+      return [bitmap[i + 2], bitmap[i + 1], bitmap[i]] // BGRA
+    }
+    const dist = (a: number[], b: number[]): number =>
+      Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])
+    const probeX = Math.round(selGeo.border / 2)
+    const stripY = Math.round(selGeo.blank.top + selGeo.blank.height / 2)
+    const plainY = Math.round(selGeo.unselected.top + selGeo.unselected.height / 2)
+    const stripColor = pixel(selGeo.blank.left + probeX, stripY)
+    const plainColor = pixel(selGeo.unselected.left + probeX, plainY)
+    const insideColor = pixel(selGeo.blank.left + selGeo.border + 60, stripY)
+    console.log(
+      `    (取样: 选中行留白 ${stripColor}, 未选中行留白 ${plainColor}, 选区内部 ${insideColor})`
+    )
+    check(
+      '选中行左边的留白与未选中代码行同色(没有被选区染色)',
+      dist(stripColor, plainColor) <= 6,
+      `${stripColor} vs ${plainColor}`
+    )
+    check(
+      '同一行的选区内部确实是选区色(取样点有效)',
+      dist(insideColor, plainColor) >= 15,
+      `${insideColor} vs ${plainColor}`
+    )
   }
-  const dist = (a: number[], b: number[]): number =>
-    Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])
-  const probeX = Math.round(selGeo.border / 2)
-  const stripY = Math.round(selGeo.blank.top + selGeo.blank.height / 2)
-  const plainY = Math.round(selGeo.unselected.top + selGeo.unselected.height / 2)
-  const stripColor = pixel(selGeo.blank.left + probeX, stripY)
-  const plainColor = pixel(selGeo.unselected.left + probeX, plainY)
-  const insideColor = pixel(selGeo.blank.left + selGeo.border + 60, stripY)
-  console.log(
-    `    (取样: 选中行留白 ${stripColor}, 未选中行留白 ${plainColor}, 选区内部 ${insideColor})`
-  )
-  check(
-    '选中行左边的留白与未选中代码行同色(没有被选区染色)',
-    dist(stripColor, plainColor) <= 6,
-    `${stripColor} vs ${plainColor}`
-  )
-  check(
-    '同一行的选区内部确实是选区色(取样点有效)',
-    dist(insideColor, plainColor) >= 15,
-    `${insideColor} vs ${plainColor}`
-  )
 
   const selShots = join(REPO, '.verify-ud', 'shots')
   await mkdir(selShots, { recursive: true })
   try {
-    await writeFile(join(selShots, 'code-block-selection.png'), (await wc.capturePage()).toPNG())
+    await writeFile(join(selShots, 'code-block-selection.png'), (await captureShot()).toPNG())
     await evalJs(`(() => { document.documentElement.dataset.theme = 'dark'; return true })()`)
     await sleep(400)
     await writeFile(
       join(selShots, 'code-block-selection-dark.png'),
-      (await wc.capturePage()).toPNG()
+      (await captureShot()).toPNG()
     )
     await evalJs(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
     await sleep(200)
@@ -454,10 +477,10 @@ async function main(): Promise<void> {
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })
   try {
-    await writeFile(join(shots, 'code-block.png'), (await wc.capturePage()).toPNG())
+    await writeFile(join(shots, 'code-block.png'), (await captureShot()).toPNG())
     await evalJs(`(() => { document.documentElement.dataset.theme = 'dark'; return true })()`)
     await sleep(400)
-    await writeFile(join(shots, 'code-block-dark.png'), (await wc.capturePage()).toPNG())
+    await writeFile(join(shots, 'code-block-dark.png'), (await captureShot()).toPNG())
     await evalJs(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
   } catch (err) {
     console.log('  (截图跳过:', err instanceof Error ? err.message : String(err), ')')

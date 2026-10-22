@@ -1126,7 +1126,9 @@ export interface FlatConfiguration {
 }
 
 /** 把对象/数组两种 configuration 形态摊平成「完整键 → 属性」 */
-export function flattenConfiguration(manifest: ExtensionManifest): FlatConfiguration[] {
+export function flattenConfiguration(
+  manifest: Pick<ExtensionManifest, 'contributes'>
+): FlatConfiguration[] {
   const config = manifest.contributes?.configuration
   if (!config) return []
   const sections = Array.isArray(config) ? config : [config]
@@ -1137,6 +1139,42 @@ export function flattenConfiguration(manifest: ExtensionManifest): FlatConfigura
     }
   }
   return out
+}
+
+/** 市场列表/详情页展示的贡献点计数 */
+export interface ExtensionContributesSummary {
+  commands: number
+  keybindings: number
+  configuration: number
+  lineMenu: number
+  actions: number
+}
+
+export function contributesSummaryOf(
+  manifest: Pick<ExtensionManifest, 'contributes'>
+): ExtensionContributesSummary {
+  const contributes = manifest.contributes ?? {}
+  return {
+    commands: contributes.commands?.length ?? 0,
+    keybindings: contributes.keybindings?.length ?? 0,
+    configuration: flattenConfiguration(manifest).length,
+    lineMenu: contributes['imark.lineMenu']?.length ?? 0,
+    actions: contributes['imark.actions']?.length ?? 0
+  }
+}
+
+/** 清单里的作者署名;对象形态取 `name`,没有就是 null */
+export function authorNameOf(manifest: Pick<ExtensionManifest, 'author'>): string | null {
+  const author = manifest.author
+  if (typeof author === 'string') return author.trim() || null
+  if (author && typeof author === 'object' && typeof author.name === 'string') {
+    return author.name.trim() || null
+  }
+  return null
+}
+
+export function displayNameOf(manifest: Pick<ExtensionManifest, 'displayName' | 'name'>): string {
+  return manifest.displayName?.trim() || manifest.name
 }
 
 function shortKey(id: string, key: string): string {

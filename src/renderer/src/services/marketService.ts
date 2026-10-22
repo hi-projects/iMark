@@ -1,9 +1,9 @@
 /**
  * 插件市场服务:已安装列表、待确认的安装、进度与卸载。
  *
- * 与 pluginService 一样,状态放在本模块而不是 appStore —— 只有设置面板的市场页用。
+ * 与 extensionService 一样,状态放在本模块而不是 appStore —— 只有设置面板的市场页用。
  *
- * **这个模块不持有字节。** 从文件/目录/市场来的插件包始终留在主进程,
+ * **这个模块不持有字节。** 从文件/目录/市场来的扩展包始终留在主进程,
  * 渲染层拿到的只有一个一次性令牌和一份用于展示的预览(见主进程 market/pending.ts)。
  * 所以「确认框里展示的那份」与「真正装进去的那份」在物理上就是同一份字节,
  * 不存在界面被掉包的可能。
@@ -23,8 +23,10 @@ import type {
   PublishPreview,
   PublishResult
 } from '@shared/market'
-import { isNewerVersion } from '@shared/pluginPackage'
-import { plain, pluginStore, settingsNav } from './pluginService'
+import type { ExtensionSource, ExtensionView } from '@shared/extensions'
+import { isNewerVersion } from '@shared/extensionPackage'
+import { settingsNav } from './settingsNav'
+import { extensionStore } from './extensionService'
 import { api } from './api'
 
 export const marketStore = reactive<{
@@ -57,10 +59,10 @@ function message(err: unknown): string {
   return text.replace(/^Error:\s*/, '')
 }
 
-/** 已安装视图同时刷两份:市场页的(含 bundled 标记)与全局插件列表的 */
-function applyPlugins(list: MarketInstalledData['plugins']): void {
-  pluginStore.list = list
-  if (marketStore.installed) marketStore.installed.plugins = list
+/** 已安装视图同时刷两份:市场页的(含 bundled 标记)与全局扩展列表的 */
+function applyExtensions(list: ExtensionView[]): void {
+  extensionStore.list = list
+  if (marketStore.installed) marketStore.installed.extensions = list
 }
 
 export async function refreshInstalled(): Promise<void> {
@@ -68,15 +70,15 @@ export async function refreshInstalled(): Promise<void> {
     const data = await api.listMarketInstalled()
     marketStore.installed = data
     marketStore.bundled = data.bundled
-    pluginStore.list = data.plugins
+    extensionStore.list = data.extensions
     marketStore.error = ''
   } catch (err) {
-    marketStore.error = `读取已安装插件失败：${message(err)}`
+    marketStore.error = `读取已安装扩展失败：${message(err)}`
   }
 }
 
 /**
- * 挑一个本地插件包 → 预览(不安装)。
+ * 挑一个本地扩展包 → 预览(不安装)。
  * 用户取消返回 false(不是错误),预览准备好后确认框会自动弹出。
  */
 export async function pickPackage(): Promise<boolean> {
@@ -96,7 +98,7 @@ export async function pickPackage(): Promise<boolean> {
   }
 }
 
-/** 挑一个插件目录 → 打包 → 预览(给自己的插件用,免去手工打包) */
+/** 挑一个扩展目录 → 打包 → 预览(给自己的扩展用,免去手工打包) */
 export async function packDirectory(): Promise<boolean> {
   if (marketStore.busy) return false
   marketStore.busy = true
@@ -122,7 +124,7 @@ export async function confirmInstall(): Promise<void> {
   try {
     const list = await api.installMarketPending(pending.token)
     marketStore.pending = null
-    applyPlugins(list)
+    applyExtensions(list)
     marketStore.error = ''
   } catch (err) {
     // 令牌可能已被消耗(主进程那边一次性),所以无论如何都关掉确认框
@@ -150,16 +152,16 @@ export async function cancelInstall(): Promise<void> {
 }
 
 /**
- * 卸载插件。
+ * 卸载扩展。
  *
- * 密钥**总是**被删除(理由见 host.uninstall);`removeConfig` 只决定插件的配置
- * 是否一并删掉 —— 为假时配置留着,重装回来不用重填其余字段,只需重新输入令牌。
+ * v2 的卸载**总是**删掉程序文件、配置、密钥、globalState 与日志 ——
+ * 扩展 id 可能被其他人重新使用,凭据不能留给下一个同名扩展。
  */
-export async function uninstallPlugin(id: string, removeConfig: boolean): Promise<void> {
+export async function uninstallPlugin(id: string): Promise<void> {
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyPlugins(await api.uninstallPlugin(id, { removeConfig }))
+    applyExtensions(await api.uninstallPlugin(id))
     marketStore.error = ''
   } catch (err) {
     marketStore.error = `卸载失败：${message(err)}`
@@ -168,15 +170,15 @@ export async function uninstallPlugin(id: string, removeConfig: boolean): Promis
   }
 }
 
-/** 把内置的兜底插件装回来(离线可用,不联网) */
+/** 把内置的兜底扩展装回来(离线可用,不联网) */
 export async function restoreBundled(): Promise<void> {
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyPlugins(await api.restoreBundledPlugins())
+    applyExtensions(await api.restoreBundledPlugins())
     marketStore.error = ''
   } catch (err) {
-    marketStore.error = `恢复内置插件失败：${message(err)}`
+    marketStore.error = `恢复内置扩展失败：${message(err)}`
   } finally {
     marketStore.busy = false
   }
@@ -197,7 +199,7 @@ export function initMarketService(): () => void {
 /**
  * 远程市场的界面状态。
  *
- * 与 marketStore 分开是因为它们的**生命周期不同**:那一半是本地事实(装了哪些插件),
+ * 与 marketStore 分开是因为它们的**生命周期不同**:那一半是本地事实(装了哪些扩展),
  * 这一半是「上一次问服务端问到了什么」—— 换一个注册表地址,这里的东西整体作废。
  */
 export const remoteStore = reactive<{
@@ -344,16 +346,13 @@ async function withBusy(fn: () => Promise<void>): Promise<boolean> {
 export async function searchMarket(): Promise<void> {
   const nav = settingsNav.market
   await withBusy(async () => {
-    remoteStore.result = await api.searchMarket(
-      plain({
-        q: nav.query,
-        page: nav.page,
-        pageSize: 20,
-        sort: nav.sort,
-        mainMode: null,
-        hasRender: null
-      })
-    )
+    remoteStore.result = await api.searchMarket({
+      q: nav.query,
+      page: nav.page,
+      pageSize: 20,
+      sort: nav.sort,
+      hasMain: nav.hasMain
+    })
     marketStore.error = ''
   })
 }
@@ -457,7 +456,7 @@ export async function publishNow(): Promise<boolean> {
     // 直接丢掉,让用户重新选一次目录 —— 也顺便避免了「连点两次发布」
     remoteStore.publishPreview = null
     remoteStore.publishDir = null
-    // 列表里那份搜索结果同样是发布**之前**问到的,它会缺掉刚发上去的这个插件。
+    // 列表里那份搜索结果同样是发布**之前**问到的,它会缺掉刚发上去的这个扩展。
     // 置空而不是立刻重查:用户不一定会去浏览页,重新查询交给它自己的 onMounted。
     remoteStore.result = null
     await checkUpdates(true)
@@ -475,7 +474,7 @@ export async function publishNow(): Promise<boolean> {
  * 服务端不知道谁装了什么,这个 join 只能在客户端做。
  */
 export function localVersion(id: string): string | null {
-  const view = pluginStore.list.find(p => p.descriptor.id === id)
+  const view = extensionStore.list.find(item => item.descriptor.id === id)
   return view?.installed?.version ?? null
 }
 
@@ -487,24 +486,20 @@ export function hasUpdate(id: string, remoteVersion: string): boolean {
 }
 
 /**
- * 已安装插件的来源标签。
- *
- * 随应用发布的那份统一叫「内置插件」(而不是「应用自带」),用来标明**来源**;
- * 日志里只说「插件」,因为那条消息讲的是升级这件事,不是来源。
+ * 已安装扩展的来源标签。
  */
-export function sourceLabel(source: string | undefined, bundled: boolean): string {
+export function sourceLabel(source: ExtensionSource | undefined, bundled: boolean): string {
   switch (source) {
-    // 'bundled'(随应用发布的兜底包)与 'builtin'(内置核心插件)不再分家:对用户来说
-    // 都是「应用自己带的那份」,后者目前也没有生产者(registry.ts 的 builtinPlugins 是空的)
     case 'bundled':
-    case 'builtin':
-      return '内置插件'
+      return '内置扩展'
     case 'market':
-      return '市场插件'
+      return '市场扩展'
     case 'local':
       return '本地安装'
+    case 'dev':
+      return '开发模式'
     default:
-      return bundled ? '内置插件' : '未知来源'
+      return bundled ? '内置扩展' : '未知来源'
   }
 }
 

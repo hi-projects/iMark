@@ -455,27 +455,14 @@
   color: var(--text-secondary);
 }
 
-/* v2 层徽标:node / restricted / render / capability。颜色只表达风险,
+/* v2 形态徽标:含代码 / 纯声明。颜色只表达风险,
    具体含义由文字承担,不靠颜色让用户猜 */
-.market-shape-node {
+.market-shape-code {
   color: var(--danger);
 }
 
-.market-shape-restricted {
-  color: var(--accent);
-  opacity: 0.85;
-}
-
-.market-shape-render {
-  color: var(--warn);
-}
-
-.market-shape-capability {
+.market-shape-declarative {
   color: var(--text-secondary);
-}
-
-.market-shape-unknown {
-  color: var(--danger);
 }
 
 .market-confirm-title h1 {

@@ -25,9 +25,8 @@ import { trashUnreferencedImageAssets } from '../src/main/files'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
-import { initPluginHost } from '../src/main/plugins/host'
+import { initExtensions } from '../src/main/extensions/service'
 import { createMainWindow } from '../src/main/window'
-import { registerPluginScheme } from '../src/main/plugins/restrictedPage'
 
 let pass = 0
 let fail = 0
@@ -52,8 +51,6 @@ const PNG = Buffer.from(PNG_B64, 'base64')
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
-registerPluginScheme()
-
 async function main(): Promise<void> {
   await app.whenReady()
 
@@ -92,7 +89,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initPluginHost()
+  await initExtensions({ appVersion: '0.1.0' })
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents

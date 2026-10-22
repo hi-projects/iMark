@@ -1,7 +1,7 @@
 /**
- * 插件市场的 IPC 处理。
+ * 扩展市场的 IPC 处理。
  *
- * 全部遵循项目里已有的惯例:**凡改动插件状态的,都返回最新的 `PluginView[]`**,
+ * 全部遵循项目里已有的惯例:**凡改动扩展状态的,都返回最新的 `ExtensionView[]`**,
  * 渲染层拿到就直接替换本地列表,不额外再发一次 list 请求
  * (这样「装完立刻能看到」是同一个往返里保证的,不会出现中间态)。
  *
@@ -16,12 +16,12 @@
 
 import { dialog, ipcMain } from 'electron'
 import { readFile, stat } from 'node:fs/promises'
+import { EXTENSION_LIMITS, extensionIdOf, type ExtensionManifest } from '@shared/extensionPackage'
 import { IPC } from '@shared/ipc-channels'
 import type { MarketInstalledData, MarketQuery, PendingInstall } from '@shared/market'
-import { LIMITS, type PluginPermission } from '@shared/pluginPackage'
+import type { ExtensionView } from '@shared/extensions'
 import { getMainWindow } from '../window'
-import { getPluginHost, type PluginHost } from '../plugins/host'
-import { getRecord } from '../plugins/installed'
+import { getExtensionService, type ExtensionService } from '../extensions/service'
 import { ensureBundledProvisioned, bundledIds } from './bundled'
 import { acknowledgePlainHttp, authStatus, getRegistryUrl, registryKey, setRegistryUrl } from './config'
 import { safeHost } from './http'
@@ -34,27 +34,24 @@ import { reportProgress } from './progress'
 import { detail, fetchEnvelope, health, iconDataUrl, login, logout, register, search } from './registry'
 import { checkUpdates, invalidateUpdates } from './updates'
 
-/** 与 index.ts 一样:插件宿主在窗口创建前初始化,这里只做兜底断言 */
-function requirePluginHost(): PluginHost {
-  const host = getPluginHost()
-  if (!host) throw new Error('插件系统尚未就绪')
-  return host
+/** 与 index.ts 一样:扩展服务在窗口创建前初始化,这里只做兜底断言 */
+function requireExtensionService(): ExtensionService {
+  const service = getExtensionService()
+  if (!service) throw new Error('扩展系统尚未就绪')
+  return service
 }
 
-/** 已安装插件的版本与授权快照 —— 生成预览时用来判断「这是升级」与「权限扩大了」 */
+async function views(): Promise<ExtensionView[]> {
+  // 市场与设置页共用同一份 extensionStore;带上密钥掩码,切到设置页时不会先看到空掩码
+  return requireExtensionService().getExtensionViewsWithSecrets()
+}
+
+/** 已安装扩展的版本与 integrity 快照 —— 生成预览时用来判断「这是升级还是降级」 */
 async function installedSnapshot(
   id: string
-): Promise<{ version: string; integrity: string; permissions: PluginPermission[] } | null> {
-  const meta = getPluginHost()?.installedMeta(id)
-  if (!meta) return null
-  const record = await getRecord(id)
-  return {
-    version: meta.version,
-    integrity: meta.integrity,
-    // 授权快照取自登记表;没有记录(手动放进目录的)时按「什么都没授权过」处理,
-    // 于是升级时会重新逐条确认全部权限 —— 宁可多问一次
-    permissions: record?.grantedPermissions ?? []
-  }
+): Promise<{ version: string; integrity: string } | null> {
+  const installed = (await requireExtensionService().getExtensionView(id))?.installed
+  return installed ? { version: installed.version, integrity: installed.integrity } : null
 }
 
 export function registerMarketIpc(): void {
@@ -64,10 +61,10 @@ export function registerMarketIpc(): void {
     const win = getMainWindow()
     if (!win) return null
     const picked = await dialog.showOpenDialog(win, {
-      title: '选择插件包',
+      title: '选择扩展包',
       properties: ['openFile'],
       filters: [
-        { name: 'iMark 插件包', extensions: ['json'] },
+        { name: 'iMark 扩展包', extensions: ['json'] },
         { name: '全部文件', extensions: ['*'] }
       ]
     })
@@ -76,9 +73,9 @@ export function registerMarketIpc(): void {
 
     // 先看大小再读:一个几百 MB 的文件不该被整个读进内存
     const info = await stat(path)
-    if (info.size > LIMITS.envelopeBytes) {
+    if (info.size > EXTENSION_LIMITS.envelopeBytes) {
       throw new Error(
-        `文件太大(${(info.size / 1024 / 1024).toFixed(1)} MiB),插件包上限 ${LIMITS.envelopeBytes / 1024 / 1024} MiB`
+        `文件太大(${(info.size / 1024 / 1024).toFixed(1)} MiB),扩展包上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB`
       )
     }
     const raw = await readFile(path, 'utf8')
@@ -87,7 +84,7 @@ export function registerMarketIpc(): void {
     try {
       parsed = JSON.parse(raw)
     } catch {
-      throw new Error('这不是一个合法的 JSON 文件,插件包应当是一份 .imkpkg.json')
+      throw new Error('这不是一个合法的 JSON 文件,扩展包应当是一份 .imkpkg.json')
     }
 
     const id = peekId(parsed)
@@ -97,26 +94,25 @@ export function registerMarketIpc(): void {
       id ? await installedSnapshot(id) : null
     )
     if (!preview.ok) {
-      throw new Error(`插件包校验失败:${preview.errors.slice(0, 4).join(';')}`)
+      throw new Error(`扩展包校验失败:${preview.errors.slice(0, 4).join(';')}`)
     }
     assertInstallable(parsed)
     const token = putPending({
       envelope: parsed,
       source: 'local',
-      publisher: null,
       registryUrl: null,
       expectedIntegrity: null
     })
     return { token, preview: preview.value }
   })
 
-  // ---------- 从目录打包再安装(给自己的插件用) ----------
+  // ---------- 从目录打包再安装(给自己的扩展用) ----------
 
   ipcMain.handle(IPC.MarketPackDir, async (): Promise<PendingInstall | null> => {
     const win = getMainWindow()
     if (!win) return null
     const picked = await dialog.showOpenDialog(win, {
-      title: '选择插件目录(需含 manifest.json)',
+      title: '选择扩展目录（需含 package.json）',
       properties: ['openDirectory']
     })
     if (picked.canceled || picked.filePaths.length === 0) return null
@@ -126,7 +122,7 @@ export function registerMarketIpc(): void {
     const preview = previewEnvelope(
       packed.envelope,
       { kind: 'local-dir', label: dir },
-      await installedSnapshot(packed.manifest.id)
+      await installedSnapshot(extensionIdOf(packed.manifest))
     )
     if (!preview.ok) {
       // 打包出来的包理应自洽;走到这里说明打包器与校验器对不上,属于内部缺陷
@@ -136,7 +132,6 @@ export function registerMarketIpc(): void {
     const token = putPending({
       envelope: packed.envelope,
       source: 'local',
-      publisher: null,
       registryUrl: null,
       expectedIntegrity: null
     })
@@ -150,51 +145,42 @@ export function registerMarketIpc(): void {
   })
 
   ipcMain.handle(IPC.MarketInstallPending, async (_e, token: string) => {
-    const host = requirePluginHost()
+    const service = requireExtensionService()
     const item = takePending(token)
-    if (!item) throw new Error('这次安装已过期,请重新选择插件包')
+    if (!item) throw new Error('这次安装已过期,请重新选择扩展包')
 
-    // 授权集合取自**清单自己声明的**(而不是渲染层回传的):用户确认的是这一份清单,
-    // 登记表里记的也必须是这一份,不存在「渲染层说同意了什么」这种中间说法。
-    const permissions = (item.envelope as { manifest?: { permissions?: PluginPermission[] } })
-      .manifest?.permissions
-    await installFromEnvelope(host, item.envelope, {
+    await installFromEnvelope(service, item.envelope, {
       source: item.source,
-      publisher: item.publisher,
       registryUrl: item.registryUrl,
-      grantedPermissions: permissions ?? [],
       expectedIntegrity: item.expectedIntegrity,
       onProgress: reportProgress
     })
     invalidateUpdates()
-    return host.list()
+    return service.getExtensionViewsWithSecrets()
   })
 
   // ---------- 卸载 ----------
 
-  ipcMain.handle(
-    IPC.MarketUninstall,
-    async (_e, o: { id: string; removeConfig: boolean }) => {
-      const host = requirePluginHost()
-      await host.uninstall(o.id, { removeConfig: o.removeConfig })
-      invalidateUpdates()
-      return host.list()
-    }
-  )
+  ipcMain.handle(IPC.MarketUninstall, async (_e, id: string) => {
+    // v2 的卸载总是清掉配置、密钥、globalState 与日志:扩展 id 可能被其他人
+    // 重新使用,凭据不能留给下一个同名扩展。
+    await requireExtensionService().uninstallExtension(id)
+    invalidateUpdates()
+    return views()
+  })
 
   // ---------- 列表 ----------
 
   ipcMain.handle(IPC.MarketInstalled, async (): Promise<MarketInstalledData> => {
-    const host = requirePluginHost()
-    return { plugins: await host.list(), bundled: bundledIds() }
+    return { extensions: await views(), bundled: bundledIds() }
   })
 
-  // 应用启动时宿主已经补装过一次;这里再挂一个入口,是为了让用户在设置里
-  // 「卸载了自带插件又后悔」时能一键装回来 —— 不需要联网,也不需要重新下载。
+  // 应用启动时已经补装过一次;这里再挂一个入口,是为了让用户在设置里
+  // 「卸载了自带扩展又后悔」时能一键装回来 —— 不需要联网,也不需要重新下载。
   ipcMain.handle(IPC.MarketRestoreBundled, async () => {
-    const host = requirePluginHost()
-    await ensureBundledProvisioned(host)
-    return host.list()
+    const service = requireExtensionService()
+    await ensureBundledProvisioned(service)
+    return service.getExtensionViews()
   })
 
   // ---------- 市场地址 ----------
@@ -244,21 +230,21 @@ export function registerMarketIpc(): void {
         id: o.id,
         phase: 'download',
         percent: 5,
-        message: `正在下载 ${info.name} ${version}…`
+        message: `正在下载 ${info.displayName || info.name} ${version}…`
       })
       const fetched = await fetchEnvelope(o.id, version, (received, total) => {
         reportProgress({
           id: o.id,
           phase: 'download',
-          // 下载占进度条的前 35%,后面的校验/解包/加载由 installer 接着报
+          // 下载占进度条的前 35%,后面的校验/安装由 installer 接着报
           percent: total ? Math.max(5, Math.min(35, Math.round((received / total) * 35))) : 20,
-          message: `正在下载 ${info.name} ${version}…`
+          message: `正在下载 ${info.displayName || info.name} ${version}…`
         })
       })
 
       const preview = previewEnvelope(
         fetched.envelope,
-        { kind: 'market', label: registry },
+        { kind: 'market', label: registry, publisher: info.publisher },
         await installedSnapshot(o.id)
       )
       if (!preview.ok) {
@@ -266,17 +252,16 @@ export function registerMarketIpc(): void {
           id: o.id,
           phase: 'error',
           percent: 100,
-          message: '下载到的插件包没有通过校验',
+          message: '下载到的扩展包没有通过校验',
           detail: preview.errors.slice(0, 4).join(';')
         })
-        throw new Error(`插件包校验失败:${preview.errors.slice(0, 4).join(';')}`)
+        throw new Error(`扩展包校验失败:${preview.errors.slice(0, 4).join(';')}`)
       }
 
       assertInstallable(fetched.envelope)
       const token = putPending({
         envelope: fetched.envelope,
         source: 'market',
-        publisher: info.publisher,
         registryUrl: registry,
         expectedIntegrity: fetched.integrity
       })
@@ -304,7 +289,7 @@ export function registerMarketIpc(): void {
     const win = getMainWindow()
     if (!win) return null
     const picked = await dialog.showOpenDialog(win, {
-      title: '选择要发布的插件目录(需含 manifest.json)',
+      title: '选择要发布的扩展目录（需含 package.json）',
       properties: ['openDirectory']
     })
     if (picked.canceled || picked.filePaths.length === 0) return null
@@ -322,6 +307,13 @@ export function registerMarketIpc(): void {
 
 /** 从信封里读 id(仅用于查已装版本;读不出来就让后续校验去报错) */
 function peekId(raw: unknown): string | null {
-  const id = (raw as { manifest?: { id?: unknown } } | null)?.manifest?.id
-  return typeof id === 'string' && id ? id : null
+  const manifest = (raw as { manifest?: ExtensionManifest } | null)?.manifest
+  if (!manifest || typeof manifest.publisher !== 'string' || typeof manifest.name !== 'string') {
+    return null
+  }
+  try {
+    return extensionIdOf(manifest)
+  } catch {
+    return null
+  }
 }
