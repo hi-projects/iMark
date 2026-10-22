@@ -1,0 +1,104 @@
+{
+  "name": "claude-code",
+  "publisher": "imark",
+  "version": "1.0.0",
+  "displayName": "Claude Code",
+  "description": "为 Agent Core 提供 Claude Code 后端：调用本机 Claude Code CLI，支持流式输出、工具时间线与会话续接",
+  "author": "iMark",
+  "engines": { "imark": "^1.0.0" },
+  "main": "./main.js",
+  "extensionDependencies": ["imark.agent"],
+  "capabilities": {
+    "filesystem": "user",
+    "network": true,
+    "secrets": true,
+    "process": true,
+    "shell": true
+  },
+  "contributes": {
+    "imark.agentProviders": ["claude-code"],
+    "configuration": {
+      "title": "Claude Code",
+      "properties": {
+        "imark.claude-code.command": {
+          "type": "string",
+          "default": "",
+          "title": "Claude Code 可执行文件",
+          "description": "留空自动探测 PATH、~/.local/bin/claude。也可以填本机 claude / claude.exe / claude.cmd 的完整路径。",
+          "imark": {
+            "kind": "text",
+            "section": "Claude Code",
+            "placeholder": "留空自动探测"
+          }
+        },
+        "imark.claude-code.model": {
+          "type": "string",
+          "default": "",
+          "title": "默认模型",
+          "description": "留空使用 Claude Code 自己的默认模型。可填 sonnet / opus / haiku 或完整模型名；对话面板里的模型输入框可覆盖它。",
+          "imark": {
+            "kind": "text",
+            "section": "Claude Code",
+            "placeholder": "留空使用 CLI 默认"
+          }
+        },
+        "imark.claude-code.isolation": {
+          "type": "string",
+          "default": "safe",
+          "enum": ["safe", "restricted", "off"],
+          "title": "隔离",
+          "description": "safe：禁用 CLAUDE.md/技能/hooks 等自定义，保留登录态；restricted：进一步限制文件工具与设置文件（可能影响自定义认证配置）；off：完全交给 Claude Code 自己的设置。",
+          "imark": {
+            "kind": "select",
+            "section": "Claude Code"
+          }
+        },
+        "imark.claude-code.timeoutSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 1800,
+          "title": "单轮超时（秒）",
+          "description": "超过这个时间会终止 Agent 子进程；文档和会话不会改动。",
+          "imark": {
+            "kind": "number",
+            "section": "Claude Code"
+          }
+        },
+        "imark.claude-code.maxTurns": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 100,
+          "title": "单轮最大工具轮数",
+          "description": "Agent 单次回答最多允许多少个 assistant 轮次；超过后宿主会终止子进程。",
+          "imark": {
+            "kind": "number",
+            "section": "Claude Code"
+          }
+        },
+        "imark.claude-code.extraArgs": {
+          "type": "string",
+          "default": "",
+          "title": "额外参数",
+          "description": "每行一个参数，追加到 claude 命令行。会拒绝会改变协议/权限/会话的参数（如 -p、--output-format、--dangerously-*）。",
+          "imark": {
+            "kind": "textarea",
+            "section": "Claude Code",
+            "rows": 3
+          }
+        },
+        "imark.claude-code.apiKey": {
+          "type": "string",
+          "default": "",
+          "title": "API 密钥",
+          "description": "可选。留空则复用本机 Claude Code 的登录态；填写后只通过子进程环境变量注入，不进入界面、日志或会话文件。",
+          "imark": {
+            "kind": "password",
+            "section": "Claude Code"
+          }
+        }
+      }
+    }
+  }
+}

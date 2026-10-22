@@ -30,7 +30,7 @@ const SOURCE_TEXT_BYTES = 256 * 1024
  *
  * 版本号是必给的(允许为 null 表示「详情页当前那一版」),而不是用选项对象包起来:
  * 这个参数**必须**传对,包成对象后一个位置参数写错就会静默地退化成「读最新版」——
- * 那正好会让「你以为在读 v1.0.0 的源码、其实读到的是 v1.2.0」这种事发生。
+ * 那正好会让「你以为在读 1.0.0 的源码、其实读到的是 1.2.0」这种事发生。
  */
 export async function fetchSource(id: string, version: string | null = null): Promise<MarketSource> {
   const registry = await getRegistryUrl()
@@ -66,7 +66,7 @@ export async function fetchSource(id: string, version: string | null = null): Pr
     const full = buf.toString('utf8')
     const cut = full.length > SOURCE_TEXT_BYTES
     if (cut) truncated = true
-    // 截断处尽量退到最后一个换行(免得把一行代码拦腰截断);一行都没有就只能硬切
+    // 截断处尽量退到最后一个换行(免得把一行代码拦腰截断);一行都没有就只能直接截断
     const breakAt = cut ? full.lastIndexOf('\n', SOURCE_TEXT_BYTES) + 1 : 0
     files.push({
       name: info.name,

@@ -1,7 +1,7 @@
 /**
  * 市场安装器:已校验的信封 → 扩展服务。
  *
- * v2 里所有落盘、登记、重载都在 `ExtensionService.installPackage()` 里完成。
+ * 所有落盘、登记、重载都在 `ExtensionService.installPackage()` 里完成。
  * 这一个文件只负责市场的**外层语义**:
  *   - 把校验/版本要求翻译成用户可以读懂的错误(带进度播报);
  *   - 生成安装确认框的预览;
@@ -20,11 +20,11 @@ import {
   entryFileOf,
   extensionIdOf,
   isNewerVersion,
-  satisfiesRange,
   type ExtensionManifest
 } from '@shared/extensionPackage'
 import type { MarketProgress, PackagePreview } from '@shared/market'
 import type { ExtensionService } from '../extensions/service'
+import { engineProblems } from '../extensions/installer'
 import { verifyEnvelope } from './verify'
 
 export interface InstallOptions {
@@ -71,7 +71,8 @@ export async function installFromEnvelope(
 
   // 版本要求是「结构合法但在这台机器上装不上」,要和校验失败分开说 ——
   // 混在一起用户会去翻包内容,而问题在 engines.imark 上
-  const engines = checkEngines(manifest, opts.appVersion)
+  const currentVersion = opts.appVersion ?? appVersionOrNull()
+  const engines = currentVersion ? engineProblems(manifest, currentVersion) : []
   if (engines.length > 0) {
     const message = `扩展不兼容:${engines.join(';')}`
     report({ id, phase: 'error', percent: 100, message: '扩展不兼容', detail: message })
@@ -103,27 +104,13 @@ export async function installFromEnvelope(
   }
 }
 
-/**
- * 清单里声明的宿主版本要求(`engines.imark`)。
- *
- * 读不到当前版本(`app` 尚未就绪)时**不做判断**:宁可放过一个不兼容的扩展,
- * 也不要因为宿主自己读不到版本号就把所有扩展判为装不上。
- */
-export function checkEngines(
-  manifest: ExtensionManifest | null | undefined,
-  appVersion?: string
-): string[] {
-  const range = manifest?.engines?.imark
-  if (!range) return []
-  let current: string
+/** 当前应用版本；`app` 尚未就绪时返回 null（此时不做引擎判断） */
+function appVersionOrNull(): string | null {
   try {
-    current = appVersion ?? app.getVersion()
+    return app.getVersion()
   } catch {
-    return []
+    return null
   }
-  if (!/^\d+\.\d+\.\d+/.test(current)) return []
-  if (satisfiesRange(current, range)) return []
-  return [`这个扩展要求 iMark ${range},当前版本是 ${current}`]
 }
 
 /** 安装确认框要看到的东西 —— 一次给全,免得界面为了凑齐这些再跑一遍校验 */
@@ -144,7 +131,9 @@ export interface PreviewOrigin {
 export function assertInstallable(envelope: unknown): void {
   const manifest = (envelope as { manifest?: ExtensionManifest } | null)?.manifest
   if (!manifest) return
-  const problems = checkEngines(manifest)
+  const current = appVersionOrNull()
+  if (!current) return
+  const problems = engineProblems(manifest, current)
   if (problems.length > 0) throw new Error(`这个扩展装不上:${problems.join(';')}`)
 }
 

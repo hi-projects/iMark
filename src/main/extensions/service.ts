@@ -78,6 +78,7 @@ import {
   type HostPlannerExtension
 } from './hostPlanner'
 import {
+  cleanupOldDirs,
   getRecord,
   invalidateInstalledCache,
   removeExtensionDir,
@@ -90,7 +91,6 @@ import {
   type InstallExtensionOutcome
 } from './installer'
 import { extensionDir, extensionLogPath } from './paths'
-import { cleanupLegacyExtensionData } from './legacy'
 import { ExtensionLogStore } from './logStore'
 import { ExtensionStateStore } from './stateStore'
 import { WebviewRegistry, type WebviewRecord } from './webviews'
@@ -232,7 +232,7 @@ function normalizeEndpoints(raw: unknown, field: PluginField): PluginEndpoint[] 
 function normalizeFieldValue(field: PluginField, raw: unknown): unknown {
   switch (field.kind) {
     case 'password':
-      // 密码字段的值永远在 secrets 里，配置只留空串（与旧模型一致）
+      // 密码字段的值永远在 secrets 里，配置只留空串
       return ''
     case 'boolean':
       if (typeof raw === 'boolean') return raw
@@ -391,7 +391,6 @@ export class ExtensionService {
   }
   private theme: ThemeDto = { kind: 'light', colors: {} }
   private workspaceFolders: WorkspaceFolderDto[] = []
-  private workspaceOverride: string | null | undefined = undefined
 
   private readonly pendingRenderer = new Map<string, PendingRendererRequest>()
   private readonly pendingUi = new Map<string, PendingUiRequest>()
@@ -421,15 +420,11 @@ export class ExtensionService {
   // ---------- 生命周期 ----------
 
   async init(): Promise<void> {
-    // 必须在读取设置与扫描安装目录之前：v1 的 installed.json / manifest.json 目录 /
-    // settings.plugins / 旧密钥都直接删掉，不做转换。一次性，失败也不拦启动。
-    await cleanupLegacyExtensionData()
     const settings = await loadSettings()
     this.preferences = settings.extensions ?? {}
     this.hostSettings = settings.extensionHost ?? { mode: 'isolated', affinity: {} }
     this.savedWebviews = await this.webviewStore.load()
-    // 清理动过磁盘，任何在此之前的扫描结果都已作废
-    invalidateInstalledCache()
+    await cleanupOldDirs()
     await this.reloadEntries()
 
     this.refreshWorkspaceFolders()
@@ -472,18 +467,8 @@ export class ExtensionService {
     await this.webviewStore.flush()
   }
 
-  /** 兼容旧调用方的名字 */
-  async dispose(): Promise<void> {
-    await this.shutdown()
-  }
-
   setRendererSender(sender: ((message: MainToRendererMessage) => void) | null): void {
     this.rendererSender = sender
-  }
-
-  setWorkspaceRoot(root: string | null): void {
-    this.workspaceOverride = root
-    this.refreshWorkspaceFolders()
   }
 
   // ---------- webview 资源与恢复 ----------
@@ -637,12 +622,6 @@ export class ExtensionService {
       .sort((a, b) => a.hostId - b.hostId)
   }
 
-  getDescriptors() {
-    return [...this.entries.values()]
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .map(entry => entry.descriptor)
-  }
-
   getLogPath(id: string): string | null {
     return this.entries.has(id) ? this.logStorePath(id) : null
   }
@@ -676,6 +655,14 @@ export class ExtensionService {
 
   async uninstallExtension(id: string): Promise<void> {
     if (!this.entries.has(id)) throw new Error(`扩展 ${id} 未安装`)
+    const dependents = this.dependentsOf(id)
+    if (dependents.length > 0) {
+      throw new Error(
+        `扩展 ${id} 被以下扩展依赖，无法卸载：${dependents
+          .map(entry => `${entry.manifest.displayName || entry.id}（${entry.id}）`)
+          .join('、')}。请先卸载依赖它的扩展。`
+      )
+    }
     this.wantActive.delete(id)
     await this.deactivateExtension(id, { removeData: true, forget: true })
     await removeExtensionDir(id)
@@ -689,8 +676,50 @@ export class ExtensionService {
 
   async setEnabled(id: string, enabled: boolean): Promise<ExtensionView | null> {
     if (!this.entries.has(id)) throw new Error(`扩展 ${id} 未安装`)
-    await this.writePreference(id, current => ({ ...current, enabled }))
+    if (!enabled) {
+      const dependents = this.dependentsOf(id).filter(entry => entry.enabled)
+      if (dependents.length > 0) {
+        throw new Error(
+          `扩展 ${id} 被以下已启用的扩展依赖，无法禁用：${dependents
+            .map(entry => `${entry.manifest.displayName || entry.id}（${entry.id}）`)
+            .join('、')}。请先禁用依赖它的扩展。`
+        )
+      }
+      await this.writePreference(id, current => ({ ...current, enabled: false }))
+      return this.getExtensionView(id)
+    }
+
+    // 启用一个扩展时把它的依赖链一并启用；缺失依赖直接拒绝，避免留下
+    // “已启用但永远激活失败”的状态。
+    const toEnable = new Set<string>()
+    const visit = (current: string): void => {
+      if (toEnable.has(current)) return
+      const entry = this.entries.get(current)
+      if (!entry) throw new Error(`扩展 ${current} 未安装`)
+      toEnable.add(current)
+      for (const dependency of entry.manifest.extensionDependencies ?? []) visit(dependency)
+    }
+    visit(id)
+    if (toEnable.size === 1) {
+      await this.writePreference(id, current => ({ ...current, enabled: true }))
+    } else {
+      const settings = await loadSettings()
+      const preferences = { ...(settings.extensions ?? {}) }
+      for (const extensionId of toEnable) {
+        const current = preferences[extensionId] ?? { enabled: true, config: {} }
+        preferences[extensionId] = { ...current, enabled: true }
+      }
+      await saveSettings({ extensions: preferences })
+    }
     return this.getExtensionView(id)
+  }
+
+  /** 已安装且清单里依赖 `id` 的扩展 */
+  private dependentsOf(id: string): ExtensionEntry[] {
+    return [...this.entries.values()].filter(
+      entry =>
+        entry.id !== id && (entry.manifest.extensionDependencies ?? []).includes(id)
+    )
   }
 
   async setExtensionConfig(id: string, config: Record<string, unknown>): Promise<ExtensionView | null> {
@@ -1098,7 +1127,6 @@ export class ExtensionService {
     }
     const visible = this.documents.visible.slice(0, MAX_OPEN_DOCUMENTS)
     return {
-      protocolVersion: 2,
       hostId: rec.hostId,
       appVersion: this.appVersion,
       environment: {
@@ -1112,7 +1140,6 @@ export class ExtensionService {
       documents: this.documents.list().slice(0, MAX_OPEN_DOCUMENTS).map(doc => ({ ...doc })),
       activeDocumentUri: this.documents.active,
       visibleDocumentUris: visible,
-      context: { ...this.context },
       extensions
     }
   }
@@ -1493,34 +1520,29 @@ export class ExtensionService {
       this.statusBarItems.set(message.extensionId, items)
     }
     if (message.action === 'dispose') {
-      const itemId = message.itemId ?? message.item?.id
-      if (!itemId) return
-      items.delete(itemId)
+      items.delete(message.itemId)
       if (items.size === 0) this.statusBarItems.delete(message.extensionId)
       this.scheduleContributions()
       return
     }
-    if (!message.item) return
     const item = sanitizeStatusItem(message.item)
     if (!item.id) return
     const exists = items.has(item.id)
-    if (message.action === 'create' && !exists) {
-      if (items.size >= MAX_STATUS_ITEMS_PER_EXTENSION) {
-        this.logStore.add(
-          message.extensionId,
-          'warn',
-          `状态栏条目超过 ${MAX_STATUS_ITEMS_PER_EXTENSION} 条，忽略「${item.id}」`
-        )
+    if (!exists) {
+      // 没 create 就 update：宿主重连后重放，按 create 处理；超限时静默丢弃
+      const perExtensionFull = items.size >= MAX_STATUS_ITEMS_PER_EXTENSION
+      if (perExtensionFull || this.totalStatusItems() >= MAX_STATUS_ITEMS_TOTAL) {
+        if (message.action === 'create') {
+          this.logStore.add(
+            message.extensionId,
+            'warn',
+            perExtensionFull
+              ? `状态栏条目超过 ${MAX_STATUS_ITEMS_PER_EXTENSION} 条，忽略「${item.id}」`
+              : '状态栏条目已达全局上限，忽略新条目'
+          )
+        }
         return
       }
-      if (this.totalStatusItems() >= MAX_STATUS_ITEMS_TOTAL) {
-        this.logStore.add(message.extensionId, 'warn', '状态栏条目已达全局上限，忽略新条目')
-        return
-      }
-    } else if (message.action === 'update' && !exists) {
-      // 没 create 就 update：当作 create（宿主可能重连后重放）
-      if (items.size >= MAX_STATUS_ITEMS_PER_EXTENSION) return
-      if (this.totalStatusItems() >= MAX_STATUS_ITEMS_TOTAL) return
     }
     items.set(item.id, item)
     this.scheduleContributions()
@@ -2117,7 +2139,6 @@ export class ExtensionService {
         uri: this.documents.active,
         visible: this.documents.visible
       })
-      rec.process.send({ kind: 'context.changed', context: { ...this.context } })
       rec.process.send({ kind: 'theme.changed', theme: this.theme })
     }
     this.broadcastWorkspaceFolders()
@@ -2236,7 +2257,6 @@ export class ExtensionService {
     }
     if (JSON.stringify(next) === JSON.stringify(this.context)) return
     this.context = next
-    this.broadcastToHosts({ kind: 'context.changed', context: { ...next } })
     this.scheduleContributions()
   }
 
@@ -2257,10 +2277,7 @@ export class ExtensionService {
   // ---------- 工作区 / 主题 ----------
 
   private refreshWorkspaceFolders(): void {
-    const root =
-      this.workspaceOverride !== undefined
-        ? this.workspaceOverride
-        : (this.options.getWorkspaceRoot?.() ?? getSettingsSync()?.vaultPath ?? null)
+    const root = this.options.getWorkspaceRoot?.() ?? getSettingsSync()?.vaultPath ?? null
     const folders: WorkspaceFolderDto[] = root
       ? [{ uri: pathToFileURL(root).toString(), name: basename(root) || root }]
       : []
@@ -2470,9 +2487,7 @@ export class ExtensionService {
     const config: Record<string, unknown> = {}
     for (const field of entry.descriptor.settingsFields) {
       const fullKey = `${entry.id}.${field.key}`
-      const raw =
-        stored[fullKey] !== undefined ? stored[fullKey] : (stored[field.key] as unknown)
-      config[fullKey] = normalizeFieldValue(field, raw)
+      config[fullKey] = normalizeFieldValue(field, stored[fullKey])
     }
     return config
   }

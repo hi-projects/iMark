@@ -21,6 +21,7 @@
  */
 
 import { app, BrowserWindow, dialog, protocol } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
@@ -200,7 +201,7 @@ async function main(): Promise<void> {
     marketAutoCheck: false
   })
 
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
 
   const settingsFile = join(ud, 'settings.json')
   async function readSettings(): Promise<Record<string, unknown>> {

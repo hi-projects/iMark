@@ -13,13 +13,7 @@
 
 import { reactive } from 'vue'
 import { EXTENSION_WEBVIEW_SCHEME } from '@shared/extensionProtocol'
-import type {
-  MainToRendererMessage,
-  ThemeDto,
-  WebviewAnchorDto,
-  WebviewPanelStateDto,
-  WebviewPresentationDto
-} from '@shared/extensionProtocol'
+import type { MainToRendererMessage, WebviewPanelStateDto } from '@shared/extensionProtocol'
 import { api } from './api'
 import { readTheme } from './editorBridge'
 
@@ -281,29 +275,6 @@ function onWindowMessage(event: MessageEvent): void {
     panelId: panel.panelId,
     message: data.message
   })
-}
-
-export function setPanelVisible(panelId: string, visible: boolean): void {
-  const panel = panelOf(panelId)
-  if (!panel) return
-  api.sendExtensionMessage({
-    type: 'webview.viewState',
-    panelId,
-    visible,
-    active: visible
-  })
-}
-
-export function themeForWebviews(): ThemeDto {
-  return readTheme()
-}
-
-export function presentationOf(panel: RendererWebviewPanel): WebviewPresentationDto {
-  return panel.presentation
-}
-
-export function anchorOf(panel: RendererWebviewPanel): WebviewAnchorDto {
-  return panel.anchor
 }
 
 export function initWebviews(): () => void {

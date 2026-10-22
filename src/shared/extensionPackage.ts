@@ -1,7 +1,6 @@
 /**
- * 扩展包格式 v2(package.json 清单 + 单文件 JSON 信封)与校验。
+ * 扩展包格式(package.json 清单 + 单文件 JSON 信封)与校验。
  *
- * 与 v1 的关系是**硬切**:没有 `main.mode`、没有 render 层、没有 capability。
  * 一个扩展就是一个普通的 VS Code 式扩展:
  *
  *   package.json   清单(唯一真身;信封里保存剥掉构建字段后的那一份)
@@ -14,8 +13,8 @@
  *   data:  路径 → base64                ← 由 files 的逐文件 sha256 传递覆盖
  *
  * integrity = sha256(stableStringify({ manifest, files: { name: sha256 } }))。
- * v1 依赖 manifest 的键序;v2 改成递归键排序,于是打包器、服务端、客户端
- * 只要“对象内容相同”就得到同一个值,不再需要三处维护同一份键序表。
+ * stableStringify 递归排序键,于是打包器、服务端、客户端只要“对象内容相同”
+ * 就得到同一个值。
  *
  * 本文件零 Node 依赖(不 import crypto),渲染层也会 import 它做展示;
  * 真正的 sha256 在主进程、构建脚本与服务端各自计算。
@@ -45,7 +44,9 @@ const TEXT_EXT: readonly string[] = formatData.textExtensions
 export const EXTENSION_TEXT_EXTENSIONS: readonly string[] = TEXT_EXT
 const RESERVED_SEGMENT: string = formatData.reservedSegment
 const ACTIVATION_EVENTS = formatData.activationEvents
+const AGENT_CORE_EXTENSION_ID: string = formatData.agentCoreExtensionId
 const ID_PART_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
+const AGENT_PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,63}$/
 const EXTENSION_ID_RE = /^[a-z0-9][a-z0-9-]{1,63}\.[a-z0-9][a-z0-9-]{1,63}$/
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const COMMAND_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -182,6 +183,8 @@ export interface ExtensionContribution {
   'imark.lineMenu'?: ExtensionLineMenuContribution[]
   /** iMark 私有:设置页里的动作按钮 */
   'imark.actions'?: ExtensionActionContribution[]
+  /** iMark 私有:本扩展向 Agent Core 提供哪些 AgentProvider */
+  'imark.agentProviders'?: string[]
 }
 
 /** package.json 清单(剥掉构建字段后的形状) */
@@ -273,7 +276,7 @@ export function isSafeRelPath(p: unknown): p is string {
   return ALLOWED_EXT.includes(ext)
 }
 
-// ---------- 版本比较(与 v1 相同,足够覆盖 engines 的常见写法) ----------
+// ---------- 版本比较(覆盖 engines 的常见写法) ----------
 
 export function compareVersions(a: string, b: string): number {
   const parse = (v: string): { nums: number[]; pre: string | null } => {
@@ -770,6 +773,41 @@ function validateActions(
   }
 }
 
+function validateAgentProviders(
+  value: unknown,
+  dependencies: unknown,
+  main: unknown,
+  errors: string[]
+): void {
+  if (value === undefined) return
+  if (!Array.isArray(value) || value.length === 0) {
+    errors.push('contributes["imark.agentProviders"] 必须是非空数组')
+    return
+  }
+  if (value.length > EXTENSION_LIMITS.agentProviders) {
+    errors.push(`Agent provider 过多(上限 ${EXTENSION_LIMITS.agentProviders})`)
+  }
+  const seen = new Set<string>()
+  for (const [i, id] of value.entries()) {
+    const at = `contributes["imark.agentProviders"][${i}]`
+    if (typeof id !== 'string' || !AGENT_PROVIDER_ID_RE.test(id)) {
+      errors.push(`${at} 非法(小写字母开头,可含数字/连字符,最多 64 字符)`)
+    } else if (seen.has(id)) {
+      errors.push(`${at} 重复:${id}`)
+    } else {
+      seen.add(id)
+    }
+  }
+  if (typeof main !== 'string' || main.length === 0) {
+    errors.push(`声明 contributes["imark.agentProviders"] 的扩展必须提供 main 入口`)
+  }
+  if (!Array.isArray(dependencies) || !dependencies.includes(AGENT_CORE_EXTENSION_ID)) {
+    errors.push(
+      `声明 contributes["imark.agentProviders"] 的扩展必须通过 extensionDependencies 依赖 ${AGENT_CORE_EXTENSION_ID}`
+    )
+  }
+}
+
 function collectConfigKeys(value: unknown): Set<string> {
   const out = new Set<string>()
   if (value === undefined) return out
@@ -808,9 +846,9 @@ export function validateManifest(raw: unknown): ExtensionValidation<ExtensionMan
   }
 
   if (!isObject(m.engines) || typeof (m.engines as { imark?: unknown }).imark !== 'string') {
-    errors.push('engines.imark 必填(如 "^0.1.0")')
+    errors.push('engines.imark 必填(如 "^1.0.0")')
   } else if (!/^(>=|>|\^)?\s*v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test((m.engines as { imark: string }).imark.trim())) {
-    errors.push('engines.imark 必须是版本范围(如 "^0.1.0" / ">=0.1.0")')
+    errors.push('engines.imark 必须是版本范围(如 "^1.0.0" / ">=1.0.0")')
   }
 
   if (m.main !== undefined) {
@@ -868,6 +906,12 @@ export function validateManifest(raw: unknown): ExtensionValidation<ExtensionMan
         contributes['imark.actions'],
         declared,
         collectConfigKeys(contributes.configuration),
+        errors
+      )
+      validateAgentProviders(
+        contributes['imark.agentProviders'],
+        m.extensionDependencies,
+        m.main,
         errors
       )
     }
@@ -971,6 +1015,9 @@ function canonicalContributes(value: unknown): unknown {
           ? item.map(entry => (isObject(entry) ? pick(entry, ['command', 'label', 'scope', 'targetSetting', 'primary']) : entry))
           : item
         break
+      case 'imark.agentProviders':
+        out['imark.agentProviders'] = Array.isArray(item) ? [...item] : item
+        break
     }
   }
   return out
@@ -1018,9 +1065,7 @@ export function validateEnvelope(raw: unknown): ExtensionValidation<ExtensionPac
   const e = raw as Partial<ExtensionPackageEnvelope>
   if (e.format !== PACKAGE_FORMAT) errors.push(`format 必须是 "${PACKAGE_FORMAT}"`)
   if (e.formatVersion !== PACKAGE_FORMAT_VERSION) {
-    errors.push(
-      `formatVersion 必须是 ${PACKAGE_FORMAT_VERSION}(v1 插件包已不再支持,请重新打包)`
-    )
+    errors.push(`formatVersion 必须是 ${PACKAGE_FORMAT_VERSION}`)
   }
 
   const manifestResult = validateManifest(e.manifest)
@@ -1095,8 +1140,8 @@ export function validateEnvelope(raw: unknown): ExtensionValidation<ExtensionPac
   }
 
   if (manifest && e.manifest !== undefined) {
-    // 安装到磁盘的清单必须与校验过的完全一致:含未知字段的清单直接拒绝,
-    // 不做“静默丢弃未知键”的兼容 —— 那会让 integrity 校验的对象与实际安装的对象分家。
+    // 安装到磁盘的清单必须与校验过的完全一致:含未知字段的清单直接拒绝 ——
+    // 静默丢弃未知键会让 integrity 校验的对象与实际安装的对象分家。
     if (stableStringify(e.manifest) !== stableStringify(manifest)) {
       errors.push('manifest 含未知字段或非规范形状,拒绝安装')
     }
@@ -1275,18 +1320,6 @@ export function descriptorFromManifest(manifest: ExtensionManifest): ExtensionDe
     configuration,
     settingsFields: settingsFieldsOf(manifest)
   }
-}
-
-/** 从清单里取出目标列表字段(用于 `scope: target` 的动作与密钥槽位) */
-export function targetFieldOf(
-  manifest: ExtensionManifest,
-  setting: string
-): { key: string; field: PluginField } | null {
-  const id = extensionIdOf(manifest)
-  const fields = settingsFieldsOf(manifest)
-  const field = fields.find(item => item.key === shortKey(id, setting))
-  if (!field || (field.kind !== 'targets' && field.kind !== 'endpoints')) return null
-  return { key: field.key, field }
 }
 
 /** 供设置页读取目标数组的默认值(类型只用于编译期) */

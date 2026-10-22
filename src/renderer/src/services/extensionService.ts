@@ -1,7 +1,7 @@
 /**
  * 扩展服务的渲染层侧:视图缓存 + 与主进程的往返。
  *
- * 与 v1 的 pluginService 最大的不同是**没有乐观更新**:主进程每执行一次
+ * 这里**没有乐观更新**:主进程每执行一次
  * 启用/保存/密钥写入都回传整份 `ExtensionView[]`,这里直接替换缓存。
  * 这样设置页、状态栏、导航栏看到的永远是同一份状态,不存在"界面先变了、
  * 主进程其实失败了"的中间态。
@@ -38,7 +38,7 @@ export function extensionById(id: string): ExtensionView | undefined {
   return extensionStore.list.find(item => item.descriptor.id === id)
 }
 
-/** 与 v1 的 `plain()` 同理:reactive 代理过不了 contextBridge 的结构化克隆 */
+/** reactive 代理过不了 contextBridge 的结构化克隆,先转成普通对象 */
 function plain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? null)) as T
 }

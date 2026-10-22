@@ -20,6 +20,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -127,7 +128,7 @@ async function main(): Promise<void> {
   )
 
   const settings = await loadSettings()
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
   await new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))

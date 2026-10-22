@@ -1,23 +1,19 @@
-# Agent
+# Agent Core
 
-通用 Agent 对话面板。插件只负责把附件落盘、把路径和工具权限交给 Agent；**怎么读取/解析文件由 Agent 自己决定**。
+Agent 对话宿主。插件只负责把附件落盘、把路径和工具权限交给 Agent；**怎么读取/解析文件由 Agent 自己决定**。
 
-首个 provider 是 **Claude Code**（本机 CLI）。插件不内置任何 PDF/Office 解析器，也不把 Claude Code runtime 打进扩展包。
+Agent Core 不认识任何具体后端。后端（provider）是独立插件，例如 **Claude Code**；安装并启用后，Core 会发现并调用它。后续接入其它 Agent 后端也只需要新增 provider 插件，不改 Core。
 
 ## 配置
 
-打开「设置 → 扩展 → Agent」：
+打开「设置 → 扩展 → Agent Core」：
 
 - **权限模式**
   - `read+parse`（默认）：允许 Agent 运行命令、写会话目录，适合让它自己调 `pdftotext`、Python、MinerU 等工具；
-  - `read-only`：只允许 Read/Glob/Grep；PDF 需要模型原生支持。
-- **Claude Code 可执行文件**：留空自动探测 PATH / `%USERPROFILE%\.local\bin\claude.exe` / 已安装的 VS Code Claude Code 扩展自带 native binary；也可以填 `claude.exe`、`claude.cmd` 的完整路径。
-- **模型**：留空使用 CLI 默认；可填 `sonnet` / `opus` / `haiku` 或完整模型名。
-- **隔离**：
-  - `safe`（默认）：禁用 CLAUDE.md/技能/hooks 等自定义，保留登录态；
-  - `restricted`：进一步限制文件工具与设置文件；
-  - `off`：完全使用 Claude Code 自己的设置。
-- **API 密钥**：可选。留空复用本机 `claude` 登录态；填写后只通过子进程环境变量注入，不进入界面、日志或会话文件。
+  - `read-only`：只允许读取；PDF 需要模型原生支持。
+- **单个附件上限（MB）**：超过上限的文件会在上传阶段被拒绝。
+
+具体后端的命令路径、模型、超时、隔离与 API 密钥由对应的 provider 插件自己提供（例如 `imark.claude-code`）。
 
 ## 附件与会话
 
@@ -30,8 +26,28 @@
 
 - 扩展以当前用户权限运行；`read+parse` 允许 Agent 运行 Bash/Python，**Windows 上没有 OS 级沙箱**。
 - Agent 只拿到会话目录和文件路径；当前文档是只读快照，结果通过编辑器写回，不直接改 vault。
-- 附件会随对话发送给 Agent 背后的模型服务（Claude Code 等），请只添加你愿意发送的内容。
+- 附件会随对话发送给 Agent 背后的模型服务，请只添加你愿意发送的内容。
 
-## 增加新 provider
+## Provider 插件契约
 
-实现 `providers/<id>.ts` 的 `AgentProvider` / `AgentSession`，在 `providers/index.ts` 注册，并在 `package.json` 增加该 provider 的命令/模型配置。核心、webview、会话、附件与写回逻辑都不需要改。
+provider 扩展的清单必须声明：
+
+```json
+{
+  "main": "./main.js",
+  "extensionDependencies": ["imark.agent"],
+  "contributes": { "imark.agentProviders": ["my-provider"] }
+}
+```
+
+`activate()` 返回 `{ apiVersion: 1, providers: [...] }`。每个 provider 实现
+`@shared/agentProvider` 里的 `AgentProvider`：`info`、`detect()`、`createSession()`。
+Core 通过 `imark.extensions.getExtension(id).exports` 读取同一个宿主里的导出对象。
+
+- `extensionDependencies` 既保证 Core 先激活，也保证两者在同一个宿主进程（导出对象不能跨宿主传输）。
+- provider 自己读取自己的配置和 secret；Core 只传通用会话参数（会话 ID、cwd、权限模式、模型、可用命令、取消信号）。
+- Core 在自己的 `activate()` 里绝不等待 provider；注册表惰性求值，Core 启动完成后才打开。
+- 每次 `createSession()` 都重新读取 provider 配置，因此设置改动下一轮生效。
+- provider 不声明 `activationEvents`，由 Core 按需激活。
+
+参考实现：[`plugins-src/claude-code`](../claude-code/)。

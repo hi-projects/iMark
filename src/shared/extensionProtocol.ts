@@ -16,7 +16,6 @@
 import type { ExtensionContextKeys } from './extensions'
 import type { ExtensionManifest } from './extensionPackage'
 
-export const EXTENSION_HOST_PROTOCOL_VERSION = 2
 export const EXTENSION_WEBVIEW_SCHEME = 'imark-webview'
 
 // ---------- 基础 DTO ----------
@@ -135,7 +134,6 @@ export interface ExtensionHostEnvironmentDto {
 }
 
 export interface ExtensionHostInitPayload {
-  protocolVersion: typeof EXTENSION_HOST_PROTOCOL_VERSION
   hostId: number
   appVersion: string
   environment: ExtensionHostEnvironmentDto
@@ -145,7 +143,6 @@ export interface ExtensionHostInitPayload {
   documents: DocumentStateDto[]
   activeDocumentUri: string | null
   visibleDocumentUris: string[]
-  context: ExtensionContextKeys
   extensions: HostExtensionInit[]
 }
 
@@ -298,13 +295,19 @@ export interface HostOutputAppendMessage {
   text: string
 }
 
-export interface HostStatusBarMessage {
-  kind: 'statusbar'
-  extensionId: string
-  action: 'create' | 'update' | 'dispose'
-  item?: StatusBarItemDto
-  itemId?: string
-}
+export type HostStatusBarMessage =
+  | {
+      kind: 'statusbar'
+      extensionId: string
+      action: 'create' | 'update'
+      item: StatusBarItemDto
+    }
+  | {
+      kind: 'statusbar'
+      extensionId: string
+      action: 'dispose'
+      itemId: string
+    }
 
 export interface HostSecretsChangedMessage {
   kind: 'secrets.changed'
@@ -567,11 +570,6 @@ export interface MainDeactivateMessage {
   removeData: boolean
 }
 
-export interface MainUnloadMessage {
-  kind: 'unload'
-  extensionId: string
-}
-
 export interface MainCommandMessage {
   kind: 'command.execute'
   requestId: string
@@ -583,11 +581,6 @@ export interface MainConfigurationChangedMessage {
   kind: 'configuration.changed'
   extensionId: string
   values: Record<string, unknown>
-}
-
-export interface MainContextChangedMessage {
-  kind: 'context.changed'
-  context: ExtensionContextKeys
 }
 
 /**
@@ -670,13 +663,8 @@ export interface MainWebviewRestoreMessage {
   viewType: string
   state: unknown
   panel: WebviewPanelStateDto
-  /** 恢复的面板沿用原来的 token,否则 asWebviewUri 拼出的地址会被拒绝 */
+  /** 恢复的面板沿用同一个 token,否则 asWebviewUri 拼出的地址会被拒绝 */
   token?: string
-}
-
-export interface MainPingMessage {
-  kind: 'ping'
-  nonce: string
 }
 
 export interface MainShutdownMessage {
@@ -695,10 +683,8 @@ export type MainToHostMessage =
   | MainInitMessage
   | MainActivateMessage
   | MainDeactivateMessage
-  | MainUnloadMessage
   | MainCommandMessage
   | MainConfigurationChangedMessage
-  | MainContextChangedMessage
   | MainSecretsChangedMessage
   | MainDocumentOpenedMessage
   | MainDocumentChangedMessage
@@ -712,7 +698,6 @@ export type MainToHostMessage =
   | MainWebviewViewStateMessage
   | MainWebviewDisposedMessage
   | MainWebviewRestoreMessage
-  | MainPingMessage
   | MainShutdownMessage
   | HostResponseMessage
 
@@ -874,16 +859,6 @@ export type MainToRendererMessage =
       type: 'editor.request'
       requestId: string
       request: EditorRequestDto
-    }
-  | {
-      type: 'editor.init'
-      payload: RendererEditorInitPayload
-    }
-  | {
-      type: 'editor.documents'
-      documents: DocumentStateDto[]
-      activeDocumentUri: string | null
-      visibleDocumentUris: string[]
     }
   | {
       type: 'extensions.contributions'

@@ -11,7 +11,7 @@
  * 网络与密钥在 main 层，这里只通过消息请求。
  */
 
-import type { ImkRenderLayerApi } from './legacy'
+import type { ImkRenderLayerApi } from './renderApi'
 import { characterStyleFrom, fillAvatar, type CharacterStyle } from './characters'
 import { extractPdfText, PdfExtractError } from './pdf'
 import {
@@ -148,7 +148,7 @@ interface PersistedChatStore {
 const MAX_MESSAGE_CHARS = 240 * 1024
 const MAX_INPUT_CHARS = 120_000
 const PLUGIN_ID = 'ai-for-edit'
-const CHAT_STORE_KEY = 'ai-for-edit:chat-store:v1'
+const CHAT_STORE_KEY = 'ai-for-edit:chat-store'
 const CHAT_STORE_VERSION = 1
 /** 每个文档保留的历史会话数；超出时丢掉最久没更新的 */
 const MAX_SESSIONS_PER_DOC = 20
@@ -951,7 +951,7 @@ function trimPersistedStore(maxSessions: number, maxDocs = 20): PersistedChatSto
         ? doc.activeSessionId
         : null
     // 扫描页图片的 base64 太大，写进 localStorage 会直接撑爆配额；落盘时只留
-    // 「曾经有图片」的标记，下次打开提示用户重新添加这个 PDF。
+    // 「之前有图片」的标记，下次打开提示用户重新添加这个 PDF。
     const attachments = doc.attachments.slice(0, MAX_ATTACHMENTS).map(item => ({
       ...item,
       images: [],
@@ -1100,7 +1100,7 @@ function noteSessionActivity(): void {
   schedulePersist()
 }
 
-/** 设置里的「把扫描页作为图片发送」；旧配置没有这个字段时默认开启 */
+/** 设置里的「把扫描页作为图片发送」；配置里没有这个字段时默认开启 */
 function scannedPdfImagesEnabled(): boolean {
   const config = imk.plugin.getConfig<{ scannedPdfImages?: unknown }>()
   return config.scannedPdfImages !== false

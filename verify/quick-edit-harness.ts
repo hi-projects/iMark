@@ -1,5 +1,5 @@
 /**
- * quick-edit（v2 扩展模型）端到端验收。
+ * quick-edit 扩展端到端验收。
  *
  * 这条链路横跨四个边界：CodeMirror 装饰（渲染层）→ 贡献点快照（主进程）
  * → 扩展宿主进程（utilityProcess 里的 `activate` / `insertTable`）
@@ -7,7 +7,7 @@
  * 所以这里盯**最终可见的结果**：DOM 里的菜单/对话框、磁盘上的文件、焦点落点。
  *
  * 覆盖：
- *   1 v2 内置包安装、清单贡献点、未命中 onCommand 前不 fork 宿主
+ *   1 内置包安装、清单贡献点、未命中 onCommand 前不 fork 宿主
  *   2 行首「+」按钮出现（光标行）
  *   3 菜单 →「表格」→ 对话框（只有行数/列数）→ 4×2 → 插入
  *   4 文档/磁盘内容、渲染表格、焦点落在第一个表头单元格
@@ -20,6 +20,7 @@
  */
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
@@ -86,7 +87,7 @@ async function main(): Promise<void> {
   const note = join(vault, '笔记.md')
   await rm(vault, { recursive: true, force: true })
   await mkdir(vault, { recursive: true })
-  // 「全新用户」：扩展目录整个抹掉，内置包由本 harness 按 v2 安装路径装进去
+  // 「全新用户」：扩展目录整个抹掉，内置包由本 harness 按正常安装路径装进去
   await rm(join(ud, 'plugins'), { recursive: true, force: true })
   await rm(join(ud, 'extensions-data'), { recursive: true, force: true })
 
@@ -109,18 +110,15 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  // 装内置的 v2 包：与市场安装走同一条校验/落盘路径（没有「因为是内置所以跳过」）
+  // 装内置包：与市场安装走同一条校验/落盘路径（没有「因为是内置所以跳过」）
   const envelope = JSON.parse(
     await readFile(join(REPO, 'src/main/market/builtin/imark.quick-edit.imkpkg.json'), 'utf8')
   ) as unknown
-  // 直接跑 electron 可执行文件时 app.getVersion() 是 Electron 的版本（44.x），
-  // 不是 package.json 里的应用版本；engines.imark 要按应用版本校验。
-  const APP_VERSION = '0.1.0'
   const installed = await installExtensionPackage(envelope, {
     source: 'bundled',
     appVersion: APP_VERSION
   })
-  check('内置 v2 包通过校验并安装', installed.manifest.publisher === 'imark')
+  check('内置包通过校验并安装', installed.manifest.publisher === 'imark')
 
   registerIpc()
   registerImarkProtocol()
@@ -308,7 +306,7 @@ async function main(): Promise<void> {
 
   // ---------- 1. 安装、清单贡献点、懒激活 ----------
 
-  console.log('\n【1】v2 内置包安装：贡献点来自 package.json，onCommand 前不 fork 宿主')
+  console.log('\n【1】内置包安装：贡献点来自 package.json，onCommand 前不 fork 宿主')
   const views = service.listExtensions()
   const quick = views.find(v => v.descriptor.id === QUICK_EDIT_ID)
   check('扩展列表里有 imark.quick-edit', !!quick, JSON.stringify(views.map(v => v.descriptor.id)))

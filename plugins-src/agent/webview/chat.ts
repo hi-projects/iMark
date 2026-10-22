@@ -1,8 +1,9 @@
 /**
- * Agent 面板 UI。
+ * Agent Core 面板 UI。
  *
- * 这个文件不知道 Claude Code 的任何细节，只消费归一化事件：
- * 会话、流式文本、工具时间线、附件、产物、错误。
+ * 这个文件不知道任何具体后端（Claude Code 等）的细节，只消费归一化事件：
+ * 会话、流式文本、工具时间线、附件、产物、错误。后端列表由宿主给出，
+ * 没有可用后端时明确提示并禁用发送。
  */
 
 import type {
@@ -47,19 +48,13 @@ interface Streaming {
 }
 
 const bootstrap = readBootstrap()
+const NO_PROVIDER_MESSAGE = '未安装或未启用任何 Agent 后端插件'
 
 const state = {
   providers: [] as ProviderView[],
   config: {
-    provider: 'claude-code',
     mode: 'read+parse' as AgentMode,
-    model: '',
-    isolation: 'safe',
-    timeoutSec: 300,
-    maxTurns: 24,
-    attachmentMaxMB: 32,
-    commandConfigured: false,
-    apiKeyConfigured: false
+    attachmentMaxMB: 32
   } as SafeConfig,
   doc: null as DocMeta | null,
   sessions: [] as SessionSummary[],
@@ -67,7 +62,7 @@ const state = {
   activeTurnId: null as string | null,
   taskMode: 'ask' as AgentTaskMode,
   permissionMode: 'read+parse' as AgentMode,
-  providerId: 'claude-code',
+  providerId: '',
   model: '',
   target: undefined as TurnTarget | undefined,
   uploads: new Map<string, { name: string; done: number; total: number }>()
@@ -78,9 +73,9 @@ let streaming: Streaming | null = null
 document.body.innerHTML = `
 <div class="agent">
   <header class="agent-head">
-    <div class="agent-brand"><span class="agent-dot" id="status-dot"></span><b>Agent</b></div>
+    <div class="agent-brand"><span class="agent-dot" id="status-dot"></span><b>Agent Core</b></div>
     <div class="agent-controls">
-      <select id="provider" class="agent-select" title="Provider"></select>
+      <select id="provider" class="agent-select" title="Agent 后端"></select>
       <select id="permission" class="agent-select" title="权限模式">
         <option value="read+parse">read+parse</option>
         <option value="read-only">read-only</option>
@@ -140,6 +135,8 @@ const hintEl = byId<HTMLElement>('hint')
 const docNameEl = byId<HTMLElement>('doc-name')
 const sendEl = byId<HTMLButtonElement>('send')
 const stopEl = byId<HTMLButtonElement>('stop')
+const attachEl = byId<HTMLButtonElement>('attach')
+const newSessionEl = byId<HTMLButtonElement>('new-session')
 const statusDot = byId<HTMLElement>('status-dot')
 const fileInput = byId<HTMLInputElement>('file-input')
 const previewEl = byId<HTMLElement>('preview')
@@ -177,8 +174,19 @@ function setHint(text: string): void {
   hintEl.textContent = text
 }
 
+function hasProvider(): boolean {
+  return state.providers.length > 0
+}
+
+function syncProviderControls(): void {
+  const ready = hasProvider()
+  sendEl.disabled = Boolean(state.activeTurnId) || !ready
+  attachEl.disabled = !ready
+  newSessionEl.disabled = !ready
+}
+
 function setRunning(running: boolean): void {
-  sendEl.disabled = running
+  sendEl.disabled = running || !hasProvider()
   stopEl.classList.toggle('hidden', !running)
   statusDot.classList.toggle('is-running', running)
   setHint(running ? 'Agent 正在运行…' : '')
@@ -211,6 +219,16 @@ function sessionDocumentName(): string {
 function renderProviders(): void {
   const current = state.providerId
   providerEl.replaceChildren()
+  if (state.providers.length === 0) {
+    const option = el('option', undefined, '无可用后端')
+    option.value = ''
+    providerEl.append(option)
+    providerEl.disabled = true
+    providerEl.classList.remove('is-unavailable')
+    syncProviderControls()
+    return
+  }
+  providerEl.disabled = false
   for (const provider of state.providers) {
     const option = el('option', undefined, provider.info.label)
     option.value = provider.info.id
@@ -219,6 +237,7 @@ function renderProviders(): void {
   if (state.providers.some(item => item.info.id === current)) providerEl.value = current
   const detection = state.providers.find(item => item.info.id === state.providerId)?.detection
   providerEl.classList.toggle('is-unavailable', detection ? !detection.available : false)
+  syncProviderControls()
 }
 
 function renderHeader(): void {
@@ -388,7 +407,7 @@ function renderMessages(): void {
   messagesEl.replaceChildren()
   if (!state.session) {
     const empty = el('div', 'agent-empty')
-    empty.append(el('b', undefined, 'Agent'))
+    empty.append(el('b', undefined, 'Agent Core'))
     empty.append(
       el(
         'p',
@@ -442,8 +461,16 @@ function renderAttachments(): void {
 async function refreshDetection(): Promise<void> {
   try {
     const result = await request<{ providers: ProviderView[] }>('provider.detect', {}, 20_000)
-    state.providers = result.providers
+    state.providers = result.providers ?? []
+    if (!state.session && !state.providerId) {
+      state.providerId = state.providers[0]?.info.id ?? ''
+    }
     renderProviders()
+    if (state.providers.length === 0) {
+      showBanner(NO_PROVIDER_MESSAGE)
+      return
+    }
+    if (bannerText.textContent === NO_PROVIDER_MESSAGE) hideBanner()
     const current = state.providers.find(item => item.info.id === state.providerId)
     if (current?.detection && !current.detection.available) {
       showBanner(
@@ -478,6 +505,7 @@ async function openSession(id: string): Promise<void> {
   try {
     const result = await request<{ session: SessionView }>('session.open', { sessionId: id })
     state.session = result.session
+    state.providerId = result.session.summary.provider
     state.permissionMode = result.session.summary.mode
     state.model = result.session.summary.model ?? ''
     renderHeader()
@@ -584,6 +612,10 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
   // 清空 input.value，live FileList 随之变空；先 Array.from 才不会丢文件。
   const list = Array.from(files)
   if (list.length === 0) return
+  if (!hasProvider()) {
+    showBanner(NO_PROVIDER_MESSAGE)
+    return
+  }
   const sessionId = await ensureSession()
   for (const file of list) {
     await uploadFile(file, sessionId)
@@ -669,6 +701,10 @@ async function previewArtifact(artifact: ArtifactInfo): Promise<void> {
 
 async function sendTurn(): Promise<void> {
   if (state.activeTurnId) return
+  if (!hasProvider()) {
+    showBanner(NO_PROVIDER_MESSAGE)
+    return
+  }
   if (state.uploads.size > 0) {
     showBanner('附件还在上传，请稍等')
     return
@@ -820,9 +856,9 @@ onPush(push => {
     state.config = init.config
     state.doc = init.doc
     state.sessions = init.sessions ?? []
-    state.providerId = state.config.provider || 'claude-code'
+    state.providerId = state.providers[0]?.info.id ?? ''
     state.permissionMode = state.config.mode
-    state.model = state.config.model
+    state.model = ''
     renderHeader()
     renderSessionList()
     renderMessages()
@@ -836,9 +872,7 @@ onPush(push => {
     if (config) {
       state.config = config
       if (!state.session) {
-        state.providerId = config.provider
         state.permissionMode = config.mode
-        state.model = config.model
         renderHeader()
       }
     }
@@ -869,6 +903,7 @@ onPush(push => {
     const view = (value as { session: SessionView }).session
     if (state.activeTurnId && state.session?.summary.id !== view.summary.id) return
     state.session = view
+    state.providerId = view.summary.provider
     state.permissionMode = view.summary.mode
     state.model = view.summary.model ?? ''
     renderHeader()
@@ -961,6 +996,10 @@ providerEl.addEventListener('change', () => {
     providerEl.value = state.providerId
     return
   }
+  if (!providerEl.value) {
+    providerEl.value = state.providerId
+    return
+  }
   state.providerId = providerEl.value
   void createSession().catch(err => showBanner(errorText(err)))
 })
@@ -988,8 +1027,12 @@ sessionEl.addEventListener('change', () => {
   if (sessionEl.value) void openSession(sessionEl.value)
 })
 
-byId('new-session').addEventListener('click', () => {
+newSessionEl.addEventListener('click', () => {
   if (guardRunning()) return
+  if (!hasProvider()) {
+    showBanner(NO_PROVIDER_MESSAGE)
+    return
+  }
   void createSession().catch(err => showBanner(errorText(err)))
 })
 
@@ -1007,7 +1050,13 @@ byId('delete-session').addEventListener('click', () => {
     .catch(err => showBanner(errorText(err)))
 })
 
-byId('attach').addEventListener('click', () => fileInput.click())
+attachEl.addEventListener('click', () => {
+  if (!hasProvider()) {
+    showBanner(NO_PROVIDER_MESSAGE)
+    return
+  }
+  fileInput.click()
+})
 fileInput.addEventListener('change', () => {
   if (fileInput.files) void uploadFiles(fileInput.files).catch(err => showBanner(errorText(err)))
   fileInput.value = ''
@@ -1057,8 +1106,6 @@ if (bootstrap.config && typeof bootstrap.config === 'object') {
   // 初始配置由 init push 覆盖；这里只用于首屏尽早显示正确的权限模式
   const config = bootstrap.config as Partial<SafeConfig>
   if (config.mode && isPermissionMode(config.mode)) state.permissionMode = config.mode
-  if (config.provider) state.providerId = config.provider
-  if (config.model) state.model = config.model
 }
 
 renderHeader()

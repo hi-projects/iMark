@@ -65,7 +65,7 @@ export const IPC = {
   VaultRename: 'vault:rename',
   VaultDelete: 'vault:delete',
   VaultConfirmDelete: 'vault:confirm-delete',
-  // ---------- 扩展(v2 模型) ----------
+  // ---------- 扩展 ----------
   /** 渲染→主:整份扩展视图(含密钥掩码) */
   ExtensionList: 'extension:list',
   /** 渲染→主:启用/禁用;返回最新视图 */
@@ -93,48 +93,12 @@ export const IPC = {
   /**
    * 渲染→主:编辑器桥与界面回执(RendererToMainMessage)。
    *
-   * 与 v1 的多条通道不同,v2 的 renderer↔main 协议在 extensionProtocol.ts 里
-   * 有完整的可辨识联合;一条通道既避免十几组重复的序列化代码,也让「哪些消息
-   * 可以跨进程」只有一处定义。
+   * renderer↔main 协议在 extensionProtocol.ts 里有完整的可辨识联合;一条通道
+   * 既避免十几组重复的序列化代码,也让「哪些消息可以跨进程」只有一处定义。
    */
   ExtensionToMain: 'extension:to-main',
   /** 主→渲染:编辑器请求 / 贡献点 / webview / UI 请求(MainToRendererMessage) */
   ExtensionToRenderer: 'extension:to-renderer',
-
-  /**
-   * 渲染→主:文档内容变了。
-   *
-   * 渲染层**已节流**才发出来 —— 每次按键都过一次 IPC 是不可接受的,
-   * 而插件要的「文档变了」本来就是粗粒度的(自动保存、字数统计这类用途)。
-   */
-  DocChanged: 'doc:changed',
-  /**
-   * 渲染→主:编辑器里**有没有文档**。
-   *
-   * 不能用 DocPath 是否为 null 来代替:一份还没保存过的新文档同样是在编辑文档,
-   * 而它的路径就是 null。命令的可用性判定要的是「有没有东西可编辑」,
-   * 这两件事在"未命名文档"上恰好相反。
-   */
-  EditorPresence: 'editor:presence',
-  /**
-   * 渲染→主:一份文档**成功写进了磁盘**。
-   *
-   * 与 SaveDone 是两件事,别合并:那条是"关闭窗口前那次保存做完了"的**回执**,
-   * 主进程在等它(handleSaveDone 会兑现一个挂起的 flush);这条是**通知**,
-   * 谁都没在等 —— 手动保存、自动保存各来一条,插件的 document:save 钩子靠它触发。
-   * 合并的话,一次用户随手按的 Ctrl+S 会去兑现一个与它无关的 flush 等待。
-   *
-   * 为什么由渲染层发而不是主进程自己看:只有渲染层知道"这次写盘是哪份文档"——
-   * 写盘那一小会儿用户可能已经切走了(自动保存尤其如此)。
-   */
-  DocSaved: 'doc:saved',
-  /**
-   * 主→渲染:某个文件被插件改了(插件有 vault:write)。
-   *
-   * 渲染层据此判断"是不是我正开着的那份",是就重新加载 —— 不重新加载的话,
-   * 编辑器里还是旧内容,用户下一次保存会把插件的改动原样覆盖掉。
-   */
-  FileExternalChange: 'file:external-change',
 
   // ---------- 插件市场 ----------
   /** 挑一个本地 .imkpkg.json 包 → 预览(不安装) */

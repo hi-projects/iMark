@@ -1,16 +1,17 @@
 /**
- * Agent Host（imark.agent）端到端验收。
+ * Agent Core（imark.agent）+ Claude Code（imark.claude-code）端到端验收。
  *
  * 覆盖：
- *   1 内置包安装、命令/设置贡献、onStartupFinished 激活
- *   2 打开侧边栏 webview、provider 探测（fake claude --version）
+ *   1 依赖安装顺序、内置包安装、无 provider 时的空状态
+ *   2 启用 provider 后的宿主重启、惰性激活、provider 探测（fake claude --version）
  *   3 附件分块上传、落盘、会话 meta
  *   4 turn：流式文本、工具时间线、prepared/ 产物、prompt 只含路径
  *   5 产物预览、结果写回、stale-doc 保护
  *   6 第二轮 --resume
  *   7 read-only 参数矩阵
- *   8 auth / cli-missing 错误分类
+ *   8 auth / provider-unavailable 错误分类
  *   9 取消：流式停止、子进程结束
+ *  10 依赖保护：Core 被 Claude Code 依赖时不能卸载
  *
  * 跑法：
  *   npm run build
@@ -19,7 +20,7 @@
 
 import { app, BrowserWindow, dialog, protocol, type WebFrameMain } from 'electron'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { EXTENSION_WEBVIEW_SCHEME } from '../src/shared/extensionProtocol'
@@ -37,8 +38,9 @@ import {
 } from '../src/main/extensions/service'
 
 const REPO = join(__dirname, '..', '..')
-const EXT_ID = 'imark.agent'
-const APP_VERSION = '0.1.0'
+const CORE_ID = 'imark.agent'
+const CLAUDE_ID = 'imark.claude-code'
+import { APP_VERSION } from './appVersion'
 const CMD_OPEN = 'imark.agent.openChat'
 
 let pass = 0
@@ -111,19 +113,34 @@ async function main(): Promise<void> {
   // ---------- fake Claude CLI ----------
   const fakeDir = join(ud, 'fake-claude')
   const fakeJs = join(REPO, 'verify', 'fixtures', 'fake-claude.js')
-  const fakeCmd = join(fakeDir, 'fake-claude.cmd')
+  // Windows 上 .cmd 由扩展用 cmd.exe 启动；POSIX 上必须是无扩展名的可执行脚本，
+  // 否则 kindOf() 会把它当成 .cmd 去调 cmd.exe（Linux 上不存在）。
+  const fakeCmd = join(fakeDir, process.platform === 'win32' ? 'fake-claude.cmd' : 'fake-claude')
   await mkdir(fakeDir, { recursive: true })
-  await writeFile(
-    fakeCmd,
-    [
-      '@echo off',
-      'set ELECTRON_RUN_AS_NODE=1',
-      `"${process.execPath}" "${fakeJs}" %*`,
-      'exit /b %ERRORLEVEL%',
-      ''
-    ].join('\r\n'),
-    'utf8'
-  )
+  if (process.platform === 'win32') {
+    await writeFile(
+      fakeCmd,
+      [
+        '@echo off',
+        'set ELECTRON_RUN_AS_NODE=1',
+        `"${process.execPath}" "${fakeJs}" %*`,
+        'exit /b %ERRORLEVEL%',
+        ''
+      ].join('\r\n'),
+      'utf8'
+    )
+  } else {
+    await writeFile(
+      fakeCmd,
+      [
+        '#!/bin/sh',
+        `ELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${fakeJs}" "$@"`,
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    await chmod(fakeCmd, 0o755)
+  }
   const controlPath = join(fakeDir, 'control.json')
   const setScenario = async (
     scenario: string,
@@ -146,31 +163,64 @@ async function main(): Promise<void> {
     marketUrl: '',
     autoSaveMode: 'off',
     extensions: {
-      [EXT_ID]: {
+      [CORE_ID]: {
         enabled: true,
         config: {
-          provider: 'claude-code',
-          mode: 'read+parse',
-          'claudeCode.command': fakeCmd,
-          'claudeCode.model': '',
-          'claudeCode.isolation': 'safe',
-          'claudeCode.timeoutSec': 30,
-          'claudeCode.maxTurns': 10,
-          attachmentMaxMB: 32
+          [`${CORE_ID}.mode`]: 'read+parse',
+          [`${CORE_ID}.attachmentMaxMB`]: 32
+        }
+      },
+      // 先禁用 provider：首屏断言“没有可用后端”时不进入宿主；随后动态启用。
+      [CLAUDE_ID]: {
+        enabled: false,
+        config: {
+          [`${CLAUDE_ID}.command`]: fakeCmd,
+          [`${CLAUDE_ID}.model`]: '',
+          [`${CLAUDE_ID}.isolation`]: 'safe',
+          [`${CLAUDE_ID}.timeoutSec`]: 30,
+          [`${CLAUDE_ID}.maxTurns`]: 10
         }
       }
     }
   }
   await writeFile(join(ud, 'settings.json'), JSON.stringify(settingsSeed, null, 2), 'utf8')
 
-  const envelope = JSON.parse(
+  const coreEnvelope = JSON.parse(
     await readFile(join(REPO, 'src/main/market/builtin/imark.agent.imkpkg.json'), 'utf8')
   ) as unknown
-  const installed = await installExtensionPackage(envelope, {
+  const claudeEnvelope = JSON.parse(
+    await readFile(join(REPO, 'src/main/market/builtin/imark.claude-code.imkpkg.json'), 'utf8')
+  ) as unknown
+
+  let withoutCore = ''
+  try {
+    await installExtensionPackage(claudeEnvelope, {
+      source: 'bundled',
+      appVersion: APP_VERSION
+    })
+  } catch (err) {
+    withoutCore = err instanceof Error ? err.message : String(err)
+  }
+  check(
+    '未安装 Agent Core 时安装 Claude Code 被拒绝',
+    withoutCore.includes(CLAUDE_ID) && withoutCore.includes(CORE_ID) && withoutCore.includes('未安装'),
+    withoutCore
+  )
+
+  const installed = await installExtensionPackage(coreEnvelope, {
     source: 'bundled',
     appVersion: APP_VERSION
   })
   check('内置 imark.agent 包通过校验并安装', installed.manifest.publisher === 'imark')
+  check('Agent Core 显示名正确', installed.manifest.displayName === 'Agent Core')
+  const claudeInstalled = await installExtensionPackage(claudeEnvelope, {
+    source: 'bundled',
+    appVersion: APP_VERSION
+  })
+  check(
+    '内置 imark.claude-code 包依赖 imark.agent',
+    claudeInstalled.manifest.extensionDependencies?.includes(CORE_ID) === true
+  )
 
   registerIpc()
   registerImarkProtocol()
@@ -342,7 +392,7 @@ async function main(): Promise<void> {
   }
 
   async function sessionDirs(): Promise<string[]> {
-    const root = join(ud, 'extensions-data', EXT_ID, 'sessions')
+    const root = join(ud, 'extensions-data', CORE_ID, 'sessions')
     const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
     return entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.')).map(entry => join(root, entry.name))
   }
@@ -387,7 +437,7 @@ async function main(): Promise<void> {
 
   // ---------- 1. 打开面板 ----------
 
-  console.log('\n【1】安装、激活、打开面板')
+  console.log('\n【1】依赖、激活、无 provider 空状态')
   check('Markdown 编辑器已加载', await waitHost(`document.querySelector('.cm-editor')`, 10_000))
   const opened = await waitUntilAsync(async () => {
     try {
@@ -400,16 +450,48 @@ async function main(): Promise<void> {
   check('imark.agent.openChat 命令已注册并执行', opened)
   check('侧边栏面板出现', await waitHost(`document.querySelector('.webview-panel-sidebar')`, 10_000))
   check('Agent webview 帧加载', Boolean(await waitFrame('.agent', 15_000)))
-  check('标题显示 Agent', (await agentText('.agent-brand')).includes('Agent'))
-  check('空状态提示出现', (await agentText('.agent-empty')).includes('Agent'))
-  check('provider 选择器有 Claude Code', (await agentText('#provider')).includes('Claude Code'))
+  check('标题显示 Agent Core', (await agentText('.agent-brand')).includes('Agent Core'))
+  check('空状态提示出现', (await agentText('.agent-empty')).includes('Agent Core'))
+  check('未启用 provider 时选择器给出占位', (await agentText('#provider')).includes('无可用后端'))
+  check(
+    '未启用 provider 时发送按钮禁用',
+    await agentEval<boolean>(`document.querySelector('#send').disabled === true`)
+  )
+  check('未启用 provider 时有明确提示', (await agentText('#banner')).includes('未安装或未启用'))
   check('设置项与文件输入存在', await agentEval<boolean>(`!!document.querySelector('#file-input')`))
+
+  console.log('\n【1b】启用 Claude Code：宿主重启、惰性激活')
+  await service.setEnabled(CLAUDE_ID, true)
+  const restarted = await waitUntilAsync(async () => {
+    const frame = await findFrame('.agent')
+    return !frame && service.isActivated(CORE_ID)
+  }, 20_000)
+  check('启用 Claude Code 后 Agent Core 随宿主重启重新激活', restarted)
+  const reopened = await waitUntilAsync(async () => {
+    try {
+      await service.executeCommand(CMD_OPEN)
+      return true
+    } catch {
+      return false
+    }
+  }, 20_000)
+  check('重启后 openChat 命令可用', reopened)
+  check('重启后 webview 帧加载', Boolean(await waitFrame('.agent', 15_000)))
+  check('provider 选择器有 Claude Code', await waitText('#provider', 'Claude Code', 10_000))
+  check(
+    'provider 由 Core 惰性激活',
+    await waitUntilAsync(() => service.isActivated(CLAUDE_ID), 15_000)
+  )
 
   const versionInvocation = await waitInvocation(item => item.versionOnly, 10_000, true)
   check('fake Claude --version 被调用', Boolean(versionInvocation))
   check(
     'provider 探测未标记不可用',
-    !(await agentEval<boolean>(`document.querySelector('#provider').classList.contains('is-unavailable')`))
+    await waitInFrame(
+      '.agent',
+      `!document.querySelector('#provider').classList.contains('is-unavailable')`,
+      10_000
+    )
   )
 
   // ---------- 2. 附件上传 ----------
@@ -447,7 +529,7 @@ async function main(): Promise<void> {
   check('会话 meta 记录附件', Boolean(metaAfterUpload))
   const attachments = (metaAfterUpload?.attachments as Array<Record<string, unknown>>) ?? []
   const attachmentPath = typeof attachments[0]?.path === 'string' ? attachments[0].path : ''
-  check('附件路径落在会话目录', attachmentPath.includes(join('extensions-data', EXT_ID, 'sessions')))
+  check('附件路径落在会话目录', attachmentPath.includes(join('extensions-data', CORE_ID, 'sessions')))
   const attachmentStat = attachmentPath ? await stat(attachmentPath).catch(() => null) : null
   check('附件字节数正确', attachmentStat?.size === 300 * 1024, String(attachmentStat?.size))
   const attachmentSha = attachmentPath
@@ -557,7 +639,7 @@ async function main(): Promise<void> {
 
   // ---------- 7. 错误分类 ----------
 
-  console.log('\n【7】auth / cli-missing 错误')
+  console.log('\n【7】auth / provider-unavailable 错误')
   await setScenario('auth')
   await sendTurn('认证测试')
   check('auth 错误显示在消息里', await waitAnyText('.agent-error', 'auth-required', 15_000))
@@ -565,7 +647,7 @@ async function main(): Promise<void> {
   await rename(fakeCmd, `${fakeCmd}.bak`)
   await setScenario('ok')
   await sendTurn('缺失测试')
-  check('cli-missing 错误显示在消息里', await waitAnyText('.agent-error', 'cli-missing', 15_000))
+  check('provider-unavailable 错误显示在消息里', await waitAnyText('.agent-error', 'provider-unavailable', 15_000))
   await rename(`${fakeCmd}.bak`, fakeCmd)
 
   // ---------- 8. 取消 ----------
@@ -619,6 +701,34 @@ async function main(): Promise<void> {
   check('beautify 消息出现', await waitAnyText('.agent-msg.assistant', 'T5', 20_000))
   const beautyInvocation = await waitInvocation(item => item.stdin.includes('本次任务：美化'))
   check('beautify prompt 标记美化', Boolean(beautyInvocation))
+
+  // ---------- 11. 依赖保护 ----------
+
+  console.log('\n【11】依赖保护')
+  let uninstallError = ''
+  try {
+    await service.uninstallExtension(CORE_ID)
+  } catch (err) {
+    uninstallError = err instanceof Error ? err.message : String(err)
+  }
+  check(
+    'Core 被 Claude Code 依赖时拒绝卸载',
+    uninstallError.includes(CLAUDE_ID) && uninstallError.includes('无法卸载'),
+    uninstallError
+  )
+  check('拒绝卸载后 Core 仍在', Boolean(await service.getExtensionView(CORE_ID)))
+
+  let disableError = ''
+  try {
+    await service.setEnabled(CORE_ID, false)
+  } catch (err) {
+    disableError = err instanceof Error ? err.message : String(err)
+  }
+  check(
+    'Core 被已启用的 Claude Code 依赖时拒绝禁用',
+    disableError.includes(CLAUDE_ID) && disableError.includes('无法禁用'),
+    disableError
+  )
 
   // ---------- 收尾 ----------
 

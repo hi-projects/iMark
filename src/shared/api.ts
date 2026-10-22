@@ -80,7 +80,7 @@ export interface WindowApi {
   renamePath(from: string, to: string): Promise<void>
   trashPath(path: string): Promise<void>
   confirmDelete(name: string, isDir: boolean): Promise<boolean>
-  // ---------- 扩展(v2) ----------
+  // ---------- 扩展 ----------
   listExtensions(): Promise<ExtensionView[]>
   setExtensionEnabled(id: string, enabled: boolean): Promise<ExtensionView[]>
   setExtensionConfig(id: string, config: Record<string, unknown>): Promise<ExtensionView[]>
@@ -103,19 +103,6 @@ export interface WindowApi {
   onExtensionCommand(
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): () => void
-  /** 某个文件被外部/扩展改了 —— 如果那正是开着的这一份,渲染层负责重新加载 */
-  onFileExternalChange(cb: (filePath: string) => void): () => void
-  /** 文档内容变了。**调用方负责节流** —— 每次按键都过一次 IPC 是不可接受的 */
-  notifyDocChanged(o: { dirty: boolean; words: number; chars: number }): void
-  setEditorPresence(present: boolean): void
-  /**
-   * 一份文档成功写进了磁盘(插件的 document:save 钩子靠它触发)。
-   *
-   * 传**刚写的那份文档的路径**:写盘期间用户可能已经切走了,
-   * 让主进程拿"当前文档"去猜会张冠李戴。
-   */
-  notifyDocSaved(filePath: string): void
-
   // ---------- 插件市场 ----------
   /**
    * 挑一个本地插件包并**预览**(不安装)。用户取消返回 null。

@@ -1,12 +1,12 @@
 {
   "name": "git-sync",
   "publisher": "imark",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "displayName": "定时上传（Git）",
   "description": "按固定间隔，将当前仓库提交并推送到 Git 远端，支持多个远端",
   "author": "iMark",
   "engines": {
-    "imark": "^0.1.0"
+    "imark": "^1.0.0"
   },
   "main": "./main.js",
   "activationEvents": [

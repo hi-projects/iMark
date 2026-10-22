@@ -15,6 +15,7 @@
  */
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -94,7 +95,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  const service = await initExtensions({ appVersion: '0.1.0' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)

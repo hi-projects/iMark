@@ -66,7 +66,7 @@ import { api } from './api'
  * `file:///a#b.md` 会被当成「文件 a,锚点 b」。Windows 盘符的冒号保留原样,
  * 这是 file URL 里唯一允许不转义的冒号。
  */
-export function pathToUri(path: string): string {
+function pathToUri(path: string): string {
   const normalized = path.replace(/\\/g, '/')
   const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`
   const encoded = prefixed
@@ -77,7 +77,7 @@ export function pathToUri(path: string): string {
 }
 
 /** `file://` URI → 绝对路径;非 file URI 返回 null */
-export function pathFromUri(uri: string): string | null {
+function pathFromUri(uri: string): string | null {
   if (!uri.startsWith('file://')) return null
   let path: string
   try {
@@ -623,10 +623,6 @@ function handleMainMessage(message: MainToRendererMessage): void {
       return
     case 'editor.resync':
       resync(message.uri)
-      return
-    case 'editor.init':
-    case 'editor.documents':
-      // renderer 才是文档真身;main 回灌的旧快照一律不采用
       return
     default:
       return

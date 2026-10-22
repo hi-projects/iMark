@@ -19,5 +19,11 @@
       "@shared/*": ["../src/shared/*"]
     }
   },
-  "include": ["quick-edit/**/*.ts", "ai-for-edit/**/*.ts", "git-sync/**/*.ts", "agent/**/*.ts"]
+  "include": [
+    "quick-edit/**/*.ts",
+    "ai-for-edit/**/*.ts",
+    "git-sync/**/*.ts",
+    "agent/**/*.ts",
+    "claude-code/**/*.ts"
+  ]
 }

@@ -8,7 +8,7 @@
  *
  * 令牌按**注册表地址**分开存放(键里带地址),于是:
  *   - 换到一个新的自建服务端,不会把上一个服务端的令牌顺手带过去;
- *   - 换回来时,原来的登录还在 —— 这比「一改地址就清空」更符合直觉,
+ *   - 换回来时,之前登录的凭据还在 —— 这比「一改地址就清空」更符合直觉,
  *     因为用户改地址往往只是想看看另一台机器上有什么。
  */
 
@@ -48,10 +48,6 @@ export function registryKey(raw: string): string | null {
   if (!url.host) return null
   const path = url.pathname.replace(/\/+$/, '')
   return `${url.protocol}//${url.host}${path}`
-}
-
-export function isValidRegistry(raw: string): boolean {
-  return registryKey(raw) !== null
 }
 
 /** 当前注册表地址(已规范化);未配置或写错了都返回空串 */

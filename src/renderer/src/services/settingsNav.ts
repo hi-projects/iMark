@@ -9,9 +9,9 @@
 import { reactive } from 'vue'
 import { openSettings } from '../stores/app'
 
-/** 市场页内部的子导航:三个页签 + 列表页的搜索条件 */
+/** 市场页内部的子导航:四个页签 + 列表页的搜索条件 */
 export interface MarketNav {
-  tab: 'browse' | 'installed' | 'publish'
+  tab: 'browse' | 'installed' | 'hosts' | 'publish'
   /** 打开某个扩展的详情页(仅 browse 页签用);null = 显示列表 */
   detailId: string | null
   query: string

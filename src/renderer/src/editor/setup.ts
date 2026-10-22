@@ -112,7 +112,7 @@ export function buildExtensions(
     mathPreview(),
     lineMenu(),
     // 扩展的文本装饰随 state 走:切换标签后装饰还在,后台标签的偏移量也跟着变化映射。
-    // v2 里扩展代码只跑在独立的宿主进程,不能往渲染层注入 CM6 扩展 —— 装饰统一走
+    // 扩展代码只跑在独立的宿主进程,不能往渲染层注入 CM6 扩展 —— 装饰统一走
     // 主进程的 extension bridge(见 services/editorBridge.ts / extensionDecorations.ts)。
     ...extensionDecorationsExtension,
     keymap.of([

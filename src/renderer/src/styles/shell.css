@@ -14,7 +14,7 @@
 }
 
 /*
- * 侧栏拖动分界:视觉上是一条 1px 线(与原来的 border 同宽),命中区向两侧各扩
+ * 侧栏拖动分界:视觉上是一条 1px 线,命中区向两侧各扩
  * 4px —— 1px 的线太细,鼠标很难精确压中。侧栏自身不再画 border,避免双线。
  */
 .pane-resizer {
@@ -478,17 +478,11 @@ body.pane-resizing * {
   gap: 2px;
 }
 
-/* 插件图标组:插件状态条目 + render 层插件自画按钮的空槽 */
+/* 插件图标组:插件状态条目 */
 .status-bar .status-plugin-group {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-}
-
-/* render 层插件的空槽:里面装插件自己画的按钮(AI for Edit 等) */
-.status-bar .status-plugin-slot {
-  display: inline-flex;
-  align-items: center;
 }
 
 .status-bar button {

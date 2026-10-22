@@ -311,7 +311,7 @@ function sameTableSource(a: TableSpec, b: TableSpec): boolean {
  *
  * 这是 widget 的 `eq` 判据:一致时 CM 会整块复用旧 tile(连 updateDOM 都不调)。
  * 只有位置也完全相同,旧 DOM 里挂的 TableDomState 才和新模型等价 —— 少比一个
- * 位置就会把旧模型留在原地,之后提交单元格会写到错误的偏移上。
+ * 位置就会把过期的 DOM 状态留在原地,之后提交单元格会写到错误的偏移上。
  */
 function sameTableModel(a: TableSpec, b: TableSpec): boolean {
   if (a.from !== b.from || a.to !== b.to) return false
@@ -621,9 +621,14 @@ function autoFocus(state: TableDomState): void {
     if (head < model.protectFrom || head > model.protectTo) return
     const loc = locateCell(model, head)
     // 表格前后各有一个可用落点时优先用**前面**那个:它不依赖表格后面有没有空行
+    const docLength = view.state.doc.length
     let safe = -1
-    if (model.protectFrom > 0) safe = model.protectFrom - 1
-    else if (model.protectTo < view.state.doc.length) safe = model.protectTo + 1
+    if (model.protectFrom > 0) {
+      safe = walkOutOfTables(view, model.protectFrom - 1, -1, docLength)
+    }
+    if (safe < 0 && model.protectTo < docLength) {
+      safe = walkOutOfTables(view, model.protectTo + 1, 1, docLength)
+    }
     if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
     if (loc) startEdit(state, loc.row, loc.col)
   }
@@ -1441,7 +1446,7 @@ export class TableWidget extends WidgetType {
      * 正在输入的那一格会被整块抽走。
      *
      * 但位置变化**不等于换了一张表**:在表格上方打字时,整张表只是往后平移,
-     * 源码一字未改。以前这里一律拒绝,结果每敲一个字 CM 都要把整块表格 DOM
+     * 源码一字未改。如果位置不同就一律拒绝,每敲一个字 CM 都要把整块表格 DOM
      * (所有行/单元格/控件)重新造一遍 —— 表格越大,打字越卡。所以位置不同时
      * 再比一次内容:完全一致就是同一张表平移了,接受它并更新位置。
      * 内容不同才可能真的是别的表,仍然拒绝。
@@ -1768,6 +1773,38 @@ function tailLineAfterTable(
 }
 
 /**
+ * 从 `from` 出发沿 `dir` 走,直到停在所有渲染态表格的保护范围之外。
+ *
+ * 两张表中间只隔一条结构空行时,这条空行同时算进两张表的 protect 范围:
+ * 跨过 A 的 protectTo + 1 正好落进 B,只跨一张表会让光标在两张表之间
+ * 来回弹,渲染进程空转。这里按方向连续跨过整条相邻表格链,返回第一个
+ * 真正能停的位置;`-1` 表示那个方向已经到文档边界。
+ */
+function walkOutOfTables(
+  view: EditorView,
+  from: number,
+  dir: 1 | -1,
+  docLength: number
+): number {
+  let pos = from
+  // 每一步都严格朝一个方向移动,表格数量有限,循环必然结束
+  for (;;) {
+    if (pos < 0 || pos > docLength) return -1
+    let hit: TableSpec | null = null
+    for (const state of renderedTables) {
+      if (state.view !== view) continue
+      const model = state.model
+      if (pos >= model.protectFrom && pos <= model.protectTo) {
+        hit = model
+        break
+      }
+    }
+    if (!hit) return pos
+    pos = dir > 0 ? hit.protectTo + 1 : hit.protectFrom - 1
+  }
+}
+
+/**
  * 渲染态表格的光标护栏。
  *
  * [protectFrom, protectTo] 是整张表连同上下紧邻的结构空行(见 TableSpec):
@@ -1788,35 +1825,48 @@ export function keepCaretOutOfTables(view: EditorView, fromHead?: number): void 
   const head = sel.main.head
   const doc = view.state.doc
   for (const state of renderedTables) {
+    if (state.view !== view) continue
     // 刚插入的表格:autoFocus 正准备把焦点放进单元格,别在这里先把选区挪走
     if (state.autoFocusPending) continue
     const model = state.model
     if (head < model.protectFrom || head > model.protectTo) continue
-    const before = model.protectFrom > 0 ? model.protectFrom - 1 : -1
-    const after = model.protectTo < doc.length ? model.protectTo + 1 : -1
     /*
      * 往哪一侧挪,取决于光标**从哪边来**:
      *   - 从表格上方往下(方向键/回车后继续下移):送到表格后面,否则永远翻不过表格;
      *   - 从表格下方往上:送到表格前面;
-     *   - 其它情况(比如落在隐藏源码中间):维持旧的向后规则。
+     *   - 其它情况(比如落在隐藏源码中间):维持向后规则。
      * 只看 head 是分不出上下的 —— 表格首行起点既可能是"从上面下来",
      * 也可能是"从下面上去"的落点。
      */
     const fromAbove = fromHead !== undefined && fromHead < model.protectFrom
     const fromBelow = fromHead !== undefined && fromHead > model.protectTo
     const forward = fromBelow ? false : fromAbove ? true : head > model.protectFrom
-    if (forward && fromAbove && after < 0) {
-      // 表格在文末,下面一行都没有:补出结构空行 + 正文行,光标落到正文行
-      const tail = tailLineAfterTable(model, doc.length)
+    // 先朝来向走;相邻表格共用的结构空行由 walkOutOfTables 连续跨过
+    const primary = forward ? model.protectTo + 1 : model.protectFrom - 1
+    let safe = walkOutOfTables(view, primary, forward ? 1 : -1, doc.length)
+    if (safe < 0 && forward && fromAbove) {
+      /*
+       * 往下翻但表格(或相邻表格链)贴着文末:补出结构空行 + 正文行,
+       * 光标落到正文行。补几行要看链的**最后一张** —— 两张表共用的结构
+       * 空行记在前一张表的 protectTo 里,拿当前这张表判断会少补一行。
+       */
+      let tailModel = model
+      for (const other of renderedTables) {
+        if (other.view === view && other.model.protectTo > tailModel.protectTo) {
+          tailModel = other.model
+        }
+      }
+      const tail = tailLineAfterTable(tailModel, doc.length)
       view.dispatch({
         changes: { from: doc.length, insert: tail.insert },
         selection: { anchor: tail.anchor }
       })
       return
     }
-    const primary = forward ? after : before
-    const fallback = forward ? before : after
-    const safe = primary >= 0 ? primary : fallback
+    if (safe < 0) {
+      const secondary = forward ? model.protectFrom - 1 : model.protectTo + 1
+      safe = walkOutOfTables(view, secondary, forward ? -1 : 1, doc.length)
+    }
     if (safe >= 0 && safe !== head) view.dispatch({ selection: { anchor: safe } })
     return
   }
@@ -1878,9 +1928,14 @@ export function focusRenderedTableAtPosition(view: EditorView, position: number)
     if (position < model.protectFrom || position > model.protectTo) continue
     if (!state.wrap.isConnected) continue
     // 先把 CM 选区挪出隐藏源码,再让单元格接管焦点(顺序与 autoFocus 一致)
+    const docLength = view.state.doc.length
     let safe = -1
-    if (model.protectFrom > 0) safe = model.protectFrom - 1
-    else if (model.protectTo < view.state.doc.length) safe = model.protectTo + 1
+    if (model.protectFrom > 0) {
+      safe = walkOutOfTables(view, model.protectFrom - 1, -1, docLength)
+    }
+    if (safe < 0 && model.protectTo < docLength) {
+      safe = walkOutOfTables(view, model.protectTo + 1, 1, docLength)
+    }
     if (safe >= 0) view.dispatch({ selection: { anchor: safe } })
     const loc = locateCell(model, position)
     if (loc) startEdit(state, loc.row, loc.col)
@@ -1905,6 +1960,7 @@ export function caretOutsideRenderedTable(
 ): { anchor: number; insert: string } | null {
   const doc = view.state.doc
   for (const state of renderedTables) {
+    if (state.view !== view) continue
     const model = state.model
     if (pos < model.protectFrom || pos > model.protectTo) continue
     const before = model.protectFrom > 0 ? model.protectFrom - 1 : -1
@@ -1913,11 +1969,16 @@ export function caretOutsideRenderedTable(
     const rect = state.table.getBoundingClientRect()
     const preferBefore = clientY <= rect.top
     if (!preferBefore) {
-      if (after >= 0) return { anchor: after, insert: '' }
+      const safe = after >= 0 ? walkOutOfTables(view, after, 1, doc.length) : -1
+      if (safe >= 0) return { anchor: safe, insert: '' }
       return tailLineAfterTable(model, doc.length)
     }
-    if (before >= 0) return { anchor: before, insert: '' }
-    if (after >= 0) return { anchor: after, insert: '' }
+    if (before >= 0) {
+      const safe = walkOutOfTables(view, before, -1, doc.length)
+      if (safe >= 0) return { anchor: safe, insert: '' }
+    }
+    const safe = after >= 0 ? walkOutOfTables(view, after, 1, doc.length) : -1
+    if (safe >= 0) return { anchor: safe, insert: '' }
   }
   return null
 }

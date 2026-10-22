@@ -157,11 +157,11 @@ onMounted(async () => {
   try {
     const settings = await api.getSettings()
     applyTheme(settings.theme)
-    initOutlineVisible(settings.outline ?? true)
-    initExplorerVisible(settings.explorer ?? true)
-    initSidebarWidths(settings.explorerWidth ?? 240, settings.outlineWidth ?? 240)
+    initOutlineVisible(settings.outline)
+    initExplorerVisible(settings.explorer)
+    initSidebarWidths(settings.explorerWidth, settings.outlineWidth)
     initVaultList(settings.vaults ?? [])
-    initSkipVaultPicker(settings.skipVaultPicker ?? false)
+    initSkipVaultPicker(settings.skipVaultPicker)
     // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
     initEditorSettings(settings)
 

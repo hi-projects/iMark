@@ -16,6 +16,7 @@
  */
 
 import { app, dialog, protocol } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents

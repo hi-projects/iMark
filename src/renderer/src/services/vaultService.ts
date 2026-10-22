@@ -43,7 +43,7 @@ const EDITABLE_EXTS = new Set(['md', 'markdown', 'mdown', 'txt'])
 /**
  * 补全扩展名:名字没带扩展名、或带了个仓库树不认的扩展名,一律按 .md 处理。
  *
- * 判据是**扩展名**而不是"有没有点":把「笔记.md」改成「笔记 v1.2」时,那个点
+ * 判据是**扩展名**而不是"有没有点":把「笔记.md」改成「笔记 2.0」时,那个点
  * 属于名字不属于扩展名,按"有没有点"判会让文件直接消失在文件树里。
  */
 export function withExtension(name: string): string {
@@ -219,12 +219,6 @@ export async function refreshVault(): Promise<void> {
   } catch (err) {
     console.error('[iMark] 刷新仓库失败', err)
   }
-}
-
-/** 菜单/空状态入口:选择文件夹 → 加载(切换前由调用方负责脏确认) */
-export async function openVaultDialog(): Promise<void> {
-  const dir = await api.selectVaultDialog()
-  if (dir) await loadVault(dir)
 }
 
 export async function createFile(parentPath: string, name: string): Promise<VaultNode | null> {

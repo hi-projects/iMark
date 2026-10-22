@@ -1156,17 +1156,11 @@ export class ExtensionHostRuntime {
       case 'deactivate':
         void this.deactivate(message.extensionId, message.removeData)
         return
-      case 'unload':
-        void this.deactivate(message.extensionId, true)
-        return
       case 'command.execute':
         void this.executeLocalCommand(message.requestId, message.command, message.args)
         return
       case 'configuration.changed':
         this.applyConfiguration(message.extensionId, message.values)
-        return
-      case 'context.changed':
-        // 上下文键目前只用于 renderer 的 when 子句;宿主 API 不暴露它们
         return
       case 'secrets.changed': {
         // 外部改动(设置页填写/清空)也要让 onDidChange 收到;扩展自己 store/delete
@@ -1228,8 +1222,6 @@ export class ExtensionHostRuntime {
           message.panel,
           message.token ?? ''
         )
-        return
-      case 'ping':
         return
       case 'shutdown':
         void this.shutdown()
@@ -1372,17 +1364,22 @@ export class ExtensionHostRuntime {
 
   private async doActivate(ext: RuntimeExtension): Promise<void> {
     try {
+      // 先清空，避免激活失败时同宿主里的依赖方读到上一次激活留下的旧对象
+      ext.exports = undefined
       await this.loadModule(ext)
       const context = this.createContext(ext)
       ext.context = context
       const activate = ext.module?.activate
-      if (typeof activate === 'function') {
-        await als.run(ext, () => activate.call(ext.module, context))
-      }
+      const exported =
+        typeof activate === 'function'
+          ? await als.run(ext, () => activate.call(ext.module, context))
+          : undefined
       ext.activated = true
+      ext.exports = exported
       this.send({ kind: 'activated', extensionId: ext.id, ok: true })
     } catch (err) {
       ext.activated = false
+      ext.exports = undefined
       this.cleanupExtension(ext, false)
       this.clearModuleCache(ext)
       const dto = errorDto(err)
@@ -1430,10 +1427,10 @@ export class ExtensionHostRuntime {
       this.log(id, 'warn', `deactivate 抛错：${String(err)}`)
     }
     ext.activated = false
+    ext.exports = undefined
     this.cleanupExtension(ext, removeData)
     if (removeData) {
       this.clearModuleCache(ext)
-      ext.exports = undefined
     }
     this.send({ kind: 'deactivated', extensionId: id })
   }
@@ -2070,7 +2067,7 @@ export class ExtensionHostRuntime {
     }
 
     return {
-      version: '0.1.0',
+      version: env.appVersion,
       commands,
       window: windowApi,
       workspace: workspaceApi,

@@ -1,5 +1,5 @@
 /**
- * 验收:扩展模型核心(阶段二)。
+ * 验收:扩展模型核心。
  *
  * 不碰渲染层、不开窗口:这里直接驱动 `ExtensionService`，盯的是模型本身:
  *
@@ -16,6 +16,7 @@
  */
 
 import { app } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dataRoot } from '../src/main/dataDir'
@@ -60,7 +61,7 @@ function manifestOf(
     version: '1.0.0',
     displayName,
     description: `${displayName} fixture`,
-    engines: { imark: '^0.1.0' },
+    engines: { imark: '^1.0.0' },
     main: './main.js',
     activationEvents,
     contributes: {
@@ -195,7 +196,7 @@ async function main(): Promise<void> {
   await writeExtension(BAD, BAD_CODE)
   await writeExtension(CRASHY, CRASHY_CODE)
 
-  const service = await initExtensions({ appVersion: '0.1.0-test' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   try {
     console.log('\n[1] 扫描与初始状态')
     const views = await service.getExtensionViewsWithSecrets()

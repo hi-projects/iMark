@@ -6,7 +6,6 @@ import {
   handleSaveDone,
   setCurrentDocPath,
   setDocDirty,
-  setEditorPresent,
   setWindowTitle,
   setWindowView
 } from './window'
@@ -116,12 +115,7 @@ export function registerIpc(): void {
   })
 
   ipcMain.on(IPC.DocDirty, (_e, value: unknown) => {
-    // 兼容旧的布尔载荷,同时接受 { dirty, names }:关闭提示要能列出
-    // 所有有未保存改动的标签页,而不只是当前这一份
-    if (typeof value === 'boolean') {
-      setDocDirty(value)
-      return
-    }
+    // names 让关闭提示能列出所有有未保存改动的标签页,而不只是当前这一份
     const o = value as { dirty?: unknown; names?: unknown } | null
     const names = Array.isArray(o?.names)
       ? o.names.filter((n): n is string => typeof n === 'string' && n.length > 0)
@@ -133,18 +127,8 @@ export function registerIpc(): void {
     setCurrentDocPath(typeof p === 'string' ? p : null)
   })
 
-  ipcMain.on(IPC.EditorPresence, (_e, value: unknown) => {
-    setEditorPresent(Boolean(value))
-  })
-
   ipcMain.on(IPC.SaveDone, (_e, o: { ok: boolean }) => {
     handleSaveDone(o.ok)
-  })
-
-  // 一次真的写盘完成了(手动保存、自动保存、另存为都走这儿)。
-  // 扩展侧的文档事件由渲染层的 editor bridge 直接发 `editor.documentSaved`。
-  ipcMain.on(IPC.DocSaved, () => {
-    /* 保留通道:主进程无需额外动作 */
   })
 
   // ---------- 仓库 ----------
@@ -179,7 +163,7 @@ export function registerIpc(): void {
     return win ? showConfirmDelete(win, o.name, o.isDir) : false
   })
 
-  // ---------- 扩展(v2) ----------
+  // ---------- 扩展 ----------
   registerExtensionIpc()
 
   // ---------- 插件市场 ----------

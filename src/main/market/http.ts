@@ -39,7 +39,7 @@ export class MarketError extends Error {
 
 /** JSON 请求的默认超时;发布另给一个长超时(8 MiB 要慢慢传) */
 const JSON_TIMEOUT = 5000
-export const PUBLISH_TIMEOUT = 60_000
+const PUBLISH_TIMEOUT = 60_000
 
 /**
  * 是否真的在线。`net.isOnline()` 只反映「有没有网络接口」,

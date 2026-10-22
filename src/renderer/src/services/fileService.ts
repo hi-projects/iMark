@@ -246,10 +246,6 @@ export async function writeTabInPlace(tabId: string, path: string): Promise<void
   // 取标签自己的基准,而不是当前标签的镜像 —— 自动保存/关闭流程可能正在后台保存别人
   const before = tab.savedContent
   await api.writeFile(path, toEol(text, tab.eol))
-  // 落盘成功就报一声(插件的 document:save 钩子挂在这条上)。带着**刚写的那份
-  // 文档的路径**:下面那个早退分支说明用户已经切走了,不带路径的话插件会以为
-  // 是刚打开的那份被保存了。
-  api.notifyDocSaved(path)
   // markTabSaved 会在写盘这一小会儿里用户又改过/切走时保留脏标记
   // (只有内容仍是刚写的那份才清);两个判断都以目标标签为准
   markTabSaved(tabId, text)
@@ -257,13 +253,6 @@ export async function writeTabInPlace(tabId: string, path: string): Promise<void
   // 按它清理,而不是按编辑器里此刻的内容。先更新保存状态再清理 ——
   // 回收资产要跟回收站打交道,不该拖着脏标记不放
   await trashRemovedImages(path, before, text)
-}
-
-/** 兼容旧调用点:写回当前标签 */
-export async function writeCurrentFileInPlace(path: string): Promise<void> {
-  const tab = activeTab()
-  if (!tab) throw new Error('编辑器未就绪')
-  await writeTabInPlace(tab.id, path)
 }
 
 /** 保存指定标签;未落过盘就走「另存为」 */
@@ -319,8 +308,6 @@ export async function saveTabAs(tabId: string): Promise<boolean> {
     notifyError('保存', err)
     return false
   }
-  // 另存为也是一次真的写盘,插件同样该收到 document:save(路径给的是新路径)
-  api.notifyDocSaved(target)
   setTabPath(tab.id, target, 'LF')
   markTabSaved(tab.id, text)
   // 旧文件如果还在原地,它自己的正文仍可能引用着这些图片 —— 主进程会扫描同目录
@@ -418,18 +405,4 @@ export async function closeAllTabsForSwitch(): Promise<boolean> {
   }
   clearTabs()
   return true
-}
-
-// ---------- 外部改动 ----------
-
-/** 插件改了某个文件:如果它正开在某个标签里,重新读盘替换该标签(不抢焦点) */
-export async function reloadFileInTab(path: string): Promise<void> {
-  const tab = tabByPath(path)
-  if (!tab) return
-  try {
-    const { content, eol } = await api.readFile(path)
-    replaceTabDocument(tab.id, content, eol)
-  } catch (err) {
-    notifyError('重新载入', err)
-  }
 }

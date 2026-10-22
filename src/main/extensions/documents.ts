@@ -27,7 +27,7 @@ function detectEol(text: string): 'lf' | 'crlf' {
 }
 
 /** 把一组“旧坐标”的修改套到文本上；任何越界都返回 null（由调用方要求全量重同步） */
-export function applyTextChanges(text: string, changes: readonly TextChangeDto[]): string | null {
+function applyTextChanges(text: string, changes: readonly TextChangeDto[]): string | null {
   const sorted = [...changes].sort((a, b) => b.from - a.from)
   let out = text
   let upper = Number.POSITIVE_INFINITY
@@ -100,7 +100,7 @@ export class DocumentRegistry {
     } else if (change.changes.length > 0) {
       const next = applyTextChanges(current.text, change.changes)
       if (next === null) {
-        // 镜像不可信：保留旧版本，等 documents.resync 或下一次全量变化覆盖。
+        // 镜像不可信：保留现有内容，等 documents.resync 或下一次全量变化覆盖。
         // 这里不抛错：一次坏增量不该中断整条变更广播。
         return null
       }

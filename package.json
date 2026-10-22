@@ -1,6 +1,6 @@
 {
   "name": "imarkdown",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "iMark — 基于 CodeMirror 6 的所见即所得 Markdown 编辑器",
   "main": "out/main/index.js",
   "private": true,
@@ -17,6 +17,7 @@
     "typecheck:plugins": "tsc --noEmit -p plugins-src/tsconfig.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:plugins",
     "market": "node server/index.mjs",
+    "predist": "npm run plugins:build",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win nsis",
     "dist:linux": "electron-vite build && electron-builder --linux",

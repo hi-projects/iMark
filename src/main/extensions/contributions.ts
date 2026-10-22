@@ -49,7 +49,7 @@ export interface RuntimeCommandRegistration {
   title?: string
 }
 
-export interface ContributionsInput {
+interface ContributionsInput {
   entries: Iterable<ExtensionEntry>
   context: ExtensionContextKeys
   hostGroups: ExtensionHostGroupView[]
@@ -280,11 +280,4 @@ export function buildContributions(input: ContributionsInput): ExtensionContribu
     context: { ...input.context },
     hostGroups
   }
-}
-
-export function extensionNameOf(entries: Iterable<ExtensionEntry>, id: string): string {
-  for (const entry of entries) {
-    if (entry.id === id) return entry.descriptor.displayName
-  }
-  return id
 }

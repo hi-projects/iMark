@@ -3,8 +3,7 @@
  * 关闭 / 定时保存(afterDelay)/ 切换焦点时(onFocusChange)/ 切换窗口时(onWindowChange)。
  *
  * 重点:
- * - 上一版的实时保存 / 定时保存配置能迁到新模型(afterDelay,延迟 1 秒 / 原间隔);
- * - 定时模式是「停止输入 N 秒后」写盘,1 秒档就是原来的实时保存;
+ * - 定时模式是「停止输入 N 秒后」写盘,1 秒档适合边写边落盘;
  * - 焦点与窗口模式只在对应事件发生时写盘,平时不碰磁盘;
  * - 没有改动不写盘;关闭后输入不再落盘。
  *
@@ -15,6 +14,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   const settingsFile = join(ud, 'settings.json')
   await mkdir(vault, { recursive: true })
   await writeFile(note, '起始内容\n', 'utf8')
-  // 故意写上一版的配置:这一轮要先证明它能迁到新模型(定时 30 秒)
+  // 定时保存,30 秒
   await writeFile(
     settingsFile,
     JSON.stringify(
@@ -65,9 +65,8 @@ async function main(): Promise<void> {
         skipVaultPicker: true,
         lastFile: note,
         marketUrl: '',
-        autoSave: true,
-        autoSaveRealtime: false,
-        autoSaveInterval: 30
+        autoSaveMode: 'afterDelay',
+        autoSaveDelay: 30
       },
       null,
       2
@@ -77,15 +76,11 @@ async function main(): Promise<void> {
 
   const settings = await loadSettings()
   check(
-    '旧配置迁移为「定时保存 · 30 秒」',
+    '读回「定时保存 · 30 秒」',
     settings.autoSaveMode === 'afterDelay' && settings.autoSaveDelay === 30,
     JSON.stringify({ mode: settings.autoSaveMode, delay: settings.autoSaveDelay })
   )
-  check(
-    '旧字段不再留在内存设置里',
-    !('autoSave' in settings) && !('autoSaveRealtime' in settings) && !('autoSaveInterval' in settings)
-  )
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
 
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
@@ -220,7 +215,7 @@ async function main(): Promise<void> {
   const editorReady = await waitFor(`document.querySelector('.cm-content')?.textContent?.includes('起始内容')`, 10000)
   check('窗口进入编辑器并载入起始文档', editorReady)
 
-  console.log('\n[A] 设置面板:四种保存方式齐全,旧配置落在「定时保存」')
+  console.log('\n[A] 设置面板:四种保存方式齐全,写入的配置落在「定时保存」')
   await openEditorSettings()
   const modeState = await evalJs<{ labels: string[]; timedActive: boolean; delayRow: boolean }>(`
     (() => {
@@ -236,20 +231,15 @@ async function main(): Promise<void> {
   for (const label of ['关闭', '定时保存', '切换焦点时', '切换窗口时']) {
     check(`有「${label}」这一项`, modeState.labels.includes(label), JSON.stringify(modeState.labels))
   }
-  check('迁移后的配置选中「定时保存」', modeState.timedActive, JSON.stringify(modeState))
+  check('写入的配置选中「定时保存」', modeState.timedActive, JSON.stringify(modeState))
   check('定时模式显示保存延迟', modeState.delayRow, JSON.stringify(modeState))
 
-  // 切到 1 秒档:这就是原来的实时保存,也方便后面的断言快速看到结果
+  // 切到 1 秒档:最快的一档,方便后面的断言快速看到结果
   check('能点中 1 秒档', await clickMode('1 秒'))
   const oneSecond = await readSettings()
   check(
     '1 秒档已落进 settings.json',
     oneSecond.autoSaveMode === 'afterDelay' && oneSecond.autoSaveDelay === 1,
-    JSON.stringify(oneSecond)
-  )
-  check(
-    '旧字段没有写回磁盘',
-    !('autoSave' in oneSecond) && !('autoSaveRealtime' in oneSecond) && !('autoSaveInterval' in oneSecond),
     JSON.stringify(oneSecond)
   )
   await closeSettings()

@@ -5,11 +5,12 @@
  * 只用白名单命令，且永远不传 bypassPermissions。
  */
 
-import type { AgentIsolation, AgentMode } from '../core/types'
+import type { AgentMode } from '@shared/agentProvider'
+import type { ClaudeIsolation } from './config'
 
 export interface ClaudeArgsInput {
   mode: AgentMode
-  isolation: AgentIsolation
+  isolation: ClaudeIsolation
   cwd: string
   sessionId?: string
   resumeId?: string

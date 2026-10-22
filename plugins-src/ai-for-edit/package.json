@@ -1,12 +1,12 @@
 {
   "name": "ai-for-edit",
   "publisher": "imark",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "displayName": "AI for Edit",
   "description": "用你配置的 AI 服务美化当前文档、在空文档里按描述生成内容，或结合文档与本地文本 / PDF 参考文件对话（扫描页可转为图片）",
   "author": "iMark",
   "engines": {
-    "imark": "^0.1.0"
+    "imark": "^1.0.0"
   },
   "main": "./main.js",
   "activationEvents": [

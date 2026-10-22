@@ -4,7 +4,7 @@
  * 这是一个刻意保持很小的扩展:清单声明菜单条目与对话框,命令处理器只把行数/列数
  * 变成一段 Markdown 文本,再通过 `TextEditor.edit` 写进当前文档。
  *
- * 插入点规则与宿主旧的 `insertBlockBelow` 保持一致:
+ * 插入点规则:
  * - 默认落在光标所在行的下一行;
  * - 光标停在表格里时,落到整张表的下方(在表格中间插内容会把表写坏);
  * - 下一行本来就是空行时,不再补第二个空行;
@@ -52,7 +52,7 @@ function buildTable(rows: number, cols: number): { text: string; cursorOffset: n
   return { text: lines.join('\n'), cursorOffset: 2 }
 }
 
-/** 与宿主旧实现一致:分隔线/Setext 下划线这种行后面需要空行 */
+/** 分隔线/Setext 下划线这种行后面需要空行 */
 function eatsLineAbove(text: string): boolean {
   return /^[-=]+\s*$/.test(text.split('\n', 1)[0] ?? '')
 }

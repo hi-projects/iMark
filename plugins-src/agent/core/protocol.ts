@@ -32,15 +32,8 @@ export const MAX_PREVIEW_IMAGE = 8 * 1024 * 1024
 export const MAX_DOCUMENT_SNAPSHOT = 2 * 1024 * 1024
 
 export interface SafeConfig {
-  provider: string
   mode: AgentMode
-  model: string
-  isolation: 'safe' | 'restricted' | 'off'
-  timeoutSec: number
-  maxTurns: number
   attachmentMaxMB: number
-  commandConfigured: boolean
-  apiKeyConfigured: boolean
 }
 
 export interface ProviderView {

@@ -86,7 +86,8 @@ export function associationWrites(
   // 3) 应用身份:键名跟着**真实 exe** 走(打包 = iMark.exe,开发 = electron.exe),
   //    显示名由 FriendlyAppName 覆盖。开发模式下这是在 electron.exe 这个共有键上
   //    写一个名字 —— 只影响本机,且只有 iMark 一个开发应用会用到 .md 关联
-  const appExe = basename(exePath)
+  // 路径可能来自 Windows,也可能来自非 Windows 上的模拟/验收 —— 两种分隔符都切
+  const appExe = exePath.replace(/^.*[\\/]/, '')
   writes.push(
     { key: `${CLASSES}\\Applications\\${appExe}`, name: 'FriendlyAppName', data: APP_NAME },
     { key: `${CLASSES}\\Applications\\${appExe}\\DefaultIcon`, name: null, data: icon },

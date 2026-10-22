@@ -1,23 +1,23 @@
 /**
  * 应用内置的「兜底」扩展包。
  *
- * 官方扩展都随应用带一份 v2 包(由 `npm run plugins:build` 生成):
+ * 官方扩展都随应用带一份包(由 `npm run plugins:build` 生成):
  *   - quick-edit:开箱即用(行首「+」菜单);
  *   - git-sync / ai-for-edit:要填仓库地址或 API 密钥才有意义,装上但默认关着;
- *   - agent:要配置本机 Agent CLI(首个 provider 为 Claude Code),装上但默认关着。
+ *   - agent(Agent Core)与 claude-code(Claude Code):要配置本机 CLI,装上但默认关着。
+ *     Claude Code 依赖 Agent Core,所以 Core 必须排在前面,安装依赖检查才能通过。
  *
  * 内置包走的是与市场下载**完全相同**的校验与安装路径
  * (`ExtensionService.installPackage`)。这里没有任何「因为是内置的所以跳过校验」
  * 的近道 —— 内置包坏了,用户看到的现象与下载到的包坏掉一模一样。
- *
- * 旧数据的迁移逻辑已经整个删掉:用户明确要求 v1 配置/密钥/安装记录直接丢弃,
- * 三款官方扩展按全新安装处理(见 extensions/legacy.ts)。
  */
 
-import { extensionIdOf, isNewerVersion, type ExtensionManifest } from '@shared/extensionPackage'
+import { isNewerVersion } from '@shared/extensionPackage'
 import type { ExtensionService } from '../extensions/service'
+import { peekIdentity } from './verify'
 import agentPackage from './builtin/imark.agent.imkpkg.json?raw'
 import aiForEditPackage from './builtin/imark.ai-for-edit.imkpkg.json?raw'
+import claudeCodePackage from './builtin/imark.claude-code.imkpkg.json?raw'
 import gitSyncPackage from './builtin/imark.git-sync.imkpkg.json?raw'
 import quickEditPackage from './builtin/imark.quick-edit.imkpkg.json?raw'
 
@@ -42,8 +42,10 @@ const BUNDLED: BundledPackage[] = [
   // git-sync 要填仓库地址与令牌、AI 要填服务地址与密钥,装上但默认关着
   { raw: gitSyncPackage, enable: false },
   { raw: aiForEditPackage, enable: false },
-  // Agent 需要本机 CLI 与权限选择,装上但默认关着
-  { raw: agentPackage, enable: false }
+  // Agent Core 与 Claude Code 需要本机 CLI 与权限选择,装上但默认关着;
+  // Core 在前,保证 provider 安装时的依赖检查能通过
+  { raw: agentPackage, enable: false },
+  { raw: claudeCodePackage, enable: false }
 ]
 
 interface ParsedBundle {
@@ -55,15 +57,8 @@ interface ParsedBundle {
 
 function peek(raw: string): ParsedBundle | null {
   try {
-    const manifest = (JSON.parse(raw) as { manifest?: ExtensionManifest }).manifest
-    if (!manifest || typeof manifest.publisher !== 'string' || typeof manifest.name !== 'string') {
-      return null
-    }
-    return {
-      raw,
-      id: extensionIdOf(manifest),
-      version: typeof manifest.version === 'string' ? manifest.version : ''
-    }
+    const identity = peekIdentity(JSON.parse(raw))
+    return identity ? { raw, ...identity } : null
   } catch {
     // 包本身坏了:交给下面安装时的校验去报错,这里只是读不了 id 而已
     return null

@@ -9,7 +9,7 @@
  * 与 webview 的协议（`webview/shim.ts` 那一侧）：
  *   config（扩展 → 页面）   配置快照；密钥不在其中
  *   doc（扩展 → 页面）      活动文档快照：key/文件名/版本/正文/光标
- *   legacy（页面 → 扩展）   旧 render 层的单向通道：ai.chat / ai.beautify / …
+ *   renderApi（页面 → 扩展） 页面的单向通道：ai.chat / ai.beautify / …
  *   request/response        markdown.render 与 doc.applyEdits 的请求/应答
  *   chat.open / close       小人点击打开对话 / 对话面板要求关闭
  *
@@ -435,8 +435,8 @@ class AiForEditExtension {
     void this.chatPanel.webview.postMessage(message)
   }
 
-  private postLegacy(channel: string, data: unknown): void {
-    this.postToChat({ type: 'legacy', channel, data })
+  private postRenderMessage(channel: string, data: unknown): void {
+    this.postToChat({ type: 'renderApi', channel, data })
   }
 
   // ---------- webview 消息 ----------
@@ -446,10 +446,10 @@ class AiForEditExtension {
     const message = raw as Record<string, unknown>
     const type = message.type
 
-    if (type === 'legacy') {
+    if (type === 'renderApi') {
       const channel = typeof message.channel === 'string' ? message.channel : ''
       if (!channel) return
-      await this.onLegacy(channel, message.data)
+      await this.onRenderMessage(channel, message.data)
       return
     }
     if (type === 'request') {
@@ -539,8 +539,8 @@ class AiForEditExtension {
     return { version: document.version }
   }
 
-  /** 旧 render 层的单向通道；形状与 v1 的 render.onMessage 保持一致 */
-  private async onLegacy(channel: string, data: unknown): Promise<void> {
+  /** webview 的单向消息通道 */
+  private async onRenderMessage(channel: string, data: unknown): Promise<void> {
     const payload = (data ?? {}) as Record<string, unknown>
     const id = typeof payload.id === 'string' ? payload.id : ''
 
@@ -644,7 +644,7 @@ class AiForEditExtension {
   /**
    * 行首「+」菜单的生成动作。
    *
-   * 空文档：打开对话面板，由用户在预览里确认后整篇写入（与 v1 一致）。
+   * 空文档：打开对话面板，由用户在预览里确认后整篇写入。
    * 非空文档：直接生成并插入到光标行 / 菜单行下方，不进预览 —— 这时写入是
    * 用户点「AI 生成内容」时就已经预期的事，而且只追加、不覆盖原文。
    */
@@ -674,7 +674,7 @@ class AiForEditExtension {
 
     if (editor.document.getText().trim() === '') {
       this.openChat()
-      this.postLegacy('preview.open', { mode: 'generate', prompt, auto: true })
+      this.postRenderMessage('preview.open', { mode: 'generate', prompt, auto: true })
       this.report({ status: 'idle', message: '已打开生成对话，确认后才会写入文档' })
       return
     }
@@ -1046,14 +1046,14 @@ class AiForEditExtension {
     if (!this.chatPanel) return
     const data = { id, ...payload }
     if (jsonLength(data) > MAX_MESSAGE_CHARS) {
-      this.postLegacy('ai.reply', {
+      this.postRenderMessage('ai.reply', {
         id,
         ok: false,
         message: '结果太大，无法在预览窗口中显示'
       })
       return
     }
-    this.postLegacy('ai.reply', data)
+    this.postRenderMessage('ai.reply', data)
   }
 
   private cancelAi(id: string): void {
@@ -1280,7 +1280,7 @@ class AiForEditExtension {
 // ---------- 插入 ----------
 
 /**
- * 在指定行的下方插入一个块级内容（与宿主旧 `insertBlockBelow` 同一套规则）：
+ * 在指定行的下方插入一个块级内容：
  *
  * - 默认落在光标所在行的下一行；
  * - 光标停在表格里时，落到整张表的下方（在表格中间插内容会把表写坏）；
@@ -1324,7 +1324,7 @@ async function insertBlockBelow(
   )
 }
 
-/** 与宿主旧实现一致：分隔线 / Setext 下划线这种行后面需要空行 */
+/** 分隔线 / Setext 下划线这种行后面需要空行 */
 function eatsLineAbove(text: string): boolean {
   return /^[-=]+\s*$/.test(text.split('\n', 1)[0] ?? '')
 }

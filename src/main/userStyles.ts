@@ -73,11 +73,10 @@ const MAX_REARM = 10
 const LIVENESS_INTERVAL = 4000
 
 /**
- * 样式目录:数据根下的 `css/`,正常运行时就是 `~/.imark/css`。
+ * 样式目录:数据根下的 `css/`(见 main/dataDir.ts)。
  *
- * 挂数据根而不是各自拼家目录,好处有三条:路径只有一个出处(见 main/dataDir.ts);
- * 与插件、设置、密钥在同一个可备份的目录里;验收里跟着 `--user-data-dir` 一起被隔离
- * (以前它不隔离,harness 只能去改 `app.getPath('home')` 来躲开用户的真实目录)。
+ * 挂数据根而不是各自拼家目录,好处有三条:路径只有一个出处;
+ * 与插件、设置、密钥在同一个可备份的目录里;验收里跟着 `--user-data-dir` 一起被隔离。
  */
 export function userStylesDir(): string {
   return join(dataRoot(), 'css')

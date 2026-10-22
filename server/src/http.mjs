@@ -186,10 +186,7 @@ export function createRouter(opts = {}) {
           sendJson(res, 500, { error: { code: 'internal', message: '服务端内部错误' } })
         }
       }
-    },
-
-    /** 拉取某条路由的请求体上限(默认值) */
-    limitOf: (method, pathname) => match(method, pathname)?.route.limit ?? DEFAULT_BODY_LIMIT
+    }
   }
 }
 
@@ -199,13 +196,4 @@ export function intParam(query, name, fallback, min, max) {
   const n = raw === null ? NaN : Number.parseInt(raw, 10)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, n))
-}
-
-export function requireString(obj, key, { max = 200, min = 1 } = {}) {
-  const value = obj?.[key]
-  if (typeof value !== 'string') throw new HttpError(400, `${key} 必须是字符串`, 'bad_field')
-  const trimmed = value.trim()
-  if (trimmed.length < min) throw new HttpError(400, `${key} 不能为空`, 'bad_field')
-  if (trimmed.length > max) throw new HttpError(400, `${key} 太长(上限 ${max} 字符)`, 'bad_field')
-  return trimmed
 }

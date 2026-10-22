@@ -1,5 +1,5 @@
 /**
- * AI for Edit（v2 扩展模型）端到端验收。
+ * AI for Edit 扩展端到端验收。
  *
  * 这条链路比 quick-edit 多两个边界：对话界面跑在跨源 sandbox iframe 里，AI 请求
  * 跑在扩展宿主进程里。所以这里既不看「render 层有没有注入」这种实现细节，也不
@@ -11,7 +11,7 @@
  *   - 最后读磁盘上的 .md，确认只有用户点「确认」后才写回。
  *
  * 覆盖：
- *   1 v2 内置包安装、清单贡献点、onStartupFinished 激活、默认小人
+ *   1 内置包安装、清单贡献点、onStartupFinished 激活、默认小人
  *   2 状态栏入口打开 chat webview；欢迎语、文档关联、密钥不进页面
  *   3 对话：带当前文档上下文、多轮历史
  *   4 多地址轮换、测试连接（全局 / 单地址）、targetResults
@@ -52,7 +52,7 @@ import { setSecret } from '../src/main/secrets'
 
 const REPO = join(__dirname, '..', '..')
 const EXT_ID = 'imark.ai-for-edit'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 const API_KEY = 'test-key-123'
 const CMD_OPEN_CHAT = 'imark.ai-for-edit.openChat'
 const CMD_TEST_CONNECTION = 'imark.ai-for-edit.testConnection'
@@ -216,8 +216,8 @@ async function main(): Promise<void> {
           [EXT_ID]: {
             enabled: true,
             config: {
-              endpoints: [{ id: 'e1', url: openaiUrl, model: 'mock-model' }],
-              timeoutSec: 5
+              [`${EXT_ID}.endpoints`]: [{ id: 'e1', url: openaiUrl, model: 'mock-model' }],
+              [`${EXT_ID}.timeoutSec`]: 5
             }
           }
         }
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  // 装内置的 v2 包：与市场安装走同一条校验/落盘路径
+  // 装内置包：与市场安装走同一条校验/落盘路径
   const envelope = JSON.parse(
     await readFile(join(REPO, 'src/main/market/builtin/imark.ai-for-edit.imkpkg.json'), 'utf8')
   ) as unknown
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     source: 'bundled',
     appVersion: APP_VERSION
   })
-  check('内置 v2 包通过校验并安装', installed.manifest.publisher === 'imark')
+  check('内置包通过校验并安装', installed.manifest.publisher === 'imark')
 
   registerIpc()
   registerImarkProtocol()
@@ -649,13 +649,15 @@ async function main(): Promise<void> {
 
   // ---------- 配置 ----------
 
+  /** 配置存的是**完整键**:`<扩展id>.<属性>` */
+  const configKey = (key: string): string => `${EXT_ID}.${key}`
   let baseConfig: Record<string, unknown> = {
-    endpoints: [{ id: 'e1', url: openaiUrl, model: 'mock-model' }],
-    timeoutSec: 5
+    [configKey('endpoints')]: [{ id: 'e1', url: openaiUrl, model: 'mock-model' }],
+    [configKey('timeoutSec')]: 5
   }
 
   async function setConfig(patch: Record<string, unknown>): Promise<void> {
-    baseConfig = { ...baseConfig, ...patch }
+    for (const [key, value] of Object.entries(patch)) baseConfig[configKey(key)] = value
     await service.setExtensionConfig(EXT_ID, baseConfig)
     await sleep(350)
   }
@@ -720,10 +722,10 @@ async function main(): Promise<void> {
 
   // ---------- 1. 安装、清单、启动激活 ----------
 
-  console.log('\n【1】v2 内置包安装：清单贡献点来自 package.json，启动后激活')
+  console.log('\n【1】内置包安装：清单贡献点来自 package.json，启动后激活')
   const view = await aiView()
   check('扩展列表里有 imark.ai-for-edit', view.descriptor.id === EXT_ID, view.descriptor.id)
-  check('版本是 2.0.0', view.descriptor.version === '2.0.0', view.descriptor.version)
+  check('版本是 1.0.0', view.descriptor.version === '1.0.0', view.descriptor.version)
   check('默认启用', view.enabled === true)
   check('来源标成内置（bundled）', view.source === 'bundled', String(view.source))
   check(

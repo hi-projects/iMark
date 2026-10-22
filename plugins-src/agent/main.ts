@@ -1,10 +1,10 @@
 /**
- * 通用 Agent Host 扩展。
+ * Agent Core：对话面板与会话宿主，不认识任何具体 Agent 后端。
  *
  * 设计边界（用户明确要求）：
  * - 插件不解析附件：只把 webview 传来的字节落盘，给 Agent 绝对路径与工具权限；
  * - 怎么读文件（Read / Bash / 写脚本 / 调本地工具）由 Agent 自行决定；
- * - 插件不保留 Preprocessor/宿主解析器；Claude Code 只是第一个 provider；
+ * - 后端通过 `imark.agentProviders` 贡献点接入；Claude Code 是独立插件；
  * - 当前文档只提供 document.md 快照，结果通过 TextEditor.edit 写回，不直接改 vault。
  */
 
@@ -45,7 +45,7 @@ import {
   type SessionMeta,
   type StoredMessage
 } from './core/sessions'
-import { providerById, PROVIDERS } from './providers'
+import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
 const CMD_OPEN = 'imark.agent.openChat'
@@ -56,7 +56,7 @@ const CMD_STOP = 'imark.agent.stop'
 
 const DOC_PUSH_DEBOUNCE_MS = 80
 const AGENT_ERROR_CODES = new Set<AgentErrorCode>([
-  'cli-missing',
+  'provider-unavailable',
   'auth-required',
   'permission-denied',
   'timeout',
@@ -109,7 +109,6 @@ interface TurnInput {
   documentHash?: string
   documentTruncated?: boolean
   history: StoredMessage[]
-  config: AgentConfig
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -148,6 +147,10 @@ function errorOf(err: unknown): AgentError {
   return { code: 'provider-error', message: err instanceof Error ? err.message : String(err) }
 }
 
+function codedError(code: AgentErrorCode, message: string): Error {
+  return Object.assign(new Error(message), { code })
+}
+
 function escapeAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -174,6 +177,7 @@ class AgentHost {
   private readonly artifacts: ArtifactStore
   private readonly documents = new DocumentBridge()
   private readonly inventory = new Inventory()
+  private readonly providers: ProviderRegistry
   private readonly output: imark.OutputChannel
   private readonly activeTurns = new Map<string, TurnRuntime>()
   private readonly turnBySession = new Map<string, string>()
@@ -187,12 +191,13 @@ class AgentHost {
     this.sessions = new SessionStore(context.globalStoragePath)
     this.attachments = new AttachmentStager(this.sessions)
     this.artifacts = new ArtifactStore(sessionId => this.sessions.preparedDir(sessionId))
-    this.output = imark.window.createOutputChannel('Agent')
+    this.providers = new ProviderRegistry(context)
+    this.output = imark.window.createOutputChannel('Agent Core')
   }
 
   async start(): Promise<void> {
     await this.sessions.init()
-    await this.refreshConfig()
+    this.refreshConfig()
 
     this.context.subscriptions.push(
       imark.commands.registerCommand(CMD_OPEN, () => this.openChat()),
@@ -217,8 +222,8 @@ class AgentHost {
     )
 
     this.statusItem = imark.window.createStatusBarItem(imark.StatusBarAlignment.Right, 95)
-    this.statusItem.text = '$(hubot) Agent'
-    this.statusItem.tooltip = '打开 Agent 对话'
+    this.statusItem.text = '$(hubot) Agent Core'
+    this.statusItem.tooltip = '打开 Agent Core 对话'
     this.statusItem.command = CMD_OPEN
     this.statusItem.show()
     this.context.subscriptions.push(this.statusItem)
@@ -244,8 +249,13 @@ class AgentHost {
 
   // ---------- 配置 ----------
 
-  private async refreshConfig(): Promise<AgentConfig> {
-    const { config, warnings } = await readConfig(this.context)
+  /** provider 就绪门闩；由入口在 start() 结束后打开 */
+  markProvidersReady(): void {
+    this.providers.markReady()
+  }
+
+  private refreshConfig(): AgentConfig {
+    const { config, warnings } = readConfig()
     this.config = config
     for (const warning of warnings) this.output.warn(warning)
     return config
@@ -253,7 +263,7 @@ class AgentHost {
 
   private async onConfigChanged(): Promise<void> {
     if (this.disposed) return
-    const config = await this.refreshConfig()
+    const config = this.refreshConfig()
     this.push({
       type: 'push',
       kind: 'config',
@@ -284,7 +294,7 @@ class AgentHost {
     }
     const panel = imark.window.createWebviewPanel(
       VIEW_TYPE,
-      'Agent',
+      'Agent Core',
       { viewColumn: imark.ViewColumn.One },
       {
         enableScripts: true,
@@ -318,7 +328,9 @@ class AgentHost {
       })
     )
     panel.webview.html = this.panelHtml(panel)
-    void this.pushInitialState()
+    void this.pushInitialState().catch(err => {
+      this.output.warn(`推送初始化状态失败：${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   private panelHtml(panel: imark.WebviewPanel): string {
@@ -342,7 +354,7 @@ class AgentHost {
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${csp} data: blob:; font-src ${csp}; style-src ${csp} 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp}; connect-src 'none'; frame-src 'none'; worker-src 'none';" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent</title>
+<title>Agent Core</title>
 <link rel="stylesheet" href="${escapeAttr(styleUri.toString())}" />
 </head>
 <body>
@@ -355,14 +367,16 @@ class AgentHost {
   private async pushInitialState(): Promise<void> {
     const doc = this.currentDocMeta()
     const sessions = doc ? await this.listSessions(doc.key) : []
+    const { providers, errors } = await this.providers.list()
     const payload: InitPayload = {
-      providers: PROVIDERS.map(provider => ({ info: provider.info })),
-      config: safeConfigView(this.config ?? (await this.refreshConfig())),
+      providers: providers.map(provider => ({ info: provider.info })),
+      config: safeConfigView(this.config ?? this.refreshConfig()),
       doc,
       sessions,
       activeSessionId: sessions[0]?.id ?? null
     }
     this.push({ type: 'push', kind: 'init', value: payload })
+    for (const error of errors) this.pushError('provider', error)
   }
 
   private push(push: HostPush): void {
@@ -405,8 +419,8 @@ class AgentHost {
   private updateStatusBar(): void {
     if (!this.statusItem) return
     const running = this.activeTurns.size > 0
-    this.statusItem.text = running ? '$(sync~spin) Agent' : '$(hubot) Agent'
-    this.statusItem.tooltip = running ? 'Agent 正在运行' : '打开 Agent 对话'
+    this.statusItem.text = running ? '$(sync~spin) Agent Core' : '$(hubot) Agent Core'
+    this.statusItem.tooltip = running ? 'Agent Core 正在运行' : '打开 Agent Core 对话'
   }
 
   // ---------- 消息入口 ----------
@@ -501,37 +515,64 @@ class AgentHost {
   // ---------- provider ----------
 
   private async detectProviders(): Promise<unknown> {
-    const config = this.config ?? (await this.refreshConfig())
-    const providers = await Promise.all(
-      PROVIDERS.map(async provider => ({
+    const { providers, errors } = await this.providers.list()
+    for (const error of errors) this.pushError('provider', error)
+    const views = await Promise.all(
+      providers.map(async provider => ({
         info: provider.info,
-        detection: await provider.detect({ commandPath: config.commandPath })
+        detection: await provider.detect()
       }))
     )
-    return { providers }
+    return { providers: views }
   }
 
   private async checkProvider(): Promise<void> {
-    const config = this.config ?? (await this.refreshConfig())
-    const provider = providerById(config.provider) ?? PROVIDERS[0]
-    const detection = await provider.detect({ commandPath: config.commandPath })
-    if (detection.available) {
-      await imark.window.showInformationMessage(
-        `${provider.info.label} 可用${detection.version ? `（${detection.version}）` : ''}`
-      )
+    const { providers, errors } = await this.providers.list()
+    for (const error of errors) this.pushError('provider', error)
+    if (providers.length === 0) {
+      const message = '未安装或未启用任何 Agent 后端插件'
+      this.pushError('provider', { code: 'provider-unavailable', message })
+      await imark.window.showErrorMessage(message)
       return
     }
-    const message = detection.error?.message ?? 'Agent 不可用'
-    this.pushError('provider', detection.error ?? { code: 'provider-error', message })
-    await imark.window.showErrorMessage(message)
+    const available: string[] = []
+    const failures: AgentError[] = []
+    for (const provider of providers) {
+      const detection = await provider.detect()
+      if (detection.available) {
+        available.push(
+          `${provider.info.label}${detection.version ? `（${detection.version}）` : ''}`
+        )
+      } else {
+        failures.push(
+          detection.error ?? {
+            code: 'provider-error',
+            message: `${provider.info.label} 不可用`
+          }
+        )
+      }
+    }
+    if (failures.length === 0) {
+      await imark.window.showInformationMessage(`可用：${available.join('、')}`)
+      return
+    }
+    for (const error of failures) this.pushError('provider', error)
+    await imark.window.showErrorMessage(failures.map(error => error.message).join('\n'))
   }
 
   // ---------- 会话 ----------
 
   private async createSession(input: Record<string, unknown>): Promise<unknown> {
-    const config = this.config ?? (await this.refreshConfig())
-    const providerId = str(input.provider, config.provider)
-    if (!providerById(providerId)) throw new Error(`未知 provider：${providerId}`)
+    const config = this.config ?? this.refreshConfig()
+    const { providers } = await this.providers.list()
+    const requested = str(input.provider)
+    const providerId = requested || providers[0]?.info.id
+    if (!providerId) {
+      throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端插件')
+    }
+    if (!providers.some(provider => provider.info.id === providerId)) {
+      throw codedError('config-invalid', `未知 provider：${providerId}`)
+    }
     const mode = isPermissionMode(input.mode) ? input.mode : config.mode
     const documentKey = str(input.documentKey, 'no-document')
     const documentName = str(input.documentName, '未关联文档')
@@ -539,7 +580,7 @@ class AgentHost {
       documentKey,
       documentName,
       provider: providerId,
-      model: str(input.model, config.model) || undefined,
+      model: str(input.model) || undefined,
       mode
     })
     // 不在这里 push sessions：webview 的 createSession 请求会拿到同一份 view；
@@ -591,16 +632,20 @@ class AgentHost {
   // ---------- 附件 ----------
 
   private async beginUpload(input: Record<string, unknown>): Promise<unknown> {
-    const config = this.config ?? (await this.refreshConfig())
+    const config = this.config ?? this.refreshConfig()
     let sessionId = str(input.sessionId)
     if (!sessionId) {
+      const { providers } = await this.providers.list()
+      const provider = providers[0]
+      if (!provider) {
+        throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端插件')
+      }
       const documentKey = str(input.documentKey, 'no-document')
       const documentName = str(input.documentName, '未关联文档')
       const created = await this.sessions.create({
         documentKey,
         documentName,
-        provider: config.provider,
-        model: config.model || undefined,
+        provider: provider.info.id,
         mode: config.mode
       })
       sessionId = created.id
@@ -705,7 +750,6 @@ class AgentHost {
       value: { summary: await this.summaryOf(meta) }
     })
 
-    const config = this.config ?? (await this.refreshConfig())
     void this.runTurn({
       turnId,
       sessionId,
@@ -717,8 +761,7 @@ class AgentHost {
       documentPath,
       documentHash,
       documentTruncated,
-      history,
-      config
+      history
     })
 
     return { turnId }
@@ -748,13 +791,17 @@ class AgentHost {
           }
           break
         }
-        const provider = providerById(meta.provider)
+        const { providers } = await this.providers.list()
+        const provider = providers.find(item => item.info.id === meta.provider)
         if (!provider) {
           outcome = {
             status: 'error',
             text: '',
             toolCalls: [],
-            error: { code: 'config-invalid', message: `未知 provider：${meta.provider}` }
+            error: {
+              code: 'config-invalid',
+              message: `未知 provider：${meta.provider}，请安装或启用对应的 Agent 后端插件`
+            }
           }
           break
         }
@@ -767,26 +814,16 @@ class AgentHost {
             providerSessionId: meta.providerSessionId,
             cwd: this.sessions.sessionDir(meta.id),
             mode: input.permissionMode,
-            isolation: input.config.isolation,
-            model: meta.model || input.config.model,
-            timeoutMs: input.config.timeoutSec * 1000,
-            maxTurns: input.config.maxTurns,
-            extraArgs: input.config.extraArgs,
-            apiKey: input.config.apiKey,
-            commandPath: input.config.commandPath,
+            model: meta.model || undefined,
             availableCommands: inventory.available,
             signal: turn.controller.signal
           })
         } catch (err) {
-          const error = errorOf(err)
           outcome = {
             status: 'error',
             text: '',
             toolCalls: [],
-            error:
-              error.code === 'provider-error' && /未找到|不存在|安装/i.test(error.message)
-                ? { code: 'cli-missing', message: error.message }
-                : error
+            error: errorOf(err)
           }
           break
         }
@@ -1062,15 +1099,24 @@ class AgentHost {
     const doc = this.currentDocMeta()
     const documentKey = doc?.key ?? 'no-document'
     const documentName = doc?.fileName ?? '未关联文档'
-    const config = this.config ?? (await this.refreshConfig())
+    const config = this.config ?? this.refreshConfig()
     const list = await this.listSessions(documentKey)
     let sessionId = list[0]?.id
     if (!sessionId) {
+      const { providers } = await this.providers.list()
+      const provider = providers[0]
+      if (!provider) {
+        this.pushError('provider', {
+          code: 'provider-unavailable',
+          message: '未安装或未启用任何 Agent 后端插件'
+        })
+        await imark.window.showWarningMessage('未安装或未启用任何 Agent 后端插件')
+        return
+      }
       const meta = await this.sessions.create({
         documentKey,
         documentName,
-        provider: config.provider,
-        model: config.model || undefined,
+        provider: provider.info.id,
         mode: config.mode
       })
       sessionId = meta.id
@@ -1091,11 +1137,15 @@ class AgentHost {
 let instance: AgentHost | null = null
 
 export function activate(context: imark.ExtensionContext): void {
-  instance = new AgentHost(context)
-  void instance.start().catch(err => {
-    const message = err instanceof Error ? err.message : String(err)
-    void imark.window.showErrorMessage(`Agent 启动失败：${message}`)
-  })
+  const host = new AgentHost(context)
+  instance = host
+  void host
+    .start()
+    .catch(err => {
+      const message = err instanceof Error ? err.message : String(err)
+      void imark.window.showErrorMessage(`Agent Core 启动失败：${message}`)
+    })
+    .finally(() => host.markProvidersReady())
 }
 
 export function deactivate(): void {

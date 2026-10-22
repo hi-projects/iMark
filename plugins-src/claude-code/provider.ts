@@ -2,8 +2,8 @@
  * Claude Code provider。
  *
  * 每次 send 启动一个 `claude -p --output-format stream-json` 子进程；首轮传
- * `--session-id`，后续传 `--resume`。插件只负责把会话目录和 prompt 交给它，
- * 附件怎么读由 Agent 自己决定。
+ * `--session-id`，后续传 `--resume`。provider 自己读取命令路径、模型、超时、
+ * 隔离、额外参数与 API 密钥；Agent Core 只传通用会话参数。
  */
 
 import type {
@@ -13,9 +13,11 @@ import type {
   AgentProviderInfo,
   AgentSession,
   AgentSessionOptions
-} from '../core/types'
+} from '@shared/agentProvider'
+import * as imark from 'imark'
 import { buildClaudeArgs } from './claudeArgs'
 import { ClaudeEventMapper, classifyClaudeFailure } from './claudeStream'
+import { readConfig, type ClaudeConfig } from './config'
 import {
   claudeEnv,
   resolveClaudeCommand,
@@ -27,6 +29,7 @@ import {
 
 const MAX_STDERR = 16 * 1024
 const MAX_LINE = 16 * 1024 * 1024
+const VERSION_TIMEOUT_MS = 5000
 
 const INFO: AgentProviderInfo = {
   id: 'claude-code',
@@ -47,6 +50,10 @@ const INFO: AgentProviderInfo = {
     { id: 'opus', label: 'Opus' },
     { id: 'haiku', label: 'Haiku' }
   ]
+}
+
+function unavailable(message: string): Error & { code: 'provider-unavailable' } {
+  return Object.assign(new Error(message), { code: 'provider-unavailable' as const })
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -96,7 +103,9 @@ class ClaudeSession implements AgentSession {
 
   constructor(
     private readonly options: AgentSessionOptions,
-    private readonly command: ResolvedCommand
+    private readonly command: ResolvedCommand,
+    private readonly config: ClaudeConfig,
+    private readonly onDispose: () => void
   ) {
     this.currentProviderSessionId = options.providerSessionId
   }
@@ -119,12 +128,12 @@ class ClaudeSession implements AgentSession {
     const mapper = new ClaudeEventMapper()
     const args = buildClaudeArgs({
       mode: this.options.mode,
-      isolation: this.options.isolation,
+      isolation: this.config.isolation,
       cwd: this.options.cwd,
       sessionId: this.currentProviderSessionId ? undefined : this.options.hostSessionId,
       resumeId: this.currentProviderSessionId,
-      model: this.options.model,
-      extraArgs: this.options.extraArgs,
+      model: this.options.model || this.config.model,
+      extraArgs: this.config.extraArgs,
       availableCommands: this.options.availableCommands
     })
 
@@ -160,7 +169,7 @@ class ClaudeSession implements AgentSession {
           reason === 'timeout'
             ? { code: 'timeout', message: 'Agent 运行超时' }
             : reason === 'turn-limit'
-              ? { code: 'turn-limit', message: `超过单轮工具轮数上限（${this.options.maxTurns}）` }
+              ? { code: 'turn-limit', message: `超过单轮工具轮数上限（${this.config.maxTurns}）` }
               : { code: 'cancelled', message: reason === 'dispose' ? '插件已停用' : '已停止' }
       })
     }
@@ -176,7 +185,7 @@ class ClaudeSession implements AgentSession {
     try {
       handle = spawnClaude(this.command, args, {
         cwd: this.options.cwd,
-        env: claudeEnv(this.options.apiKey),
+        env: claudeEnv(this.config.apiKey),
         signal: this.options.signal,
         onStdoutLine: line => {
           if (terminal) return
@@ -222,13 +231,13 @@ class ClaudeSession implements AgentSession {
             }
             queue.push(event)
           }
-          if (mapper.assistantCount > this.options.maxTurns) {
+          if (mapper.assistantCount > this.config.maxTurns) {
             void handle?.killTree()
             finish({
               type: 'error',
               error: {
                 code: 'turn-limit',
-                message: `超过单轮工具轮数上限（${this.options.maxTurns}）`
+                message: `超过单轮工具轮数上限（${this.config.maxTurns}）`
               }
             })
           }
@@ -244,7 +253,7 @@ class ClaudeSession implements AgentSession {
       } else {
         timer = setTimeout(() => {
           cancel('timeout')
-        }, this.options.timeoutMs)
+        }, this.config.timeoutSec * 1000)
         if (typeof timer.unref === 'function') timer.unref()
       }
 
@@ -269,7 +278,7 @@ class ClaudeSession implements AgentSession {
       finish({
         type: 'error',
         error: {
-          code: 'cli-missing',
+          code: 'provider-unavailable',
           message: err instanceof Error ? err.message : String(err)
         }
       })
@@ -296,35 +305,57 @@ class ClaudeSession implements AgentSession {
 
   async dispose(): Promise<void> {
     this.disposed = true
-    this.cancel('dispose')
+    this.activeTurn?.cancel('dispose')
+    this.onDispose()
   }
 }
 
-let cachedDetection: { key: string; at: number; result: AgentDetection } | null = null
+class ClaudeCodeProvider implements AgentProvider {
+  readonly info = INFO
+  private readonly sessions = new Set<ClaudeSession>()
+  private readonly warned = new Set<string>()
+  private cachedDetection: { key: string; at: number; result: AgentDetection } | null = null
 
-export const claudeCodeProvider: AgentProvider = {
-  info: INFO,
+  constructor(
+    private readonly context: imark.ExtensionContext,
+    private readonly warn: (message: string) => void = () => undefined
+  ) {}
 
-  async detect(ctx): Promise<AgentDetection> {
-    const key = ctx.commandPath ?? ''
-    if (cachedDetection && cachedDetection.key === key && Date.now() - cachedDetection.at < 60_000) {
-      return cachedDetection.result
+  /** 被拒绝的额外参数只提示一次；每轮 createSession 都会重读配置 */
+  private reportWarnings(warnings: readonly string[]): void {
+    for (const warning of warnings) {
+      if (this.warned.has(warning)) continue
+      this.warned.add(warning)
+      this.warn(warning)
+    }
+  }
+
+  async detect(): Promise<AgentDetection> {
+    const { config, warnings } = await readConfig(this.context)
+    this.reportWarnings(warnings)
+    const key = `${config.command}|${config.timeoutSec}`
+    if (
+      this.cachedDetection &&
+      this.cachedDetection.key === key &&
+      Date.now() - this.cachedDetection.at < 60_000
+    ) {
+      return this.cachedDetection.result
     }
     let command: ResolvedCommand
     try {
-      command = await resolveClaudeCommand(ctx.commandPath ?? '')
+      command = await resolveClaudeCommand(config.command)
     } catch (err) {
       const result: AgentDetection = {
         available: false,
         error: {
-          code: 'cli-missing',
+          code: 'provider-unavailable',
           message: err instanceof Error ? err.message : String(err)
         }
       }
-      cachedDetection = { key, at: Date.now(), result }
+      this.cachedDetection = { key, at: Date.now(), result }
       return result
     }
-    const version = await runVersion(command, ctx.timeoutMs ?? 5000)
+    const version = await runVersion(command, Math.min(config.timeoutSec * 1000, VERSION_TIMEOUT_MS))
     const result: AgentDetection = version.ok
       ? { available: true, version: version.version, executable: command.command }
       : {
@@ -335,12 +366,47 @@ export const claudeCodeProvider: AgentProvider = {
             message: version.detail || 'Claude Code 版本探测失败'
           }
         }
-    cachedDetection = { key, at: Date.now(), result }
+    this.cachedDetection = { key, at: Date.now(), result }
     return result
-  },
+  }
 
-  async createSession(options): Promise<AgentSession> {
-    const command = await resolveClaudeCommand(options.commandPath ?? '')
-    return new ClaudeSession(options, command)
+  async createSession(options: AgentSessionOptions): Promise<AgentSession> {
+    const { config, warnings } = await readConfig(this.context)
+    this.reportWarnings(warnings)
+    let command: ResolvedCommand
+    try {
+      command = await resolveClaudeCommand(config.command)
+    } catch (err) {
+      throw unavailable(err instanceof Error ? err.message : String(err))
+    }
+    let session: ClaudeSession
+    session = new ClaudeSession(options, command, config, () => this.sessions.delete(session))
+    this.sessions.add(session)
+    return session
+  }
+
+  disposeAll(): void {
+    for (const session of [...this.sessions]) {
+      session.cancel('dispose')
+      void session.dispose()
+    }
+    this.sessions.clear()
+  }
+}
+
+export interface ClaudeCodeProviderHandle {
+  provider: AgentProvider
+  dispose(): void
+}
+
+export function createClaudeCodeProvider(context: imark.ExtensionContext): ClaudeCodeProviderHandle {
+  const output = imark.window.createOutputChannel('Claude Code')
+  const instance = new ClaudeCodeProvider(context, message => output.warn(message))
+  return {
+    provider: instance,
+    dispose: () => {
+      instance.disposeAll()
+      output.dispose()
+    }
   }
 }

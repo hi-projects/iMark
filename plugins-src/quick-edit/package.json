@@ -1,11 +1,11 @@
 {
   "name": "quick-edit",
   "publisher": "imark",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "displayName": "快速编辑",
   "description": "在行首「+」菜单里插入一张 Markdown 表格",
   "author": "iMark",
-  "engines": { "imark": "^0.1.0" },
+  "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
   "activationEvents": [
     "onCommand:imark.quick-edit.insertTable"

@@ -1,9 +1,8 @@
 /**
- * 「定时上传（Git）」—— v2 扩展模型实现。
+ * 「定时上传（Git）」扩展。
  *
- * 与 v1 的差别只在「外围」：配置从 `workspace.getConfiguration()` 读，密钥从
- * `context.secrets` 取，状态用 `imark.reportStatus()` 上报，git 直接用 Node 的
- * `child_process` 跑。提交、推送、代理探测、失败分类的逻辑与旧版逐行一致。
+ * 配置从 `workspace.getConfiguration()` 读，密钥从 `context.secrets` 取，状态用
+ * `imark.reportStatus()` 上报，git 直接用 Node 的 `child_process` 跑。
  *
  * 扩展按 VS Code 信任模型以当前用户权限运行，因此这里拿到的是完整的 Node 能力；
  * 密钥只在本扩展宿主进程内使用，不写进日志、状态或仓库配置，也不改动用户的

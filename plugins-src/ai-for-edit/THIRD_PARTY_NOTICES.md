@@ -2,7 +2,7 @@
 
 ## PDF.js
 
-本插件的 render 入口内联了 [PDF.js](https://github.com/mozilla/pdf.js)（`pdfjs-dist`
+本插件的 webview 包内联了 [PDF.js](https://github.com/mozilla/pdf.js)（`pdfjs-dist`
 6.4.299）的 legacy 构建，用于从 PDF 参考文件中提取文字。
 
 Copyright 2024 Mozilla Foundation

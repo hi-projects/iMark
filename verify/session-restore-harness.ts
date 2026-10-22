@@ -20,6 +20,7 @@
  */
 
 import { app, BrowserWindow, protocol } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { basename, join } from 'node:path'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { registerIpc } from '../src/main/ipc'
@@ -95,7 +96,7 @@ async function main(): Promise<void> {
     marketAutoCheck: false
   })
 
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
 
   const settingsFile = join(ud, 'settings.json')
 

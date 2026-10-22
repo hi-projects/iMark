@@ -4,7 +4,7 @@ iMark 自身代码的许可状态见仓库说明。下面列出随应用分发�
 
 ## PDF.js
 
-AI for Edit 插件在 render 入口里内联了 [PDF.js](https://github.com/mozilla/pdf.js)
+AI for Edit 插件在 webview 包里内联了 [PDF.js](https://github.com/mozilla/pdf.js)
 （`pdfjs-dist` 6.4.299，legacy 构建），用于从 PDF 参考文件中提取文字。
 
 Copyright 2024 Mozilla Foundation

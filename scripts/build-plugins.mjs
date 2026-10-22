@@ -3,7 +3,7 @@
  * 把 plugins-src/ 下的每个扩展打包成扩展信封,产出
  * `src/main/market/builtin/<publisher>.<name>.imkpkg.json`。
  *
- * v2 的构建只有一种入口形态:
+ * 构建只有一种入口形态:
  *
  *   package.json  清单(唯一真身)
  *   main.ts       → esbuild → main.js(CommonJS,`imark` 外置)
@@ -40,6 +40,8 @@ const OUT = join(ROOT, 'src/main/market/builtin')
 const DIST = join(SRC, 'dist')
 
 const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', '.cache'])
+/** provider 契约等共享模块走 tsconfig 的 @shared/* 别名；esbuild 不读 tsconfig paths */
+const SHARED_ALIAS = { '@shared': join(ROOT, 'src/shared') }
 /** 源码与构建中间产物不进包;清单单独进 envelope.manifest */
 const EXCLUDE_FILE = /(^|\/)(package\.json|tsconfig[^/]*\.json|.*\.(ts|tsx|mts|cts|map))$/
 /** webview 下不作为入口打包的共享模块 */
@@ -117,6 +119,7 @@ async function bundleMain(dir, manifest, entryName) {
     logLevel: 'silent',
     // 宿主注入的虚拟模块;必须由扩展宿主在运行时解析
     external: ['imark'],
+    alias: SHARED_ALIAS,
     // Node 内置模块自动外置;允许扩展带自己的 CJS/ESM 依赖
     packages: 'external',
     legalComments: 'eof',
@@ -141,6 +144,7 @@ async function bundleWebviewEntry(source) {
     write: false,
     logLevel: 'silent',
     minify: true,
+    alias: SHARED_ALIAS,
     // 保留带 @license 的版权声明;完整许可证另随包分发
     legalComments: 'eof',
     define: { 'process.env.NODE_ENV': '"production"' }

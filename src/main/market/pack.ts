@@ -6,7 +6,7 @@
  * **这是有意接受的** —— 它们从不同时出场,而且正确性的唯一权威是安装时的
  * `validateEnvelope()`:打包端算错了,自己就会被拒。
  *
- * v2 的清单是目录根部的 `package.json`。清单只进 `envelope.manifest`,**不作为
+ * 清单是目录根部的 `package.json`。清单只进 `envelope.manifest`,**不作为
  * 文件进包** —— 否则磁盘上会出现两份清单,而两份不可能永远一致。
  *
  * 只做 JS:不在这里编译 TypeScript。用 TS 写的扩展先自己编译成 `main.js`,

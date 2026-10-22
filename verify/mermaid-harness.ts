@@ -15,6 +15,7 @@
  */
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
@@ -137,10 +138,13 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  const service = await initExtensions({ appVersion: '0.1.0' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
+  // 【4】要同时看到六张图:CodeMirror 只为视口内的行建 widget DOM,
+  // 窗口太矮时排在后面的图根本不会被实例化 —— 把验收窗口加高,不是等它自己出来。
+  win.setContentSize(900, 2000)
   const wc = win.webContents
   wc.on('console-message', (_event, ...args: unknown[]) => {
     const first = args[0]
@@ -295,9 +299,9 @@ async function main(): Promise<void> {
   check('折叠行真的是零高度', heights.voids.every(h => h < 1), JSON.stringify(heights.voids))
   await dump('渲染之后')
 
-  // ---------- 1b. 普通代码块不受影响(FencedCode 分支被重构过) ----------
+  // ---------- 1b. 普通代码块不受影响 ----------
 
-  console.log('\n【1b】普通代码块仍然按原来的方式显示(没被 mermaid 分支误伤)')
+  console.log('\n【1b】普通代码块按常规代码块显示(没被 mermaid 分支误伤)')
   await loadDoc('# 代码\n\n```ts\nconst answer = 42\n```\n\n末尾\n')
   const plain = await evalJs<{ lines: number; info: string; widgets: number; raw: string }>(`
     (() => ({

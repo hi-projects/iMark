@@ -3,9 +3,8 @@
  *
  * 只有**进度**是单向播报,其余都是一问一答。
  *
- * v2 的市场形状只描述 VS Code 式扩展:一个包要么含代码(`hasMain`),要么是
- * 纯声明式配置。没有 main 模式、没有 render 层、没有 capability —— 那些是 v1
- * 的层模型,已经从类型里整个删掉了。
+ * 市场形状只描述 VS Code 式扩展:一个包要么含代码(`hasMain`),要么是
+ * 纯声明式配置。
  */
 
 import type { ExtensionContributesSummary, ExtensionCapabilities } from './extensionPackage'
@@ -52,7 +51,7 @@ export interface PackageFileInfo {
  * 这是**安全基线**:用户在按下「安装」之前必须能看清自己将要同意什么 ——
  * 谁做的、装的是什么、会不会执行代码、多大、以及那个可以拿去和别人核对的 sha256。
  *
- * v2 没有权限沙箱:含代码扩展以当前用户权限运行。清单里的 `capabilities` 只是
+ * 扩展没有权限沙箱:含代码扩展以当前用户权限运行。清单里的 `capabilities` 只是
  * **告知**,不构成门禁 —— 因此它是 `ExtensionCapabilities` 而不是权限数组。
  */
 export interface PackagePreview {

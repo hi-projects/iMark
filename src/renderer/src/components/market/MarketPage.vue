@@ -13,12 +13,14 @@ import { checkUpdates, marketStore, refreshInstalled, remoteStore } from '../../
 import { settingsNav } from '../../services/settingsNav'
 import MarketBrowse from './MarketBrowse.vue'
 import MarketDetail from './MarketDetail.vue'
+import MarketHosts from './MarketHosts.vue'
 import MarketInstalled from './MarketInstalled.vue'
 import MarketPublish from './MarketPublish.vue'
 
 const TABS = [
   { id: 'installed', label: '已安装' },
   { id: 'browse', label: '浏览市场' },
+  { id: 'hosts', label: '扩展宿主' },
   { id: 'publish', label: '发布插件' }
 ] as const
 
@@ -69,6 +71,7 @@ onMounted(async () => {
     />
     <MarketInstalled v-else-if="settingsNav.market.tab === 'installed'" />
     <MarketBrowse v-else-if="settingsNav.market.tab === 'browse'" />
+    <MarketHosts v-else-if="settingsNav.market.tab === 'hosts'" />
     <MarketPublish v-else />
   </div>
 </template>

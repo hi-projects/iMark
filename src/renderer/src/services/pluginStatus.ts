@@ -6,7 +6,7 @@
  * 而像 quick-edit 这种只在行首菜单里被点一下的扩展,启用后可能永远没有「操作」,
  * 但它确实已经跑起来了。所以圆点先看 enabled,再让 error/running 覆盖它。
  *
- * v2 的扩展视图同时带 `runtime.status`(inactive/activating/active/failed/…);
+ * 扩展视图同时带 `runtime.status`(inactive/activating/active/failed/…);
  * 设置页会先把失败态折算成这里的 `error` 再调用这些函数。
  */
 

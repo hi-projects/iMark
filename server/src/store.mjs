@@ -115,14 +115,4 @@ export class Store {
       throw err
     }
   }
-
-  /** 这份包体还被别的版本引用着吗(引用计数式清理的基础) */
-  async blobExists(integrity) {
-    try {
-      await readFile(this.blobPath(integrity))
-      return true
-    } catch {
-      return false
-    }
-  }
 }

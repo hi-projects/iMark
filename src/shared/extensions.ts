@@ -10,7 +10,6 @@
  */
 
 import type {
-  ExtensionManifest,
   ExtensionCapabilities,
   ExtensionContribution,
   ExtensionConfigurationProperty
@@ -18,7 +17,6 @@ import type {
 import type {
   PluginField,
   PluginLogEntry,
-  PluginOperation,
   PluginStatus,
   PluginTargetResult
 } from './plugins'
@@ -48,7 +46,7 @@ export interface ExtensionInstallInfo {
   registryUrl?: string | null
 }
 
-/** 宿主分组视图(设置页「宿主」区) */
+/** 宿主分组视图(浏览市场 → 扩展宿主) */
 export interface ExtensionHostGroupView {
   /** 组号;isolated 模式下每个扩展一个组 */
   hostId: number
@@ -117,7 +115,6 @@ export interface ExtensionView {
   /** 密钥掩码,key 为 `<extensionId>:<property>` / `<extensionId>:<property>:<targetId>` */
   secrets: Record<string, string>
   logs?: PluginLogEntry[]
-  recentOps?: PluginOperation[]
   /** 开发模式挂载的目录(不是安装进来的) */
   dev?: boolean
   /** 加载/校验期失败;此时 descriptor 可能是宿主合成的最小描述 */
@@ -261,14 +258,13 @@ export type ExtensionHostMode = 'isolated' | 'shared'
 export interface ExtensionHostSettings {
   mode: ExtensionHostMode
   /**
-   * 用户设置的 affinity:相同正整数 → 同一宿主;未列出 → 跟随 mode 的默认分组。
-   * 与 VS Code 的 `extensions.experimental.affinity` 同义,但 0 也允许(0 = 默认组),
-   * 因为 isolated 模式下每一组本来就是一个扩展。
+   * 用户设置的 affinity:相同正整数 → 同一宿主;未列出或 0 → 跟随 mode 的默认分组。
+   * 与 VS Code 的 `extensions.experimental.affinity` 同义。
    */
   affinity: Record<string, number>
 }
 
-/** 设置页「宿主」区提交的变更 */
+/** 「扩展宿主」页提交的变更 */
 export interface ExtensionHostSettingsPatch {
   mode?: ExtensionHostMode
   affinity?: Record<string, number>
@@ -310,5 +306,3 @@ export interface ExtensionRecord {
   source: Exclude<ExtensionSource, 'dev'>
   registryUrl: string | null
 }
-
-export type { ExtensionManifest }

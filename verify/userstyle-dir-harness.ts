@@ -9,12 +9,12 @@
  * ⚠️ 改了 `src/main/**` 或 `src/renderer/**` 之后要先跑一次 `npx electron-vite build`
  * (渲染层与 preload 走 out/ 里的构建产物,见 verify/run.mjs 顶部的说明)。
  *
- * 样式目录现在是数据根下的 `css/`(见 main/dataDir.ts),所以它跟着 `--user-data-dir`
- * 一起被隔离 —— 以前它不吃这个开关,这里得先把 `app.getPath('home')` 改到临时目录
- * 才敢往里写东西;数据根统一之后那段 hack 就不需要了。
+ * 样式目录是数据根下的 `css/`(见 main/dataDir.ts),所以它跟着 `--user-data-dir`
+ * 一起被隔离,不需要再改 `app.getPath('home')` 来躲开用户的真实目录。
  */
 
 import { app, BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
 
   console.log('\n[B] 渲染层:选中目录 → 目录里所有 .css 一起生效')
   const settings = await loadSettings()
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
   await new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))

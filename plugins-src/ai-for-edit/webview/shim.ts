@@ -1,11 +1,11 @@
 /**
- * 旧 render-layer API 在 webview 里的实现。
+ * render 层 API 在 webview 里的实现。
  *
- * render.ts 是按「同步拿 CM6 视图、同步 dispatch、同步读配置」写的。v2 里它跑在
+ * render.ts 是按「同步拿 CM6 视图、同步 dispatch、同步读配置」写的。它跑在
  * 跨源 sandbox iframe 中，拿不到编辑器视图，于是这里伪造一个最小 API：
  *
  *   - `imk.plugin.getConfig()`     读扩展宿主随 HTML 注入、配置变化时推送的快照；
- *   - `imk.main.send/onMessage`    映射成 postMessage（消息形状与 v1 相同）；
+ *   - `imk.main.send/onMessage`    映射成 postMessage；
  *   - `imk.markdown.render()`      请求宿主调用应用自己的 markdown-it；
  *   - `imk.editor.getView()`       用宿主推送的文档快照拼出伪 EditorView；
  *   - `view.dispatch()`            本地乐观更新 + 请求宿主执行 TextEditor.edit。
@@ -16,11 +16,11 @@
 
 import type {
   ImkRenderLayerApi,
-  LegacyDocState,
-  LegacyDocumentRef,
-  LegacyEditorView,
-  LegacyPluginHooks
-} from '../legacy'
+  RenderDocState,
+  RenderDocumentRef,
+  RenderEditorView,
+  RenderPluginHooks
+} from '../renderApi'
 import { announceReady, applyTheme, postToHost, readBootstrap } from './shared'
 
 interface DocSnapshot {
@@ -41,7 +41,7 @@ interface PendingRequest {
 
 const bootstrap = readBootstrap()
 let config: Record<string, unknown> = bootstrap.config
-let hooks: LegacyPluginHooks | null = null
+let hooks: RenderPluginHooks | null = null
 let started = false
 
 let doc: DocSnapshot = {
@@ -112,7 +112,7 @@ function replaceDoc(next: Partial<DocSnapshot>): void {
   }
 }
 
-const state: LegacyDocState = {
+const state: RenderDocState = {
   get doc() {
     return {
       length: doc.text.length,
@@ -125,7 +125,7 @@ const state: LegacyDocState = {
   facet: facet => (facet === EDITABLE_FACET ? doc.editable : undefined)
 }
 
-const view: LegacyEditorView = {
+const view: RenderEditorView = {
   state,
   dispatch(spec) {
     const changes = spec.changes
@@ -162,7 +162,7 @@ const view: LegacyEditorView = {
 const imk: ImkRenderLayerApi = {
   plugin: {
     log(level, message) {
-      postToHost({ type: 'legacy', channel: 'log', data: { level, message } })
+      postToHost({ type: 'renderApi', channel: 'log', data: { level, message } })
     },
     getConfig<T>(): T {
       return config as T
@@ -181,7 +181,7 @@ const imk: ImkRenderLayerApi = {
   },
   main: {
     send(channel, payload) {
-      postToHost({ type: 'legacy', channel, data: payload })
+      postToHost({ type: 'renderApi', channel, data: payload })
       return Promise.resolve()
     },
     onMessage(callback) {
@@ -201,7 +201,7 @@ const imk: ImkRenderLayerApi = {
     getView() {
       return view
     },
-    getDocumentRef(): LegacyDocumentRef {
+    getDocumentRef(): RenderDocumentRef {
       return { key: doc.key, fileName: doc.fileName, filePath: doc.filePath }
     },
     onDocChanged(callback) {
@@ -220,7 +220,7 @@ function onHostMessage(message: unknown): void {
   if (!message || typeof message !== 'object') return
   const data = message as Record<string, unknown>
   switch (data.type) {
-    case 'legacy': {
+    case 'renderApi': {
       const channel = typeof data.channel === 'string' ? data.channel : ''
       if (!channel) return
       for (const listener of messageListeners) {

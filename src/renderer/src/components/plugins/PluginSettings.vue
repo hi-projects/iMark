@@ -22,12 +22,10 @@ import {
   extensionById,
   extensionStore,
   reloadExtension,
-  reloadExtensionHost,
   runExtensionCommand,
   saveExtensionConfig,
   saveExtensionSecret,
   setExtensionEnabled,
-  setExtensionHostSettings,
   uninstallExtension
 } from '../../services/extensionService'
 import { settingsNav } from '../../services/settingsNav'
@@ -46,7 +44,6 @@ const selected = computed(() => extensionById(settingsNav.pluginId ?? ''))
 
 const logsOpen = ref(false)
 const recentLogs = computed(() => (selected.value?.logs ?? []).slice(-50))
-const recentOps = computed(() => selected.value?.recentOps ?? [])
 
 const LOG_LEVEL_LABEL: Record<PluginLogLevel, string> = {
   debug: 'debug',
@@ -68,12 +65,6 @@ function formatLogTime(ts: number): string {
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })
-}
-
-function formatBytes(bytes: number | null): string {
-  if (!bytes) return '—'
-  const mb = bytes / (1024 * 1024)
-  return `${mb.toFixed(1)} MB`
 }
 
 // ---------- 配置 ----------
@@ -209,56 +200,7 @@ const statusMessage = computed(() => {
   })
 })
 
-// ---------- 宿主 ----------
-
-const hostMode = computed(() => extensionStore.hostSettings.mode)
-const affinityValue = computed(() => {
-  const id = selected.value?.descriptor.id
-  return id ? (extensionStore.hostSettings.affinity[id] ?? null) : null
-})
-
-const hostGroups = computed(() => extensionStore.contribs?.hostGroups ?? [])
-
-const hostGroupOfSelected = computed(() => {
-  const id = selected.value?.descriptor.id
-  return hostGroups.value.find(group => group.extensionIds.includes(id ?? '')) ?? null
-})
-
-function extensionName(id: string): string {
-  return extensionById(id)?.descriptor.displayName ?? id
-}
-
-async function setMode(mode: 'isolated' | 'shared'): Promise<void> {
-  await setExtensionHostSettings({ mode })
-}
-
-async function setAffinity(raw: string): Promise<void> {
-  const extension = selected.value
-  if (!extension) return
-  const affinity = { ...extensionStore.hostSettings.affinity }
-  const value = Number(raw)
-  if (raw.trim() === '' || !Number.isFinite(value) || value <= 0) {
-    delete affinity[extension.descriptor.id]
-  } else {
-    affinity[extension.descriptor.id] = Math.trunc(value)
-  }
-  await setExtensionHostSettings({ affinity })
-}
-
-/** 共享宿主里反复崩溃的扩展:给它一个独立组号,把它从出事的那组里挪出去 */
-async function isolateSelected(): Promise<void> {
-  const extension = selected.value
-  if (!extension) return
-  const used = Object.values(extensionStore.hostSettings.affinity)
-  const next = Math.max(0, ...used) + 1
-  await setExtensionHostSettings({
-    affinity: { ...extensionStore.hostSettings.affinity, [extension.descriptor.id]: next }
-  })
-}
-
-async function reloadHost(hostId: number): Promise<void> {
-  await reloadExtensionHost(hostId)
-}
+// ---------- 调试 ----------
 
 async function reloadSelected(): Promise<void> {
   if (!selected.value) return
@@ -390,91 +332,6 @@ const busy = computed(() => extensionStore.busy !== null)
         />
       </section>
 
-      <!-- 宿主:拓扑与 PID 是排查「一个扩展拖垮另一个」时最直接的信息 -->
-      <section class="plugin-group">
-        <h3 class="plugin-group-title">扩展宿主</h3>
-        <div class="plugin-meta">
-          <div class="plugin-meta-line">
-            <span class="plugin-field-label">宿主模式</span>
-            <span class="settings-presets">
-              <button
-                class="settings-preset"
-                :class="{ 'settings-preset-active': hostMode === 'isolated' }"
-                :disabled="busy"
-                title="每个扩展一个进程：一个扩展崩溃不影响其他扩展"
-                @click="setMode('isolated')"
-              >
-                每扩展独立进程
-              </button>
-              <button
-                class="settings-preset"
-                :class="{ 'settings-preset-active': hostMode === 'shared' }"
-                :disabled="busy"
-                title="所有扩展共用一个进程：省内存，但崩溃半径也共享"
-                @click="setMode('shared')"
-              >
-                共享宿主
-              </button>
-            </span>
-          </div>
-          <div class="plugin-meta-line">
-            <span class="plugin-field-label">affinity</span>
-            <input
-              class="settings-number"
-              type="number"
-              min="0"
-              step="1"
-              :value="affinityValue ?? ''"
-              :placeholder="hostMode === 'isolated' ? '自动' : '与同号扩展同宿主'"
-              :disabled="busy"
-              @change="setAffinity(($event.target as HTMLInputElement).value)"
-            />
-            <span class="plugin-field-hint">
-              正整数相同的扩展进同一个宿主；留空 = 按模式自动分组。
-            </span>
-          </div>
-          <div v-if="hostGroups.length > 0" class="plugin-meta-line">
-            <span class="plugin-field-label">当前宿主</span>
-            <ul class="plugin-ops-list">
-              <li v-for="group in hostGroups" :key="group.hostId" class="plugin-op">
-                <div class="plugin-op-head">
-                  <span class="plugin-op-result">#{{ group.hostId }}</span>
-                  <span class="plugin-op-action">
-                    {{ group.extensionIds.map(extensionName).join('、') }}
-                  </span>
-                  <span class="plugin-op-time">
-                    {{ group.state }} · PID {{ group.pid ?? '—' }} ·
-                    {{ formatBytes(group.memoryBytes) }}
-                  </span>
-                  <button
-                    class="plugin-icon-btn"
-                    title="重新加载这个宿主"
-                    :disabled="busy"
-                    @click="reloadHost(group.hostId)"
-                  >
-                    <RotateCw :size="12" />
-                  </button>
-                </div>
-              </li>
-            </ul>
-          </div>
-          <div class="plugin-meta-line">
-            <span class="plugin-field-hint">
-              共享宿主里，同组扩展共享进程、globalThis 与事件循环：一个扩展调用
-              process.exit()、阻塞事件循环或触发原生崩溃，会带走同组其他扩展。
-            </span>
-            <button
-              v-if="runtimeBad || (hostMode === 'shared' && hostGroupOfSelected && hostGroupOfSelected.extensionIds.length > 1)"
-              class="plugin-btn"
-              :disabled="busy"
-              @click="isolateSelected()"
-            >
-              隔离到独立宿主
-            </button>
-          </div>
-        </div>
-      </section>
-
       <!--
         调试:最近 3 次操作结果 + 日志尾部(扩展自己 log() 的行 + 操作摘要)。
         完整版在数据根下的 logs/extensions/<id>.log,右上角用系统默认程序打开。
@@ -491,23 +348,6 @@ const busy = computed(() => extensionStore.busy !== null)
             </button>
           </span>
         </div>
-        <div v-if="recentOps.length === 0" class="plugin-ops-empty">还没有操作记录。</div>
-        <ul v-else class="plugin-ops-list">
-          <li v-for="op in recentOps" :key="`${op.at}:${op.action}`" class="plugin-op">
-            <div class="plugin-op-head">
-              <span
-                class="plugin-op-result"
-                :class="op.status === 'ok' ? 'plugin-op-ok' : 'plugin-op-bad'"
-              >
-                {{ op.status === 'ok' ? '成功' : op.status === 'partial' ? '部分失败' : '失败' }}
-              </span>
-              <span class="plugin-op-action">{{ op.action }}</span>
-              <span class="plugin-op-time">{{ formatTime(op.at) }}</span>
-            </div>
-            <div class="plugin-op-message">{{ op.message }}</div>
-            <pre v-if="op.detail" class="plugin-op-detail">{{ op.detail }}</pre>
-          </li>
-        </ul>
         <div v-if="recentLogs.length > 0" class="plugin-logs">
           <button class="plugin-link" @click="logsOpen = !logsOpen">
             {{ logsOpen ? '▾' : '▸' }} 扩展日志（最近 {{ recentLogs.length }} 条）

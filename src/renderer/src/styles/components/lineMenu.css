@@ -6,7 +6,7 @@
  * 那条写在 editor/setup.ts 的 editorTheme 里(base theme 的特异度只能从那儿盖)。
  *
  * 行本身没有左右 padding(见 setup.ts 的说明),所以按钮要越过正文栏左缘,
- * 落在 --editor-line-gutter(28px)这段留白里;2px 是与旧版一致的边距。
+ * 落在 --editor-line-gutter(28px)这段留白里;2px 是按钮与行左缘的间距。
  */
 .line-plus {
   position: absolute;

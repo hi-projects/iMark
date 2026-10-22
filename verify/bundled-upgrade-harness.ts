@@ -1,5 +1,5 @@
 /**
- * 内置扩展的补装与「跟着应用一起升级」验收(v2)。
+ * 内置扩展的补装与「跟着应用一起升级」验收。
  *
  * 为什么需要这一段:应用自带的扩展包在补装时是「有同 id 就不碰」的,而扩展的新
  * 能力是随应用版本一起发出去的。没有升级这条路,用户升了应用却拿不到新能力。
@@ -8,7 +8,7 @@
  * 用户真正的体验,而那取决于磁盘。
  *
  * 覆盖:
- *   - 全新环境:四款都补装;quick-edit 默认启用,git-sync / ai-for-edit / agent 默认关闭;
+ *   - 全新环境:五款都补装;quick-edit 默认启用,其余四款默认关闭;
  *   - 并发/重复调用幂等;
  *   - bundled 来源的旧版本 → 升到应用自带版本,启用态不变;
  *   - market 来源的旧版本 → 不被内置包覆盖;
@@ -18,6 +18,7 @@
  */
 
 import { app } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -36,6 +37,7 @@ import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg
 import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
 import aiForEditPackage from '../src/main/market/builtin/imark.ai-for-edit.imkpkg.json?raw'
 import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
+import claudeCodePackage from '../src/main/market/builtin/imark.claude-code.imkpkg.json?raw'
 
 let pass = 0
 let fail = 0
@@ -74,6 +76,8 @@ const QUICK = parse(quickEditPackage)
 const GIT = parse(gitSyncPackage)
 const AI = parse(aiForEditPackage)
 const AGENT = parse(agentPackage)
+const CLAUDE = parse(claudeCodePackage)
+const BUNDLED = [QUICK, GIT, AI, AGENT, CLAUDE]
 
 interface InstalledFile {
   version: number
@@ -135,7 +139,7 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  const service: ExtensionService = await initExtensions({ appVersion: '0.1.0' })
+  const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
 
   // ---------- [A] 全新环境:补装 ----------
   console.log('\n[A] 全新环境:补装')
@@ -145,9 +149,36 @@ async function main(): Promise<void> {
     ensureBundledProvisioned(service)
   ])
 
+  check(
+    '五款内置包版本都是 1.0.0',
+    BUNDLED.every(bundled => bundled.manifest.version === '1.0.0'),
+    BUNDLED.map(bundled => bundled.manifest.version).join(',')
+  )
+  check(
+    '五款内置包都要求 iMark ^1.0.0',
+    BUNDLED.every(bundled => bundled.manifest.engines.imark === '^1.0.0'),
+    BUNDLED.map(bundled => bundled.manifest.engines.imark).join(',')
+  )
+  check(
+    'Agent Core 的显示名已更新',
+    AGENT.manifest.displayName === 'Agent Core',
+    String(AGENT.manifest.displayName)
+  )
+  check(
+    'Claude Code 依赖 Agent Core',
+    JSON.stringify(CLAUDE.manifest.extensionDependencies) === JSON.stringify([AGENT.id]),
+    JSON.stringify(CLAUDE.manifest.extensionDependencies)
+  )
+  check(
+    'Claude Code 声明 imark.agentProviders',
+    JSON.stringify(CLAUDE.manifest.contributes?.['imark.agentProviders']) ===
+      JSON.stringify(['claude-code']),
+    JSON.stringify(CLAUDE.manifest.contributes?.['imark.agentProviders'])
+  )
+
   const installed = await readInstalled()
-  check('登记表是 v2 形状', installed.version === 2)
-  for (const bundled of [QUICK, GIT, AI, AGENT]) {
+  check('登记表是当前形状', installed.version === 1)
+  for (const bundled of BUNDLED) {
     const record = installed.extensions[bundled.id]
     check(`${bundled.id} 已补装`, Boolean(record), Object.keys(installed.extensions).join(','))
     check(
@@ -172,10 +203,13 @@ async function main(): Promise<void> {
   const gitView = await service.getExtensionView(GIT.id)
   const aiView = await service.getExtensionView(AI.id)
   const agentView = await service.getExtensionView(AGENT.id)
+  const claudeView = await service.getExtensionView(CLAUDE.id)
   check('quick-edit 默认启用', quickView?.enabled === true)
   check('git-sync 默认关闭', gitView?.enabled === false)
   check('ai-for-edit 默认关闭', aiView?.enabled === false)
-  check('agent 默认关闭', agentView?.enabled === false)
+  check('Agent Core 默认关闭', agentView?.enabled === false)
+  check('Claude Code 默认关闭', claudeView?.enabled === false)
+  check('Agent Core 显示名是 Agent Core', agentView?.descriptor.displayName === 'Agent Core')
 
   // ---------- [B] 重复调用幂等 ----------
   console.log('\n[B] 重复调用幂等')
@@ -183,7 +217,7 @@ async function main(): Promise<void> {
   await ensureBundledProvisioned(service)
   await ensureBundledProvisioned(service)
   const after = await readInstalled()
-  const same = [QUICK, GIT, AI, AGENT].every(
+  const same = BUNDLED.every(
     bundled =>
       after.extensions[bundled.id]?.installedAt === before.extensions[bundled.id]?.installedAt &&
       after.extensions[bundled.id]?.version === before.extensions[bundled.id]?.version

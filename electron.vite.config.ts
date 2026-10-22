@@ -43,8 +43,8 @@ export default defineConfig({
         '@shared': resolve('src/shared')
       }
     },
-    // 只有一个入口:应用主窗口的 preload。v1 的沙箱插件页 preload 已随旧模型删除;
-    // webview 的内容由主进程的 imark-webview:// 协议服务,不再注入 preload。
+    // 只有一个入口:应用主窗口的 preload。扩展 webview 的内容由主进程的
+    // imark-webview:// 协议服务,不注入 preload。
     build: {
       rollupOptions: {
         input: {

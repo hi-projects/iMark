@@ -116,17 +116,17 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 /**
- * 数据目录:`app.getPath('userData')` / `sessionData` 指到 `~/.imark/profile`,
- * 应用自有数据(插件、设置、密钥、窗口几何、样式)放在 `~/.imark` 顶层;
- * 老用户第一次跑新版时在这里做一次性搬迁(见 main/dataDir.ts)。
+ * 数据目录:`app.getPath('userData')` / `sessionData` 指到数据根下的 `profile/`,
+ * 应用自有数据(插件、设置、密钥、窗口几何、样式)放在数据根顶层
+ * (见 main/dataDir.ts:应用目录可写时是 `<应用目录>/.imark`,否则回退 `~/.imark`)。
  *
  * 位置与"同步"这两个要求都是硬的:
  *   - 必须在 `app.whenReady()` **之前**:Chromium 按这两个路径开 profile,
- *     晚了就成了"Chromium 用旧路径、应用代码用新路径";
+ *     晚了就成了"Chromium 用默认路径、应用代码用数据根";
  *   - 必须在 `requestSingleInstanceLock()` **之前**:那把锁就绑在 userData 上,
- *     先后颠倒会让新旧版本互相看不见(同时跑两个实例写同一份 profile);
+ *     先后颠倒会让不同安装的两个实例互相看不见(同时跑两个实例写同一份 profile);
  *   - **同步**:写成 async 会跟 Chromium 自己的初始化抢跑(它是主脚本返回后继续
- *     跑的),而这一步只是几次 rename。
+ *     跑的),而这一步只是几次 mkdir 与 setPath。
  */
 prepareDataDirs()
 if (!app.isPackaged) console.log(`[iMark] ${describeDataPaths()}`)
@@ -164,7 +164,7 @@ if (!app.requestSingleInstanceLock()) {
       reservedKeys: reservedAccelerators,
       onContributions: applyContributionMenu
     })
-    // 三款官方扩展按 v2 内置包补装(已是 bundled 来源的会跟随应用版本升级;
+    // 五款官方扩展按内置包补装(已是 bundled 来源的会跟随应用版本升级;
     // 市场/本地来源一律不碰)。必须在建菜单之前:它们贡献的命令与快捷键是菜单来源。
     await ensureBundledProvisioned(service)
     // 窗口出现之前先建一次菜单:扩展贡献的快捷键是靠原生菜单加速键生效的,

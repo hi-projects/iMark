@@ -1,5 +1,5 @@
 /**
- * git-sync（v2）的**凭据路径**端到端验收。
+ * git-sync 的**凭据路径**端到端验收。
  *
  * 主 harness 用的是 ssh + 本地路径远端，`credentialArgs()` 返回空数组，于是
  * 「一次性 credential helper 拼进 git 命令行 + 用户名/令牌经环境变量传给子进程」
@@ -37,7 +37,7 @@ import {
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
 const EXT_ID = 'imark.git-sync'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -118,19 +118,22 @@ interface TargetConfig {
   remoteBranch: string
 }
 
+/** 配置存的是**完整键**:`<扩展id>.<属性>` */
+const configKey = (key: string): string => `${EXT_ID}.${key}`
+
 const configOf = (targets: TargetConfig[]): Record<string, unknown> => ({
-  targets,
-  intervalMinutes: 0,
-  syncOnStart: false,
-  commitMessage: 'sync: {time}',
-  authorName: 'iMark',
-  authorEmail: 'imark@local',
-  autoInitRepo: true,
-  initBranch: 'main',
-  writeGitignore: false,
-  writeReadme: false,
-  proxyMode: 'off',
-  proxyUrl: 'http://127.0.0.1:7890'
+  [configKey('targets')]: targets,
+  [configKey('intervalMinutes')]: 0,
+  [configKey('syncOnStart')]: false,
+  [configKey('commitMessage')]: 'sync: {time}',
+  [configKey('authorName')]: 'iMark',
+  [configKey('authorEmail')]: 'imark@local',
+  [configKey('autoInitRepo')]: true,
+  [configKey('initBranch')]: 'main',
+  [configKey('writeGitignore')]: false,
+  [configKey('writeReadme')]: false,
+  [configKey('proxyMode')]: 'off',
+  [configKey('proxyUrl')]: 'http://127.0.0.1:7890'
 })
 
 async function main(): Promise<void> {
@@ -204,7 +207,7 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSave: false,
+        autoSaveMode: 'off',
         extensions: {
           [EXT_ID]: { enabled: true, config: configOf([baseTarget]) }
         }

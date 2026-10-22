@@ -1,7 +1,7 @@
 /**
  * 市场侧的包校验入口 —— 与扩展安装路径共用同一份实现。
  *
- * v2 的校验只存在于 `extensions/installer.ts` 一处:结构校验(`validateEnvelope`,
+ * 校验只存在于 `extensions/installer.ts` 一处:结构校验(`validateEnvelope`,
  * 在 shared 里)、逐文件 sha256、整包 integrity。市场模块再抄一份的后果是
  * 「界面上校验通过、装的时候被拒」—— 所以这里只做转发,不重新实现。
  *
@@ -10,29 +10,34 @@
  */
 
 import { createHash } from 'node:crypto'
-import {
-  stableIntegrityInput,
-  type ExtensionManifest,
-  type PackageFileEntry
-} from '@shared/extensionPackage'
+import { extensionIdOf, type ExtensionManifest } from '@shared/extensionPackage'
 import {
   verifyExtensionPackage,
   type VerifiedExtensionPackage
 } from '../extensions/installer'
 
+/**
+ * 从一个尚未校验的信封里读身份。
+ * 读不出来返回 null —— 结构问题交给后续校验去报，这里只给「装的是谁」。
+ */
+export function peekIdentity(raw: unknown): { id: string; version: string } | null {
+  const manifest = (raw as { manifest?: ExtensionManifest } | null)?.manifest
+  if (!manifest || typeof manifest.publisher !== 'string' || typeof manifest.name !== 'string') {
+    return null
+  }
+  try {
+    return {
+      id: extensionIdOf(manifest),
+      version: typeof manifest.version === 'string' ? manifest.version : ''
+    }
+  } catch {
+    return null
+  }
+}
+
 export function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex')
 }
-
-/** 整包 integrity:输入形状必须与打包端、服务端完全一致 */
-export function computeIntegrity(
-  manifest: ExtensionManifest,
-  files: Record<string, PackageFileEntry>
-): string {
-  return sha256(stableIntegrityInput(manifest, files))
-}
-
-export type VerifiedPackage = VerifiedExtensionPackage
 
 /**
  * 全量校验一个信封。
@@ -42,11 +47,6 @@ export type VerifiedPackage = VerifiedExtensionPackage
 export function verifyEnvelope(
   raw: unknown,
   expectedIntegrity?: string | null
-): { ok: true; value: VerifiedPackage } | { ok: false; errors: string[] } {
+): { ok: true; value: VerifiedExtensionPackage } | { ok: false; errors: string[] } {
   return verifyExtensionPackage(raw, expectedIntegrity)
-}
-
-/** 界面上展示 sha256 时统一截断成 `abc123…def456`,完整值留给「复制」按钮 */
-export function short(sha: string): string {
-  return sha.length > 16 ? `${sha.slice(0, 6)}…${sha.slice(-6)}` : sha
 }

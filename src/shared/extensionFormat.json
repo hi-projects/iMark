@@ -5,19 +5,18 @@
     "(裸 Node ESM)、server/src/validate.mjs(裸 Node ESM,独立进程)。",
     "放在 TS 模块里,后两者就 import 不了;让它们各抄一份,就是等着漂移。",
     "",
-    "v2 与 v1 的关系是**硬切**:没有兼容分支,formatVersion 不是 2 的包一律拒绝。",
-    "integrity 改为递归键排序的 stable stringify,所以 manifest 的键序不再是格式的一部分;",
-    "manifestKeyOrder 只用于把清单重建为稳定、可读的形状。"
+    "formatVersion 不匹配的包一律拒绝。integrity 使用递归键排序的",
+    "stable stringify,所以 manifest 的键序不是格式的一部分;manifestKeyOrder 只用于",
+    "把清单重建为稳定、可读的形状。"
   ],
 
-  "_format": ["信封标识;v1 也是这个值,靠 formatVersion 区分。"],
+  "_format": ["信封标识,与 formatVersion 一起构成包格式的识别信息。"],
   "format": "imk-plugin",
 
   "_formatVersion": [
-    "信封格式版本。应用、打包器、服务端都从这里读。",
-    "v2 = package.json 清单 + stable integrity,不兼容 v1。"
+    "信封格式版本。应用、打包器、服务端都从这里读;写入包时也用它。"
   ],
-  "formatVersion": 2,
+  "formatVersion": 1,
 
   "_manifestKeyOrder": [
     "重建 package.json 清单时使用的键序。integrity 已改为 stable stringify,键序不影响",
@@ -57,8 +56,16 @@
     "menus",
     "configuration",
     "imark.lineMenu",
-    "imark.actions"
+    "imark.actions",
+    "imark.agentProviders"
   ],
+
+  "_agentCore": [
+    "Agent Core 的扩展 ID 与 provider 贡献点。Core、provider 插件、校验器和市场服务端",
+    "都从这一份读，避免把同一个约定抄成两份。"
+  ],
+  "agentCoreExtensionId": "imark.agent",
+  "agentProvidersContribution": "imark.agentProviders",
 
   "_capabilityKeys": [
     "capabilities 只是**安装披露**,不是运行时门禁。扩展代码以当前用户权限运行。",
@@ -70,8 +77,8 @@
   "filesystemValues": ["workspace", "user"],
 
   "_activationEvents": [
-    "支持的激活事件。未知事件只记警告、不阻止安装(与 VS Code 一致:新事件可以让",
-    "旧版本安静地忽略)。带参数的事件在这里只校验前缀。"
+    "支持的激活事件。未知事件只记警告、不阻止安装(与 VS Code 一致)。",
+    "带参数的事件在这里只校验前缀。"
   ],
   "activationEvents": {
     "exact": ["*", "onStartupFinished", "onLanguage:markdown"],
@@ -142,7 +149,8 @@
     "lineMenuTotalBytes": 16384,
     "actions": 20,
     "menuItems": 20,
-    "statusBarItems": 5
+    "statusBarItems": 5,
+    "agentProviders": 8
   },
 
   "_extensions": [

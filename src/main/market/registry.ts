@@ -15,7 +15,6 @@ import type {
   MarketEntry,
   MarketQuery,
   MarketSearchResult,
-  MarketVersionInfo,
   PublishResult
 } from '@shared/market'
 import { authStatus, clearSession, getDevToken, getRegistryUrl, invalidateSession, registryKey, setSession } from './config'
@@ -59,13 +58,6 @@ export async function latest(id: string): Promise<MarketEntry> {
   )
 }
 
-export async function byAuthor(username: string): Promise<MarketSearchResult> {
-  const registry = await base()
-  return getJson<MarketSearchResult>(
-    resolveUrl(registry, `/api/v1/users/${encodeURIComponent(username)}/packages`)
-  )
-}
-
 export async function iconDataUrl(id: string): Promise<string | null> {
   const registry = await getRegistryUrl()
   if (!registry) return null
@@ -99,13 +91,6 @@ export async function fetchEnvelope(
   )
   const result = await downloadEnvelope(url, { token: await getDevToken(), onBytes })
   return { envelope: result.body, integrity: result.integrity, version: result.version }
-}
-
-export async function versionInfo(id: string, version: string): Promise<MarketVersionInfo & { manifest: unknown }> {
-  const registry = await base()
-  return getJson<MarketVersionInfo & { manifest: unknown }>(
-    resolveUrl(registry, `/api/v1/packages/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}`)
-  )
 }
 
 // ---------- 账号 ----------
@@ -144,27 +129,6 @@ export async function logout(): Promise<MarketAuthStatus> {
   return authStatus()
 }
 
-/**
- * 拿本地令牌去问服务端「我还在吗」。
- *
- * 与 `authStatus()` 的分工:那个只读本地状态(离线也对),这个要联网,
- * 但它能发现「令牌已经在服务端被吊销了」—— 401 时顺手把本地凭证清掉,
- * 免得用户对着一个永远不会成功的登录状态反复点发布。
- */
-export async function refreshSession(): Promise<MarketAuthStatus> {
-  const registry = await getRegistryUrl()
-  const token = await getDevToken()
-  if (!registry || !token) return authStatus()
-  try {
-    const me = await getJson<{ username: string }>(resolveUrl(registry, '/api/v1/auth/me'), { token })
-    await setSession(token, me.username)
-  } catch (err) {
-    if ((err as { kind?: string }).kind === 'unauthorized') await invalidateSession()
-    else throw err
-  }
-  return authStatus()
-}
-
 // ---------- 发布 ----------
 
 /**
@@ -186,21 +150,6 @@ export async function publish(envelope: unknown): Promise<PublishResult> {
     if ((err as { kind?: string }).kind === 'unauthorized') await invalidateSession()
     throw err
   }
-}
-
-export async function setYanked(id: string, version: string, yanked: boolean): Promise<void> {
-  const registry = await base()
-  const token = await getDevToken()
-  if (!token) throw new Error('请先登录后再操作')
-  const action = yanked ? 'yank' : 'unyank'
-  await postJson(
-    resolveUrl(
-      registry,
-      `/api/v1/packages/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}/${action}`
-    ),
-    {},
-    { token }
-  )
 }
 
 // ---------- 健康检查 ----------

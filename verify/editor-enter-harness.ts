@@ -24,6 +24,7 @@
  */
 
 import { app, dialog, protocol } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
@@ -104,7 +105,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents
@@ -202,9 +203,9 @@ async function main(): Promise<void> {
   /**
    * 写盘 + 重载窗口,拿到一个光标在文首的干净编辑器。
    *
-   * 重载之后必须验一下页面里装的确实是刚写的那份:曾经有过「重载没有真正发生、
-   * 编辑器里还是上一份文档」的情况,那时候按键落在别的行上,后面每一条断言都会
-   * 报成假失败 —— 所以这里等 DOM 行数对上了才继续,不对就再重载一次并摊开证据。
+   * 重载之后必须验一下页面里装的确实是刚写的那份:如果重载没有真正发生、
+   * 编辑器里还是上一份文档,按键就会落在别的行上,后面每一条断言都会报成假失败 ——
+   * 所以这里等 DOM 行数对上了才继续,不对就再重载一次并摊开证据。
    */
   async function loadDoc(content: string): Promise<boolean> {
     const lines = content.split('\n').length

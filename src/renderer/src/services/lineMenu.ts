@@ -5,7 +5,7 @@
  * 「启用中的扩展声明了哪些条目」算成快照,这里只负责显示、收集对话框参数、
  * 调 `commands.executeCommand`。
  *
- * 与 v1 的区别:宿主不再替扩展插入文本。命令拿到
+ * 宿主不替扩展插入文本:命令拿到
  * `{ values, source: 'lineMenu', line, lineText, filePath }`,要改文档就走
  * `window.activeTextEditor.edit` —— 插入位置和撤销栈由扩展自己负责。
  *

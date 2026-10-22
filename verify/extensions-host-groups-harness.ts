@@ -1,5 +1,5 @@
 /**
- * 验收:宿主分组(阶段二)。
+ * 验收:宿主分组。
  *
  * 这里只关心“扩展代码跑在哪个进程里”，不碰渲染层:
  *
@@ -11,6 +11,9 @@
  *   [6] 共享宿主里 A 崩溃 → 同组 C 一起重启，其他宿主不受影响
  *   [7] 禁用组内扩展 → 该组单独释放/换宿主，其他组 PID 不变
  *
+ * 另外:E 的 activate() 返回导出对象,D(依赖 E,同宿主)通过
+ * `imark.extensions.getExtension()` 读到它,覆盖 `Extension.exports` 的赋值路径。
+ *
  * 每组里的扩展都用 `require('imark')` 注册**清单未声明**的命令；命令归属
  * (`command.registered` 的 extensionId)能直接证明注入的是调用方自己的 API。
  *
@@ -19,6 +22,7 @@
  */
 
 import { app } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dataRoot } from '../src/main/dataDir'
@@ -62,7 +66,7 @@ function manifestOf(
     name,
     version: '1.0.0',
     displayName,
-    engines: { imark: '^0.1.0' },
+    engines: { imark: '^1.0.0' },
     main: './main.js',
     activationEvents: ['onStartupFinished'],
     contributes: {
@@ -89,7 +93,7 @@ function manifestOf(
   }
 }
 
-function codeFor(extra = ''): string {
+function codeFor(extra = '', exportValue = ''): string {
   return `
 const imark = require('imark')
 
@@ -105,6 +109,7 @@ exports.activate = (context) => {
   // 清单里没声明:归属完全由注入的 API 对象决定
   context.subscriptions.push(imark.commands.registerCommand(self + '.runtime', () => self))
   ${extra}
+  ${exportValue ? `return ${exportValue}` : ''}
 }
 `
 }
@@ -166,6 +171,11 @@ async function who(service: ExtensionService, id: string): Promise<string> {
   return String(await service.executeCommand(`${id}.who`))
 }
 
+/** D 在自己的宿主里读取 E 的 exports；跨宿主时读不到对象 */
+async function readEExports(service: ExtensionService): Promise<string> {
+  return String(await service.executeCommand(`${D_ID}.read-e`))
+}
+
 async function main(): Promise<void> {
   if (!app.commandLine.hasSwitch('user-data-dir')) {
     console.error('拒绝运行:必须带 --user-data-dir(用 `node verify/run.mjs <名字>` 跑会自动带上)')
@@ -176,11 +186,19 @@ async function main(): Promise<void> {
 
   const dieCode =
     "context.subscriptions.push(imark.commands.registerCommand(self + '.die', () => { process.exit(9) }))"
+  // D 依赖 E,两者同宿主;这里读的是宿主内的 exports 对象,不是命令返回值
+  const readECode = `
+  context.subscriptions.push(imark.commands.registerCommand(self + '.read-e', () => {
+    const target = imark.extensions.getExtension('test.ee')
+    return target ? String(target.exports?.marker ?? 'missing') : 'missing'
+  }))`
   for (const manifest of EXTENSIONS) {
-    await writeExtension(manifest, codeFor(manifest.name === 'aa' ? dieCode : ''))
+    const extra = manifest.name === 'aa' ? dieCode : manifest.name === 'dd' ? readECode : ''
+    const exported = manifest.name === 'ee' ? "({ marker: 'export-e' })" : ''
+    await writeExtension(manifest, codeFor(extra, exported))
   }
 
-  const service = await initExtensions({ appVersion: '0.1.0-test' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   try {
     console.log('\n[1] isolated(默认):每个扩展一个宿主，依赖强制同组')
     await service.startup()
@@ -205,6 +223,7 @@ async function main(): Promise<void> {
       String(distinctLivePids(service, IDS))
     )
     check('运行时命令归属正确(isolated)', allOwnRuntimeCommands(service))
+    check('D 能读到同宿主依赖 E 的 exports', (await readEExports(service)) === 'export-e')
     check(
       '每个扩展读到自己的配置默认值',
       (await who(service, A_ID)) === `${A_ID}|hello-aa|none` &&

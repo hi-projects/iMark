@@ -87,7 +87,7 @@ const api = {
   trashPath: (path: string): Promise<void> => request(IPC.VaultDelete, { path }),
   confirmDelete: (name: string, isDir: boolean): Promise<boolean> =>
     request(IPC.VaultConfirmDelete, { name, isDir }),
-  // ---------- 扩展(v2) ----------
+  // ---------- 扩展 ----------
   listExtensions: (): Promise<ExtensionView[]> => request(IPC.ExtensionList),
   setExtensionEnabled: (id: string, enabled: boolean): Promise<ExtensionView[]> =>
     request(IPC.ExtensionSetEnabled, { id, enabled }),
@@ -145,16 +145,6 @@ const api = {
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): (() => void) =>
     subscribe<Pick<ExtensionCommandInvocation, 'command' | 'from'>>(IPC.ExtensionCommand, cb),
-  /** 文档内容变了(渲染层已节流,最快约 400ms 一次) */
-  notifyDocChanged: (o: { dirty: boolean; words: number; chars: number }): void =>
-    ipcRenderer.send(IPC.DocChanged, o),
-  /** 编辑器里有没有文档 —— 与「有没有文件路径」是两件事,未命名文档没有路径 */
-  setEditorPresence: (present: boolean): void => ipcRenderer.send(IPC.EditorPresence, present),
-  /** 一份文档成功写进了磁盘 */
-  notifyDocSaved: (filePath: string): void => ipcRenderer.send(IPC.DocSaved, filePath),
-  /** 主→渲染:这个文件被外部改了(是正开着的就重新加载) */
-  onFileExternalChange: (cb: (filePath: string) => void): (() => void) =>
-    subscribe<string>(IPC.FileExternalChange, cb),
   // ---------- 插件市场 ----------
   pickMarketPackage: () => request(IPC.MarketPickPackage),
   packMarketDir: () => request(IPC.MarketPackDir),
@@ -216,5 +206,3 @@ contextBridge.exposeInMainWorld('__imarkTakeApi', () => {
   apiTaken = true
   return api
 })
-
-export type RendererApi = typeof api

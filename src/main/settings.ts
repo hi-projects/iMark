@@ -9,27 +9,13 @@ import {
 } from '@shared/editorSettings'
 import { dataRoot } from './dataDir'
 
-/** 上一版用来表达三种自动保存状态的字段;只用于迁移,不再往磁盘上写 */
-type LegacyAutoSave = {
-  autoSave?: unknown
-  autoSaveRealtime?: unknown
-  autoSaveInterval?: unknown
-}
-
 const AUTO_SAVE_MODES: readonly AutoSaveMode[] = ['off', 'afterDelay', 'onFocusChange', 'onWindowChange']
 
 const THEMES: readonly Theme[] = ['light', 'dark']
 
-/**
- * 主题的迁移与校验。
- *
- * 上一版还有一档纯黑(`black`),现在只保留亮色 / 深色两档。存过纯黑的用户
- * 保留「深色」这个偏好,就地落到 `dark`;被手改成未知值的落回默认亮色。
- */
+/** 主题校验 */
 function normalizeTheme(value: unknown): Theme {
-  if ((THEMES as readonly unknown[]).includes(value)) return value as Theme
-  if (value === 'black') return 'dark'
-  return DEFAULTS.theme
+  return (THEMES as readonly unknown[]).includes(value) ? (value as Theme) : DEFAULTS.theme
 }
 
 /**
@@ -57,7 +43,6 @@ const DEFAULTS: Settings = {
   userStyle: null,
   extensions: {},
   extensionHost: { mode: 'isolated', affinity: {} },
-  legacyDataCleared: 0,
   // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
   marketUrl: 'http://127.0.0.1:8787',
   marketAutoCheck: true,
@@ -74,28 +59,13 @@ function isAutoSaveMode(v: unknown): v is AutoSaveMode {
   return typeof v === 'string' && (AUTO_SAVE_MODES as readonly string[]).includes(v)
 }
 
-/**
- * 自动保存的迁移与夹取。
- *
- * 新版只有 mode + delay 两个字段。旧配置(没有 autoSaveMode)按上一版的
- * autoSave / autoSaveRealtime / autoSaveInterval 推:
- * - 没开自动保存 → off;
- * - 开的是上一版「实时保存」→ afterDelay + 1 秒(它本来就是短延迟的定时保存);
- * - 开的是定时保存 → afterDelay + 原来的间隔。
- */
+/** 自动保存:两个字段都只做校验与夹取 */
 function normalizeAutoSave(
-  raw: Partial<Settings> & LegacyAutoSave
+  raw: Partial<Settings>
 ): Pick<Settings, 'autoSaveMode' | 'autoSaveDelay'> {
-  if (isAutoSaveMode(raw.autoSaveMode)) {
-    return { autoSaveMode: raw.autoSaveMode, autoSaveDelay: clampAutoSaveDelay(raw.autoSaveDelay) }
-  }
-  if (raw.autoSave !== true) {
-    return { autoSaveMode: 'off', autoSaveDelay: EDITOR_DEFAULTS.autoSaveDelay }
-  }
   return {
-    autoSaveMode: 'afterDelay',
-    // 旧版的默认间隔是 30 秒;没有这个字段时按它兜底,别把老用户的节奏悄悄改成 1 秒
-    autoSaveDelay: raw.autoSaveRealtime === true ? 1 : clampAutoSaveDelay(raw.autoSaveInterval, 30)
+    autoSaveMode: isAutoSaveMode(raw.autoSaveMode) ? raw.autoSaveMode : DEFAULTS.autoSaveMode,
+    autoSaveDelay: clampAutoSaveDelay(raw.autoSaveDelay)
   }
 }
 
@@ -104,10 +74,8 @@ function normalizeAutoSave(
  * 就地落回默认值,避免各处读取时崩。扩展内部的字段级默认值由扩展服务负责补
  * (那里才知道各扩展的字段表)。
  */
-function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
+function normalize(raw: Partial<Settings>): Settings {
   const merged = { ...DEFAULTS, ...raw } as Settings & Record<string, unknown>
-  // v1 的扩展配置键已经不在类型里:读到就丢掉,下一次 saveSettings 不会再写出去
-  delete merged.plugins
   if (!merged.extensions || typeof merged.extensions !== 'object' || Array.isArray(merged.extensions)) {
     merged.extensions = {}
   }
@@ -126,10 +94,6 @@ function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
     }
     merged.extensionHost = { mode, affinity }
   }
-  merged.legacyDataCleared =
-    typeof merged.legacyDataCleared === 'number' && Number.isFinite(merged.legacyDataCleared)
-      ? Math.trunc(merged.legacyDataCleared)
-      : 0
   // 标签会话:只接受非空字符串。被手改成别的形状时当作「没有记住任何标签」,
   // 而不是让恢复流程拿着一串对象去读文件
   if (!Array.isArray(merged.openFiles)) merged.openFiles = []
@@ -147,10 +111,6 @@ function normalize(raw: Partial<Settings> & LegacyAutoSave): Settings {
   merged.lineWrapping = merged.lineWrapping !== false
   merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
   merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)
-  // 旧字段不留在磁盘上:下一次 saveSettings 写出的就是新模型
-  for (const key of ['autoSave', 'autoSaveRealtime', 'autoSaveInterval']) {
-    delete merged[key]
-  }
   return merged
 }
 
@@ -158,7 +118,7 @@ export async function loadSettings(): Promise<Settings> {
   if (cache) return cache
   try {
     const raw = await readFile(settingsPath(), 'utf8')
-    cache = normalize(JSON.parse(raw) as Partial<Settings> & LegacyAutoSave)
+    cache = normalize(JSON.parse(raw) as Partial<Settings>)
   } catch {
     cache = { ...DEFAULTS }
   }
@@ -233,38 +193,4 @@ export async function saveSettings(partial: Partial<Settings>): Promise<Settings
     }
   }
   return next
-}
-
-/**
- * 从磁盘上删掉已经废弃的顶层键(v1 的 `plugins` 等)。
- *
- * 只删键、不迁移值:`normalize()` 已经把内存里的 `plugins` 丢掉了,这里补的是
- * 「磁盘上的那一份也别再留着」。写入走同一条串行队列,避免与 saveSettings 抢跑。
- */
-export async function dropLegacySettingsKeys(keys: readonly string[]): Promise<void> {
-  let raw: Record<string, unknown>
-  try {
-    raw = JSON.parse(await readFile(settingsPath(), 'utf8')) as Record<string, unknown>
-  } catch {
-    return
-  }
-  let changed = false
-  for (const key of keys) {
-    if (key in raw) {
-      delete raw[key]
-      changed = true
-    }
-  }
-  if (!changed) return
-  const snapshot = JSON.stringify(raw, null, 2)
-  const write = writeChain.then(async () => {
-    try {
-      await mkdir(dirname(settingsPath()), { recursive: true })
-      await writeFile(settingsPath(), snapshot, 'utf8')
-    } catch {
-      /* 落盘失败不影响本次会话;下次清理前会再试 */
-    }
-  })
-  writeChain = write
-  await write
 }

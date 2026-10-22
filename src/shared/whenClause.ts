@@ -317,7 +317,3 @@ export function evaluateWhenClause(input: string | undefined, context: WhenConte
   if (!parsed.ok || !parsed.node) return false
   return evaluateWhenNode(parsed.node, context)
 }
-
-export function whenClauseKeys(input: string | undefined): string[] {
-  return parseWhenClause(input).keys
-}

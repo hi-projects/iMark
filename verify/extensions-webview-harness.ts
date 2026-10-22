@@ -1,5 +1,5 @@
 /**
- * 验收:扩展 webview(阶段四)。
+ * 验收:扩展 webview。
  *
  * 一个合成扩展 `test.webview` 在真实窗口里创建面板，盯四件事：
  *
@@ -49,7 +49,7 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 
 const EXT_ID = 'test.webview'
 const VIEW_TYPE = 'test.webview.panel'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 
 const MANIFEST: ExtensionManifest = {
   publisher: 'test',
@@ -57,7 +57,7 @@ const MANIFEST: ExtensionManifest = {
   version: '1.0.0',
   displayName: 'Webview 探针',
   description: 'extensions-webview harness 用的合成扩展',
-  engines: { imark: '^0.1.0' },
+  engines: { imark: '^1.0.0' },
   main: './main.js',
   activationEvents: ['onStartupFinished'],
   contributes: {

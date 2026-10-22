@@ -16,7 +16,7 @@
 
 import { dialog, ipcMain } from 'electron'
 import { readFile, stat } from 'node:fs/promises'
-import { EXTENSION_LIMITS, extensionIdOf, type ExtensionManifest } from '@shared/extensionPackage'
+import { EXTENSION_LIMITS, extensionIdOf } from '@shared/extensionPackage'
 import { IPC } from '@shared/ipc-channels'
 import type { MarketInstalledData, MarketQuery, PendingInstall } from '@shared/market'
 import type { ExtensionView } from '@shared/extensions'
@@ -33,6 +33,7 @@ import { fetchSource } from './source'
 import { reportProgress } from './progress'
 import { detail, fetchEnvelope, health, iconDataUrl, login, logout, register, search } from './registry'
 import { checkUpdates, invalidateUpdates } from './updates'
+import { peekIdentity } from './verify'
 
 /** 与 index.ts 一样:扩展服务在窗口创建前初始化,这里只做兜底断言 */
 function requireExtensionService(): ExtensionService {
@@ -162,7 +163,7 @@ export function registerMarketIpc(): void {
   // ---------- 卸载 ----------
 
   ipcMain.handle(IPC.MarketUninstall, async (_e, id: string) => {
-    // v2 的卸载总是清掉配置、密钥、globalState 与日志:扩展 id 可能被其他人
+    // 卸载总是清掉配置、密钥、globalState 与日志:扩展 id 可能被其他人
     // 重新使用,凭据不能留给下一个同名扩展。
     await requireExtensionService().uninstallExtension(id)
     invalidateUpdates()
@@ -307,13 +308,5 @@ export function registerMarketIpc(): void {
 
 /** 从信封里读 id(仅用于查已装版本;读不出来就让后续校验去报错) */
 function peekId(raw: unknown): string | null {
-  const manifest = (raw as { manifest?: ExtensionManifest } | null)?.manifest
-  if (!manifest || typeof manifest.publisher !== 'string' || typeof manifest.name !== 'string') {
-    return null
-  }
-  try {
-    return extensionIdOf(manifest)
-  } catch {
-    return null
-  }
+  return peekIdentity(raw)?.id ?? null
 }

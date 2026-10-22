@@ -1,5 +1,5 @@
 /**
- * 验收:安装确认框拿到的 v2 字段。
+ * 验收:安装确认框拿到的预览字段。
  *
  * 不打开界面,只钉住 `previewEnvelope` 的产出与「需不需要风险确认」这条规则 ——
  * 界面组件是它们的纯函数投影。
@@ -7,8 +7,7 @@
  * 覆盖:
  *   - 含代码包(git-sync):hasMain=true、有 mainSha256、需要勾选「以用户权限运行」;
  *   - 纯声明包:hasMain=false、没有 mainSha256、不需要勾选;
- *   - PackagePreview 里不再有权限数组;
- *   - 所有内置包都能生成预览。
+ *   - Agent Core / Claude Code 也能生成预览,并带出各自的能力声明。
  *
  * 跑法:node verify/run.mjs install-confirm
  */
@@ -18,10 +17,11 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { previewEnvelope } from '../src/main/market/installer'
 import { packDirectory } from '../src/main/market/pack'
-import { needsTrustAck } from '../src/renderer/src/services/pluginShape'
 import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
 import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
 import aiForEditPackage from '../src/main/market/builtin/imark.ai-for-edit.imkpkg.json?raw'
+import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
+import claudeCodePackage from '../src/main/market/builtin/imark.claude-code.imkpkg.json?raw'
 
 let pass = 0
 let fail = 0
@@ -50,11 +50,7 @@ async function main(): Promise<void> {
     check('激活事件非空', git.value.activationEvents.length > 0)
     check('能力声明带出(含 git/network)', git.value.capabilities.git === true && git.value.capabilities.network === true)
     check('贡献摘要非全零', git.value.contributesSummary.commands > 0, JSON.stringify(git.value.contributesSummary))
-    check('需要勾选「以用户权限运行」', needsTrustAck(git.value) === true)
-    check('没有 render 入口哈希字段', !('renderSha256' in git.value))
-    check('没有权限数组', !('permissions' in git.value))
-    check('没有 v1 的 mainMode', !('mainMode' in git.value))
-    check('没有 v1 的 capability', !('capability' in git.value))
+    check('需要勾选「以用户权限运行」', git.value.hasMain === true)
     check('本地安装时 publisher 为 null', git.value.publisher === null)
   }
 
@@ -65,7 +61,7 @@ async function main(): Promise<void> {
   if (quick.ok) {
     check('hasMain = true', quick.value.hasMain === true)
     check('有入口哈希', Boolean(quick.value.mainSha256))
-    check('需要风险确认', needsTrustAck(quick.value) === true)
+    check('需要风险确认', quick.value.hasMain === true)
   }
 
   // ---------- [C] AI 扩展 ----------
@@ -76,6 +72,34 @@ async function main(): Promise<void> {
     check('hasMain = true', ai.value.hasMain === true)
     check('activationEvents 含 onWebviewPanel', ai.value.activationEvents.some(e => e.startsWith('onWebviewPanel:')), JSON.stringify(ai.value.activationEvents))
     check('能力声明含 network/secrets', ai.value.capabilities.network === true && ai.value.capabilities.secrets === true)
+  }
+
+  // ---------- [C2] Agent Core ----------
+  console.log('\n[C2] 含代码扩展(agent)')
+  const agent = previewEnvelope(JSON.parse(agentPackage), origin)
+  check('预览成功', agent.ok, agent.ok ? '' : agent.errors.join(';'))
+  if (agent.ok) {
+    check('hasMain = true', agent.value.hasMain === true)
+    check('显示名为 Agent Core', agent.value.name === 'Agent Core', agent.value.name)
+    check('能力声明含 process', agent.value.capabilities.process === true)
+    check('贡献摘要非全零', agent.value.contributesSummary.commands > 0, JSON.stringify(agent.value.contributesSummary))
+  }
+
+  // ---------- [C3] Claude Code ----------
+  console.log('\n[C3] 含代码扩展(claude-code)')
+  const claude = previewEnvelope(JSON.parse(claudeCodePackage), origin)
+  check('预览成功', claude.ok, claude.ok ? '' : claude.errors.join(';'))
+  if (claude.ok) {
+    check('hasMain = true', claude.value.hasMain === true)
+    check('显示名为 Claude Code', claude.value.name === 'Claude Code', claude.value.name)
+    check(
+      '能力声明含 network/secrets/process/shell',
+      claude.value.capabilities.network === true &&
+        claude.value.capabilities.secrets === true &&
+        claude.value.capabilities.process === true &&
+        claude.value.capabilities.shell === true
+    )
+    check('贡献摘要带出配置', claude.value.contributesSummary.configuration > 0, JSON.stringify(claude.value.contributesSummary))
   }
 
   // ---------- [D] 纯声明扩展 ----------
@@ -92,7 +116,7 @@ async function main(): Promise<void> {
         name: 'declarative-demo',
         version: '1.2.3',
         displayName: '纯声明示例',
-        engines: { imark: '^0.1.0' },
+        engines: { imark: '^1.0.0' },
         contributes: {
           commands: [{ command: 'harness.declarative-demo.run', title: '运行' }],
           configuration: {
@@ -115,9 +139,8 @@ async function main(): Promise<void> {
     check('hasMain = false', decl.value.hasMain === false)
     check('main 为 null', decl.value.main === null)
     check('没有入口哈希', decl.value.mainSha256 === null)
-    check('不需要风险确认', needsTrustAck(decl.value) === false)
+    check('不需要风险确认', decl.value.hasMain === false)
     check('贡献摘要仍带出', decl.value.contributesSummary.configuration === 1)
-    check('没有权限数组', !('permissions' in decl.value))
   }
 
   // ---------- [E] 来源字段 ----------

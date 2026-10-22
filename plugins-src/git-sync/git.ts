@@ -1,8 +1,8 @@
 /**
  * 扩展侧的 git 子进程封装。
  *
- * v1 里这是宿主注入的 `imk.git.*`；v2 的扩展按 VS Code 信任模型以当前用户权限运行，
- * 直接用 Node 的 `child_process` 即可，不再需要宿主代理。两条必须保留的约定：
+ * 扩展按 VS Code 信任模型以当前用户权限运行，直接用 Node 的 `child_process`
+ * 即可，不需要宿主代理。两条必须保留的约定：
  *
  * 1. 子进程一律 `GIT_TERMINAL_PROMPT=0` + `GCM_INTERACTIVE=never` —— 否则缺凭据时
  *    git 会弹凭据管理器/等输入，在 GUI 里表现为「同步卡死」；

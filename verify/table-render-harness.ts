@@ -15,6 +15,7 @@
  */
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -98,7 +99,7 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSave: false
+        autoSaveMode: 'off'
       },
       null,
       2
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  const service = await initExtensions({ appVersion: '0.1.0' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
@@ -370,9 +371,9 @@ async function main(): Promise<void> {
   )
   check('控件全在表格外侧的留白里(不盖住任何单元格)', ctlInfo.outside, JSON.stringify(ctlInfo))
   check(
-    '鼠标不在表上时:行列控件隐藏,整表选择/删除/对齐三枚常驻',
-    ctlInfo.opacity === 1 &&
-      ctlInfo.visibility === 'visible' &&
+    '鼠标不在表上时:所有结构控件都隐藏',
+    ctlInfo.opacity === 0 &&
+      ctlInfo.visibility === 'hidden' &&
       (await shownCtl()).length === 0,
     JSON.stringify(ctlInfo)
   )
@@ -444,8 +445,8 @@ async function main(): Promise<void> {
   // 1) 鼠标放在某个单元格:只出现这一行、这一列的删除 ×
   await moveTo(geom.bodyCell.x, geom.bodyCell.y)
   check(
-    '放在单元格上:只出现该行 + 该列的删除 ×',
-    summarize(await shownCtl()) === 'delete-col#1,delete-row@2',
+    '放在单元格上:出现该行 + 该列的删除 ×,以及靠近表格才显示的整表三枚',
+    summarize(await shownCtl()) === 'align-table,delete-col#1,delete-row@2,delete-table,select-table',
     summarize(await shownCtl())
   )
   const colGap = await evalJs<number>(`
@@ -461,7 +462,8 @@ async function main(): Promise<void> {
   await moveTo(geom.col1Center, geom.headerBottom - 2)
   check(
     '靠近行边界:出现对应的插入行 +',
-    summarize(await shownCtl()) === 'add-row>0,delete-col#1,delete-row@0',
+    summarize(await shownCtl()) ===
+      'add-row>0,align-table,delete-col#1,delete-row@0,delete-table,select-table',
     summarize(await shownCtl())
   )
 
@@ -469,15 +471,17 @@ async function main(): Promise<void> {
   await moveTo(geom.col0Right - 2, geom.bodyRow1Y)
   check(
     '靠近列边界:出现对应的插入列 +',
-    summarize(await shownCtl()) === 'add-col<1,delete-col#0,delete-row@1',
+    summarize(await shownCtl()) ===
+      'add-col<1,align-table,delete-col#0,delete-row@1,delete-table,select-table',
     summarize(await shownCtl())
   )
 
-  // 4) 表格上沿附近:整表三枚按钮本来就常驻,这里只核对行列控件照旧按需出现
+  // 4) 表格上沿附近:整表三枚与所在行列控件一起出现
   await moveTo(geom.tableLeft + 30, geom.tableTop + 3)
   check(
-    '靠近表格上沿:行列控件照旧按需出现(整表按钮不参与悬停显隐)',
-    summarize(await shownCtl()) === 'delete-col#0,delete-row@0',
+    '靠近表格上沿:行列控件与整表三枚都出现',
+    summarize(await shownCtl()) ===
+      'align-table,delete-col#0,delete-row@0,delete-table,select-table',
     summarize(await shownCtl())
   )
 
@@ -585,7 +589,7 @@ async function main(): Promise<void> {
   await sleep(300)
   const filledHeights = await cellHeights()
   console.log(`    (有字格子:表头 ${filledHeights.th}px / 单元格 ${filledHeights.td}px)`)
-  // 压扁之后的最小高度 = 上下 padding 2px×2 + 边框 2px;再低说明表根本没画出来
+  // 压扁之后的最小高度 = 上下 padding 8px×2 + 边框 2px;再低说明表根本没画出来
   check('空格子的表头量到了高度', emptyHeights.th > 20, JSON.stringify(emptyHeights))
   check(
     '空表头 / 有字表头 行高一致',
@@ -598,9 +602,9 @@ async function main(): Promise<void> {
     `空 ${emptyHeights.td} vs 有字 ${filledHeights.td}`
   )
 
-  // ---------- 4e. 行高压扁、列宽拉大 ----------
+  // ---------- 4e. 内边距与列宽 ----------
 
-  console.log('\n【4e】表格外观:行高更矮、列更宽(空表的列也得有可点的宽度)')
+  console.log('\n【4e】表格外观:单元格内边距与最小列宽')
   await loadDoc(`开头\n\n${makeTable(3, 3)}\n\n末尾\n`)
   await sleep(400)
   const box = await evalJs<{ w: number; h: number; padX: number; padY: number }>(`
@@ -617,10 +621,14 @@ async function main(): Promise<void> {
       }
     })()`)
   console.log(`    (表头单元格 ${box.w}px 宽 × ${box.h}px 高,内边距 ${box.padY}px/${box.padX}px)`)
-  check('删掉多余的上下内边距(2px)', box.padY === 2, JSON.stringify(box))
-  check('左右内边距拉大(16px)', box.padX === 16, JSON.stringify(box))
-  check('空表列宽至少 105px(比原来的窄条明显加宽)', box.w >= 105, JSON.stringify(box))
-  check('行高压到 30px 以内', box.h > 0 && box.h <= 30, JSON.stringify(box))
+  check('上下内边距 8px', box.padY === 8, JSON.stringify(box))
+  check('左右内边距 16px', box.padX === 16, JSON.stringify(box))
+  check('空表列宽至少 110px', box.w >= 110, JSON.stringify(box))
+  check(
+    '行高约 35px(8px 内边距 + 行盒)',
+    box.h > 30 && box.h <= 40,
+    JSON.stringify(box)
+  )
 
   // ---------- 4b. 两张表并存:各自独立渲染 ----------
 
@@ -751,8 +759,8 @@ async function main(): Promise<void> {
     maxVoids = Math.max(maxVoids, voids)
   }
   check('9 个滚动位置都没出现"清空了却没画表"', violations === 0, seen.join('; '))
-  // 具体条数随视口高度与控件留白变化(曾经是 39,也出现过 27),这里只要求
-  // "确实挂载了足够多的折叠行",别把环境差异当成代码回归
+  // 具体条数随视口高度与控件留白变化,这里只要求"确实挂载了足够多的折叠行",
+  // 别把环境差异当成代码回归
   check('滚到能看见整张表的位置时,折叠行足够多', maxVoids >= 20, String(maxVoids))
   console.log(`    (各滚动位置:${seen.join(' | ')})`)
 

@@ -15,7 +15,7 @@ import { app } from 'electron'
 import { statSync } from 'node:fs'
 
 /** 带值的启动开关:下一项是它的值,不是用户要打开的文件 */
-const VALUE_FLAGS = new Set(['--user-data-dir', '--data-dir', '--plugin-dev'])
+const VALUE_FLAGS = new Set(['--user-data-dir', '--imark-data-dir', '--plugin-dev'])
 
 /**
  * 从命令行里挑出「要打开的文件」。

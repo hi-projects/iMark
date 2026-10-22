@@ -1,5 +1,5 @@
 /**
- * 验收:扩展的编辑器桥(阶段三)。
+ * 验收:扩展的编辑器桥。
  *
  * 这一轮不碰市场、不装内置包,直接往数据目录里放一个 `test.editor` 扩展,
  * 盯的是宿主进程与真实 CodeMirror 之间的往返:
@@ -50,7 +50,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 const EXT_ID = 'test.editor'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 
 const MANIFEST: ExtensionManifest = {
   publisher: 'test',
@@ -58,7 +58,7 @@ const MANIFEST: ExtensionManifest = {
   version: '1.0.0',
   displayName: '编辑器桥探针',
   description: 'extensions-editor harness 用的合成扩展',
-  engines: { imark: '^0.1.0' },
+  engines: { imark: '^1.0.0' },
   main: './main.js',
   activationEvents: ['onStartupFinished'],
   contributes: {

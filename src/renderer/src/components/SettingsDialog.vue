@@ -41,7 +41,7 @@ import MarketSource from './market/MarketSource.vue'
 const LAYER_HELP = [
   '扩展代码以你的用户权限运行，能读写文件、执行命令、访问网络 —— 安装前请确认来源可信。',
   '默认每个扩展跑在独立的扩展宿主进程中：一个扩展崩溃不会影响其他扩展。',
-  '可以在扩展设置页切换为共享宿主（省内存），或给扩展设置 affinity 分组。'
+  '可以在 浏览市场 → 扩展宿主 切换为共享宿主（省内存），或给扩展设置分组编号。'
 ].join('\n')
 
 /** 右侧标题:选中的是插件就显示插件名,市场页则跟着它的页签走 */
@@ -49,6 +49,7 @@ const title = computed(() => {
   if (settingsNav.page === 'market') {
     const tab: MarketNav['tab'] = settingsNav.market.tab
     if (tab === 'browse') return settingsNav.market.detailId ? '插件详情' : '浏览市场'
+    if (tab === 'hosts') return '扩展宿主'
     return tab === 'publish' ? '发布插件' : '已安装插件'
   }
   if (settingsNav.page === 'editor') return '编辑器'
@@ -70,7 +71,7 @@ const AUTO_SAVE_MODE_OPTIONS: { mode: AutoSaveMode; label: string; title: string
   { mode: 'onWindowChange', label: '切换窗口时', title: '切换到其他窗口时写盘' }
 ]
 
-/** 延迟的常用档位。1 秒档就是原来的「实时保存」 */
+/** 延迟的常用档位。1 秒档适合边写边落盘的场景 */
 const DELAY_PRESETS = [
   { label: '1 秒', sec: 1 },
   { label: '5 秒', sec: 5 },

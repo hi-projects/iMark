@@ -20,11 +20,11 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
-- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认每个扩展一个宿主(`isolated`),也可切换 `shared` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮、宿主分组与运行日志;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
+- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认每个扩展一个宿主(`isolated`),也可切换 `shared` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「浏览市场 → 扩展宿主」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
   - **定时上传(Git)**:市场里的官方插件(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
   - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方插件。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 插件只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,插件只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有插件的 `lineMenu` 会合进同一个「+」菜单
   - **AI for Edit**:随应用预装、默认关闭的官方插件。配置一个或多个 OpenAI 兼容 / Anthropic 兼容服务地址,每个地址分别填模型与 API 密钥(DeepSeek / Moonshot / 智谱 / Ollama / Azure 等;请求按列表顺序自动回退)后,状态栏左下角的插件图标组里会多一枚 AI 按钮,编辑器里还有一个可在设置里开关、换形象、**按住拖动**的浮动小人(企鹅是透明背景的独立动画角色,不套圆形气泡);点开是对话窗口:输入框上方依次是「对话」(默认)/「生成」(空文档)/「美化」(已有内容)三个模式,选好模式、输入内容(美化可留空)后点「发送」;模式按钮右侧的提示带信息图标,悬浮即可预览本轮发送给 AI 的初始提示词(系统提示词 + 用户消息,生成/美化的用户消息里也包含当前文档与参考文件内容);生成/美化会在对话里先说一句展示消息,再把结果作为消息返回 —— 美化可以在输入框里直接提要求(如更正式、精简、分点),生成/美化结果都有「预览 / 源码」窗口(预览用宿主同一套 markdown-it / KaTeX / Mermaid 渲染),美化的预览直接用绿色标出新增/修改、红色划掉删除的内容(不再单独放一块逐行差异);只有点「写入文档 / 确认替换」才会改文档(关闭窗口、请求失败都不动一个字)。对话按**文档**归档,「会话」按钮列出该文档的历史会话并可恢复,「新对话」保留当前文档关联(标题栏不再标注文件,文档身份只显示在输入框上方的环境栏里);还可以给文档添加本地文本或 PDF 参考文件,当前文档名与参考文件一起显示在环境栏里(不展示篇幅),内容随对话/生成/美化一起提交(PDF 提取文字,没有文字层的扫描页可按页转成图片发给支持图像输入的模型,只发内容、不发路径);对话的稳定上下文会利用服务端上下文缓存(Anthropic 显式缓存断点、DeepSeek/OpenAI 兼容服务的自动前缀缓存),命中与写入的 token 数记入插件日志。行首「+」→「AI 生成内容」在空文档里走同一套对话;YAML front matter 原样保留,输出被截断或确认时文档已被修改则拒绝写回。文档正文只在扩展宿主与 webview 之间传递,密钥经 safeStorage 加密;详见 `plugins-src/ai-for-edit/README.md`
-  - **Agent**:随应用预装、默认关闭的官方通用 Agent 面板。首个 provider 是 **Claude Code** 本机 CLI;插件本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给 Agent,由 Agent 自己决定 Read / Bash / 写脚本 / 调本机解析器。支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。启用前需要在设置里填 Claude Code 可执行文件(留空自动探测)或先安装 CLI;详见 `plugins-src/agent/README.md`
+  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方插件。**Agent Core** 是通用 Agent 面板:对话、会话、附件、产物与权限模式都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给后端,由后端自己决定 Read / Bash / 写脚本 / 调本机解析器。具体后端由 provider 插件提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里填可执行文件(留空自动探测)或先安装 CLI。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
 - **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、插件市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 深色两档,状态栏一键切换(主题与设置按钮在状态栏最左边),或在 **设置面板**(状态栏左侧齿轮 / `Ctrl+,`)的「外观」中挑选;深色的底色与边框对齐 Obsidian 的 Minimal 主题深色档(`#262626` 编辑区 / `#212121` 侧栏),文字仍用 iMark 默认配色(`#dadada` 正文 / `#8a5cf5` 强调色)。偏好持久化到数据目录的 `settings.json`
@@ -42,12 +42,12 @@ npm run dev        # 启动开发模式(HMR)
 ```bash
 npm run typecheck  # tsc(node 侧)+ vue-tsc(渲染层)
 npm run build      # 构建三端产物到 out/
-npm run dist       # 构建 + electron-builder 打 NSIS 安装包
+npm run dist       # 先重建内置扩展包,再构建 + electron-builder 打安装包(predist)
 ```
 
 ## 环境要求
 
-- **Node ≥ 22.12**(本机使用 `D:\software\nodejs\v24.21.0`)。Electron 40 起的安装链(`@electron/get` 5 / `@electron-internal/extract-zip`)与 electron-builder 26 的部分依赖均为 ESM-only,Node < 22.12 时需降级 electron ≤ 39 / electron-builder 25。
+- **Node ≥ 22.12**。Electron 40 起的安装链(`@electron/get` 5 / `@electron-internal/extract-zip`)与 electron-builder 26 的部分依赖均为 ESM-only,Node < 22.12 时需降级 electron ≤ 39 / electron-builder 25。
 - **国内镜像分两处**:npm registry 在 `.npmrc` 里;electron 与 electron-builder 的二进制镜像用**裸环境变量** `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR`(Windows 下 `setx` 设为用户级)。别把它们写回 `.npmrc`——npm 11 会按「Unknown project config」告警,且下个大版本不再支持;也不要指望 `package.json` 的 `config` 字段,它传不到依赖的 install 脚本(实测依赖的 `install` 脚本里 `npm_package_config_*` 是空的),electron 的 postinstall 拿不到。两个变量是 `@electron/get` 与 `app-builder-lib` 直接读 `process.env` 的兜底项,不经过 npm,因此不会产生任何告警。
 - 在 `ELECTRON_RUN_AS_NODE=1` 的 shell 中运行 `npm run dev` 会以纯 Node 模式拉起应用而报错,需 `env -u ELECTRON_RUN_AS_NODE npm run dev`。
 - shell 的 `TEMP` 指向 `C:\WINDOWS\TEMP` 时,NSIS 打包会报 `!include: could not find ...nstXXX.tmp`,构建前把 `TMP`/`TEMP` 覆盖为用户临时目录(`%LOCALAPPDATA%\Temp`)。
@@ -235,7 +235,7 @@ src/shared/theme/
 
 ### 四、扩展系统
 
-iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 拿到 API。没有 main/render 分层,没有 capability 绑定,也没有权限沙箱 —— 这是 **v2**,与旧版插件包格式**硬切**,不保留任何兼容。
+iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 拿到 API。扩展代码以当前用户权限运行,不做权限沙箱。
 
 > **信任模型(请先读这一段)**
 >
@@ -258,7 +258,7 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 | `isolated`(默认) | 每个扩展一个 `utilityProcess` 宿主 | 只影响该扩展;按 1s/2s/4s 退避重启,60 秒三次后停止 |
 | `shared` | 所有扩展共用一个宿主 | 同宿主内的**所有扩展**一起重启 |
 
-`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(0 也算一个组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。设置页的「宿主」区可以切换模式、设置 affinity,并查看每个宿主的 PID/内存/状态。
+`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(未列出或 0 = 按模式自动分组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。「浏览市场 → 扩展宿主」页可以切换模式、设置分组编号,并查看每个宿主的 PID/内存/状态。
 
 启用态驱动全部界面:扩展被禁用后,它贡献的命令、快捷键、状态栏、行首菜单会立即消失;没有激活过的扩展不会 fork 宿主。
 
@@ -266,20 +266,19 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 
 | 文件 | 职责 |
 |---|---|
-| `shared/extensionPackage.ts` | v2 清单/信封、校验、stable integrity、`configuration → 设置字段` 翻译;主进程、构建脚本、服务端共用同一套规则 |
+| `shared/extensionPackage.ts` | 清单/信封、校验、stable integrity、`configuration → 设置字段` 翻译;主进程、构建脚本、服务端共用同一套规则 |
 | `shared/extensionApi.ts` | 扩展作者看到的 `imark` 模块(类型 + `Uri` / `Position` / `Range` / `EventEmitter` / `Disposable` 等纯工具类) |
 | `shared/extensionProtocol.ts` | 宿主 ↔ 主进程的协议 DTO |
 | `main/extensions/service.ts` | `ExtensionService`:安装/启用/配置/密钥/激活事件/宿主规划/命令路由/崩溃重启 |
-| `main/extensions/installer.ts` | v2 包校验与安装(`validateEnvelope` + 逐文件 sha256 + integrity) |
+| `main/extensions/installer.ts` | 包校验与安装(`validateEnvelope` + 逐文件 sha256 + integrity) |
 | `main/extensions/hostPlanner.ts` / `hostProcess.ts` | `isolated` / `shared` / affinity 分组与 `utilityProcess.fork` |
 | `main/extensions/hostRuntime.ts` | 宿主内运行时:`require('imark')` 注入、命令/配置/密钥/文档/装饰/webview |
-| `main/extensions/installedStore.ts` / `paths.ts` | `installed.json` v2 登记、磁盘布局 |
-| `main/extensions/legacy.ts` | 旧版数据一次性清理(不做迁移) |
+| `main/extensions/installedStore.ts` / `paths.ts` | `installed.json` 登记、磁盘布局 |
 | `main/market/*` | 市场客户端(见 §五) |
 
 **激活事件**:`*`、`onStartupFinished`、`onLanguage:markdown`、`onCommand:<命令>`、`onWebviewPanel:<viewType>`。没有命中的扩展保持未激活;命令执行、面板恢复、依赖激活都会按需拉起宿主。
 
-**内置扩展**:`quick-edit`、`git-sync`、`ai-for-edit`、`agent` 随应用带一份 v2 包,启动时由 `ensureBundledProvisioned()` 补装(走**完全相同**的校验与安装路径)。已是 `bundled` 来源且版本更旧时会跟随应用升级;市场/本地来源一律不碰。默认启用策略写在 `main/market/bundled.ts`:quick-edit 开箱启用,git-sync、AI 与 Agent 默认关闭(Agent 需要先配置 Claude Code CLI)。
+**内置扩展**:`quick-edit`、`git-sync`、`ai-for-edit`、`agent`(Agent Core)、`claude-code`(Claude Code)随应用带一份包,启动时由 `ensureBundledProvisioned()` 补装(走**完全相同**的校验与安装路径)。已是 `bundled` 来源且版本更旧时会跟随应用升级;市场/本地来源一律不碰。默认启用策略写在 `main/market/bundled.ts`:quick-edit 开箱启用,其余四款默认关闭;Claude Code 依赖 Agent Core,内置包按依赖顺序补装。
 
 ### 五、插件市场
 
@@ -309,9 +308,9 @@ IMK_MARKET_PORT=8787 HOST=127.0.0.1 DATA=./server/data ADMIN_TOKEN=… node serv
 | POST | `/api/v1/packages` | Bearer | 发布:信封 JSON |
 | POST | `/api/v1/packages/:id/versions/:v/yank` \| `/unyank` | Bearer(owner) | 下架 / 恢复 |
 
-列表/详情返回 v2 字段:`displayName`、`main`、`hasMain`、`activationEvents`、`capabilities`、`contributesSummary`(命令/快捷键/设置项/行首菜单/动作计数)。另有 `GET /api/v1/users/:username/packages`(某作者的全部扩展)与 `/api/v1/admin/*`(统计、把被抢注的 id 转移给真正的作者,需 `ADMIN_TOKEN`)。
+列表/详情返回扩展字段:`displayName`、`main`、`hasMain`、`activationEvents`、`capabilities`、`contributesSummary`(命令/快捷键/设置项/行首菜单/动作计数)。另有 `GET /api/v1/users/:username/packages`(某作者的全部扩展)与 `/api/v1/admin/*`(统计、把被抢注的 id 转移给真正的作者,需 `ADMIN_TOKEN`)。
 
-**发布**:注册账号(scrypt 加盐哈希,密码 ≥8 位)→ 在「发布扩展」页选目录 → 打包预览(文件清单、形态、体积、整包 sha256、入口 sha256、激活事件与贡献摘要)→ 发布。服务端会**重算**逐文件 sha256 与整包 integrity,不符就 400;`formatVersion` 必须是 2。`<publisher>.<name>` 首次发布即被该账号认领,别人再发同 id → 403;同一个 `(id, 版本)` 不能重发(409)—— 已发布的版本不可变,要改就升版本号。版本可以**下架**(yanked):下架后从搜索、`latest` 与版本列表里消失,但按精确版本号仍能下载;下架当前最新版时,次高的非下架版本会自动成为 latest。**没有硬删除。**
+**发布**:注册账号(scrypt 加盐哈希,密码 ≥8 位)→ 在「发布扩展」页选目录 → 打包预览(文件清单、形态、体积、整包 sha256、入口 sha256、激活事件与贡献摘要)→ 发布。服务端会**重算**逐文件 sha256 与整包 integrity,不符就 400;`formatVersion` 必须是 1。`<publisher>.<name>` 首次发布即被该账号认领,别人再发同 id → 403;同一个 `(id, 版本)` 不能重发(409)—— 已发布的版本不可变,要改就升版本号。版本可以**下架**(yanked):下架后从搜索、`latest` 与版本列表里消失,但按精确版本号仍能下载;下架当前最新版时,次高的非下架版本会自动成为 latest。**没有硬删除。**
 
 **安装**:下载 → 把响应头声明的 integrity 与自算的比对 → `validateEnvelope()`(结构、路径、扩展名、体积、逐文件 sha256、integrity)→ 检查 `engines.imark` 是否满足 → 解到 `.staging/` → 原子就位 → 写 `installed.json` → 重新扫描并热加载。任何一步失败都不落盘。更新检查在启动后、打开市场页时、手动刷新时各跑一次,结果缓存 10 分钟;**绝不循环重试** —— 离线是正常状态,界面安静降级。
 
@@ -369,7 +368,7 @@ npm run typecheck:plugins
   "version": "1.0.0",
   "displayName": "我的扩展",
   "description": "一句话说明",
-  "engines": { "imark": "^0.1.0" },
+  "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
   "activationEvents": ["onCommand:your-name.my-extension.hello"],
   "capabilities": { "filesystem": "workspace", "network": true, "secrets": true },
@@ -408,11 +407,11 @@ npm run typecheck:plugins
 |---|---|---|
 | `publisher` / `name` | ✔ | 各自 `^[a-z0-9][a-z0-9-]{1,63}$`;扩展 ID 是 `<publisher>.<name>` |
 | `version` | ✔ | 语义化版本(可带预发布后缀) |
-| `engines.imark` | ✔ | 依赖的 iMark 版本范围,如 `^0.1.0` / `>=0.1.0` |
+| `engines.imark` | ✔ | 依赖的 iMark 版本范围,如 `^1.0.0` / `>=1.0.0` |
 | `main` | | 包内 `.js` / `.cjs` 入口。不填 = 纯声明式 |
 | `displayName` / `description` / `author` / `license` / `homepage` / `icon` | | 展示与署名;`homepage` 必须是 https |
 | `activationEvents` | | `*`、`onStartupFinished`、`onLanguage:markdown`、`onCommand:<命令>`、`onWebviewPanel:<viewType>` |
-| `extensionDependencies` | | 依赖的扩展 ID;激活时先激活依赖 |
+| `extensionDependencies` | | 依赖的扩展 ID;强制分到同一宿主并先激活依赖,同宿主内可读依赖的 `exports` |
 | `extensionAffinity` | | 希望与哪些扩展分到同一宿主(参与 affinity 分组) |
 | `capabilities` | | 安装披露:`filesystem: workspace\|user`、`network`、`secrets`、`git`、`process`、`shell` |
 | `contributes` | | 命令 / 快捷键 / 命令面板菜单 / 设置 / 行首菜单 / 动作 |
@@ -452,12 +451,68 @@ export function deactivate(): void {
 | `commands` | `registerCommand` / `executeCommand` / `getCommands` |
 | `window` | 消息框、输入框、QuickPick、状态栏、输出通道、装饰类型、文本编辑器、`createWebviewPanel` / `registerWebviewPanelSerializer` |
 | `workspace` | `workspaceFolders`、`getConfiguration`、文档打开/保存/变更事件、`openTextDocument`、`saveAll`、`workspace.fs` |
-| `extensions` | `getExtension(id)` / `extensions.all` |
+| `extensions` | `getExtension(id)` / `extensions.all`;同宿主内的依赖方可以读 `extension.exports` |
 | `env` | `appName` / `appVersion` / `language` / `uriScheme` / `machineId` / `sessionId` |
 | `imark` | iMark 私有入口:`reportStatus()`、`renderMarkdown()`、`flushActiveDocument()`、`onDidChangeTheme` |
 | 工具类 | `Uri`、`Position`、`Range`、`Selection`、`EventEmitter`、`Disposable`、`ThemeColor`、`StatusBarAlignment`、`ViewColumn`、`TextEditorRevealType`、`ConfigurationTarget` 等 |
 
 与 VS Code 的差异:模块名是 `imark`;没有 TreeView / 终端 / 任务 / 调试 / LSP / notebook / 多根工作区;`imark.imark` 是私有命名空间。
+
+#### Agent 后端插件(provider)
+
+Agent Core 不带具体后端;后端是独立扩展,通过贡献点登记,由 Core 在需要时激活:
+
+```json
+{
+  "name": "my-agent-backend",
+  "main": "./main.js",
+  "extensionDependencies": ["imark.agent"],
+  "contributes": {
+    "imark.agentProviders": ["my-backend"]
+  }
+}
+```
+
+```ts
+// main.ts —— 返回值就是 imark.extensions.getExtension(id).exports
+// 类型对照 src/shared/agentProvider.ts;这里只写运行时结构
+export function activate() {
+  return {
+    apiVersion: 1,
+    providers: [
+      {
+        info: {
+          id: 'my-backend',
+          label: '我的后端',
+          capabilities: {
+            roles: ['assistant'],
+            inputs: { image: 'none', pdf: 'none', file: 'path' },
+            tools: { read: true, bash: false, write: false },
+            streaming: true,
+            thinking: false,
+            resume: false,
+            systemPrompt: true
+          },
+          models: []
+        },
+        detect: async () => ({ available: true }),
+        createSession: async options => ({
+          providerSessionId: undefined,
+          send: async function* () { /* yield AgentEvent */ },
+          cancel: () => {},
+          dispose: async () => {}
+        })
+      }
+    ]
+  }
+}
+```
+
+- 贡献点必须是非空数组(最多 8 个),id 形如 `my-backend`;同时**必须**通过 `extensionDependencies` 依赖 `imark.agent`,否则清单校验与安装都会被拒绝。
+- `extensionDependencies` 同时保证 provider 与 Core 在同一宿主;`exports` 是进程内对象,**跨宿主读不到**。
+- provider 不需要 `activationEvents`;Core 的 `ProviderRegistry` 在首次列后端时才 `activate()` 它,避免与 Core 自己的激活互相等待。
+- provider 自己读自己的 `contributes.configuration` 与 `context.secrets`;Core 不读取、不转发后端专属设置。CLI 不存在或启动失败时,`detect()` / `createSession()` 返回 `provider-unavailable` 错误。
+- 完整契约见 `src/shared/agentProvider.ts`,内置示例见 `plugins-src/claude-code/`。
 
 #### 配置、密钥与状态
 
@@ -546,6 +601,5 @@ iMark 的所有数据都在**应用自己所在的目录**里:安装版是 `<安
 - **升级/卸载前请先备份**:数据放在安装目录里,而安装器/卸载器可能会覆盖或删除安装目录中的文件。移动整个应用文件夹时,数据会跟着走(这正是这个布局的好处);但**用安装器升级/卸载**时建议先把 `.imark` 拷出来。
 - **彻底重置**:退出应用 → 删掉 `<应用目录>/.imark` → 重启。设置、插件、令牌、缓存一起清空。
 - **换机器**:数据拷过去后 `settings.json` / `plugins/` 直接可用,但 `secrets.json` 里的令牌要重填 —— 加密密钥绑当前 Windows 用户(DPAPI),换用户或换机器都解不开,插件那边表现为"还没填令牌"。
-- **搬迁**(只发生一次):启动时若新位置还没有数据,会从旧位置搬 —— 来源依次是家目录 `~/.imark` 与更早的 `%APPDATA%\iMark` / `%APPDATA%\imarkdown`。**先搬 profile**(缓存、登录态、插件分区、解密密钥一起走),通过完整性守卫后才搬 `plugins/` 与三个 json。同盘用 `rename`;跨盘(比如 C: → D:)退化为拷贝,校验文件数对得上才删源。任一步失败(被占用、旧实例还在跑)就整体放弃、本次继续用可用的旧布局,下次启动再试 —— 绝不会出现"路径换了但数据没搬完"或"令牌解不开"。
-- **`--imark-data-dir=<目录>`**(高级):把数据根指到别处(别的盘、U 盘、并行实例)。单用它等于"接管这个构建的真实数据目录",所以它要配 `--user-data-dir` 一起用;验收里就是这么把搬迁跑在沙箱内的(`verify/data-dir-harness.ts`)。
+- **`--imark-data-dir=<目录>`**(高级):把数据根指到别处(别的盘、U 盘、并行实例)。单独使用时 profile 在 `<目录>/profile`;再配 `--user-data-dir=<目录>` 时,数据根是前者、profile 是后者。验收里就是用它把数据跑在沙箱内的(`verify/data-dir-harness.ts`)。
 - **单实例锁绑在这个目录上**:安装版与开发版现在各用各的数据目录,可以同时运行;同一个数据目录同时只允许一个实例(两个 Chromium 同时写一份 profile 会互相破坏)。要并行开两个共用数据目录的实例,给其中一个加 `--imark-data-dir` 另指一处。

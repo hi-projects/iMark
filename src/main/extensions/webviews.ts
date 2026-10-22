@@ -7,7 +7,7 @@
  * - **归属**：每条消息都带 `extensionId`，与记录不符就丢弃。renderer 也无法伪造
  *   另一扩展的消息 —— 它拿到的 panelId 只属于自己的面板。
  * - **token**：宿主在 `createWebviewPanel()` 里同步生成，main 校验格式与唯一性。
- *   资源协议（阶段四）会再校验一次 token；这里先保证不会有两个面板共用一个 token。
+ *   资源协议会再校验一次 token；这里先保证不会有两个面板共用一个 token。
  * - **HTML**：只存字符串。真正的 CSP 由扩展 HTML 的 meta 提供，iframe 是 sandbox。
  */
 
@@ -110,9 +110,9 @@ export class WebviewRegistry {
   /**
    * 从持久化记录恢复一个面板。
    *
-   * 沿用原来的 panelId 与 token：扩展在 `deserializeWebviewPanel` 里会立刻用
+   * 沿用持久化记录里的 panelId 与 token：扩展在 `deserializeWebviewPanel` 里会立刻用
    * `asWebviewUri()` 重新拼资源地址，换 token 会让那批地址在第一帧之后失效。
-   * 万一旧 token 已被别的面板占用（正常不会发生），退化成新 token 并通过
+   * 万一这个 token 已被别的面板占用（正常不会发生），退化成新 token 并通过
    * `webview.restore` 把新值告诉宿主。
    */
   restore(saved: PersistedWebviewPanel, extensionRoot: string): WebviewRecord {
@@ -288,7 +288,7 @@ function normalizeRoots(extensionRoot: string, roots: readonly string[] | undefi
   return out
 }
 
-/** 资源路径是否落在允许的根目录内（阶段四的 imark-webview:// 处理器复用） */
+/** 资源路径是否落在允许的根目录内（imark-webview:// 处理器复用） */
 export function isWithinRoots(filePath: string, roots: readonly string[]): boolean {
   const full = resolve(filePath)
   return roots.some(root => full === root || full.startsWith(root + sep))

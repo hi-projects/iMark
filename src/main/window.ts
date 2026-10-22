@@ -247,23 +247,6 @@ export function currentDocPath(): string | null {
 }
 
 /**
- * 编辑器里有没有文档(未保存的新文档也算)。
- *
- * 不能拿 docPath 是否为 null 代替:一份还没落过盘的新文档同样是在编辑文档,
- * 而它的路径恰好就是 null —— 两件事在"未命名文档"上结论相反。
- * 命令的可用性判定(`when: 'editor'`)要的是前者。
- */
-let editorPresent = false
-
-export function setEditorPresent(value: boolean): void {
-  editorPresent = value
-}
-
-export function hasEditor(): boolean {
-  return editorPresent || docPath !== null
-}
-
-/**
  * name 传 null 表示当前没有打开的文档。
  *
  * 两种「没有文档」要分开看,区别就在 vaultName:

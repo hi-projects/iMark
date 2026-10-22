@@ -18,7 +18,6 @@ import type {
   MarketSearchResult,
   MarketSource,
   MarketUpdate,
-  PackagePreview,
   PendingInstall,
   PublishPreview,
   PublishResult
@@ -154,7 +153,7 @@ export async function cancelInstall(): Promise<void> {
 /**
  * 卸载扩展。
  *
- * v2 的卸载**总是**删掉程序文件、配置、密钥、globalState 与日志 ——
+ * 卸载**总是**删掉程序文件、配置、密钥、globalState 与日志 ——
  * 扩展 id 可能被其他人重新使用,凭据不能留给下一个同名扩展。
  */
 export async function uninstallPlugin(id: string): Promise<void> {
@@ -366,12 +365,6 @@ export async function openDetail(id: string): Promise<void> {
   })
 }
 
-export function closeDetail(): void {
-  settingsNav.market.detailId = null
-  remoteStore.detail = null
-  remoteStore.source = null
-}
-
 /**
  * 打开源码查看器。
  *
@@ -470,7 +463,7 @@ export async function publishNow(): Promise<boolean> {
 /**
  * 本地已装版本;没装过为 null。
  *
- * 列表页用它把「安装」变成「已安装 v1.2.0」或「更新到 v1.3.0」——
+ * 列表页用它把「安装」变成「已安装 1.2.0」或「更新到 1.3.0」——
  * 服务端不知道谁装了什么,这个 join 只能在客户端做。
  */
 export function localVersion(id: string): string | null {
@@ -506,9 +499,4 @@ export function sourceLabel(source: ExtensionSource | undefined, bundled: boolea
 export function formatTime(ts: number | undefined): string {
   if (!ts) return '—'
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })
-}
-
-/** 预览里的一句话摘要(列表行、确认框标题都用它) */
-export function previewTitle(p: PackagePreview): string {
-  return `${p.name} ${p.version}`
 }

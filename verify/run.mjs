@@ -2,7 +2,7 @@
 //
 //   node verify/run.mjs <名字> [额外传给 electron 的参数...]
 //
-// 例:node verify/run.mjs phase2
+// 例:node verify/run.mjs extensions-model
 //
 // 它做四件事,每一件都是**必须**的,所以别再手敲(手敲漏掉任意一件都会得到
 // 一个看起来像"应用坏了"的假失败):
@@ -47,10 +47,10 @@ if (!name) {
         'git-sync-proxy',
         'ai-for-edit',
         'agent',
-        'market-v2',
+        'market-package',
+        'market-ui',
         'install-confirm',
         'bundled-upgrade',
-        'legacy-cleanup',
         'table-render',
         'code-block',
         'code-indent',

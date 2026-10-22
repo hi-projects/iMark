@@ -46,7 +46,7 @@ interface AppState {
   /** 当前激活的标签 id;null = 没有打开任何文档 */
   activeTabId: string | null
   /**
-   * 当前标签的镜像 —— 状态栏、窗口标题、大纲、插件 API 都读这些旧字段。
+   * 当前标签的镜像 —— 状态栏、窗口标题、大纲、插件 API 都读这些字段。
    * 由 services/tabs.ts 的 syncMirror() 维护,不要在别处直接改。
    */
   filePath: string | null

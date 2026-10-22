@@ -1,5 +1,5 @@
 /**
- * git-sync（v2）的**本机代理路径**验收。
+ * git-sync 的**本机代理路径**验收。
  *
  * 为什么单独一套：浏览器走系统代理，git 的 libcurl 不读它 —— 「浏览器能打开
  * GitHub，插件测试连接却超时」是最容易踩到、又最难自查的配置。这里钉住三件事：
@@ -9,7 +9,7 @@
  *   3. 直连：同一个环境变量还在，但 off 模式必须压过它（并断言代理没收到新请求）。
  * 另外验一次**推送**也带上了代理参数，而不是只有「测试连接」这一条路。
  *
- * 与 v1 的差别：git 现在跑在扩展宿主进程里。宿主在 fork 时继承主进程环境变量，
+ * git 跑在扩展宿主进程里。宿主在 fork 时继承主进程环境变量，
  * 所以 HTTP_PROXY 必须在 `service.startup()` 之前设置，否则宿主读不到。
  *
  * 跑法（在仓库根目录）：node verify/run.mjs git-sync-proxy
@@ -45,7 +45,7 @@ import {
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
 const EXT_ID = 'imark.git-sync'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -132,19 +132,22 @@ interface TargetConfig {
   remoteBranch: string
 }
 
+/** 配置存的是**完整键**:`<扩展id>.<属性>` */
+const configKey = (key: string): string => `${EXT_ID}.${key}`
+
 const configOf = (target: TargetConfig, mode: string, proxyUrl: string): Record<string, unknown> => ({
-  targets: [target],
-  intervalMinutes: 0,
-  syncOnStart: false,
-  commitMessage: 'sync: {time}',
-  authorName: 'iMark',
-  authorEmail: 'imark@local',
-  autoInitRepo: true,
-  initBranch: 'main',
-  writeGitignore: false,
-  writeReadme: false,
-  proxyMode: mode,
-  proxyUrl
+  [configKey('targets')]: [target],
+  [configKey('intervalMinutes')]: 0,
+  [configKey('syncOnStart')]: false,
+  [configKey('commitMessage')]: 'sync: {time}',
+  [configKey('authorName')]: 'iMark',
+  [configKey('authorEmail')]: 'imark@local',
+  [configKey('autoInitRepo')]: true,
+  [configKey('initBranch')]: 'main',
+  [configKey('writeGitignore')]: false,
+  [configKey('writeReadme')]: false,
+  [configKey('proxyMode')]: mode,
+  [configKey('proxyUrl')]: proxyUrl
 })
 
 async function main(): Promise<void> {
@@ -296,7 +299,7 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSave: false,
+        autoSaveMode: 'off',
         extensions: {
           [EXT_ID]: { enabled: true, config: configOf(target, 'manual', proxy.url) }
         }

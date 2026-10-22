@@ -1,7 +1,7 @@
 /**
  * 配置字段与运行状态的共享类型(主/渲染层共用,零运行时依赖)。
  *
- * v2 的扩展作者 API 在 extensionApi.ts;这里只保留**界面与清单之间**的少数形状:
+ * 扩展作者 API 在 extensionApi.ts;这里只保留**界面与清单之间**的少数形状:
  * 设置表单的字段描述(由 `contributes.configuration` 翻译而来)、目标/地址列表、
  * 运行状态与日志。它们与扩展代码跑在哪一层无关。
  */
@@ -114,20 +114,6 @@ export interface PluginLogEntry {
   level: PluginLogLevel
   /** 正文;操作记录可能带换行(第一行是摘要,后面是明细) */
   message: string
-}
-
-/** 一次已经结束的扩展操作,设置页的「调试」模块用它;完整版另有日志文件 */
-export interface PluginOperation {
-  /** 结束时间(epoch ms) */
-  at: number
-  /** 按钮名(如「测试连接」「立即上传」);后台触发时为「后台任务」 */
-  action: string
-  /** 结束时的整体状态:成功 / 部分失败 / 失败 */
-  status: 'ok' | 'partial' | 'error'
-  /** 结果文本(逐项明细;整体状态由 status 或状态卡徽标负责) */
-  message: string
-  /** 更长的失败原因/逐项明细;与 message 相同的话宿主不会再存一份 */
-  detail?: string
 }
 
 /** 提示条级别(扩展通知、应用提示共用) */

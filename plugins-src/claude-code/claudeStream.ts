@@ -5,7 +5,7 @@
  * 用测试夹具覆盖，而不是靠读源码猜。
  */
 
-import type { AgentError, AgentEvent, AgentUsage, ToolKind } from '../core/types'
+import type { AgentError, AgentEvent, AgentUsage, ToolKind } from '@shared/agentProvider'
 
 interface RawRecord {
   type?: unknown
@@ -299,7 +299,7 @@ export function classifyClaudeFailure(input: {
   }
   const stderr = input.stderr.trim()
   if (/\bENOENT\b|not recognized as an internal|command not found/i.test(stderr)) {
-    return { code: 'cli-missing', message: '找不到 Claude Code 可执行文件', detail: clip(stderr, 500) }
+    return { code: 'provider-unavailable', message: '找不到 Claude Code 可执行文件', detail: clip(stderr, 500) }
   }
   if (/invalid api key|authentication|401|please run \/login|oauth|credential/i.test(stderr)) {
     return {

@@ -299,7 +299,7 @@ export async function requestChat(
     }
   }
 
-  // 只有一个地址时保留原来的错误文案（401/404/超时等），不要包一层「所有地址」
+  // 只有一个地址时直接抛出该地址的错误（401/404/超时等），不包一层「所有地址」
   if (failures.length === 1) throw failures[0]!.error
   throw new AiError(
     `所有 AI 服务地址都不可用（已尝试 ${failures.length} 个）`,
@@ -463,7 +463,7 @@ function buildBody(
 /**
  * 一条消息在请求体里的形状。
  *
- * 没有图片时保持原来的纯字符串 content —— 一些 OpenAI 兼容网关对 content
+ * 没有图片时用纯字符串 content —— 一些 OpenAI 兼容网关对 content
  * 数组的支持并不完整，不能因为加了功能就把所有请求都换成数组。带图片时才
  * 按各家的多模态格式拆成 content parts。
  */

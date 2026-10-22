@@ -11,7 +11,7 @@ function fmt(label: string, id: MenuCommandId, accelerator?: string): MenuItemCo
   return { label, accelerator, click: () => send(id) }
 }
 
-/** v2:一条准备进「扩展」菜单的命令 */
+/** 一条准备进「扩展」菜单的命令 */
 export interface ExtensionMenuCommand {
   command: string
   title: string
@@ -28,7 +28,7 @@ export interface ExtensionMenuGroup {
   commands: ExtensionMenuCommand[]
 }
 
-/** v2:因为撞车而被摘掉快捷键的一条 */
+/** 因为撞车而被摘掉快捷键的一条 */
 export interface DroppedExtensionKeybinding {
   extensionId: string
   extensionName: string
@@ -41,7 +41,7 @@ let extensionGroups: ExtensionMenuGroup[] = []
 let built = false
 
 /**
- * 更新扩展命令(v2 服务在贡献点变化时调)。
+ * 更新扩展命令(扩展服务在贡献点变化时调)。
  *
  * 返回本次**因为与别的菜单项撞车**而被摘掉的快捷键;清单级别的冲突
  * (`dropped: true`)已经在贡献点快照里标好,不会重复报告。
@@ -52,7 +52,7 @@ export function setExtensionCommands(groups: ExtensionMenuGroup[]): DroppedExten
 }
 
 /**
- * 扩展命令那一栏(v2)。
+ * 扩展命令那一栏。
  *
  * 点击不在这里直接调 `executeCommand`:命令的真正执行入口统一在渲染层的
  * `command.execute` 上(错误提示、忙碌状态、行首菜单参数都在那边),主进程

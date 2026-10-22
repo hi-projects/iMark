@@ -1,8 +1,7 @@
 /**
  * 扩展系统的磁盘布局。
  *
- * 与 v1 一样，“磁盘是权威”：`plugins/<id>/package.json` 存在且合法，扩展就算已安装。
- * 区别只是 v1 用 `manifest.json`，v2 用 `package.json`；旧目录由一次性清理删除。
+ * “磁盘是权威”：`plugins/<id>/package.json` 存在且合法，扩展就算已安装。
  */
 
 import { createHash } from 'node:crypto'
@@ -10,15 +9,10 @@ import { join, resolve, sep } from 'node:path'
 import { dataRoot } from '../dataDir'
 
 /** 与 extensionPackage 的 publisher/name 规则一致；目录名就是 `<publisher>.<name>` */
-const ID_SEGMENT = /^[a-z0-9][a-z0-9-]{1,63}$/
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,63}\.[a-z0-9][a-z0-9-]{1,63}$/
 
 export function isValidExtensionId(id: unknown): id is string {
   return typeof id === 'string' && ID_RE.test(id)
-}
-
-export function isValidPublisherSegment(value: string): boolean {
-  return ID_SEGMENT.test(value)
 }
 
 export function extensionsRoot(): string {

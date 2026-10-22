@@ -15,7 +15,7 @@
  * 一个纯 JSON 数据文件没有构建步骤、没有版本同步,代价只有「服务端与仓库同处
  * 一份 checkout」—— 它本来就是这么跑的(`npm run market`)。校验**逻辑**仍然各写各的。
  *
- * v2 与 v1 是硬切:只接受 formatVersion === 2,清单是 package.json 形状。
+ * 只接受 `FORMAT.formatVersion`,清单是 package.json 形状。
  */
 
 import { createHash } from 'node:crypto'
@@ -46,6 +46,8 @@ const ALLOWED_EXT = FORMAT.allowedExtensions
 const RESERVED_SEGMENT = FORMAT.reservedSegment
 const ACTIVATION_EVENTS = FORMAT.activationEvents
 const SUPPORTED_FORMAT_VERSION = FORMAT.formatVersion
+const AGENT_CORE_EXTENSION_ID = FORMAT.agentCoreExtensionId
+const AGENT_PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,63}$/
 
 /** package.json 里允许出现、但不进信封的构建字段(与 shared/extensionPackage.ts 一致) */
 const PACKAGING_KEYS = [
@@ -131,7 +133,7 @@ export function stableStringify(value) {
 
 /**
  * integrity 的输入形状:manifest + 「路径 → sha256」,**路径排序**。
- * v2 用递归键排序的 stable stringify,于是打包器、服务端、客户端只要对象内容
+ * 递归键排序的 stable stringify,于是打包器、服务端、客户端只要对象内容
  * 相同就得到同一个值。
  */
 export function integrityInput(manifest, files) {
@@ -239,6 +241,9 @@ function canonicalContributes(value) {
               isObject(entry) ? pick(entry, ['command', 'label', 'scope', 'targetSetting', 'primary']) : entry
             )
           : item
+        break
+      case 'imark.agentProviders':
+        out['imark.agentProviders'] = Array.isArray(item) ? [...item] : item
         break
     }
   }
@@ -638,6 +643,36 @@ function validateActions(value, declared, configKeys, errors) {
   }
 }
 
+function validateAgentProviders(value, dependencies, main, errors) {
+  if (value === undefined) return
+  if (!Array.isArray(value) || value.length === 0) {
+    errors.push('contributes["imark.agentProviders"] 必须是非空数组')
+    return
+  }
+  if (value.length > LIMITS.agentProviders) {
+    errors.push(`Agent provider 过多(上限 ${LIMITS.agentProviders})`)
+  }
+  const seen = new Set()
+  for (const [i, id] of value.entries()) {
+    const at = `contributes["imark.agentProviders"][${i}]`
+    if (typeof id !== 'string' || !AGENT_PROVIDER_ID_RE.test(id)) {
+      errors.push(`${at} 非法(小写字母开头,可含数字/连字符,最多 64 字符)`)
+    } else if (seen.has(id)) {
+      errors.push(`${at} 重复:${id}`)
+    } else {
+      seen.add(id)
+    }
+  }
+  if (typeof main !== 'string' || main.length === 0) {
+    errors.push('声明 contributes["imark.agentProviders"] 的扩展必须提供 main 入口')
+  }
+  if (!Array.isArray(dependencies) || !dependencies.includes(AGENT_CORE_EXTENSION_ID)) {
+    errors.push(
+      `声明 contributes["imark.agentProviders"] 的扩展必须通过 extensionDependencies 依赖 ${AGENT_CORE_EXTENSION_ID}`
+    )
+  }
+}
+
 export function validateManifest(raw) {
   const errors = []
   const warnings = []
@@ -662,9 +697,9 @@ export function validateManifest(raw) {
     errors.push('homepage 必须是 https 地址')
   }
   if (!isObject(raw.engines) || typeof raw.engines.imark !== 'string') {
-    errors.push('engines.imark 必填(如 "^0.1.0")')
+    errors.push('engines.imark 必填(如 "^1.0.0")')
   } else if (!ENGINE_RE.test(raw.engines.imark.trim())) {
-    errors.push('engines.imark 必须是版本范围(如 "^0.1.0" / ">=0.1.0")')
+    errors.push('engines.imark 必须是版本范围(如 "^1.0.0" / ">=1.0.0")')
   }
   if (raw.main !== undefined) {
     if (typeof raw.main !== 'string') {
@@ -724,6 +759,12 @@ export function validateManifest(raw) {
         collectConfigKeys(contributes.configuration),
         errors
       )
+      validateAgentProviders(
+        contributes['imark.agentProviders'],
+        raw.extensionDependencies,
+        raw.main,
+        errors
+      )
     }
   }
 
@@ -748,7 +789,7 @@ export function validateEnvelope(raw) {
   if (!isObject(raw)) return bad()
   if (raw.format !== FORMAT.format) errors.push(`format 必须是 ${FORMAT.format}`)
   if (raw.formatVersion !== SUPPORTED_FORMAT_VERSION) {
-    errors.push(`formatVersion 必须是 ${SUPPORTED_FORMAT_VERSION}(v1 扩展包已不再支持,请重新打包)`)
+    errors.push(`formatVersion 必须是 ${SUPPORTED_FORMAT_VERSION}`)
   }
 
   const manifest = raw.manifest

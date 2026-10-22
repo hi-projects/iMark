@@ -1,11 +1,11 @@
 /**
- * git-sync（v2 扩展模型）端到端验收。
+ * git-sync 扩展端到端验收。
  *
  * 真开一个裸仓库当远端，真让扩展在自己的宿主进程里 `git add / commit / push`，
  * 最后用 git 自己读回远端分支 —— 不看扩展怎么说，只看远端有什么。
  *
  * 覆盖：
- *   1 v2 内置包安装、清单贡献点（命令/快捷键/配置/动作/状态栏）
+ *   1 内置包安装、清单贡献点（命令/快捷键/配置/动作/状态栏）
  *   2 `onStartupFinished` 激活、状态栏条目与初始文案
  *   3 首次同步：远端建分支、文件与忽略项写入、提交信息模板生效
  *   4 无改动不造空提交；有改动 +1 提交
@@ -42,7 +42,7 @@ import type { PluginStatus } from '../src/shared/plugins'
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
 const EXT_ID = 'imark.git-sync'
-const APP_VERSION = '0.1.0'
+import { APP_VERSION } from './appVersion'
 
 // 必须在 app ready 之前注册；主窗口加载 markdown 时用得到
 protocol.registerSchemesAsPrivileged([
@@ -93,20 +93,23 @@ interface TargetConfig {
   remoteBranch: string
 }
 
+/** 配置存的是**完整键**:`<扩展id>.<属性>` */
+const configKey = (key: string): string => `${EXT_ID}.${key}`
+
 const baseConfig = (targets: TargetConfig[]): Record<string, unknown> => ({
-  targets,
-  intervalMinutes: 0,
-  syncOnStart: false,
-  commitMessage: 'sync: {time}',
-  authorName: 'iMark',
-  authorEmail: 'imark@local',
-  autoInitRepo: true,
-  initBranch: 'main',
-  writeGitignore: true,
-  writeReadme: false,
+  [configKey('targets')]: targets,
+  [configKey('intervalMinutes')]: 0,
+  [configKey('syncOnStart')]: false,
+  [configKey('commitMessage')]: 'sync: {time}',
+  [configKey('authorName')]: 'iMark',
+  [configKey('authorEmail')]: 'imark@local',
+  [configKey('autoInitRepo')]: true,
+  [configKey('initBranch')]: 'main',
+  [configKey('writeGitignore')]: true,
+  [configKey('writeReadme')]: false,
   // 本地路径远端不需要代理；固定直连，避免宿主机环境变量里的代理影响结果
-  proxyMode: 'off',
-  proxyUrl: 'http://127.0.0.1:7890'
+  [configKey('proxyMode')]: 'off',
+  [configKey('proxyUrl')]: 'http://127.0.0.1:7890'
 })
 
 const target1 = (remote: string): TargetConfig => ({
@@ -158,7 +161,7 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSave: false,
+        autoSaveMode: 'off',
         extensions: {
           [EXT_ID]: { enabled: true, config }
         }
@@ -176,7 +179,7 @@ async function main(): Promise<void> {
     source: 'bundled',
     appVersion: APP_VERSION
   })
-  check('内置 v2 包通过校验并安装', installed.manifest.version === '2.0.0')
+  check('内置包通过校验并安装', installed.manifest.version === '1.0.0')
 
   registerIpc()
   registerImarkProtocol()
@@ -223,7 +226,7 @@ async function main(): Promise<void> {
 
   // ---------- 1. 安装与贡献点 ----------
 
-  console.log('\n【1】v2 内置包：清单贡献点来自 package.json')
+  console.log('\n【1】内置包：清单贡献点来自 package.json')
   const v = await view()
   check('扩展列表里有 imark.git-sync', !!v, JSON.stringify(service.listExtensions().map(x => x.descriptor.id)))
   check('默认启用', v?.enabled === true)

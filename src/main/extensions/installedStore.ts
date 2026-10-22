@@ -1,5 +1,5 @@
 /**
- * 已安装扩展的登记表（`plugins/installed.json`，v2）。
+ * 已安装扩展的登记表（`plugins/installed.json`）。
  *
  * 两条原则：
  * - **磁盘是权威**：目录里有合法的 `package.json` 就算已安装。用户手动拷进来的
@@ -7,8 +7,7 @@
  * - **登记表只存来源**：版本、integrity、安装时间、市场地址。启用态与配置在
  *   `settings.extensions`；密钥在 secrets.json；状态在 extensions-data。
  *
- * v1 的 `installed.json`（`{ version: 1, plugins }`）在这里直接当作空表 ——
- * 旧数据由一次性清理删除，不做迁移。
+ * 登记表版本号不匹配时按空表处理；目录扫描会把磁盘上仍然有效的扩展重新登记。
  */
 
 import { lstat, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
@@ -33,14 +32,14 @@ import {
 } from './paths'
 
 interface InstalledFile {
-  version: 2
+  version: 1
   extensions: Record<string, ExtensionRecord>
 }
 
 let cache: InstalledFile | null = null
 
 function empty(): InstalledFile {
-  return { version: 2, extensions: {} }
+  return { version: 1, extensions: {} }
 }
 
 export async function loadInstalled(): Promise<InstalledFile> {
@@ -48,7 +47,7 @@ export async function loadInstalled(): Promise<InstalledFile> {
   try {
     const parsed = JSON.parse(await readFile(installedPath(), 'utf8')) as Partial<InstalledFile>
     const raw =
-      parsed.version === 2 &&
+      parsed.version === 1 &&
       parsed.extensions &&
       typeof parsed.extensions === 'object' &&
       !Array.isArray(parsed.extensions)
@@ -59,7 +58,7 @@ export async function loadInstalled(): Promise<InstalledFile> {
       if (!isValidExtensionId(id) || !record || typeof record !== 'object') continue
       extensions[id] = record
     }
-    cache = { version: 2, extensions }
+    cache = { version: 1, extensions }
   } catch {
     cache = empty()
   }
@@ -78,7 +77,7 @@ export async function getRecord(id: string): Promise<ExtensionRecord | null> {
 
 export async function setRecord(record: ExtensionRecord): Promise<void> {
   const file = await loadInstalled()
-  await persist({ version: 2, extensions: { ...file.extensions, [record.id]: record } })
+  await persist({ version: 1, extensions: { ...file.extensions, [record.id]: record } })
 }
 
 export async function removeRecord(id: string): Promise<void> {
@@ -86,7 +85,7 @@ export async function removeRecord(id: string): Promise<void> {
   if (!file.extensions[id]) return
   const extensions = { ...file.extensions }
   delete extensions[id]
-  await persist({ version: 2, extensions })
+  await persist({ version: 1, extensions })
 }
 
 /** 只给测试/清理用：让下一次读取重新解析磁盘 */
@@ -103,11 +102,6 @@ export async function readManifestAt(dir: string): Promise<ExtensionManifest | n
   } catch {
     return null
   }
-}
-
-export async function readInstalledManifest(id: string): Promise<ExtensionManifest | null> {
-  if (!isValidExtensionId(id)) return null
-  return readManifestAt(extensionDir(id))
 }
 
 async function mainShaOf(dir: string, manifest: ExtensionManifest): Promise<string | null> {
@@ -193,9 +187,9 @@ export async function scanInstalled(): Promise<Map<string, ExtensionManifest>> {
   }
 
   if (changed) {
-    await persist({ version: 2, extensions: next })
+    await persist({ version: 1, extensions: next })
   } else {
-    cache = { version: 2, extensions: next }
+    cache = { version: 1, extensions: next }
   }
   return manifests
 }

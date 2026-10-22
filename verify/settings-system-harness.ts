@@ -20,6 +20,7 @@
  */
 
 import { app, BrowserWindow } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -303,7 +304,7 @@ async function main(): Promise<void> {
         vaults: [vault],
         skipVaultPicker: true,
         lastFile: join(vault, '笔记.md'),
-        autoSave: false,
+        autoSaveMode: 'off',
         marketUrl: ''
       },
       null,
@@ -316,7 +317,7 @@ async function main(): Promise<void> {
   registerImarkProtocol()
   // 渲染层的插件服务一挂载就会 listPlugins();不给宿主的话界面右下角会弹一条
   // 「插件系统尚未就绪」—— 不影响断言,但会出现在截图里
-  await initExtensions({ appVersion: '0.1.0' })
+  await initExtensions({ appVersion: APP_VERSION })
   const settings = await loadSettings()
   // 模拟「双击 .md 启动」:文件在 argv 里,主进程暂存,渲染层初始化完来取
   setPendingOpenFile(external)

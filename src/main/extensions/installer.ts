@@ -1,7 +1,7 @@
 /**
- * v2 扩展包的校验与安装。
+ * 扩展包的校验与安装。
  *
- * 校验顺序（与 v1 相同，报告更具体）：
+ * 校验顺序：
  * 1. `validateEnvelope()`：结构、路径、扩展名、体积、文件数、清单；
  * 2. 逐文件 sha256：把 base64 解出来重算；
  * 3. 整包 integrity：`sha256(stableStringify({ manifest, files }))`。
@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import {
+  extensionIdOf,
   satisfiesRange,
   stableIntegrityInput,
   validateEnvelope,
@@ -20,7 +21,13 @@ import {
   type ExtensionPackageEnvelope
 } from '@shared/extensionPackage'
 import type { ExtensionRecord, ExtensionSource } from '@shared/extensions'
-import { setRecord, activateStaged, cleanupStaging, stagingDirFor } from './installedStore'
+import {
+  readManifestAt,
+  setRecord,
+  activateStaged,
+  cleanupStaging,
+  stagingDirFor
+} from './installedStore'
 import { extensionDir, safeJoin, sha256 } from './paths'
 
 export interface VerifiedExtensionPackage {
@@ -97,6 +104,22 @@ export interface InstallExtensionOutcome {
   previousVersion: string | null
 }
 
+/**
+ * 清单里声明的宿主版本要求（`engines.imark`）。
+ * 返回空数组表示这台机器能装；当前版本读不出来或格式不认识时不做判断 ——
+ * 宁可放过一个不兼容的扩展，也不要因为宿主自己读不到版本号就全部拒绝。
+ */
+export function engineProblems(
+  manifest: ExtensionManifest | null | undefined,
+  appVersion: string
+): string[] {
+  const range = manifest?.engines?.imark
+  if (!range) return []
+  if (!/^\d+\.\d+\.\d+/.test(appVersion)) return []
+  if (satisfiesRange(appVersion, range)) return []
+  return [`这个扩展要求 iMark ${range}，当前版本是 ${appVersion}`]
+}
+
 export async function installExtensionPackage(
   raw: unknown,
   options: InstallExtensionOptions
@@ -108,10 +131,18 @@ export async function installExtensionPackage(
   const { envelope, manifest, mainSha256, warnings } = verified.value
   const id = `${manifest.publisher}.${manifest.name}`
 
-  if (options.appVersion && !satisfiesRange(options.appVersion, manifest.engines.imark)) {
-    throw new Error(
-      `扩展 ${id} 要求 iMark ${manifest.engines.imark}，当前版本 ${options.appVersion} 不满足`
-    )
+  if (options.appVersion) {
+    const problems = engineProblems(manifest, options.appVersion)
+    if (problems.length > 0) throw new Error(`扩展 ${id} 不兼容：${problems.join('；')}`)
+  }
+
+  // 依赖必须已安装（启用状态在激活时再检查）；直接读磁盘清单，
+  // 这样用户手动放进扩展目录、还没有登记记录的依赖也算数。
+  for (const dependency of manifest.extensionDependencies ?? []) {
+    const installed = await readManifestAt(extensionDir(dependency))
+    if (!installed || extensionIdOf(installed) !== dependency) {
+      throw new Error(`扩展 ${id} 依赖的扩展 ${dependency} 未安装，请先安装依赖`)
+    }
   }
 
   const staged = stagingDirFor(id)
@@ -177,6 +208,6 @@ export async function installExtensionPackage(
 }
 
 /** 界面展示 sha256 时统一截断 */
-export function short(sha: string): string {
+function short(sha: string): string {
   return sha.length > 16 ? `${sha.slice(0, 6)}…${sha.slice(-6)}` : sha
 }

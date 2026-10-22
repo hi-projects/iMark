@@ -21,6 +21,7 @@
  */
 
 import { app, BrowserWindow, dialog } from 'electron'
+import { APP_VERSION } from './appVersion'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
     'utf8'
   )
 
-  // 探针扩展:直接放进 v2 的安装目录,由 initExtensions 扫描加载
+  // 探针扩展:直接放进扩展安装目录,由 initExtensions 扫描加载
   const probeDir = join(ud, 'plugins', PROBE_ID)
   await mkdir(probeDir, { recursive: true })
   await writeFile(
@@ -153,7 +154,7 @@ async function main(): Promise<void> {
         version: '1.0.0',
         displayName: PROBE_NAME,
         description: 'harness 用:发扩展通知',
-        engines: { imark: '^0.1.0' },
+        engines: { imark: '^1.0.0' },
         main: './main.js',
         activationEvents: [
           'onCommand:harness.notice-probe.probe-notify',
@@ -177,7 +178,7 @@ async function main(): Promise<void> {
   registerImarkProtocol()
   const settings = await loadSettings()
   // 不补装内置插件:这一轮只需要一个干净的窗口 + 探针,少一个变量少一处噪音
-  const service = await initExtensions({ appVersion: '0.1.0' })
+  const service = await initExtensions({ appVersion: APP_VERSION })
   // 先激活探针:它贡献的状态栏条目要在首帧就出现在布局里(这时还没有任何通知)
   try {
     await service.activateExtension(PROBE_ID)
@@ -436,7 +437,7 @@ async function main(): Promise<void> {
     items[0]?.source === '插件' && items[0]?.name === PROBE_NAME && items[0]?.message === PLUGIN_TEXT,
     JSON.stringify(items)
   )
-  // v2 的 showInformationMessage 没有 success 这一档;info 是它与通知中心的对应等级
+  // showInformationMessage 没有 success 这一档;info 是它与通知中心的对应等级
   check('通知等级沿用扩展消息的 info', items[0]?.levelClass === 'notif-info', JSON.stringify(items[0]))
   check('打开后未读角标消失', (await waitFor(`!document.querySelector('.status-notify-badge')`, 2000)))
 
