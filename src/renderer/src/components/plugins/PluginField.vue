@@ -4,10 +4,13 @@ import { RotateCcw } from 'lucide-vue-next'
 import HelpTip from '../HelpTip.vue'
 import type { PluginEndpoint, PluginField, PluginTarget, PluginTargetResult } from '@shared/plugins'
 import EndpointsField from './EndpointsField.vue'
+import ExternalField from './ExternalField.vue'
 import TargetsField from './TargetsField.vue'
 
 const props = withDefaults(
   defineProps<{
+    /** 外部设置字段需要;行首菜单对话框也复用本组件,那里不传 */
+    extensionId?: string
     field: PluginField
     value: unknown
     /** password 字段的密钥掩码('' = 未配置) */
@@ -18,10 +21,8 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** targets 字段:每个目标的最近一次操作结果(id → ok/error;没有条目 = 还没操作过) */
     targetResults?: Record<string, PluginTargetResult>
-    /** 正在执行动作的目标 id */
-    busyTarget: string | null
   }>(),
-  { targetResults: () => ({}) }
+  { targetResults: () => ({}), extensionId: '' }
 )
 
 const emit = defineEmits<{
@@ -101,15 +102,21 @@ function onSecretInput(e: Event): void {
 </script>
 
 <template>
+  <!-- 外部 JSON 设置:值的唯一事实是目标文件 -->
+  <ExternalField
+    v-if="field.kind === 'external'"
+    :extension-id="extensionId"
+    :field="field"
+  />
+
   <!-- 目标列表自带整块布局 -->
-  <div v-if="field.kind === 'targets'" class="plugin-field">
+  <div v-else-if="field.kind === 'targets'" class="plugin-field">
     <TargetsField
       :field="field"
       :targets="Array.isArray(value) ? (value as PluginTarget[]) : []"
       :secrets="targetSecrets"
       :target-actions="targetActions"
       :target-results="targetResults"
-      :busy-target="busyTarget"
       @change="emit('change', $event)"
       @save-secret="(id, v) => emit('save-target-secret', id, v)"
       @clear-secret="id => emit('clear-target-secret', id)"
@@ -125,7 +132,6 @@ function onSecretInput(e: Event): void {
       :secrets="targetSecrets"
       :target-actions="targetActions"
       :target-results="targetResults"
-      :busy-target="busyTarget"
       @change="emit('change', $event)"
       @save-secret="(id, v) => emit('save-target-secret', id, v)"
       @clear-secret="id => emit('clear-target-secret', id)"
@@ -139,6 +145,7 @@ function onSecretInput(e: Event): void {
       <span class="plugin-field-label">
         {{ field.label }}
         <HelpTip v-if="field.description" :text="field.description" />
+        <span v-if="field.scope === 'workspace'" class="plugin-scope-tag">按仓库</span>
       </span>
       <div v-if="field.resettable" class="plugin-field-actions">
         <button
@@ -169,6 +176,7 @@ function onSecretInput(e: Event): void {
     <span class="plugin-field-label">
       {{ field.label }}
       <HelpTip v-if="field.description" :text="field.description" />
+      <span v-if="field.scope === 'workspace'" class="plugin-scope-tag">按仓库</span>
     </span>
 
     <label v-if="field.kind === 'boolean'" class="plugin-switch">

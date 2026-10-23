@@ -24,7 +24,7 @@ const ICON = {
 
 const SOURCE_LABEL: Record<NoticeRecord['source'], string> = {
   app: '应用',
-  plugin: '插件',
+  plugin: '扩展',
   browser: '浏览器'
 }
 

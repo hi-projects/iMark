@@ -107,21 +107,22 @@ export interface DecorationRangeDto {
 
 // ---------- 宿主初始化 ----------
 
-export type ExtensionHostExtensionMode = 'production' | 'development' | 'test'
-
 export interface HostExtensionInit {
   id: string
   /** 扩展目录的绝对路径 */
   extensionPath: string
   manifest: ExtensionManifest
-  /** 完整配置键(不含扩展 ID 前缀的映射由宿主自己做) */
+  /** 生效配置:全局值 → 当前仓库覆盖值 → 默认值,已归一化 */
   config: Record<string, unknown>
+  /** 显式保存在全局层的值(`inspect().globalValue`) */
+  globalConfig?: Record<string, unknown>
+  /** 显式保存在当前仓库层的覆盖值(`inspect().workspaceValue`) */
+  workspaceConfig?: Record<string, unknown>
   globalState: Record<string, unknown>
   workspaceState: Record<string, unknown>
   /** main 分配的 storage 目录与日志文件;宿主不自己猜 userData 布局 */
   globalStoragePath: string
   logPath: string
-  mode: ExtensionHostExtensionMode
 }
 
 export interface ExtensionHostEnvironmentDto {
@@ -170,11 +171,6 @@ export interface StatusBarItemDto {
   visible: boolean
 }
 
-export interface OutputAppendDto {
-  channel: string
-  text: string
-}
-
 // ---------- webview ----------
 
 export type WebviewPresentationDto = 'sidebar' | 'overlay' | 'floating'
@@ -193,7 +189,6 @@ export interface WebviewPanelCreateRequest {
   enableScripts?: boolean
   /** 绝对路径;资源请求必须落在这些目录里 */
   localResourceRoots: string[]
-  iconPath?: string
   state?: unknown
   /**
    * 宿主在 create 请求里同步生成的面板 token。
@@ -293,6 +288,8 @@ export interface HostOutputAppendMessage {
   extensionId: string
   channel: string
   text: string
+  /** 输出通道方法自带的级别;append/appendLine 不传时为 info */
+  level?: 'debug' | 'info' | 'warn' | 'error'
 }
 
 export type HostStatusBarMessage =
@@ -379,7 +376,6 @@ export type HostRequestMessage =
         description?: string
         detail?: string
         picked?: boolean
-        alwaysShow?: boolean
       }[]
       options: {
         title?: string
@@ -396,6 +392,11 @@ export type HostRequestMessage =
       extensionId: string
       key: string
       value: unknown
+      /**
+       * VS Code 的 `ConfigurationTarget`(1 = Global,2 = Workspace,
+       * 3 = WorkspaceFolder);省略时按字段清单里声明的 `imark.scope` 决定。
+       */
+      target?: number
     }
   | {
       kind: 'secret.get'
@@ -580,7 +581,12 @@ export interface MainCommandMessage {
 export interface MainConfigurationChangedMessage {
   kind: 'configuration.changed'
   extensionId: string
+  /** 生效配置(合并后) */
   values: Record<string, unknown>
+  /** 显式全局值;省略表示没有变化 */
+  globalConfig?: Record<string, unknown>
+  /** 当前仓库的显式覆盖值;省略表示没有变化 */
+  workspaceConfig?: Record<string, unknown>
 }
 
 /**
@@ -664,7 +670,7 @@ export interface MainWebviewRestoreMessage {
   state: unknown
   panel: WebviewPanelStateDto
   /** 恢复的面板沿用同一个 token,否则 asWebviewUri 拼出的地址会被拒绝 */
-  token?: string
+  token: string
 }
 
 export interface MainShutdownMessage {
@@ -700,9 +706,6 @@ export type MainToHostMessage =
   | MainWebviewRestoreMessage
   | MainShutdownMessage
   | HostResponseMessage
-
-/** 宿主发给 main 的响应(与 main 发给宿主的响应是同一种消息) */
-export type MainResponseMessage = HostResponseMessage
 
 // ---------- renderer ↔ main ----------
 
@@ -849,7 +852,6 @@ export type RendererToMainMessage =
       type: 'ui.response'
       requestId: string
       value: string | string[] | null
-      cancelled?: boolean
     }
   | { type: 'extensions.requestReload'; extensionId: string }
   | { type: 'extensions.setEnabled'; extensionId: string; enabled: boolean }

@@ -1,4 +1,4 @@
-/* ---------- 插件市场(设置面板「浏览市场」页 + 安装确认框) ----------
+/* ---------- 扩展市场(设置面板「浏览市场」页 + 安装确认框) ----------
    按钮沿用 plugins.css 的 .plugin-btn / .plugin-icon-btn(全局面板按钮),
    这里只补市场自己的布局与几个语义色(危险/警告徽标)。 */
 
@@ -48,18 +48,6 @@
 
 .market-toolbar-gap {
   flex: 1;
-}
-
-.market-registry {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 260px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
 }
 
 /* ---------- 工具条与列表 ---------- */
@@ -123,6 +111,10 @@
   min-width: 0;
 }
 
+.market-row-name-main .plugin-icon {
+  align-self: center;
+}
+
 .market-row-name-main b {
   min-width: 0;
   overflow: hidden;
@@ -166,49 +158,10 @@
   row-gap: 3px;
 }
 
-/* 开发模式的长提示不参与列宽,单独占一整行 */
-.market-row .market-row-sub-dev {
-  grid-column: 1 / -1;
-}
-
 .market-row-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* ---------- 权限(已安装列表每行名字下面那一排) ---------- */
-
-/*
- * 不写「权限」两个字:一枚盾牌图标 + 一排柔和胶囊,读起来就是「这插件拿到了什么」。
- * 用**底色**而不是描边 —— 描边胶囊在这一页长得像按钮(设置/卸载都是描边的),
- * 权限只是事实,不该看上去能点。
- *
- * 类名带 row 前缀:下面「权限清单」里的 .market-perms / .market-perm 是安装确认框
- * 的列式条目(label + 说明),两者长得完全不同,不能共用名字(撞过一次,胶囊被排成一列)。
- */
-.market-row-perms {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  margin-top: 5px;
-}
-
-.market-row-perms-icon {
-  display: inline-flex;
-  flex: none;
-  color: var(--text-tertiary);
-}
-
-.market-row-perm {
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
-  color: var(--text-secondary);
-  font-size: 10.5px;
-  line-height: 16px;
-  white-space: nowrap;
 }
 
 .market-row-error {
@@ -264,13 +217,6 @@
 
 .market-badge-code {
   color: var(--text-secondary);
-}
-
-/* 「不含代码」:声明式插件专用。它不该和「已安装」那种状态徽标抢颜色 ——
-   这是一个关于风险的**事实**,所以用 success 绿,与「含代码」的灰形成对照 */
-.market-badge-safe {
-  border-color: var(--success);
-  color: var(--success);
 }
 
 .market-badge-warn {
@@ -489,7 +435,7 @@
   background: var(--bg-app);
 }
 
-/* 警示条:脚本插件的红字与声明式插件的绿色说明 */
+/* 警示条:脚本扩展的红字与声明式扩展的绿色说明 */
 
 .market-alert {
   display: flex;
@@ -610,10 +556,6 @@
   background: var(--bg-app);
 }
 
-.market-perm-new {
-  border-color: var(--accent);
-}
-
 .market-perm-label {
   display: flex;
   align-items: center;
@@ -626,13 +568,6 @@
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--text-tertiary);
-}
-
-.market-new-perms-note {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--accent);
 }
 
 /* 校验值 */
@@ -1076,16 +1011,6 @@
   font-size: 12.5px;
 }
 
-.market-update-warn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex: 1 1 100%;
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--danger, #c0392b);
-}
-
 /* ---------- 源码查看器 ---------- */
 
 .market-source-mask {
@@ -1218,7 +1143,7 @@
   background: var(--bg-app);
 }
 
-/* ---------- 扩展宿主(市场页「扩展宿主」页签) ---------- */
+/* ---------- 扩展分配(市场页「扩展分配」页签) ---------- */
 
 .market-hosts {
   display: flex;
@@ -1226,29 +1151,32 @@
   gap: 10px;
 }
 
+/* 模式说明与切换按钮:说明在上、按钮另起一行 */
 .market-host-mode {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-app);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
 }
 
-.market-host-mode-info {
-  flex: 1;
-  min-width: 0;
+.market-host-assigned {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.market-host-mode-title {
+/* 已分配 / 未分配两个分区共用:标题上方一条细线作为模块分隔 */
+.market-host-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.market-host-section-head b {
   font-size: 12.5px;
-  font-weight: 600;
   color: var(--text-primary);
-}
-
-.market-host-mode-info .market-hint {
-  margin-top: 3px;
 }
 
 .market-host-groups {
@@ -1262,6 +1190,22 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-app);
+}
+
+/*
+ * 进程状态用卡片外框表达:运行中绿框、启动中主题色、崩溃红框。
+ * 卡片头部不再单独挂状态圆点 —— 同一行已经有「运行中 · PID …」的文字。
+ */
+.market-host-card-ok {
+  border-color: var(--success);
+}
+
+.market-host-card-running {
+  border-color: var(--accent);
+}
+
+.market-host-card-error {
+  border-color: var(--danger);
 }
 
 .market-host-head {
@@ -1321,6 +1265,23 @@
   color: var(--text-primary);
 }
 
+/* 名字与「依赖同组」贴在一起,后面的空白把编号控件推到行尾 */
+.market-host-ident {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.market-host-ident .market-host-name {
+  flex: 0 1 auto;
+}
+
+.market-host-ident .market-badge {
+  flex: none;
+}
+
 .market-host-affinity {
   display: flex;
   align-items: center;
@@ -1330,6 +1291,11 @@
   color: var(--text-tertiary);
 }
 
+/* 共享进程时占位符是「与同号同组」:默认 68px 会把最后两个字截掉 */
+.market-host-affinity .settings-number {
+  width: 92px;
+}
+
 .market-host-paused {
   display: flex;
   flex-direction: column;
@@ -1337,18 +1303,7 @@
   margin-top: 2px;
 }
 
-.market-host-paused-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.market-host-paused-head b {
-  font-size: 12.5px;
-  color: var(--text-primary);
-}
-
-/* 未分配区里的一行与宿主卡共享底色/内边距,但整块是列表而不是卡片组 */
+/* 未分配区里的一行与进程卡共享底色/内边距,但整块是列表而不是卡片组 */
 .market-host-paused .market-host-card {
   padding: 8px 12px;
 }

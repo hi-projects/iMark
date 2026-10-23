@@ -7,8 +7,8 @@
  * 界面不猜任何东西 —— 表单由 `contributes.configuration` 翻译出的 settingsFields
  * 驱动,动作由 `contributes['imark.actions']` 驱动。
  */
-import { computed, ref } from 'vue'
-import { FileText, RotateCw, Trash2 } from 'lucide-vue-next'
+import { computed, onMounted, ref, watch } from 'vue'
+import { FileJson, FileText, RotateCw, Trash2 } from 'lucide-vue-next'
 // 类型名与组件名 PluginField 冲突,这里给类型起别名
 import {
   secretKey,
@@ -21,13 +21,15 @@ import type { ExtensionActionView } from '@shared/extensions'
 import {
   extensionById,
   extensionStore,
+  refreshExtensions,
   reloadExtension,
   runExtensionCommand,
-  saveExtensionConfig,
+  saveExtensionField,
   saveExtensionSecret,
   setExtensionEnabled,
   uninstallExtension
 } from '../../services/extensionService'
+import { appStore } from '../../stores/app'
 import { settingsNav } from '../../services/settingsNav'
 import { notifyError } from '../../services/notice'
 import {
@@ -41,6 +43,16 @@ import PluginField from './PluginField.vue'
 
 /** 选中哪个扩展由左侧导航决定(settingsNav.pluginId) */
 const selected = computed(() => extensionById(settingsNav.pluginId ?? ''))
+
+// 日志与运行状态只存在主进程内存里:设置页每次打开、每次切换扩展都重新拉一次,
+// 否则「调试」看到的还是应用启动时的旧快照。
+onMounted(() => {
+  void refreshExtensions()
+})
+watch(
+  () => settingsNav.pluginId,
+  () => void refreshExtensions()
+)
 
 const logsOpen = ref(false)
 const recentLogs = computed(() => (selected.value?.logs ?? []).slice(-50))
@@ -98,13 +110,49 @@ const fieldGroups = computed(() => {
   return out
 })
 
+/**
+ * 只提交被改的那一项。
+ *
+ * 整份提交会把「从全局继承来的值」固化进当前仓库的覆盖层 —— 用户以后改全局
+ * 默认值时,这些仓库就不会跟随了。主进程按清单里的 imark.scope 决定写入哪一层。
+ */
 async function commit(field: PluginFieldSpec, value: unknown): Promise<void> {
+  // 外部设置由字段组件直接写目标文件,不能进应用的配置存储
+  if (field.kind === 'external') return
   const extension = selected.value
   if (!extension) return
-  await saveExtensionConfig(extension.descriptor.id, {
-    ...extension.config,
-    [fullKey(field)]: value
-  })
+  await saveExtensionField(extension.descriptor.id, fullKey(field), value)
+}
+
+/** 有按仓库保存的字段时才显示范围说明与分组标记 */
+const hasWorkspaceFields = computed(
+  () => selected.value?.descriptor.settingsFields.some(field => field.scope === 'workspace') ?? false
+)
+
+const currentVaultName = computed(() => {
+  const path = appStore.vaultPath
+  if (!path) return ''
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+})
+
+function groupHasWorkspaceField(fields: PluginFieldSpec[]): boolean {
+  return fields.some(field => field.scope === 'workspace')
+}
+
+/** 这一组字段写在哪个外部配置文件里;没有外部字段返回 null */
+function externalFieldOf(fields: PluginFieldSpec[]): PluginFieldSpec | null {
+  return fields.find(field => field.kind === 'external' && field.external?.file) ?? null
+}
+
+async function openExternalFile(fields: PluginFieldSpec[]): Promise<void> {
+  const extension = selected.value
+  const field = externalFieldOf(fields)
+  if (!extension || !field) return
+  try {
+    await api.openExtensionExternalFile(extension.descriptor.id, field.key)
+  } catch (err) {
+    notifyError('打开设置文件', err)
+  }
 }
 
 function passwordHint(extensionId: string, field: PluginFieldSpec): string {
@@ -156,13 +204,41 @@ function targetActionsFor(field: PluginFieldSpec): { id: string; label: string }
   return targetActions.value.map(action => ({ id: action.command, label: action.label }))
 }
 
+/**
+ * 动作执行期间至少让「进行中」露这么久。
+ *
+ * 「检查 Claude Code」这类命令可能几十毫秒就返回;不设下限的话,状态卡会从
+ * 上一次的「成功」直接跳到新的「成功」,看起来像没执行。下限只影响很快的动作,
+ * 慢动作(同步、测试连接)按实际耗时走。
+ */
+const ACTION_PENDING_MIN_MS = 300
+
+async function runWithPending(command: string, run: () => Promise<void>): Promise<void> {
+  if (pendingCommand.value) return
+  pendingCommand.value = command
+  const startedAt = Date.now()
+  try {
+    await run()
+  } finally {
+    const rest = ACTION_PENDING_MIN_MS - (Date.now() - startedAt)
+    if (rest > 0) await new Promise(resolve => setTimeout(resolve, rest))
+    pendingCommand.value = null
+  }
+}
+
 async function runAction(action: ExtensionActionView): Promise<void> {
-  const result = await runExtensionCommand(action.command, [], 'action')
-  if (!result.ok) return
+  await runWithPending(action.command, async () => {
+    await runExtensionCommand(action.command, [], 'action')
+    // 动作的结果会写进扩展日志,刷新后「调试」里立刻能看到这一条
+    await refreshExtensions()
+  })
 }
 
 async function runTargetAction(targetId: string, command: string): Promise<void> {
-  await runExtensionCommand(command, [{ targetId, source: 'action' }], 'action')
+  await runWithPending(command, async () => {
+    await runExtensionCommand(command, [{ targetId, source: 'action' }], 'action')
+    await refreshExtensions()
+  })
 }
 
 // ---------- 启用 / 状态 ----------
@@ -177,20 +253,36 @@ const runtimeBad = computed(() => {
   return status === 'failed' || status === 'crashed' || status === 'crash-loop'
 })
 
+/** 正在执行的那条动作命令;null = 没有动作在跑 */
+const pendingCommand = ref<string | null>(null)
+const actionPending = computed(() => pendingCommand.value !== null)
+
 const statusState = computed(() => ({
   enabled: selected.value?.enabled ?? false,
-  status: runtimeBad.value ? ('error' as const) : (selected.value?.status.status ?? 'idle')
+  status: actionPending.value
+    ? ('running' as const)
+    : runtimeBad.value
+      ? ('error' as const)
+      : (selected.value?.status.status ?? 'idle')
 }))
 
-const statusTone = computed(() => (runtimeBad.value ? 'error' : pluginStatusTone(statusState.value)))
+const statusTone = computed(() =>
+  actionPending.value
+    ? 'running'
+    : runtimeBad.value
+      ? 'error'
+      : pluginStatusTone(statusState.value)
+)
 const statusLabel = computed(() => {
+  if (actionPending.value) return '进行中'
   const runtime = selected.value?.runtime.status
   if (runtime === 'failed') return '激活失败'
-  if (runtime === 'crashed') return '宿主已退出'
+  if (runtime === 'crashed') return '进程已退出'
   if (runtime === 'crash-loop') return '反复崩溃'
   return pluginStatusLabel(statusState.value)
 })
 const statusMessage = computed(() => {
+  if (actionPending.value) return '正在执行…'
   const extension = selected.value
   if (!extension) return ''
   if (runtimeBad.value) return extension.runtime.lastError ?? '扩展进程异常退出。'
@@ -199,6 +291,8 @@ const statusMessage = computed(() => {
     lastMessage: extension.status.lastMessage
   })
 })
+/** 失败原因等明细(reportStatus 的 detail);只有一行摘要时用户不知道去哪查 */
+const statusDetail = computed(() => selected.value?.status.lastDetail ?? '')
 
 // ---------- 调试 ----------
 
@@ -206,32 +300,6 @@ async function reloadSelected(): Promise<void> {
   if (!selected.value) return
   await reloadExtension(selected.value.descriptor.id)
 }
-
-// ---------- 安装信息 ----------
-
-const CAPABILITY_LABELS: Record<string, string> = {
-  filesystem: '文件系统',
-  network: '网络',
-  secrets: '密钥存储',
-  git: 'Git',
-  process: '子进程',
-  shell: 'Shell'
-}
-
-const capabilityLabels = computed(() => {
-  const caps = selected.value?.descriptor.capabilities ?? {}
-  const out: string[] = []
-  for (const [key, label] of Object.entries(CAPABILITY_LABELS)) {
-    const value = (caps as Record<string, unknown>)[key]
-    if (!value) continue
-    if (key === 'filesystem' && typeof value === 'string') {
-      out.push(`${label}(${value === 'workspace' ? '仅工作区' : '用户目录'})`)
-    } else {
-      out.push(label)
-    }
-  }
-  return out
-})
 
 async function openLog(): Promise<void> {
   if (!selected.value) return
@@ -274,10 +342,12 @@ const busy = computed(() => extensionStore.busy !== null)
 
     <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
 
-    <!-- 开发模式:代码不在数据目录里,改文件即时生效 -->
-    <div v-if="selected.dev" class="plugin-dev-banner">
-      <span class="plugin-dev-dot" />
-      <span>开发模式：代码来自你指定的目录，改文件即时生效；它不是安装进来的，重启应用就不在了</span>
+    <div v-if="hasWorkspaceFields" class="plugin-scope-hint">
+      <span class="plugin-scope-tag">按仓库</span>
+      <span>
+        带此标记的设置每个仓库各存一份{{ currentVaultName ? `（当前：${currentVaultName}）` : '' }}，
+        切换仓库后自动换用对应设置；其余设置全局共用。
+      </span>
     </div>
 
     <div v-if="selected.loadError" class="plugin-status-card plugin-status-card-error">
@@ -292,37 +362,50 @@ const busy = computed(() => extensionStore.busy !== null)
         <b>{{ statusLabel }}</b>
         <span class="plugin-status-message">{{ statusMessage }}</span>
         <span class="plugin-status-time">
-          {{ pluginStatusTime({ lastRunAt: selected.status.lastRunAt }, formatTime) }}
+          {{ pluginStatusTime({ lastRunAt: actionPending ? null : selected.status.lastRunAt }, formatTime) }}
         </span>
       </div>
+      <div v-if="statusDetail && !actionPending" class="plugin-status-detail">{{ statusDetail }}</div>
     </div>
 
-    <div v-if="globalActions.length > 0" class="plugin-actions">
+    <!-- 动作单独占一行;结果通过 reportStatus 写进上面的状态卡,不再弹通知 -->
+    <div v-if="globalActions.length > 0" class="plugin-actions plugin-global-actions">
       <button
         v-for="action in globalActions"
         :key="action.command"
         class="plugin-btn"
         :class="{ 'plugin-btn-action': action.primary }"
-        :disabled="!selected.enabled || busy"
+        :disabled="!selected.enabled || busy || actionPending"
         @click="runAction(action)"
       >
-        {{ busy ? '执行中…' : action.label }}
+        {{ pendingCommand === action.command ? '执行中…' : action.label }}
       </button>
     </div>
 
     <div class="plugin-fields">
       <section v-for="(group, gi) in fieldGroups" :key="gi" class="plugin-group">
-        <h3 v-if="group.section" class="plugin-group-title">{{ group.section }}</h3>
+        <h3 v-if="group.section" class="plugin-group-title">
+          {{ group.section }}
+          <span v-if="groupHasWorkspaceField(group.fields)" class="plugin-scope-tag">按仓库</span>
+          <button
+            v-if="externalFieldOf(group.fields)"
+            class="plugin-icon-btn"
+            :title="`打开设置文件：${externalFieldOf(group.fields)?.external?.file ?? ''}`"
+            @click="openExternalFile(group.fields)"
+          >
+            <FileJson :size="13" />
+          </button>
+        </h3>
         <PluginField
           v-for="field in group.fields"
           :key="field.key"
+          :extension-id="selected.descriptor.id"
           :field="field"
           :value="fieldValue(field)"
           :hint="passwordHint(selected.descriptor.id, field)"
           :target-secrets="targetSecrets(selected.descriptor.id, field)"
           :target-actions="targetActionsFor(field)"
           :target-results="selected.status.targetResults ?? {}"
-          :busy-target="null"
           @change="v => commit(field, v)"
           @run-action="runTargetAction"
           @save-secret="v => saveSecret(field, null, v)"
@@ -333,7 +416,7 @@ const busy = computed(() => extensionStore.busy !== null)
       </section>
 
       <!--
-        调试:最近 3 次操作结果 + 日志尾部(扩展自己 log() 的行 + 操作摘要)。
+        调试:日志尾部(扩展自己 log() 的行 + 命令执行摘要)。
         完整版在数据根下的 logs/extensions/<id>.log,右上角用系统默认程序打开。
       -->
       <section class="plugin-group plugin-ops">
@@ -348,7 +431,10 @@ const busy = computed(() => extensionStore.busy !== null)
             </button>
           </span>
         </div>
-        <div v-if="recentLogs.length > 0" class="plugin-logs">
+        <div v-if="recentLogs.length === 0" class="plugin-ops-empty">
+          还没有日志。扩展运行时的输出与命令操作会显示在这里。
+        </div>
+        <div v-else class="plugin-logs">
           <button class="plugin-link" @click="logsOpen = !logsOpen">
             {{ logsOpen ? '▾' : '▸' }} 扩展日志（最近 {{ recentLogs.length }} 条）
           </button>
@@ -364,44 +450,16 @@ const busy = computed(() => extensionStore.busy !== null)
         </div>
       </section>
 
-      <!-- 安装信息:来源、integrity、权限披露;卸载入口放在最后 -->
-      <section class="plugin-group">
-        <h3 class="plugin-group-title">安装信息</h3>
-        <div class="plugin-meta">
-          <div class="plugin-meta-line">
-            <span class="plugin-field-hint">
-              扩展代码以你的用户权限运行：能读写文件、执行命令、访问网络，不做权限沙箱。
-            </span>
-          </div>
-          <div class="plugin-meta-line">
-            <span class="plugin-field-label">来源</span>
-            <span>{{ selected.source }}</span>
-            <span v-if="selected.installed"> · 安装于 {{ formatTime(selected.installed.installedAt) }}</span>
-          </div>
-          <div v-if="selected.installed" class="plugin-meta-line">
-            <span class="plugin-field-label">integrity</span>
-            <code class="plugin-code">{{ selected.installed.integrity.slice(0, 24) }}…</code>
-          </div>
-          <div v-if="selected.installed?.mainSha256" class="plugin-meta-line">
-            <span class="plugin-field-label">入口 sha256</span>
-            <code class="plugin-code">{{ selected.installed.mainSha256.slice(0, 24) }}…</code>
-          </div>
-          <div class="plugin-meta-line">
-            <span class="plugin-field-label">能力声明</span>
-            <span>{{ capabilityLabels.length > 0 ? capabilityLabels.join('、') : '未声明' }}</span>
-          </div>
-          <div class="plugin-meta-line">
-            <span class="plugin-field-label">激活事件</span>
-            <span>{{ selected.descriptor.activationEvents.join('、') || '无' }}</span>
-          </div>
-          <div v-if="selected.source !== 'bundled' && selected.installed" class="plugin-meta-line">
-            <button class="plugin-btn" :disabled="busy" @click="removeSelected()">
-              <Trash2 :size="13" />
-              <span>卸载扩展</span>
-            </button>
-          </div>
-        </div>
-      </section>
+      <!-- 安装信息已集中到市场「已安装」;这里只留下卸载这个操作 -->
+      <div
+        v-if="selected.source !== 'bundled' && selected.installed"
+        class="plugin-actions"
+      >
+        <button class="plugin-btn plugin-btn-danger" :disabled="busy" @click="removeSelected()">
+          <Trash2 :size="13" />
+          <span>卸载扩展</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>

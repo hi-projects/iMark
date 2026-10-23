@@ -2,7 +2,7 @@
  * `context.globalState` / `workspaceState` 的持久化。
  *
  * 宿主进程只持有内存缓存，每次 `update()` 通过 RPC 把值送回 main；main 在这里
- * 合并并按扩展做 100ms 防抖写盘。这样插件把状态当普通对象高频改也不会把磁盘写爆，
+ * 合并并按扩展做 100ms 防抖写盘。这样扩展把状态当普通对象高频改也不会把磁盘写爆，
  * 而宿主崩溃/重启后值仍然在。
  *
  * 文件布局：`extensions-data/<id>/state.json`

@@ -1,5 +1,5 @@
 /**
- * 插件市场服务:已安装列表、待确认的安装、进度与卸载。
+ * 扩展市场服务:已安装列表、待确认的安装、进度与卸载。
  *
  * 与 extensionService 一样,状态放在本模块而不是 appStore —— 只有设置面板的市场页用。
  *
@@ -22,7 +22,7 @@ import type {
   PublishPreview,
   PublishResult
 } from '@shared/market'
-import type { ExtensionSource, ExtensionView } from '@shared/extensions'
+import type { ExtensionView } from '@shared/extensions'
 import { isNewerVersion } from '@shared/extensionPackage'
 import { settingsNav } from './settingsNav'
 import { extensionStore } from './extensionService'
@@ -156,11 +156,11 @@ export async function cancelInstall(): Promise<void> {
  * 卸载**总是**删掉程序文件、配置、密钥、globalState 与日志 ——
  * 扩展 id 可能被其他人重新使用,凭据不能留给下一个同名扩展。
  */
-export async function uninstallPlugin(id: string): Promise<void> {
+export async function uninstallFromMarket(id: string): Promise<void> {
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyExtensions(await api.uninstallPlugin(id))
+    applyExtensions(await api.uninstallMarketExtension(id))
     marketStore.error = ''
   } catch (err) {
     marketStore.error = `卸载失败：${message(err)}`
@@ -169,12 +169,12 @@ export async function uninstallPlugin(id: string): Promise<void> {
   }
 }
 
-/** 把内置的兜底扩展装回来(离线可用,不联网) */
+/** 把内置扩展装回来(离线可用,不联网) */
 export async function restoreBundled(): Promise<void> {
   if (marketStore.busy) return
   marketStore.busy = true
   try {
-    applyExtensions(await api.restoreBundledPlugins())
+    applyExtensions(await api.restoreBundledExtensions())
     marketStore.error = ''
   } catch (err) {
     marketStore.error = `恢复内置扩展失败：${message(err)}`
@@ -476,24 +476,6 @@ export function hasUpdate(id: string, remoteVersion: string): boolean {
   const local = localVersion(id)
   if (!local) return false
   return isNewerVersion(remoteVersion, local)
-}
-
-/**
- * 已安装扩展的来源标签。
- */
-export function sourceLabel(source: ExtensionSource | undefined, bundled: boolean): string {
-  switch (source) {
-    case 'bundled':
-      return '内置扩展'
-    case 'market':
-      return '市场扩展'
-    case 'local':
-      return '本地安装'
-    case 'dev':
-      return '开发模式'
-    default:
-      return bundled ? '内置扩展' : '未知来源'
-  }
 }
 
 export function formatTime(ts: number | undefined): string {

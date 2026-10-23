@@ -82,8 +82,15 @@ export interface WindowApi {
   confirmDelete(name: string, isDir: boolean): Promise<boolean>
   // ---------- 扩展 ----------
   listExtensions(): Promise<ExtensionView[]>
+  /** 扩展包内图标(data: URL);没有图标或读取失败为 null */
+  extensionIcon(id: string): Promise<string | null>
+  /** 读扩展清单声明的外部 JSON 设置;键不存在返回空串 */
+  readExtensionExternal(id: string, key: string): Promise<string>
+  /** 写扩展清单声明的外部 JSON 设置;空串表示删除该键 */
+  writeExtensionExternal(id: string, key: string, value: string): Promise<void>
   setExtensionEnabled(id: string, enabled: boolean): Promise<ExtensionView[]>
-  setExtensionConfig(id: string, config: Record<string, unknown>): Promise<ExtensionView[]>
+  /** 保存一个配置项(key 为完整配置键);保存范围由清单的 imark.scope 决定 */
+  setExtensionField(id: string, key: string, value: unknown): Promise<ExtensionView[]>
   /** value 为 null 时清除该密钥;key 是完整键(`<id>:<property>[:<slot>]`) */
   setExtensionSecret(id: string, key: string, value: string | null): Promise<ExtensionView[]>
   reloadExtension(id: string): Promise<ExtensionView[]>
@@ -91,6 +98,8 @@ export interface WindowApi {
   setExtensionHostSettings(patch: ExtensionHostSettingsPatch): Promise<ExtensionView[]>
   uninstallExtension(id: string): Promise<ExtensionView[]>
   openExtensionLog(id: string): Promise<void>
+  /** 打开扩展清单声明的外部设置文件(如 ~/.claude/settings.json) */
+  openExtensionExternalFile(id: string, key: string): Promise<void>
   getExtensionContributions(): Promise<ExtensionContributionsSnapshot>
   runExtensionCommand(
     command: string,
@@ -103,31 +112,31 @@ export interface WindowApi {
   onExtensionCommand(
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): () => void
-  // ---------- 插件市场 ----------
+  // ---------- 扩展市场 ----------
   /**
-   * 挑一个本地插件包并**预览**(不安装)。用户取消返回 null。
+   * 挑一个本地扩展包并**预览**(不安装)。用户取消返回 null。
    * 返回的令牌是一次性的:确认安装时只回传令牌,字节始终留在主进程。
    */
   pickMarketPackage(): Promise<PendingInstall | null>
-  /** 挑一个插件目录 → 打包 → 预览(不安装)。用户取消返回 null */
+  /** 挑一个扩展目录 → 打包 → 预览(不安装)。用户取消返回 null */
   packMarketDir(): Promise<PendingInstall | null>
   /** 用户点了取消:把待确认项丢掉 */
   dropMarketPending(token: string): Promise<void>
-  /** 确认安装,返回最新的插件视图列表 */
+  /** 确认安装,返回最新的扩展视图列表 */
   installMarketPending(token: string): Promise<ExtensionView[]>
   /**
-   * 卸载插件。**密钥一定会被删除**(见 host.uninstall 的说明),与 `removeConfig` 无关;
-   * 该选项只决定插件的配置是否一起删掉。
+   * 从市场页卸载扩展。**程序文件、配置、密钥、globalState 与日志一起删除** ——
+   * 扩展 id 可能被其他人重新使用,凭据不能留给下一个同名扩展。
    */
-  uninstallPlugin(id: string): Promise<ExtensionView[]>
-  /** 已安装插件 + 哪些是应用自带的 */
+  uninstallMarketExtension(id: string): Promise<ExtensionView[]>
+  /** 已安装扩展 + 哪些是应用自带的 */
   listMarketInstalled(): Promise<MarketInstalledData>
-  /** 把应用自带的兜底插件重新装回来(离线可用) */
-  restoreBundledPlugins(): Promise<ExtensionView[]>
+  /** 把应用自带的扩展重新装回来(离线可用) */
+  restoreBundledExtensions(): Promise<ExtensionView[]>
   onMarketProgress(cb: (p: MarketProgress) => void): () => void
   /** 设置市场地址;返回规范化后的地址。空串表示不使用市场 */
   setMarketRegistry(url: string): Promise<string>
-  /** 连一下某个地址的 /health,确认它是 iMark 插件市场;失败抛中文错误 */
+  /** 连一下某个地址的 /health,确认它是 iMark 扩展市场;失败抛中文错误 */
   testMarketRegistry(url: string): Promise<string>
   searchMarket(query: MarketQuery): Promise<MarketSearchResult>
   marketDetail(id: string): Promise<MarketDetail>
@@ -149,7 +158,7 @@ export interface WindowApi {
   /** 重新打包该目录并上传 */
   publishToMarket(dir: string): Promise<PublishResult>
   /**
-   * 检查已安装的插件在市场上有没有新版本;离线或没配地址时返回空数组。
+   * 检查已安装的扩展在市场上有没有新版本;离线或没配地址时返回空数组。
    * 结果在主进程缓存 10 分钟,`force` 为真时跳过缓存。
    */
   checkMarketUpdates(force?: boolean): Promise<MarketUpdate[]>

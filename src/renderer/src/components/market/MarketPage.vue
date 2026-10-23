@@ -1,14 +1,13 @@
 <script setup lang="ts">
 /**
- * 插件市场页 —— 设置面板里的第三个页面(外观 / 插件 / 市场)。
+ * 扩展市场页 —— 设置面板里的第三个页面(外观 / 扩展 / 市场)。
  *
- * 只做外壳:页签、当前市场地址、顶部错误条,具体内容交给各个 tab 组件。
+ * 只做外壳:页签与市场错误条,具体内容交给各个 tab 组件。
  * 页签状态存在 settingsNav 的 market 里,所以从菜单打开市场、
- * 点到某个插件详情再关掉设置、重新打开,看到的还是原来那一屏。
+ * 点到某个扩展详情再关掉设置、重新打开,看到的还是原来那一屏。
  */
 
 import { computed, onMounted } from 'vue'
-import { Store } from 'lucide-vue-next'
 import { checkUpdates, marketStore, refreshInstalled, remoteStore } from '../../services/marketService'
 import { settingsNav } from '../../services/settingsNav'
 import MarketBrowse from './MarketBrowse.vue'
@@ -20,11 +19,9 @@ import MarketPublish from './MarketPublish.vue'
 const TABS = [
   { id: 'installed', label: '已安装' },
   { id: 'browse', label: '浏览市场' },
-  { id: 'hosts', label: '扩展宿主' },
-  { id: 'publish', label: '发布插件' }
+  { id: 'hosts', label: '扩展分配' },
+  { id: 'publish', label: '发布扩展' }
 ] as const
-
-const registry = computed(() => remoteStore.auth?.registry ?? '')
 
 /** 有可用更新时在「已安装」页签上挂个角标 —— 这是用户唯一会主动看的地方 */
 const updateCount = computed(() => remoteStore.updates.length)
@@ -56,14 +53,15 @@ onMounted(async () => {
           {{ updateCount }}
         </span>
       </button>
-      <span class="market-toolbar-gap" />
-      <span class="market-registry" :title="registry">
-        <Store :size="13" />
-        {{ registry || '未设置市场地址' }}
-      </span>
     </div>
 
-    <p v-if="marketStore.error" class="market-banner market-banner-error">{{ marketStore.error }}</p>
+    <!-- 市场连接错误只与「浏览市场」有关;其它页签不显示,免得每个页面都顶着一条红条 -->
+    <p
+      v-if="settingsNav.market.tab === 'browse' && marketStore.error"
+      class="market-banner market-banner-error"
+    >
+      {{ marketStore.error }}
+    </p>
 
     <!-- 详情是「浏览」下面的一个子屏,所以它只在浏览页签里替换列表 -->
     <MarketDetail

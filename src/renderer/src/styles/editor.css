@@ -446,16 +446,6 @@
   background: var(--bg-selection);
 }
 
-.cm-md-table-ctl-del:hover {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-.cm-md-table-ctl-add {
-  border-radius: 50%;
-  font-size: 13px;
-}
-
 .cm-md-table-trash svg {
   display: block;
 }

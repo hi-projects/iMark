@@ -13,7 +13,7 @@ import {
   Trash2
 } from 'lucide-vue-next'
 import type { VaultNode } from '@shared/types'
-import { appStore } from '../stores/app'
+import { activeTab, appStore } from '../stores/app'
 import {
   createDir,
   createFile,
@@ -63,7 +63,7 @@ function toggleDir(node: VaultNode): void {
 }
 
 function isOpenFile(node: VaultNode): boolean {
-  return appStore.filePath === node.path
+  return activeTab()?.filePath === node.path
 }
 
 function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, target: VaultNode | null, initial = ''): void {
@@ -119,9 +119,9 @@ interface MenuEntry {
   label: string
   /** 危险动作(删除)用红色 */
   danger?: boolean
-  /** 分组线:应用自己的条目与插件条目之间要有一条,不然分不清哪些是外来的 */
+  /** 分组线:应用自己的条目与扩展条目之间要有一条,不然分不清哪些是外来的 */
   separator?: boolean
-  /** 条目来源(插件名)。空 = 应用自带 —— 用户得能一眼看出哪一条不是原装的 */
+  /** 条目来源(扩展名)。空 = 应用自带 —— 用户得能一眼看出哪一条不是原装的 */
   source?: string
   run: () => void
 }

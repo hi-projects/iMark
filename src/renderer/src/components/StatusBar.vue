@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import {
   Bell,
   ChevronsUpDown,
@@ -10,6 +10,7 @@ import {
   Sun
 } from 'lucide-vue-next'
 import {
+  activeTab,
   appStore,
   editorHolder,
   openSettings,
@@ -30,6 +31,9 @@ import {
   statusTitle,
   statusTone
 } from '../services/extensionUi'
+import { extensionById } from '../services/extensionService'
+import { ensureExtensionIcon, extensionIconOf } from '../services/extensionIcons'
+import PluginIcon from './plugins/PluginIcon.vue'
 import { noticeCenter, toggleNoticeCenter } from '../services/notice'
 
 function openVaultSwitcher(): void {
@@ -47,6 +51,7 @@ function toggleOutline(): void {
   editorHolder.view?.focus()
 }
 
+const activeDoc = computed(() => activeTab())
 const isDark = computed(() => appStore.theme !== 'light')
 const nextTheme = computed(() => THEME_ORDER[(THEME_ORDER.indexOf(appStore.theme) + 1) % THEME_ORDER.length]!)
 const themeTitle = computed(
@@ -97,12 +102,33 @@ function statusStyle(entry: ExtensionStatusItemView): Record<string, string> {
   if (background) style.backgroundColor = background
   return style
 }
+
+/** 清单声明了图标的扩展:状态栏优先画它自己的图标,比文字/通用 codicon 更好认 */
+function hasExtensionIcon(entry: ExtensionStatusItemView): boolean {
+  return Boolean(extensionIconOf(entry.extensionId))
+}
+
+// 状态条目出现时预取图标;取不到(旧安装包没带 icon.svg)就继续用文字,不放空按钮
+watch(
+  () => statusEntries.value.map(entry => entry.extensionId),
+  ids => {
+    for (const id of ids) {
+      if (extensionById(id)?.descriptor.icon) ensureExtensionIcon(id)
+    }
+  },
+  { immediate: true }
+)
+
+function statusItemTitle(entry: ExtensionStatusItemView): string {
+  const title = statusTitle(entry)
+  return hasExtensionIcon(entry) ? `${entry.extensionName}\n${title}` : title
+}
 </script>
 
 <template>
   <div class="status-bar">
     <!--
-      左下角从左到右:设置 / 主题 → 目录、大纲 → 插件图标。
+      左下角从左到右:设置 / 主题 → 目录、大纲 → 扩展图标。
       两条竖线把它们分成三组,组内按钮只隔 2px,组与组之间靠状态栏的 gap 拉开。
     -->
     <span class="status-app-actions">
@@ -144,15 +170,24 @@ function statusStyle(entry: ExtensionStatusItemView): Record<string, string> {
           v-for="entry in leftStatusEntries"
           :key="entry.id"
           class="status-plug"
-          :class="{ ...statusClass(entry), 'status-plug-text': !statusIcon(entry.text) }"
+          :class="{ ...statusClass(entry), 'status-plug-text': !hasExtensionIcon(entry) && !statusIcon(entry.text) }"
           :style="statusStyle(entry)"
-          :title="statusTitle(entry)"
+          :title="statusItemTitle(entry)"
           @click="clickStatusItem(entry)"
         >
-          <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
-          <span v-if="statusLabel(entry.text)" class="status-plug-label">
-            {{ statusLabel(entry.text) }}
-          </span>
+          <template v-if="hasExtensionIcon(entry)">
+            <PluginIcon :id="entry.extensionId" :size="14" class="status-plug-icon" />
+            <span
+              class="status-plug-dot"
+              :class="`status-plug-dot-${statusTone(entry.status)}`"
+            />
+          </template>
+          <template v-else>
+            <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
+            <span v-if="statusLabel(entry.text)" class="status-plug-label">
+              {{ statusLabel(entry.text) }}
+            </span>
+          </template>
         </button>
       </span>
     </template>
@@ -166,10 +201,10 @@ function statusStyle(entry: ExtensionStatusItemView): Record<string, string> {
       <span class="status-vault-name">{{ appStore.vaultName }}</span>
     </button>
     <!-- 没有打开页面时,0 字 0 行不是「统计结果」,是空状态;不显示反而诚实 -->
-    <template v-if="appStore.hasDocument">
-      <span>字数 {{ appStore.words }}</span>
-      <span>字符 {{ appStore.chars }}</span>
-      <span>行数 {{ appStore.lines }}</span>
+    <template v-if="activeDoc">
+      <span>字数 {{ activeDoc.words }}</span>
+      <span>字符 {{ activeDoc.chars }}</span>
+      <span>行数 {{ activeDoc.lines }}</span>
     </template>
     <span class="status-spacer"></span>
     <!-- 贴右的扩展条目:在自动保存提示与通知铃铛之前 -->
@@ -178,15 +213,24 @@ function statusStyle(entry: ExtensionStatusItemView): Record<string, string> {
         v-for="entry in rightStatusEntries"
         :key="entry.id"
         class="status-plug"
-        :class="{ ...statusClass(entry), 'status-plug-text': !statusIcon(entry.text) }"
+        :class="{ ...statusClass(entry), 'status-plug-text': !hasExtensionIcon(entry) && !statusIcon(entry.text) }"
         :style="statusStyle(entry)"
-        :title="statusTitle(entry)"
+        :title="statusItemTitle(entry)"
         @click="clickStatusItem(entry)"
       >
-        <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
-        <span v-if="statusLabel(entry.text)" class="status-plug-label">
-          {{ statusLabel(entry.text) }}
-        </span>
+        <template v-if="hasExtensionIcon(entry)">
+          <PluginIcon :id="entry.extensionId" :size="14" class="status-plug-icon" />
+          <span
+            class="status-plug-dot"
+            :class="`status-plug-dot-${statusTone(entry.status)}`"
+          />
+        </template>
+        <template v-else>
+          <component v-if="statusIcon(entry.text)" :is="statusIcon(entry.text)" :size="14" />
+          <span v-if="statusLabel(entry.text)" class="status-plug-label">
+            {{ statusLabel(entry.text) }}
+          </span>
+        </template>
       </button>
     </span>
     <span

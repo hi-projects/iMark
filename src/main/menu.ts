@@ -130,7 +130,7 @@ function dedupeAccelerators(
   return extensionDropped
 }
 
-/** 帮助之前的那一段固定菜单(不含插件/扩展两栏) */
+/** 帮助之前的那一段固定菜单(不含扩展/扩展两栏) */
 function baseMenuTemplate(): MenuItemConstructorOptions[] {
   return [
     {
@@ -207,7 +207,7 @@ function baseMenuTemplate(): MenuItemConstructorOptions[] {
         fmt('大纲', 'view:toggle-outline', 'CmdOrCtrl+Shift+O'),
         fmt('循环切换主题', 'view:toggle-theme', 'CmdOrCtrl+J'),
         fmt('设置...', 'view:settings', 'CmdOrCtrl+,'),
-        fmt('插件市场', 'view:market', 'CmdOrCtrl+Shift+P'),
+        fmt('扩展市场', 'view:market', 'CmdOrCtrl+Shift+P'),
         // Ctrl+Shift+P 早被市场占了(VSCode 里它是命令面板),这里退一步用 Alt+P。
         // 与 Ctrl+Alt+O(打开仓库)是同一条腿的记忆:Alt 那一档留给"跳出去"的操作。
         fmt('命令面板...', 'view:command-palette', 'CmdOrCtrl+Alt+P'),

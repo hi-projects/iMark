@@ -1,7 +1,7 @@
 /**
  * 当前文档桥。
  *
- * 插件只读取内存中的编辑器文本做快照；应用结果时用一次 TextEditor.edit 写回，
+ * 扩展只读取内存中的编辑器文本做快照；应用结果时用一次 TextEditor.edit 写回，
  * 保留撤销栈。Agent 永远拿不到 vault 的真实写权限。
  */
 
@@ -60,7 +60,6 @@ export class DocumentBridge {
       fileName: snapshot.fileName,
       version: snapshot.version,
       isDirty: snapshot.isDirty,
-      editable: true,
       selection: snapshot.selection
     }
   }

@@ -188,12 +188,12 @@ export function createMainWindow(settings: Settings): BrowserWindow {
   mainWindow.on('closed', () => {
     mainWindow = null
     // 退出决策交给 index.ts(它才知道还有没有别的窗口该活下来)。
-    // 见那边的说明:有了隐藏的插件执行器页面之后,"所有窗口关闭"不再是"该退出了"。
+    // 见那边的说明:有了隐藏的扩展执行器页面之后,"所有窗口关闭"不再是"该退出了"。
     mainWindowClosedHandler?.()
   })
 
   // 切换主题时窗口底色与 WCO 配色跟着换。saveSettings 是唯一漏斗,挂在它上面
-  // 能覆盖状态栏快捷键、设置面板、插件改设置等所有路径
+  // 能覆盖状态栏快捷键、设置面板、扩展改设置等所有路径
   const offSettings = onSettingsChanged((next, prev) => {
     if (next.theme === prev.theme || !mainWindow) return
     applyWindowChrome(mainWindow, next.theme, currentView)
@@ -233,7 +233,7 @@ export function setWindowView(view: 'picker' | 'editor'): void {
  * 当前打开文档的绝对路径(null = 没打开文件)。
  *
  * 主进程需要它来回答两个问题:「imark:// 这个请求读的图片能不能读」
- * (见 protocol.ts 的 allowedRoots)与「插件要写的这个文件是不是正开着的那个」。
+ * (见 protocol.ts 的 allowedRoots)与「扩展要写的这个文件是不是正开着的那个」。
  * 两者都不能靠猜 —— 主进程本来只拿得到标题里的文件名,而文件名不构成路径。
  */
 let docPath: string | null = null

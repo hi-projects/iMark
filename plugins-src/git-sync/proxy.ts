@@ -3,10 +3,10 @@
  *
  * 为什么需要这一层:Windows 的「系统代理」是 WinINET 的设置,浏览器会读,
  * 而 git 用的 libcurl **不读它**。于是会出现一个很迷惑的状态:
- * 浏览器能打开 GitHub,插件的「测试连接」却一律超时。
+ * 浏览器能打开 GitHub,扩展的「测试连接」却一律超时。
  * 这里把同一份设置查出来,通过 `-c http.proxy=…` 显式交给 git。
  *
- * 只依赖 Node 内置模块(插件独立打包,除 Node 与注入的 imk 外什么都 require 不到)。
+ * 只依赖 Node 内置模块(扩展独立打包,除 Node 与注入的 imk 外什么都 require 不到)。
  */
 
 import { execFile } from 'node:child_process'
@@ -22,7 +22,8 @@ export interface DetectedProxy {
   bypass: string[]
 }
 
-export type ProxyMode = 'auto' | 'manual' | 'off'
+/** auto = 自动寻找本机代理；manual = 用设置里填的地址；两者找不到可用代理时都直连 */
+export type ProxyMode = 'auto' | 'manual'
 
 const WINDOWS_INTERNET_SETTINGS =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
@@ -35,7 +36,7 @@ function withScheme(hostPort: string, fallback: 'http' | 'socks5'): string {
 
 /**
  * 手动填写的代理地址:补协议、校验协议白名单、去掉多余的根斜杠。
- * 无法识别时返回 null(调用方据此给出「地址填错了」的提示,而不是静默直连)。
+ * 无法识别时返回 null(调用方提示地址填错了,并按直连处理)。
  */
 export function normalizeProxyUrl(raw: unknown): string | null {
   const text = String(raw ?? '').trim()
@@ -153,7 +154,7 @@ function matchesNoProxy(hostname: string, entries: readonly string[]): boolean {
     }
     if (!entry) continue
     // Windows 的 ProxyOverride 允许通配(`10.*`、`172.2*`):按 glob 匹配。
-    // NO_PROXY 本身没有这层语义,所以判断必须在插件里做完。
+    // NO_PROXY 本身没有这层语义,所以判断必须在扩展里做完。
     if (entry.includes('*')) {
       const pattern = entry.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
       if (new RegExp(`^${pattern}$`, 'i').test(host)) return true

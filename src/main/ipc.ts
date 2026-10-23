@@ -166,7 +166,7 @@ export function registerIpc(): void {
   // ---------- 扩展 ----------
   registerExtensionIpc()
 
-  // ---------- 插件市场 ----------
+  // ---------- 扩展市场 ----------
 
   registerMarketIpc()
 

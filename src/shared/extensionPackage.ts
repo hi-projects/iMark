@@ -23,11 +23,10 @@
 import formatData from './extensionFormat.json'
 import type { ExtensionDescriptor } from './extensions'
 import type {
-  PluginEndpoint,
   PluginField,
   PluginFieldKind,
-  PluginLineMenuDialog,
-  PluginTarget
+  PluginFieldScope,
+  PluginLineMenuDialog
 } from './plugins'
 
 export const PACKAGE_FORMAT: string = formatData.format
@@ -64,7 +63,8 @@ const FIELD_KINDS: readonly string[] = [
   'boolean',
   'select',
   'targets',
-  'endpoints'
+  'endpoints',
+  'external'
 ]
 const DIALOG_FIELD_KINDS: readonly string[] = ['text', 'number', 'boolean', 'select']
 /**
@@ -122,6 +122,11 @@ export interface ExtensionMenusContribution {
 /** `configuration.properties` 里 `imark` 元数据的形状(不含 key/kind 的交叉校验) */
 export interface ExtensionFieldMarkdown {
   kind?: PluginFieldKind
+  /**
+   * 保存范围:`workspace` = 每个仓库各存一份覆盖值,缺省 = 全局一份。
+   * 只影响非密配置;密钥始终全局。
+   */
+  scope?: PluginFieldScope
   label?: string
   description?: string
   section?: string
@@ -134,6 +139,11 @@ export interface ExtensionFieldMarkdown {
   targetSecret?: { label: string; placeholder?: string }
   /** select 的显示名;标准 enum 只有值,标签需要单独给 */
   options?: { value: string; label: string }[]
+  /** kind: 'external' 的文件与 JSON 指针 */
+  file?: string
+  dirEnv?: string
+  pointer?: string
+  secret?: boolean
 }
 
 export interface ExtensionConfigurationProperty {
@@ -462,6 +472,9 @@ function validateConfigProperties(
     if (meta.kind !== undefined && !FIELD_KINDS.includes(meta.kind as string)) {
       errors.push(`${at}.imark.kind 非法:${String(meta.kind)}`)
     }
+    if (meta.scope !== undefined && meta.scope !== 'global' && meta.scope !== 'workspace') {
+      errors.push(`${at}.imark.scope 只能是 global / workspace`)
+    }
     if (meta.showWhen !== undefined) {
       if (!isObject(meta.showWhen) || typeof meta.showWhen.key !== 'string') {
         errors.push(`${at}.imark.showWhen 必须是 { key, value }`)
@@ -483,6 +496,20 @@ function validateConfigProperties(
       !Array.isArray(meta.options)
     ) {
       errors.push(`${at} 是 select,但既没有 enum 也没有 imark.options`)
+    }
+    if (meta.kind === 'external') {
+      if (typeof meta.file !== 'string' || !meta.file.trim()) {
+        errors.push(`${at}.imark.file 必须是非空字符串`)
+      }
+      if (typeof meta.pointer !== 'string' || !meta.pointer.startsWith('/') || meta.pointer === '/') {
+        errors.push(`${at}.imark.pointer 必须是以 / 开头的 JSON 指针`)
+      }
+      if (meta.dirEnv !== undefined && typeof meta.dirEnv !== 'string') {
+        errors.push(`${at}.imark.dirEnv 必须是字符串`)
+      }
+      if (meta.secret !== undefined && typeof meta.secret !== 'boolean') {
+        errors.push(`${at}.imark.secret 必须是布尔值`)
+      }
     }
     if (meta.kind === 'targets' || meta.kind === 'endpoints') {
       warnings.push(`${at} 使用 ${String(meta.kind)} 字段,请确认 targetSecret 与 targetSetting 已配置`)
@@ -1281,12 +1308,25 @@ export function settingsFieldsOf(manifest: ExtensionManifest): PluginField[] {
         value: meta.showWhen.value
       }
     }
+    if (meta.scope !== undefined) field.scope = meta.scope
     if (meta.rows !== undefined) field.rows = meta.rows
     if (meta.resettable !== undefined) field.resettable = meta.resettable
     if (meta.required !== undefined) field.required = meta.required
     if (meta.placeholder !== undefined) field.placeholder = meta.placeholder
     if (meta.endpointModel !== undefined) field.endpointModel = meta.endpointModel
     if (meta.targetSecret !== undefined) field.targetSecret = meta.targetSecret
+    if (
+      meta.kind === 'external' &&
+      typeof meta.file === 'string' &&
+      typeof meta.pointer === 'string'
+    ) {
+      field.external = {
+        file: meta.file,
+        pointer: meta.pointer,
+        ...(meta.dirEnv !== undefined ? { dirEnv: meta.dirEnv } : {}),
+        ...(meta.secret !== undefined ? { secret: meta.secret } : {})
+      }
+    }
     const options = optionsOfProperty(property)
     if (options) field.options = options
     if (property.minimum !== undefined) field.min = property.minimum
@@ -1296,7 +1336,7 @@ export function settingsFieldsOf(manifest: ExtensionManifest): PluginField[] {
   return out
 }
 
-/** 主进程与市场页共用的描述符;插件代码永远不参与决定自己长什么样 */
+/** 主进程与市场页共用的描述符;扩展代码永远不参与决定自己长什么样 */
 export function descriptorFromManifest(manifest: ExtensionManifest): ExtensionDescriptor {
   const id = extensionIdOf(manifest)
   const contributes = manifest.contributes ?? {}
@@ -1321,6 +1361,3 @@ export function descriptorFromManifest(manifest: ExtensionManifest): ExtensionDe
     settingsFields: settingsFieldsOf(manifest)
   }
 }
-
-/** 供设置页读取目标数组的默认值(类型只用于编译期) */
-export type ExtensionTargetDefault = PluginTarget[] | PluginEndpoint[]

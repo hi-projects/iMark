@@ -1,9 +1,9 @@
 /**
- * 读取 Claude Code provider 自己的设置。
+ * 读取 Claude Code provider 自己的「调用参数」。
  *
- * 设置键在清单里是 `imark.claude-code.*`；扩展宿主拿到的 WorkspaceConfiguration
- * 已经按扩展归属过滤，所以这里用相对 key（如 `command`）。API 密钥不落配置，
- * 只从本扩展的 secret 槽位读取。
+ * 模型、端点、令牌等 CLI 配置不在这里：它们唯一的事实是 Claude Code 自己的
+ * ~/.claude/settings.json，由设置页的外部字段直接读写。这里只负责扩展怎么启动
+ * CLI（可执行文件、隔离、超时、轮数、额外参数）。
  */
 
 import * as imark from 'imark'
@@ -14,12 +14,10 @@ export type ClaudeIsolation = 'safe' | 'restricted' | 'off'
 
 export interface ClaudeConfig {
   command: string
-  model: string
   isolation: ClaudeIsolation
   timeoutSec: number
   maxTurns: number
   extraArgs: string[]
-  apiKey?: string
 }
 
 export interface ClaudeConfigRead {
@@ -104,23 +102,20 @@ export function parseExtraArgs(raw: unknown): { args: string[]; warnings: string
   return { args, warnings }
 }
 
-export async function readConfig(context: imark.ExtensionContext): Promise<ClaudeConfigRead> {
+export function readConfig(): ClaudeConfigRead {
   const config = imark.workspace.getConfiguration(SECTION)
   const rawIsolation = text(config.get<string>('isolation', 'safe'), 'safe')
   const isolation: ClaudeIsolation =
     rawIsolation === 'restricted' || rawIsolation === 'off' ? rawIsolation : 'safe'
   const parsedExtra = parseExtraArgs(config.get<string>('extraArgs', ''))
-  const apiKeyRaw = await context.secrets.get('apiKey')
 
   return {
     config: {
       command: text(config.get<string>('command', '')),
-      model: text(config.get<string>('model', '')),
       isolation,
       timeoutSec: clampInt(config.get<number>('timeoutSec', 300), 10, 1800, 300),
       maxTurns: clampInt(config.get<number>('maxTurns', 24), 1, 100, 24),
-      extraArgs: parsedExtra.args,
-      apiKey: apiKeyRaw && apiKeyRaw.trim() ? apiKeyRaw.trim() : undefined
+      extraArgs: parsedExtra.args
     },
     warnings: parsedExtra.warnings
   }

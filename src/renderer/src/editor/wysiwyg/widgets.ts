@@ -1360,7 +1360,7 @@ function deleteSelection(state: TableDomState): void {
  * GFM 表格:整块渲染成真表格,并支持**在渲染态直接编辑单元格**。
  *
  * 这个 widget 只替换**表头那一行**,其余行由 cm-md-table-void 折叠成零高度
- * (与块级公式同一套做法 —— CM 不允许插件提供跨行 replace)。
+ * (与块级公式同一套做法 —— CM 不允许扩展提供跨行 replace)。
  *
  * 与 Math/Image 那些 widget 不同,这里 `ignoreEvent` 为真:点击不再交给 CodeMirror
  * 映射进源码区(那会整张表翻回 Markdown),而是自己把单元格切成 contenteditable。

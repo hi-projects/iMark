@@ -6,7 +6,7 @@
  * 每个标签页各自持有一份 **EditorState**(文档、撤销栈、选区都在里面),
  * 切换标签时对同一个视图 `setState()`。这样:
  *   - 撤销历史天然按标签隔离,不会出现「在 B 里撤销出 A 的内容」;
- *   - 插件拿到的始终是当前视图(它们只认 `editorHolder.view`),不用为每个标签
+ *   - 扩展拿到的始终是当前视图(它们只认 `editorHolder.view`),不用为每个标签
  *     重新注册一遍扩展;
  *   - 滚动位置用 CM6 的 `scrollSnapshot()` 随 state 一起存:它正是为
  *     「同一个视图换文档」设计的,比手动记 scrollTop 可靠。
@@ -17,18 +17,14 @@
  * EditorState 放在模块级 Map 里,绝不进响应式 —— 它是不可变的大对象,
  * 让 Vue 深层代理它既没必要,也会踩到 CodeMirror 的模块身份/同一性判断。
  *
- * ## 兼容层
- *
- * `appStore.filePath / fileName / dirty / savedContent / outline ...` 保留为
- * **当前标签的镜像**。状态栏、窗口标题、大纲、插件 API、自动保存读的都是这些
- * 旧字段;每次激活/编辑/保存后由 `syncMirror()` 同步,避免全仓改读取点。
+ * 界面要读当前文档时走 `activeTab()`,不要在 store 里再存一份镜像。
  */
 import { ChangeSet, type EditorState, type TransactionSpec } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { applyWrapping, buildDocumentState } from '../editor/setup'
 import { extractOutline, updateActiveOutline } from '../editor/outline'
 import { flushTableEdits } from '../editor/wysiwyg/widgets'
-import { appStore, editorHolder, type OutlineItem } from '../stores/app'
+import { activeTab, appStore, editorHolder, type OutlineItem } from '../stores/app'
 import { basename, computeStats, stripMarkdownExt } from '../utils/text'
 import { isInside } from '../utils/paths'
 import { api } from './api'
@@ -107,11 +103,6 @@ function freshId(): string {
 
 // ---------- 读取 ----------
 
-export function activeTab(): DocTab | null {
-  const id = appStore.activeTabId
-  return id ? (appStore.tabs.find(t => t.id === id) ?? null) : null
-}
-
 export function tabById(id: string | null): DocTab | null {
   return id ? (appStore.tabs.find(t => t.id === id) ?? null) : null
 }
@@ -138,36 +129,6 @@ export function tabText(id: string, opts?: { flush?: boolean }): string | null {
   if (opts?.flush !== false && id === appStore.activeTabId) flushTableEdits()
   const fresh = id === appStore.activeTabId && editorHolder.view ? editorHolder.view.state : state
   return fresh.doc.toString()
-}
-
-// ---------- 镜像 ----------
-
-/** 把当前标签的字段复制到旧的单文档字段上(见文件头「兼容层」) */
-export function syncMirror(): void {
-  const tab = activeTab()
-  appStore.hasDocument = !!tab
-  if (!tab) {
-    appStore.filePath = null
-    appStore.fileName = '未命名'
-    appStore.eol = 'LF'
-    appStore.savedContent = ''
-    appStore.dirty = false
-    appStore.words = 0
-    appStore.chars = 0
-    appStore.lines = 1
-    appStore.outline = []
-    appStore.outlineActive = null
-    return
-  }
-  appStore.filePath = tab.filePath
-  appStore.fileName = tab.fileName
-  appStore.eol = tab.eol
-  appStore.savedContent = tab.savedContent
-  appStore.dirty = tab.dirty
-  appStore.words = tab.words
-  appStore.chars = tab.chars
-  appStore.lines = tab.lines
-  appStore.outline = tab.outline
 }
 
 // ---------- 新建 / 激活 / 关闭 ----------
@@ -216,7 +177,6 @@ export function addTab(input: NewTabInput, opts?: AddTabOptions): DocTab {
   appStore.tabs.splice(at, 0, tab)
 
   if (opts?.activate !== false) activateTab(tab.id, { persist: opts?.persist })
-  else if (!current) syncMirror()
   if (opts?.persist !== false) persistSession()
   return tab
 }
@@ -239,7 +199,6 @@ export function captureActiveTab(): void {
     rt.scrollEffect = view.scrollSnapshot()
   }
   clearTimers()
-  syncMirror()
 }
 
 /** 把某个标签的 state 装进视图(光标、撤销栈、滚动位置都随 state 走) */
@@ -262,12 +221,8 @@ export function activateTab(id: string, opts?: { focus?: boolean; persist?: bool
 
     const view = editorHolder.view
     if (view) mountTabState(id, view)
-    // 先同步镜像:updateActiveOutline 读的是 appStore.outline
-    syncMirror()
     if (view) updateActiveOutline(view)
     if (opts?.persist !== false) persistSession()
-  } else {
-    syncMirror()
   }
 
   if (opts?.focus !== false) editorHolder.view?.focus()
@@ -285,7 +240,6 @@ export function attachActiveTab(): void {
   const view = editorHolder.view
   if (!tab || !view) return
   mountTabState(tab.id, view)
-  syncMirror()
   updateActiveOutline(view)
 }
 
@@ -308,7 +262,6 @@ export function closeTabNow(id: string): void {
 
   appStore.tabs.splice(index, 1)
   runtime.delete(id)
-  syncMirror()
   persistSession()
 }
 
@@ -321,7 +274,6 @@ export function deactivateToEmpty(): void {
     view.setState(buildDocumentState('', v => editorHolder.onDocChange?.(v), { editable: false }))
     view.contentDOM.blur()
   }
-  syncMirror()
   // 没有页面就没有可恢复的页面;openFiles 仍可能为空或由 clearTabs 处理
   persistSession()
 }
@@ -337,7 +289,6 @@ export function clearTabs(): void {
     view.setState(buildDocumentState('', v => editorHolder.onDocChange?.(v), { editable: false }))
     view.contentDOM.blur()
   }
-  syncMirror()
   persistSession()
 }
 
@@ -380,7 +331,6 @@ function refreshMeta(id: string): void {
   const text = state.doc.toString()
   Object.assign(tab, computeStats(text))
   tab.dirty = text !== tab.savedContent
-  if (id === appStore.activeTabId) syncMirror()
 }
 
 function refreshOutline(id: string): void {
@@ -388,10 +338,7 @@ function refreshOutline(id: string): void {
   const state = stateOf(id)
   if (!tab || !state) return
   tab.outline = extractOutline(state)
-  if (id === appStore.activeTabId) {
-    appStore.outline = tab.outline
-    if (editorHolder.view) updateActiveOutline(editorHolder.view)
-  }
+  if (id === appStore.activeTabId && editorHolder.view) updateActiveOutline(editorHolder.view)
 }
 
 /**
@@ -467,7 +414,7 @@ function clearTimers(): void {
 export function handleEditorDocChange(_view: EditorView): void {
   const tab = activeTab()
   if (!tab) {
-    // 没有当前标签却有人改了文档:只可能是插件直接写视图。把它收编成一个
+    // 没有当前标签却有人改了文档:只可能是扩展直接写视图。把它收编成一个
     // 未命名标签,而不是让内容停在一个「没有文档」的视图里。
     // update listener 里不能 setState,挪到微任务。
     queueMicrotask(() => {
@@ -479,13 +426,10 @@ export function handleEditorDocChange(_view: EditorView): void {
     return
   }
   const id = tab.id
-  // 先同步标脏:250ms 后才结算只是为了省下每次按键的全文比较,
+  // 先标脏:250ms 后才结算只是为了省下每次按键的全文比较,
   // 但「刚敲完就关窗口/关标签」不能因为这段延迟而看不到改动。
   // 结算时如果撤销回了保存时的内容,会再改回 false。
-  if (!tab.dirty) {
-    tab.dirty = true
-    if (id === appStore.activeTabId) appStore.dirty = true
-  }
+  if (!tab.dirty) tab.dirty = true
   clearTimeout(metaTimer)
   clearTimeout(outlineTimer)
   metaTimer = setTimeout(() => refreshMeta(id), 250)
@@ -501,7 +445,6 @@ export function markTabSaved(id: string, text: string): void {
   tab.savedContent = text
   const current = stateOf(id)
   tab.dirty = current ? current.doc.toString() !== text : false
-  if (id === appStore.activeTabId) syncMirror()
   notifyDocumentEvent({ kind: 'saved', tabId: id })
 }
 
@@ -512,12 +455,11 @@ export function setTabPath(id: string, path: string, eol: 'LF' | 'CRLF'): void {
   tab.filePath = path
   tab.fileName = basename(path)
   tab.eol = eol
-  if (id === appStore.activeTabId) syncMirror()
   persistSession()
 }
 
 /**
- * 用磁盘内容替换一个标签(插件的 vault.write 改了正开着的文件)。
+ * 用磁盘内容替换一个标签(扩展的 vault.write 改了正开着的文件)。
  * 当前标签会换掉 state;后台标签只换 Map 里那份,不打扰用户。
  */
 export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRLF'): void {
@@ -534,9 +476,8 @@ export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRL
   const view = editorHolder.view
   if (id === appStore.activeTabId && view) {
     view.setState(state)
+    updateActiveOutline(view)
   }
-  syncMirror()
-  if (id === appStore.activeTabId && view) updateActiveOutline(view)
   notifyDocumentEvent({ kind: 'replaced', tabId: id, text: content, eol })
 }
 
@@ -558,15 +499,12 @@ export function renameTabPaths(from: string, to: string, isDir: boolean): void {
       changed = true
     }
   }
-  if (changed) {
-    syncMirror()
-    persistSession()
-  }
+  if (changed) persistSession()
 }
 
 /**
  * 文件/目录被删除后,受影响的标签转为「未保存的未命名文档」(内容保留)。
- * 与旧行为一致:删除的是磁盘上的文件,不是用户正在看的文字。
+ * 删除的是磁盘上的文件,不是用户正在看的文字。
  */
 export function detachDeletedPath(path: string, isDir: boolean): void {
   let changed = false
@@ -580,10 +518,7 @@ export function detachDeletedPath(path: string, isDir: boolean): void {
     tab.dirty = text.length > 0
     changed = true
   }
-  if (changed) {
-    syncMirror()
-    persistSession()
-  }
+  if (changed) persistSession()
 }
 
 // ---------- 会话持久化 ----------

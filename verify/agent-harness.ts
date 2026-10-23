@@ -175,7 +175,6 @@ async function main(): Promise<void> {
         enabled: false,
         config: {
           [`${CLAUDE_ID}.command`]: fakeCmd,
-          [`${CLAUDE_ID}.model`]: '',
           [`${CLAUDE_ID}.isolation`]: 'safe',
           [`${CLAUDE_ID}.timeoutSec`]: 30,
           [`${CLAUDE_ID}.maxTurns`]: 10
@@ -457,7 +456,7 @@ async function main(): Promise<void> {
     '未启用 provider 时发送按钮禁用',
     await agentEval<boolean>(`document.querySelector('#send').disabled === true`)
   )
-  check('未启用 provider 时有明确提示', (await agentText('#banner')).includes('未安装或未启用'))
+  check('未启用 provider 时有明确提示', await waitText('#banner', '未安装或未启用'))
   check('设置项与文件输入存在', await agentEval<boolean>(`!!document.querySelector('#file-input')`))
 
   console.log('\n【1b】启用 Claude Code：宿主重启、惰性激活')
@@ -493,6 +492,41 @@ async function main(): Promise<void> {
       10_000
     )
   )
+
+  const claudeActions =
+    (await service.getExtensionView(CLAUDE_ID))?.descriptor.contributes['imark.actions'] ?? []
+  check(
+    'Claude Code 声明了自己的检查动作',
+    claudeActions.some(action => action.command === 'imark.claude-code.check'),
+    JSON.stringify(claudeActions)
+  )
+  const coreActions =
+    (await service.getExtensionView(CORE_ID))?.descriptor.contributes['imark.actions'] ?? []
+  check('Agent Core 不再声明检测动作', coreActions.length === 0, JSON.stringify(coreActions))
+
+  await service.executeCommand('imark.claude-code.check')
+  const checkedView = await waitUntilAsync(async () => {
+    const checked = await service.getExtensionView(CLAUDE_ID)
+    return checked?.status.status === 'ok' && (checked.status.lastMessage ?? '').includes('可用：Claude Code')
+  }, 10_000)
+  check('Claude Code 自检结果写进自己的状态卡', checkedView)
+  await sleep(400)
+  const checkToasts = await evalHost<string[]>(
+    `[...document.querySelectorAll('.toast')].map(el => el.textContent || '')`
+  )
+  check(
+    '自检结果不弹右下角通知',
+    !checkToasts.some(text => text.includes('可用：Claude Code')),
+    JSON.stringify(checkToasts)
+  )
+
+  let oldCheck = ''
+  try {
+    await service.executeCommand('imark.agent.checkProvider')
+  } catch (err) {
+    oldCheck = err instanceof Error ? err.message : String(err)
+  }
+  check('Agent Core 的检测命令已移除', oldCheck.includes('未知命令'), oldCheck)
 
   // ---------- 2. 附件上传 ----------
 
@@ -637,6 +671,26 @@ async function main(): Promise<void> {
   check('read-only 工具只读', readOnlyTools === 'Read,Glob,Grep', readOnlyTools)
   check('read-only 不含 Bash 白名单', !readOnlyArgv.join(' ').includes('Bash('))
 
+  // ---------- 6b. 轮数按 assistant 消息计 ----------
+
+  console.log('\n【6b】同一条 assistant 消息拆成多条记录时不重复计轮')
+  await setScenario('split-turns', 'fake-session-1', 'T4')
+  await sendTurn('轮数统计回归')
+  check('split-turns 触发 turn-limit', await waitAnyText('.agent-error', 'turn-limit', 20_000))
+  await sleep(300)
+  const splitMessages = (await readFile(messagesPath, 'utf8'))
+    .trim()
+    .split(/\r?\n/)
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+  const splitLast = splitMessages[splitMessages.length - 1] as
+    | { toolCalls?: unknown[] }
+    | undefined
+  check(
+    'maxTurns=10 时第 11 条消息才终止（旧实现第 6 条就终止）',
+    Array.isArray(splitLast?.toolCalls) && splitLast.toolCalls.length === 10,
+    String(splitLast?.toolCalls?.length)
+  )
+
   // ---------- 7. 错误分类 ----------
 
   console.log('\n【7】auth / provider-unavailable 错误')
@@ -672,39 +726,18 @@ async function main(): Promise<void> {
   }
   check('fake CLI 进程已结束', !alive, String(slowPid))
 
-  // ---------- 9. 行首菜单 generate 意图 ----------
+  // ---------- 9. beautify 命令 ----------
 
-  console.log('\n【9】行首菜单 generate 意图')
-  await setScenario('ok', 'fake-session-1', 'T4')
-  await service.executeCommand('imark.agent.generate', [
-    {
-      values: { prompt: '请生成一段测试内容' },
-      line: 2,
-      source: 'lineMenu'
-    }
-  ])
-  check('行首菜单触发的生成消息出现', await waitAnyText('.agent-msg.assistant', 'T4', 20_000))
-  const menuInvocation = await waitInvocation(item => item.stdin.includes('请生成一段测试内容'))
-  check('generate 要求进入 stdin', Boolean(menuInvocation))
-  check('prompt 标记本次任务为生成', menuInvocation?.stdin.includes('本次任务：生成') === true)
-  check(
-    'composer 任务模式切到 generate',
-    (await agentEval<string>(`document.querySelector('#task-mode').value`)) === 'generate'
-  )
-  check('结果按钮带行首菜单目标', await waitAnyText('.agent-actions', '插入第 2 行后', 8000))
-
-  // ---------- 10. beautify 命令 ----------
-
-  console.log('\n【10】beautify 命令')
+  console.log('\n【9】beautify 命令')
   await setScenario('ok', 'fake-session-1', 'T5')
   await service.executeCommand('imark.agent.beautify')
   check('beautify 消息出现', await waitAnyText('.agent-msg.assistant', 'T5', 20_000))
   const beautyInvocation = await waitInvocation(item => item.stdin.includes('本次任务：美化'))
   check('beautify prompt 标记美化', Boolean(beautyInvocation))
 
-  // ---------- 11. 依赖保护 ----------
+  // ---------- 10. 依赖保护 ----------
 
-  console.log('\n【11】依赖保护')
+  console.log('\n【10】依赖保护')
   let uninstallError = ''
   try {
     await service.uninstallExtension(CORE_ID)

@@ -1,4 +1,4 @@
-/* ---------- 插件设置页(设置面板「插件」分类) ---------- */
+/* ---------- 扩展设置页(设置面板「扩展」分类) ---------- */
 
 .plugin-page {
   display: flex;
@@ -6,11 +6,23 @@
   gap: 10px;
 }
 
-/* 左侧导航里的插件条目:状态点 + 名字 */
+/* 左侧导航里的扩展条目:状态点 + 名字 */
 .settings-nav-empty {
   padding: 4px 10px;
   font-size: 12px;
   color: var(--text-tertiary);
+}
+
+/* 扩展图标:设置左栏、设置页头与市场已安装列表共用 */
+.plugin-icon {
+  flex: 0 0 auto;
+  display: block;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.plugin-icon-empty {
+  background: var(--bg-toolbar-btn-hover);
 }
 
 .plugin-detail-version {
@@ -137,6 +149,16 @@
   word-break: break-word;
 }
 
+/* 状态卡里的失败原因(reportStatus 的 detail):摘要行放不下时在下面完整展开 */
+.plugin-status-detail {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-line;
+  word-break: break-word;
+}
+
 /* 详情页头部与动作 */
 
 .plugin-detail-head {
@@ -213,29 +235,6 @@
   color: var(--accent);
 }
 
-/* 执行中转圈:只转图标,不转按钮框 */
-.plugin-icon-btn .plugin-spin {
-  animation: plugin-spin 1s linear infinite;
-}
-
-.plugin-action-result {
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  background: var(--bg-app);
-  border: 1px solid var(--border);
-}
-
-.plugin-action-result.is-ok {
-  border-left: 3px solid var(--success);
-}
-
-.plugin-action-result.is-bad {
-  border-left: 3px solid var(--danger);
-}
-
 /* 表单 */
 
 .plugin-fields {
@@ -272,6 +271,35 @@
   flex: 1 1 auto;
   min-width: 0;
   width: auto;
+}
+
+/* 外部 JSON 设置:输入框 + 保存状态在同一行 */
+.plugin-external-control {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plugin-external-control .plugin-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.plugin-external-status {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.plugin-external-error {
+  color: var(--danger);
 }
 
 /* 数字/下拉不需要占满整行 */
@@ -316,6 +344,42 @@
   color: var(--text-primary);
 }
 
+/* 「按仓库」范围标记:字段标签旁与分组标题旁共用 */
+.plugin-scope-tag {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--text-tertiary);
+  background: var(--bg-toolbar-btn-hover);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* 插件页顶部的范围说明:只在存在按仓库字段时出现 */
+.plugin-scope-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-toolbar-btn-hover);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.plugin-scope-hint .plugin-scope-tag {
+  margin-left: 0;
+  margin-top: 2px;
+}
+
 /* 字段分组:标题 + 分隔线 */
 .plugin-group {
   display: flex;
@@ -328,6 +392,9 @@
 }
 
 .plugin-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 0;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
@@ -398,18 +465,6 @@
 
 /* 密钥行 */
 
-.plugin-secret {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.plugin-secret-state {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
 .plugin-secret-on {
   color: var(--success);
 }
@@ -427,10 +482,6 @@
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.plugin-secret-off {
-  color: var(--text-tertiary);
 }
 
 /* 远端 / 地址列表 */
@@ -495,16 +546,6 @@
   padding-left: 16px;
 }
 
-.plugin-target-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.plugin-target-url {
-  flex: 1;
-}
-
 .plugin-target-actions {
   display: flex;
   gap: 6px;
@@ -554,6 +595,10 @@
   flex: 0 1 auto;
   max-width: 180px;
   text-align: center;
+  /* 原生下拉框的文字行盒比同字号输入框高几像素 —— 28px 高度再拿走 6px 上下
+     内边距,内容区只剩 14px,「访问令牌」这类中文字形的下缘会被裁掉。
+     下拉框的文字本来就由控件自己垂直居中,这两条内边距不需要。 */
+  padding-block: 0;
 }
 
 .plugin-target-hint {
@@ -576,6 +621,39 @@
   min-width: 0;
 }
 
+/* 密钥输入框里的小眼睛:点在按钮上不抢走输入框焦点,否则 change 会先把密钥存掉 */
+.plugin-secret-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 64px;
+}
+
+.plugin-secret-wrap .plugin-target-secret {
+  width: 100%;
+  padding-right: 30px;
+}
+
+.plugin-secret-eye {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.plugin-secret-eye:hover {
+  color: var(--text-primary);
+}
+
 /* 密钥行在「只有输入框」「输入框 + 取消」「遮罩 + 更换/清除」三种状态下必须等高,
    否则保存令牌后下面的动作按钮会往下跳一下(滚动锚定还会带着上方的行一起动)。
    按钮文字的行盒由字体度量决定,比输入框的内容区高几像素 —— 只对齐内边距不够,
@@ -590,10 +668,10 @@
 }
 
 /*
- * 状态栏上的插件条目(选择器要压过 shell.css 的 .status-bar button)。
+ * 状态栏上的扩展条目(选择器要压过 shell.css 的 .status-bar button)。
  *
- * 一个插件最多一条,列表顺序就是插件顺序 —— 这里不做排序:任何排序规则都会变成
- * "为什么我的插件排后面"的问题,而状态栏本来就不该是插件争位置的地方。
+ * 一个扩展最多一条,列表顺序就是扩展顺序 —— 这里不做排序:任何排序规则都会变成
+ * "为什么我的扩展排后面"的问题,而状态栏本来就不该是扩展争位置的地方。
  */
 
 /* 图标型按钮走 shell.css 的 24px 方按钮;文字型要自己撑开 */
@@ -623,6 +701,41 @@
   color: var(--success);
 }
 
+/* 图标型条目:扩展自己的图标 + 右下角状态点;图片不吃文字的 status 颜色 */
+.status-bar .status-plug {
+  position: relative;
+}
+
+.status-bar .status-plug-icon {
+  border-radius: 4px;
+}
+
+.status-bar .status-plug-dot {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--bg-toolbar);
+}
+
+.status-bar .status-plug-dot-ok {
+  background: var(--success);
+}
+
+.status-bar .status-plug-dot-error {
+  background: var(--danger);
+}
+
+.status-bar .status-plug-dot-running {
+  background: var(--accent);
+}
+
+.status-bar .status-plug-dot-idle {
+  background: var(--text-tertiary);
+}
+
 @keyframes plugin-spin {
   from {
     transform: rotate(0deg);
@@ -632,99 +745,11 @@
   }
 }
 
-/* ---------- 外部安装插件的信息卡(发布者 + 沙箱插件的专属操作) ---------- */
-
-.plugin-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-app);
-}
-
-.plugin-meta-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-/* 开发模式加载的插件(--plugin-dev):必须一眼认出来,否则用户会以为它一直都在 */
-.plugin-dev-banner {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 8px;
-  padding: 7px 11px;
-  border: 1px solid var(--danger);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  color: var(--danger);
-  font-size: 11.5px;
-}
-
-.plugin-dev-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--danger);
-}
-
-.plugin-chip {
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-tertiary);
-  font-size: 10.5px;
-  font-family: var(--font-editor);
-  white-space: nowrap;
-}
-
-.plugin-chip-btn {
-  font-family: var(--font-mono);
-  cursor: pointer;
-}
-
-.plugin-chip-btn:hover {
-  background: var(--bg-toolbar-btn-hover);
-  color: var(--text-secondary);
-}
-
-/* 名字要能截断,长文档库的插件名不能把状态圆点挤走 */
+/* 名字要能截断,长文档库的扩展名不能把状态圆点挤走 */
 .settings-nav-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 「允许访问本机地址」—— 它是一条**授权**,所以长得像一个可勾的开关,
-   而不是又一枚说明性 chip(那些是只读的) */
-.plugin-net-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-secondary);
-  font-size: 11.5px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.plugin-net-toggle:hover {
-  background: var(--bg-toolbar-btn-hover);
-}
-
-.plugin-net-toggle input {
-  margin: 0;
-  cursor: pointer;
 }
 
 .plugin-link {
@@ -772,98 +797,6 @@
   display: flex;
   align-items: center;
   gap: 4px;
-}
-
-/* 安装信息/宿主区里的说明文字:比 meta line 更小、更弱,不抢标签的视线 */
-.plugin-field-hint {
-  flex: 1;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--text-tertiary);
-}
-
-.plugin-code {
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--bg-code);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.plugin-meta-line .plugin-ops-list {
-  flex-basis: 100%;
-}
-
-.plugin-ops-list {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.plugin-op {
-  padding: 10px 0;
-  /* 条目之间的分隔线比模块标题下的分隔线浅一档:
-     先看到「调试」是一块,再看到里面一条条操作,而不是所有横线长一个样 */
-  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-}
-
-.plugin-op:first-child {
-  padding-top: 0;
-  border-top: none;
-}
-
-.plugin-op-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-
-.plugin-op-ok {
-  color: var(--success);
-}
-
-.plugin-op-bad {
-  color: var(--danger);
-}
-
-.plugin-op-action {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.plugin-op-time {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.plugin-op-message {
-  margin-top: 4px;
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--text-secondary);
-  white-space: pre-line;
-  word-break: break-word;
-}
-
-.plugin-op-detail {
-  max-height: 140px;
-  margin: 6px 0 0;
-  overflow: auto;
-  padding: 6px 8px;
-  border-radius: 5px;
-  background: var(--bg-codeblock);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .plugin-logs {

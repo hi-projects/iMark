@@ -24,7 +24,8 @@ import { join } from 'node:path'
 import { initExtensions, shutdownExtensions, type ExtensionService } from '../src/main/extensions/service'
 import { installFromEnvelope, previewEnvelope, type InstallOutcome } from '../src/main/market/installer'
 import { packDirectory } from '../src/main/market/pack'
-import { sha256, verifyEnvelope } from '../src/main/market/verify'
+import { sha256 } from '../src/main/extensions/paths'
+import { verifyEnvelope } from '../src/main/market/verify'
 import {
   stableIntegrityInput,
   validateManifest,
@@ -146,7 +147,7 @@ async function main(): Promise<void> {
     )
     check('入口 sha256 非空', Boolean(p.mainSha256) && p.mainSha256!.length === 64)
     check('整包 sha256 与信封一致', p.integrity === packed.envelope.integrity)
-    check('新安装没有已装版本', p.installed === null && p.installedVersion === null)
+    check('新安装没有已装版本', p.installed === null)
   }
 
   // ---------- [C] 安装与登记 ----------

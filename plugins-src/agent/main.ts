@@ -2,9 +2,9 @@
  * Agent Core：对话面板与会话宿主，不认识任何具体 Agent 后端。
  *
  * 设计边界（用户明确要求）：
- * - 插件不解析附件：只把 webview 传来的字节落盘，给 Agent 绝对路径与工具权限；
+ * - 扩展不解析附件：只把 webview 传来的字节落盘，给 Agent 绝对路径与工具权限；
  * - 怎么读文件（Read / Bash / 写脚本 / 调本地工具）由 Agent 自行决定；
- * - 后端通过 `imark.agentProviders` 贡献点接入；Claude Code 是独立插件；
+ * - 后端通过 `imark.agentProviders` 贡献点接入；Claude Code 是独立扩展；
  * - 当前文档只提供 document.md 快照，结果通过 TextEditor.edit 写回，不直接改 vault。
  */
 
@@ -49,9 +49,7 @@ import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
 const CMD_OPEN = 'imark.agent.openChat'
-const CMD_GENERATE = 'imark.agent.generate'
 const CMD_BEAUTIFY = 'imark.agent.beautify'
-const CMD_CHECK = 'imark.agent.checkProvider'
 const CMD_STOP = 'imark.agent.stop'
 
 const DOC_PUSH_DEBOUNCE_MS = 80
@@ -73,12 +71,6 @@ const AGENT_ERROR_CODES = new Set<AgentErrorCode>([
   'edit-rejected',
   'not-found'
 ])
-
-interface LineMenuArgs {
-  values?: Record<string, unknown>
-  line?: number
-  source?: 'lineMenu'
-}
 
 interface TurnRuntime {
   turnId: string
@@ -201,9 +193,7 @@ class AgentHost {
 
     this.context.subscriptions.push(
       imark.commands.registerCommand(CMD_OPEN, () => this.openChat()),
-      imark.commands.registerCommand(CMD_GENERATE, (args?: LineMenuArgs) => this.generate(args)),
       imark.commands.registerCommand(CMD_BEAUTIFY, () => this.beautify()),
-      imark.commands.registerCommand(CMD_CHECK, () => this.checkProvider()),
       imark.commands.registerCommand(CMD_STOP, () => this.cancelAllTurns()),
       imark.window.registerWebviewPanelSerializer(VIEW_TYPE, {
         deserializeWebviewPanel: async panel => this.adoptPanel(panel)
@@ -255,10 +245,8 @@ class AgentHost {
   }
 
   private refreshConfig(): AgentConfig {
-    const { config, warnings } = readConfig()
-    this.config = config
-    for (const warning of warnings) this.output.warn(warning)
-    return config
+    this.config = readConfig().config
+    return this.config
   }
 
   private async onConfigChanged(): Promise<void> {
@@ -343,9 +331,6 @@ class AgentHost {
       imark.Uri.joinPath(this.context.extensionUri, 'webview', 'styles.css')
     )
     const bootstrap = JSON.stringify({
-      mode: 'chat',
-      panelId: '',
-      extensionId: this.context.extension.id,
       config: this.config ? safeConfigView(this.config) : {}
     }).replace(/</g, '\\u003c')
     return `<!DOCTYPE html>
@@ -526,40 +511,6 @@ class AgentHost {
     return { providers: views }
   }
 
-  private async checkProvider(): Promise<void> {
-    const { providers, errors } = await this.providers.list()
-    for (const error of errors) this.pushError('provider', error)
-    if (providers.length === 0) {
-      const message = '未安装或未启用任何 Agent 后端插件'
-      this.pushError('provider', { code: 'provider-unavailable', message })
-      await imark.window.showErrorMessage(message)
-      return
-    }
-    const available: string[] = []
-    const failures: AgentError[] = []
-    for (const provider of providers) {
-      const detection = await provider.detect()
-      if (detection.available) {
-        available.push(
-          `${provider.info.label}${detection.version ? `（${detection.version}）` : ''}`
-        )
-      } else {
-        failures.push(
-          detection.error ?? {
-            code: 'provider-error',
-            message: `${provider.info.label} 不可用`
-          }
-        )
-      }
-    }
-    if (failures.length === 0) {
-      await imark.window.showInformationMessage(`可用：${available.join('、')}`)
-      return
-    }
-    for (const error of failures) this.pushError('provider', error)
-    await imark.window.showErrorMessage(failures.map(error => error.message).join('\n'))
-  }
-
   // ---------- 会话 ----------
 
   private async createSession(input: Record<string, unknown>): Promise<unknown> {
@@ -568,7 +519,7 @@ class AgentHost {
     const requested = str(input.provider)
     const providerId = requested || providers[0]?.info.id
     if (!providerId) {
-      throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端插件')
+      throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端扩展')
     }
     if (!providers.some(provider => provider.info.id === providerId)) {
       throw codedError('config-invalid', `未知 provider：${providerId}`)
@@ -638,7 +589,7 @@ class AgentHost {
       const { providers } = await this.providers.list()
       const provider = providers[0]
       if (!provider) {
-        throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端插件')
+        throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端扩展')
       }
       const documentKey = str(input.documentKey, 'no-document')
       const documentName = str(input.documentName, '未关联文档')
@@ -800,7 +751,7 @@ class AgentHost {
             toolCalls: [],
             error: {
               code: 'config-invalid',
-              message: `未知 provider：${meta.provider}，请安装或启用对应的 Agent 后端插件`
+              message: `未知 provider：${meta.provider}，请安装或启用对应的 Agent 后端扩展`
             }
           }
           break
@@ -994,8 +945,7 @@ class AgentHost {
         turnId: input.turnId,
         sessionId: input.sessionId,
         status: outcome.status,
-        message: toViewMessage(stored),
-        artifacts
+        message: toViewMessage(stored)
       }
     })
     const meta = await this.sessions.getMeta(input.sessionId)
@@ -1070,31 +1020,15 @@ class AgentHost {
 
   // ---------- 命令入口 ----------
 
-  private generate(args?: LineMenuArgs): void {
-    const prompt = str(args?.values?.prompt)
-    const line = Math.max(0, Math.trunc(Number(args?.line ?? 1)) - 1)
-    void this.openIntent(
-      'generate',
-      prompt,
-      { kind: 'insert-below-line', line },
-      Boolean(prompt)
-    )
-  }
-
   private beautify(): void {
     if (!this.documents.current()) {
       void imark.window.showWarningMessage('请先打开一个 Markdown 文档')
       return
     }
-    void this.openIntent('beautify', '', { kind: 'replace-all' }, true)
+    void this.openIntent('beautify', true)
   }
 
-  private async openIntent(
-    taskMode: AgentTaskMode,
-    prompt: string,
-    target: TurnTarget,
-    auto: boolean
-  ): Promise<void> {
+  private async openIntent(taskMode: AgentTaskMode, auto: boolean): Promise<void> {
     this.openChat()
     const doc = this.currentDocMeta()
     const documentKey = doc?.key ?? 'no-document'
@@ -1108,9 +1042,9 @@ class AgentHost {
       if (!provider) {
         this.pushError('provider', {
           code: 'provider-unavailable',
-          message: '未安装或未启用任何 Agent 后端插件'
+          message: '未安装或未启用任何 Agent 后端扩展'
         })
-        await imark.window.showWarningMessage('未安装或未启用任何 Agent 后端插件')
+        await imark.window.showWarningMessage('未安装或未启用任何 Agent 后端扩展')
         return
       }
       const meta = await this.sessions.create({
@@ -1127,7 +1061,7 @@ class AgentHost {
       })
     }
     this.push({ type: 'push', kind: 'session', value: { session: await this.viewOf(sessionId) } })
-    const intent: UiIntent = { mode: taskMode, prompt: prompt || undefined, target, auto }
+    const intent: UiIntent = { mode: taskMode, auto }
     this.push({ type: 'push', kind: 'uiIntent', value: intent })
   }
 }

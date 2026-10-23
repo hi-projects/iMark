@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Loader2, PlugZap, Plus, Trash2 } from 'lucide-vue-next'
+import { PlugZap, Plus, Trash2 } from 'lucide-vue-next'
 import type { PluginEndpoint, PluginField, PluginTargetResult } from '@shared/plugins'
 import HelpTip from '../HelpTip.vue'
 
@@ -15,8 +15,6 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** 每个地址的最近一次操作结果:卡片边框的颜色由它决定 */
     targetResults?: Record<string, PluginTargetResult>
-    /** 正在执行动作的地址 id */
-    busyTarget: string | null
   }>(),
   { secrets: () => ({}), targetResults: () => ({}) }
 )
@@ -217,13 +215,11 @@ const text = (e: Event): string => (e.target as HTMLInputElement).value
           v-for="a in targetActions"
           :key="a.id"
           class="plugin-icon-btn plugin-icon-btn-accent"
-          :title="busyTarget === endpoint.id ? '执行中…' : a.label"
+          :title="a.label"
           :aria-label="a.label"
-          :disabled="busyTarget === endpoint.id"
           @click="emit('run-action', endpoint.id, a.id)"
         >
-          <Loader2 v-if="busyTarget === endpoint.id" :size="14" class="plugin-spin" />
-          <PlugZap v-else :size="14" />
+          <PlugZap :size="14" />
         </button>
         <button
           class="plugin-icon-btn"

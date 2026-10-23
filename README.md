@@ -10,7 +10,7 @@
 - 标题(H1–H6)、粗体、斜体、删除线、行内代码、引用、无序/有序列表、分隔线
 - 任务列表(可点击 checkbox,直接改写源码,可撤销)
 - 代码块嵌套语言高亮(`@codemirror/language-data` 按需加载)
-- **LaTeX 公式**(KaTeX 渲染):行内 `$E = mc^2$` / `\(E = mc^2\)`、块级 `$$...$$` / `\[...\]`(支持跨行,居中显示);光标移入公式即翻回源码编辑,移出即恢复渲染;代码块内的定界符不受影响;导出 HTML 与插件预览同样带公式
+- **LaTeX 公式**(KaTeX 渲染):行内 `$E = mc^2$` / `\(E = mc^2\)`、块级 `$$...$$` / `\[...\]`(支持跨行,居中显示);光标移入公式即翻回源码编辑,移出即恢复渲染;代码块内的定界符不受影响;导出 HTML 与扩展预览同样带公式
 - **Mermaid 图表**(Mermaid 12 渲染):```` ```mermaid ```` 围栏在光标外整块渲染成 SVG,支持流程图、时序图、类图、状态图、ER 图、甘特图、饼图、思维导图、架构图等全部图种与 `%%{init}%%` 指令;本地注册 Lucide 图标包,可直接使用 `A@{ icon: "lucide:user" }` 这类 icon shape(无网络依赖)。光标移入或点击图表即翻回源码编辑,移出恢复;切换亮/深色主题会自动重渲染;导出 HTML 内联同一张 SVG,单块语法错误降级成错误块而不影响整份导出
 - 链接 Ctrl+点击在系统浏览器打开;图片(本地相对路径走 `imark://` 自定义协议)光标外直接渲染;粘贴截图/剪贴板图片时自动存到文档旁的 `assets/` 并插入相对路径;从正文删掉引用并保存后,对应的 `assets/` 文件会移入系统回收站(同目录其他笔记仍在引用它时保留)
 - 文件:新建 / 打开 / 保存 / 另存为 / 拖拽 `.md` 入窗打开,窗口标题未保存圆点,关闭前脏检查
@@ -20,17 +20,16 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
-- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认每个扩展一个宿主(`isolated`),也可切换 `shared` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「浏览市场 → 扩展宿主」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
-  - **定时上传(Git)**:市场里的官方插件(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
-  - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方插件。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 插件只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,插件只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有插件的 `lineMenu` 会合进同一个「+」菜单
-  - **AI for Edit**:随应用预装、默认关闭的官方插件。配置一个或多个 OpenAI 兼容 / Anthropic 兼容服务地址,每个地址分别填模型与 API 密钥(DeepSeek / Moonshot / 智谱 / Ollama / Azure 等;请求按列表顺序自动回退)后,状态栏左下角的插件图标组里会多一枚 AI 按钮,编辑器里还有一个可在设置里开关、换形象、**按住拖动**的浮动小人(企鹅是透明背景的独立动画角色,不套圆形气泡);点开是对话窗口:输入框上方依次是「对话」(默认)/「生成」(空文档)/「美化」(已有内容)三个模式,选好模式、输入内容(美化可留空)后点「发送」;模式按钮右侧的提示带信息图标,悬浮即可预览本轮发送给 AI 的初始提示词(系统提示词 + 用户消息,生成/美化的用户消息里也包含当前文档与参考文件内容);生成/美化会在对话里先说一句展示消息,再把结果作为消息返回 —— 美化可以在输入框里直接提要求(如更正式、精简、分点),生成/美化结果都有「预览 / 源码」窗口(预览用宿主同一套 markdown-it / KaTeX / Mermaid 渲染),美化的预览直接用绿色标出新增/修改、红色划掉删除的内容(不再单独放一块逐行差异);只有点「写入文档 / 确认替换」才会改文档(关闭窗口、请求失败都不动一个字)。对话按**文档**归档,「会话」按钮列出该文档的历史会话并可恢复,「新对话」保留当前文档关联(标题栏不再标注文件,文档身份只显示在输入框上方的环境栏里);还可以给文档添加本地文本或 PDF 参考文件,当前文档名与参考文件一起显示在环境栏里(不展示篇幅),内容随对话/生成/美化一起提交(PDF 提取文字,没有文字层的扫描页可按页转成图片发给支持图像输入的模型,只发内容、不发路径);对话的稳定上下文会利用服务端上下文缓存(Anthropic 显式缓存断点、DeepSeek/OpenAI 兼容服务的自动前缀缓存),命中与写入的 token 数记入插件日志。行首「+」→「AI 生成内容」在空文档里走同一套对话;YAML front matter 原样保留,输出被截断或确认时文档已被修改则拒绝写回。文档正文只在扩展宿主与 webview 之间传递,密钥经 safeStorage 加密;详见 `plugins-src/ai-for-edit/README.md`
-  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方插件。**Agent Core** 是通用 Agent 面板:对话、会话、附件、产物与权限模式都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给后端,由后端自己决定 Read / Bash / 写脚本 / 调本机解析器。具体后端由 provider 插件提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里填可执行文件(留空自动探测)或先安装 CLI。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
-- **插件市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、插件市场」
+- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认所有扩展共用一个宿主(`shared`),也可切换 `isolated` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「浏览市场 → 扩展宿主」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
+  - **定时上传(Git)**:市场里的官方扩展(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
+  - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方扩展。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 扩展只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,扩展只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有扩展的 `lineMenu` 会合进同一个「+」菜单
+  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方扩展。**Agent Core** 是通用 Agent 面板:对话、会话、附件、产物与权限模式都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给后端,由后端自己决定 Read / Bash / 写脚本 / 调本机解析器。具体后端由 provider 扩展提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里填可执行文件(留空自动探测)或先安装 CLI;模型、端点与令牌的唯一事实是 `~/.claude/settings.json`,设置页的对应字段直接读写它;「检查 Claude Code」会探测 CLI 并把结果显示在本扩展的状态卡里。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
+- **扩展市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、扩展市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 深色两档,状态栏一键切换(主题与设置按钮在状态栏最左边),或在 **设置面板**(状态栏左侧齿轮 / `Ctrl+,`)的「外观」中挑选;深色的底色与边框对齐 Obsidian 的 Minimal 主题深色档(`#262626` 编辑区 / `#212121` 侧栏),文字仍用 iMark 默认配色(`#dadada` 正文 / `#8a5cf5` 强调色)。偏好持久化到数据目录的 `settings.json`
 - **自定义样式**:把 `.css` 文件放进数据目录的 `css/`(默认 `<应用目录>/.imark/css/`)(首次启动自动创建,并附一份带注释的示例)就能改编辑器里的显示 —— 比如整张表格居中 `.cm-md-table { text-align: center }`。改完保存**即刻生效、不用重启**;设置面板「外观」里是**单选**:一份 .css,或一个**目录**(目录里所有 .css 一起生效),点一行选中、再点一次取消,可导入单个文件或整个文件夹、删除、一键打开样式目录。样式作用于整个界面,**只影响编辑器内显示,不影响导出的 HTML**;详见下文「三、样式模块」
 - 状态栏字数统计(中文按字、拉丁按词)、导出 HTML(markdown-it + highlight.js 内联样式)
-- **通知中心**:状态栏右下角的铃铛收集插件通知(`imk.ui.notify`)、应用自身的提示,以及渲染进程里 `new Notification(...)` 的浏览器通知;未读时铃铛带角标,点开在右下角弹出历史小框(可一键清空)。右下角气泡仍然负责即时提醒,但不再需要"盯着它看"——错过了随时能从铃铛里翻回来
+- **通知中心**:状态栏右下角的铃铛收集扩展通知(`imk.ui.notify`)、应用自身的提示,以及渲染进程里 `new Notification(...)` 的浏览器通知;未读时铃铛带角标,点开在右下角弹出历史小框(可一键清空)。右下角气泡仍然负责即时提醒,但不再需要"盯着它看"——错过了随时能从铃铛里翻回来
 
 ## 开发
 
@@ -62,7 +61,7 @@ npm run dist       # 先重建内置扩展包,再构建 + electron-builder 打�
 - **Linux / Jetson Orin 注意**:
   - 需要桌面会话(X11 / Wayland),纯 SSH 无头环境起不来。
   - 部分主板(含部分 Jetson)Chromium 沙箱受限,起不来时用 `ELECTRON_DISABLE_SANDBOX=1`(开发与打包后都适用)。
-  - 没有桌面密钥环(gnome-keyring / kwallet)时 `safeStorage` 不可用,插件里的访问令牌会**降级为明文**存进 `secrets.json`(界面上暂无提示)—— 在意的话别在无密钥环的机器上保存令牌。
+  - 没有桌面密钥环(gnome-keyring / kwallet)时 `safeStorage` 不可用,扩展里的访问令牌会**降级为明文**存进 `secrets.json`(界面上暂无提示)—— 在意的话别在无密钥环的机器上保存令牌。
   - 「删除到回收站」依赖 XDG trash 实现,极简系统上可能失败。
 
 ## 技术架构
@@ -89,7 +88,7 @@ src/
 ├── preload/    # contextBridge 暴露 window.api(sandbox 模式)
 └── renderer/
     └── src/
-        ├── styles/           # ★ 样式模块:统一装配入口 + 插件样式注册表(见下)
+        ├── styles/           # ★ 样式模块:统一装配入口 + 扩展样式注册表(见下)
         ├── editor/wysiwyg/   # ★ 核心:语法树 → 装饰(build/rules/widgets/selection)
         ├── editor/           # 编辑器组装、格式命令、键位、大纲、LaTeX 语法扩展
         ├── components/       # SettingsDialog / FileExplorer / OutlineSidebar / EditorPane / StatusBar
@@ -120,7 +119,7 @@ RangeSet(Decoration.set)  +  EditorView.atomicRanges
 - **`atomicRanges`**:所有 replace 区间同时注册为原子区间,方向键与鼠标点击整体跳过,光标不会卡进不可见的标记字符里。
 - **中文输入保护**:`view.composing === true` 期间跳过重建,避免输入法组合过程中装饰重排打断候选窗。
 - **行内解析惰性**:语法树的行内节点按视口惰性解析;未就绪时先 `ensureSyntaxTree` 有界强解析,仍不可用则跳帧重试。
-- **跨行块(块级公式、表格、Mermaid 图表)的渲染手法**:CM6 **不允许插件提供跨行的 `replace` 装饰**(`remap()` 里还会在中文输入期间主动丢掉跨行的那些),而这类语法天生多行。做法是只替换**首行**成一个承载整块内容的 widget,其余行清空内容并加 `cm-md-*-void` 折算成零高度(`line-height: 0` + `font-size: 0` + `min-height: 0`,高 0 是被 DOM 实测确认过的)。配套的**视口守卫**不能省:首行不完整落在视口内时整块退回源码态——否则首行的 widget 根本没被渲染,而后面几行照样被清空,屏幕上就是一块空白。
+- **跨行块(块级公式、表格、Mermaid 图表)的渲染手法**:CM6 **不允许扩展提供跨行的 `replace` 装饰**(`remap()` 里还会在中文输入期间主动丢掉跨行的那些),而这类语法天生多行。做法是只替换**首行**成一个承载整块内容的 widget,其余行清空内容并加 `cm-md-*-void` 折算成零高度(`line-height: 0` + `font-size: 0` + `min-height: 0`,高 0 是被 DOM 实测确认过的)。配套的**视口守卫**不能省:首行不完整落在视口内时整块退回源码态——否则首行的 widget 根本没被渲染,而后面几行照样被清空,屏幕上就是一块空白。
 
 **实现文件**:
 
@@ -159,7 +158,7 @@ katex.render(tex, el, { displayMode, throwOnError: false, output: 'html', trust:
 
 **块级公式的跨行难题**
 
-CodeMirror 明确禁止插件提供跨行的 replace 装饰(`Decorations that replace line breaks may not be specified via plugins`),而 `$$...$$` 通常写成多行。这里采用**逐行处理**绕过该限制:
+CodeMirror 明确禁止扩展提供跨行的 replace 装饰(`Decorations that replace line breaks may not be specified via plugins`),而 `$$...$$` 通常写成多行。这里采用**逐行处理**绕过该限制:
 
 ```
 $$                    ← 首行:整行内容替换为 MathWidget(display 模式,居中)
@@ -178,7 +177,7 @@ $$                    ← 尾行:同内容行
 - **异步渲染**:`mermaid.render` 返回 Promise,而 `WidgetType.toDOM()` 必须同步。`toDOM` 先给出占位框,结果回来再写入;写入前用 `isConnected` 确认 DOM 没被 CodeMirror 回收。
 - **异步撑高后的重新测量**(踩过的坑):只调 `view.requestMeasure()` 不够。CodeMirror 仅在 `.cm-content` 总高度变化时才重读各行高度,而短文档的高度被视口/内边距托住 —— 图表从 48px 占位框长到几百 px 时总高度可能不变,行高缓存就一直停在旧值(实测 113px vs 实际 284px),鼠标点击按旧高度映射,点图表中心会把光标送到文末。所以 widget 用 `ResizeObserver` 监听自身尺寸,并在回调里显式置位 `viewState.mustMeasureContent`(CodeMirror 自己 DOM 重绘时用的同一个开关)后再 `requestMeasure()`。
 - **动态 import + 串行队列 + 缓存**:Mermaid 体积大,第一次遇到图表才加载;`mermaid.render` 会在 `document.body` 里挂临时容器,并发渲染会互相踩,因此服务层用一条 Promise 队列串行化;结果按「主题 + 源码」缓存(滚动/击键都会让装饰层整体重建,同一段源码会被反复索取)。
-- **主题**:配色是渲染时烘进 SVG 的,不是 CSS 变量。WYSIWYG 插件用 `MutationObserver` 盯 `<html data-theme>`,主题一变就借 `pendingRetry` 触发一次完整重建;`MermaidWidget.eq()` 比较 `theme`,旧图会被新配色的 widget 替换。
+- **主题**:配色是渲染时烘进 SVG 的,不是 CSS 变量。WYSIWYG 扩展用 `MutationObserver` 盯 `<html data-theme>`,主题一变就借 `pendingRetry` 触发一次完整重建;`MermaidWidget.eq()` 比较 `theme`,旧图会被新配色的 widget 替换。
 - **图标**:启动时本地注册 `@iconify-json/lucide`(与应用自身图标同源),支持 `A@{ icon: "lucide:user", form: "square" }` 这类 icon shape;图标包按需加载,不走网络。
 - **导出**:markdown-it 的 fence renderer 把 mermaid 块替换成带序号的占位 div,全文渲染完再异步填入内联 SVG;单块语法错误降级成带源码的错误块,不影响整份导出。导出固定用亮色主题(模板本身是亮色)。
 
@@ -199,7 +198,7 @@ src/shared/theme/
 └── tokens.css      # 设计令牌:CSS 变量,两档主题(亮/深色)都在这
 ```
 
-令牌文件放在 `shared/theme/` 是因为它现在有**三个**消费方:渲染层正常 import、主进程用 `?raw` 内联(给插件窗口下发 CSP 下可用的样式)、插件 preload 用 `webFrame.insertCSS` 注入。同一份文件三处消费,插件窗口的配色才可能与应用逐字一致 —— 各存一份迟早漂移。
+令牌文件放在 `shared/theme/` 是因为它现在有**三个**消费方:渲染层正常 import、主进程用 `?raw` 内联(给扩展窗口下发 CSP 下可用的样式)、扩展 preload 用 `webFrame.insertCSS` 注入。同一份文件三处消费,扩展窗口的配色才可能与应用逐字一致 —— 各存一份迟早漂移。
 
 - **手动导入(核心)**:`main.ts` → `import './styles'`;组件与服务不再各自引用 CSS 文件,层叠顺序集中维护。
 - **运行时注入(注册表)**:`styles/registry.ts` 提供 `registerStyle(id, css)` / `unregisterStyle(id)`,
@@ -214,7 +213,7 @@ src/shared/theme/
   export function deactivate() { unregisterStyle('my-plugin') }
   ```
 
-- **第一个调用方是用户自定义样式**,不是插件:数据目录的 `css/` 由主进程读出来
+- **第一个调用方是用户自定义样式**,不是扩展:数据目录的 `css/` 由主进程读出来
   (`main/userStyles.ts`),渲染层把**选中的那一项**注入成 `user:<名字>`
   (见 `services/userStyleService.ts`)。同时只有一项生效,所以没有「谁盖过谁」这回事 ——
   注册表的插入顺序在这里不影响任何东西。目录项送过来的是一份**拼好的**文本(主进程按
@@ -246,6 +245,7 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 - 扩展目录根部是一份 `package.json`(唯一清单),可选 `main` 入口(CommonJS)与 `webview/**` 资源;
 - 打包成单文件信封 `.imkpkg.json`:`files` 记路径/size/sha256,`data` 存 base64;`integrity = sha256(stableStringify({ manifest, files }))`(递归键排序,打包器、服务端、客户端三处同构);
 - 安装后落在数据目录的 `plugins/<publisher>.<name>/`,启用态与配置在 `settings.json` 的 `extensions.<id>`,密钥经 `safeStorage` 加密后存 `secrets.json` 且**明文不出主进程与扩展宿主**;
+- 配置项默认全局一份;清单里给字段加 `"imark": { "scope": "workspace" }` 后,设置页的修改会写进**当前仓库的覆盖层**(同一条配置在 `settings.json` 里按仓库根目录分开保存),扩展侧 `getConfiguration()` 读到的仍是合并后的值。未覆盖时回落到全局值,再回落到默认值。密钥始终全局;
 - 安装是原子的:先解到 `.staging/`,全部校验通过后 rename 就位;失败回滚,不留半份目录;
 - 卸载会删除程序文件、配置、密钥、`globalState` 与日志。
 
@@ -278,9 +278,9 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 
 **激活事件**:`*`、`onStartupFinished`、`onLanguage:markdown`、`onCommand:<命令>`、`onWebviewPanel:<viewType>`。没有命中的扩展保持未激活;命令执行、面板恢复、依赖激活都会按需拉起宿主。
 
-**内置扩展**:`quick-edit`、`git-sync`、`ai-for-edit`、`agent`(Agent Core)、`claude-code`(Claude Code)随应用带一份包,启动时由 `ensureBundledProvisioned()` 补装(走**完全相同**的校验与安装路径)。已是 `bundled` 来源且版本更旧时会跟随应用升级;市场/本地来源一律不碰。默认启用策略写在 `main/market/bundled.ts`:quick-edit 开箱启用,其余四款默认关闭;Claude Code 依赖 Agent Core,内置包按依赖顺序补装。
+**内置扩展**:`quick-edit`、`git-sync`、`agent`(Agent Core)、`claude-code`(Claude Code)随应用带一份包,启动时由 `ensureBundledProvisioned()` 补装(走**完全相同**的校验与安装路径)。官方扩展只认内置包:开发阶段四款版本统一固定为 `1.0.0`,补装按整包 integrity 对齐,内容有变化就整包覆盖;同 ID 的本地/市场安装也会被内置包替换。默认启用策略写在 `main/market/bundled.ts`:quick-edit 开箱启用,其余三款默认关闭;Claude Code 依赖 Agent Core,内置包按依赖顺序补装。
 
-### 五、插件市场
+### 五、扩展市场
 
 市场服务端**在仓库里**(`server/`,零依赖、纯 `.mjs`,Node ≥18 直接跑),应用里填一个地址即可:
 
@@ -355,7 +355,7 @@ npm run typecheck:plugins
 ```
 
 - `main.ts` 用 esbuild 打成 CommonJS,`imark` 外置(由宿主注入),Node 内置模块自动外置;
-- `webview/*.ts` 打成 IIFE(依赖全部内联),`webview/shim.ts` / `shared.ts` 不作为入口;
+- `webview/*.ts` 打成 IIFE(依赖全部内联),`webview/shared.ts` 不作为入口;
 - 静态资源原样复制;`package.json` 只进 `envelope.manifest`,不作为包内文件;
 - 文本文件以 LF 进包,保证 Windows/Linux 构建逐字节一致。
 
@@ -417,7 +417,11 @@ npm run typecheck:plugins
 | `contributes` | | 命令 / 快捷键 / 命令面板菜单 / 设置 / 行首菜单 / 动作 |
 | `categories` / `keywords` | | 市场展示用 |
 
-`configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/targets/endpoints)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
+`icon` 是包内相对路径,支持 PNG / SVG(≤128 KiB);设置左栏、扩展设置页头与市场「已安装」列表会显示它,未声明时这些位置不占位。
+
+`configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/targets/endpoints/external)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
+
+`kind: "external"` 的字段直接读写扩展包外的 JSON 配置文件,值的唯一事实是那个文件(例如 Claude Code 的 `~/.claude/settings.json`)。元数据用 `file`(支持 `~`)、`dirEnv`(用该环境变量替换父目录)、`pointer`(JSON 指针,如 `/env/ANTHROPIC_BASE_URL`)与 `secret`(按密码框显示)声明位置;渲染层只提交扩展 ID 与字段键,路径解析和目标校验都在主进程完成,其它字段原样保留。
 
 包内文件规则:相对 POSIX 路径、无 `..`、深度 ≤4、扩展名白名单(`js/mjs/cjs/json/md/txt/css/html/htm/svg/png/jpg/jpeg/gif/webp/ico/woff/woff2/ttf/otf/wasm/bcmap`)、单文件 ≤8 MiB、入口 ≤8 MiB、README ≤512 KiB、图标 ≤128 KiB、整包 ≤16 MiB、文件数 ≤96。路径里任何一段都不能是 `__imark`。
 
@@ -458,7 +462,7 @@ export function deactivate(): void {
 
 与 VS Code 的差异:模块名是 `imark`;没有 TreeView / 终端 / 任务 / 调试 / LSP / notebook / 多根工作区;`imark.imark` 是私有命名空间。
 
-#### Agent 后端插件(provider)
+#### Agent 后端扩展(provider)
 
 Agent Core 不带具体后端;后端是独立扩展,通过贡献点登记,由 Core 在需要时激活:
 
@@ -567,6 +571,8 @@ panel.webview.postMessage({ type: 'hello' })
 
 命令回调收到 `(args)`;需要改文档时用 `workspace.openTextDocument` + `window.showTextDocument` + `TextEditor.edit`,或 `imark.imark.flushActiveDocument()` 先落盘。`imark.actions` 让设置页出现动作按钮;`scope: "target"` + `targetSetting` 指向一个 `targets` / `endpoints` 配置键,可按目标逐个执行。
 
+动作结果**只写进设置页的状态卡**:用 `imark.imark.reportStatus()` 上报状态(可带 `targetResults` 让每个目标单独着色),不要再调用 `showInformationMessage` / `showWarningMessage` 弹右下角通知。右下角通知只留给面板之外的运行时事件(例如没有打开文档、宿主启动失败、后台任务报错);同一条结果不要同时出现在状态卡和通知里。
+
 #### 发布
 
 在「发布扩展」页选目录 → 预览(文件清单、形态、体积、整包 sha256、入口 sha256、激活事件、贡献摘要)→ 发布。服务端重算逐文件 sha256 与整包 integrity,不符就 400。`<publisher>.<name>` 首次发布即被账号认领;同一 `(id, 版本)` 不可重发。版本可以下架,没有硬删除。
@@ -590,16 +596,16 @@ iMark 的所有数据都在**应用自己所在的目录**里:安装版是 `<安
 ```
 <应用目录>/.imark/
 ├── css/               自定义样式(§三)
-├── plugins/           插件包 + installed.json + .staging/ + <id>.old/
-├── settings.json      仓库列表、上次打开的文件、界面偏好、插件启用态与配置
-├── secrets.json       插件访问令牌、市场登录令牌(**safeStorage 加密**,不是明文)
+├── plugins/           扩展包 + installed.json + .staging/ + <id>.old/
+├── settings.json      仓库列表、上次打开的文件、界面偏好、扩展启用态与配置
+├── secrets.json       扩展访问令牌、市场登录令牌(**safeStorage 加密**,不是明文)
 └── profile/           Chromium 自己的 profile:缓存、Cookie、webview 的分区存储……
                        ↑ 解密密钥(Local State)也在里面,别单独删它
 ```
 
-- **备份**:拷 `<应用目录>/.imark` 即可。最少要含 `plugins/` + `secrets.json`(只拷配置不拷密钥,插件会认为你没填过令牌);`profile/` 是缓存与登录态,可以不拷。
+- **备份**:拷 `<应用目录>/.imark` 即可。最少要含 `plugins/` + `secrets.json`(只拷配置不拷密钥,扩展会认为你没填过令牌);`profile/` 是缓存与登录态,可以不拷。
 - **升级/卸载前请先备份**:数据放在安装目录里,而安装器/卸载器可能会覆盖或删除安装目录中的文件。移动整个应用文件夹时,数据会跟着走(这正是这个布局的好处);但**用安装器升级/卸载**时建议先把 `.imark` 拷出来。
-- **彻底重置**:退出应用 → 删掉 `<应用目录>/.imark` → 重启。设置、插件、令牌、缓存一起清空。
-- **换机器**:数据拷过去后 `settings.json` / `plugins/` 直接可用,但 `secrets.json` 里的令牌要重填 —— 加密密钥绑当前 Windows 用户(DPAPI),换用户或换机器都解不开,插件那边表现为"还没填令牌"。
+- **彻底重置**:退出应用 → 删掉 `<应用目录>/.imark` → 重启。设置、扩展、令牌、缓存一起清空。
+- **换机器**:数据拷过去后 `settings.json` / `plugins/` 直接可用,但 `secrets.json` 里的令牌要重填 —— 加密密钥绑当前 Windows 用户(DPAPI),换用户或换机器都解不开,扩展那边表现为"还没填令牌"。
 - **`--imark-data-dir=<目录>`**(高级):把数据根指到别处(别的盘、U 盘、并行实例)。单独使用时 profile 在 `<目录>/profile`;再配 `--user-data-dir=<目录>` 时,数据根是前者、profile 是后者。验收里就是用它把数据跑在沙箱内的(`verify/data-dir-harness.ts`)。
 - **单实例锁绑在这个目录上**:安装版与开发版现在各用各的数据目录,可以同时运行;同一个数据目录同时只允许一个实例(两个 Chromium 同时写一份 profile 会互相破坏)。要并行开两个共用数据目录的实例,给其中一个加 `--imark-data-dir` 另指一处。

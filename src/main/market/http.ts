@@ -2,8 +2,8 @@
  * 市场 HTTP 客户端 —— 全部请求都在主进程里发。
  *
  * 渲染层的 CSP 是 `connect-src 'self' ws:`,它根本发不出外部请求;
- * 这不是需要绕开的限制,而是一道**好事**:插件市场要下载的是一段将要执行的代码,
- * 让渲染层(那儿还跑着插件的 CSS 和笔记内容)碰网络没有任何必要。
+ * 这不是需要绕开的限制,而是一道**好事**:扩展市场要下载的是一段将要执行的代码,
+ * 让渲染层(那儿还跑着扩展的 CSS 和笔记内容)碰网络没有任何必要。
  *
  * 用 Electron 的 `net.fetch` 而不是全局 fetch:它走 Chromium 的网络栈,
  * 因此会遵守系统代理设置、证书存储与 HTTP 缓存 —— 用 node:http 就得自己重造这些。
@@ -11,6 +11,7 @@
 
 import { net } from 'electron'
 import { EXTENSION_LIMITS } from '@shared/extensionPackage'
+import { iconDataUrl } from '../iconData'
 
 export type MarketFailure =
   /** 连不上(服务未启动、地址写错、断网) */
@@ -74,7 +75,7 @@ function describeNetworkError(url: string, err: unknown): MarketError {
   switch (code) {
     case 'ECONNREFUSED':
     case 'ERR_CONNECTION_REFUSED':
-      return new MarketError('offline', `无法连接插件市场： ${host}`)
+      return new MarketError('offline', `无法连接扩展市场： ${host}`)
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
     case 'ERR_NAME_NOT_RESOLVED':
@@ -82,7 +83,7 @@ function describeNetworkError(url: string, err: unknown): MarketError {
       return new MarketError('offline', `找不到主机 ${host}:请检查地址是否写对`)
     case 'ERR_INTERNET_DISCONNECTED':
     case 'ERR_NETWORK_CHANGED':
-      return new MarketError('offline', '当前处于离线状态,无法访问插件市场')
+      return new MarketError('offline', '当前处于离线状态,无法访问扩展市场')
     case 'ERR_CONNECTION_TIMED_OUT':
     case 'ERR_TIMED_OUT':
     case 'ETIMEDOUT':
@@ -141,7 +142,7 @@ export interface RequestOptions {
 }
 
 async function send(url: string, opts: RequestOptions): Promise<Response> {
-  if (offline()) throw new MarketError('offline', '当前处于离线状态,无法访问插件市场')
+  if (offline()) throw new MarketError('offline', '当前处于离线状态,无法访问扩展市场')
 
   const timeout = opts.timeoutMs ?? JSON_TIMEOUT
   let res: Response
@@ -234,7 +235,7 @@ export interface DownloadResult {
 }
 
 /**
- * 下载一份插件信封。
+ * 下载一份扩展信封。
  *
  * **先看 content-length 再读**:上限之外的东西不该被读进内存,
  * 一个几 GB 的响应能把主进程直接拖垮。没有 content-length 时靠读完之后的再验。
@@ -243,7 +244,7 @@ export async function downloadEnvelope(
   url: string,
   { token, onBytes }: { token?: string | null; onBytes?: (received: number, total: number | null) => void } = {}
 ): Promise<DownloadResult> {
-  if (offline()) throw new MarketError('offline', '当前处于离线状态,无法访问插件市场')
+  if (offline()) throw new MarketError('offline', '当前处于离线状态,无法访问扩展市场')
 
   let res: Response
   try {
@@ -261,7 +262,7 @@ export async function downloadEnvelope(
   if (declared > EXTENSION_LIMITS.envelopeBytes) {
     throw new MarketError(
       'bad-response',
-      `插件包过大(${(declared / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
+      `扩展包过大(${(declared / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
     )
   }
 
@@ -269,7 +270,7 @@ export async function downloadEnvelope(
   if (buf.byteLength > EXTENSION_LIMITS.envelopeBytes) {
     throw new MarketError(
       'bad-response',
-      `插件包过大(${(buf.byteLength / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
+      `扩展包过大(${(buf.byteLength / 1024 / 1024).toFixed(1)} MiB,上限 ${EXTENSION_LIMITS.envelopeBytes / 1024 / 1024} MiB)`
     )
   }
   onBytes?.(buf.byteLength, declared || null)
@@ -278,7 +279,7 @@ export async function downloadEnvelope(
   try {
     body = JSON.parse(buf.toString('utf8'))
   } catch {
-    throw new MarketError('bad-response', '下载到的不是合法的插件包(JSON 解析失败)')
+    throw new MarketError('bad-response', '下载到的不是合法的扩展包(JSON 解析失败)')
   }
   return {
     body,
@@ -301,15 +302,7 @@ export async function downloadIcon(url: string): Promise<string | null> {
     const res = await net.fetch(url, { signal: AbortSignal.timeout(JSON_TIMEOUT) })
     if (!res.ok) return null
     const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
-    if (type !== 'image/png' && type !== 'image/svg+xml') return null
-    const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.byteLength > EXTENSION_LIMITS.iconBytes) return null
-    // 魔数校验:content-type 是服务端说的,魔数是字节自己说的
-    if (type === 'image/png' && !(buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)) {
-      return null
-    }
-    if (type === 'image/svg+xml' && !/<svg[\s>]/i.test(buf.subarray(0, 512).toString('utf8'))) return null
-    return `data:${type};base64,${buf.toString('base64')}`
+    return iconDataUrl(Buffer.from(await res.arrayBuffer()), type)
   } catch {
     return null
   }

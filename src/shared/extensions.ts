@@ -21,7 +21,7 @@ import type {
   PluginTargetResult
 } from './plugins'
 
-export type ExtensionSource = 'bundled' | 'market' | 'local' | 'dev'
+export type ExtensionSource = 'bundled' | 'market' | 'local'
 
 /** 扩展当前在哪个生命周期阶段 */
 export type ExtensionRuntimeStatus =
@@ -115,8 +115,6 @@ export interface ExtensionView {
   /** 密钥掩码,key 为 `<extensionId>:<property>` / `<extensionId>:<property>:<targetId>` */
   secrets: Record<string, string>
   logs?: PluginLogEntry[]
-  /** 开发模式挂载的目录(不是安装进来的) */
-  dev?: boolean
   /** 加载/校验期失败;此时 descriptor 可能是宿主合成的最小描述 */
   loadError?: string
 }
@@ -231,6 +229,13 @@ export interface ExtensionContributionsSnapshot {
   menus: ExtensionMenuView[]
   context: ExtensionContextKeys
   hostGroups: ExtensionHostGroupView[]
+  /**
+   * 当前实际分组等同于哪个模式按钮的默认分组。
+   *
+   * 手动填了分组编号后,结果可能既不是「每个扩展各自一组」,也不是「所有扩展
+   * 一组」——这时是 `custom`,两个模式按钮都不该显示为选中。
+   */
+  hostModeState: ExtensionHostMode | 'custom'
 }
 
 /** 渲染层请主进程执行一条扩展命令 */
@@ -273,7 +278,16 @@ export interface ExtensionHostSettingsPatch {
 /** settings.extensions 的一行:启用态 + 非密配置(值用完整配置键) */
 export interface ExtensionPreference {
   enabled: boolean
+  /** 全局配置:所有仓库共用 */
   config: Record<string, unknown>
+  /**
+   * 按仓库保存的覆盖值:`规范化仓库根路径 → { 完整配置键: 值 }`。
+   *
+   * 只有清单里声明 `imark.scope: "workspace"` 的字段会由设置页写到这里;
+   * 读取时覆盖 `config` 里的同名字段。仓库键是绝对路径(Windows / macOS
+   * 折叠大小写),所以同一个文件夹换一种写法也能命中。
+   */
+  workspaceConfig?: Record<string, Record<string, unknown>>
 }
 
 /** 运行中面板的视图(渲染层据此挂 iframe) */
@@ -303,6 +317,6 @@ export interface ExtensionRecord {
   integrity: string
   mainSha256: string | null
   installedAt: number
-  source: Exclude<ExtensionSource, 'dev'>
+  source: ExtensionSource
   registryUrl: string | null
 }

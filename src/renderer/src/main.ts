@@ -1,10 +1,10 @@
 // ⚠️ 必须是**第一条 import**:它把宿主桥一次性取走(见 services/api.ts 的说明)。
-// 取走之后再加载任何插件代码,`window.__imarkTakeApi()` 都只能拿到 null —— 这是
-// "渲染层插件没有系统能力"的前提。ESM 的 import 按声明顺序求值,所以它排第一。
+// 取走之后再加载任何扩展代码,`window.__imarkTakeApi()` 都只能拿到 null —— 这是
+// "扩展页面没有系统能力"的前提。ESM 的 import 按声明顺序求值,所以它排第一。
 import './services/api'
 import { createApp } from 'vue'
 import App from './App.vue'
-// 全部样式由样式模块统一装配(层叠顺序、主题变量、插件样式注册表都在 ./styles)
+// 全部样式由样式模块统一装配(层叠顺序、主题变量、扩展样式注册表都在 ./styles)
 import './styles'
 import { initExtensionService } from './services/extensionService'
 import { initExtensionUiHost } from './services/extensionUiHost'

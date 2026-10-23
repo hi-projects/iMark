@@ -25,6 +25,7 @@ import { remoteStore } from '../services/marketService'
 import { openMarketSettings, settingsNav, type MarketNav } from '../services/settingsNav'
 import { extensionStore, selectExtensionSettings } from '../services/extensionService'
 import { extensionTone } from '../services/extensionUi'
+import PluginIcon from './plugins/PluginIcon.vue'
 import PluginSettings from './plugins/PluginSettings.vue'
 import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
@@ -40,26 +41,26 @@ import MarketSource from './market/MarketSource.vue'
  */
 const LAYER_HELP = [
   '扩展代码以你的用户权限运行，能读写文件、执行命令、访问网络 —— 安装前请确认来源可信。',
-  '默认每个扩展跑在独立的扩展宿主进程中：一个扩展崩溃不会影响其他扩展。',
-  '可以在 浏览市场 → 扩展宿主 切换为共享宿主（省内存），或给扩展设置分组编号。'
+  '默认所有扩展跑在同一个共享扩展进程中（省内存）；需要隔离时可在 浏览市场 → 扩展分配 切换为独立进程，或按分组编号拆开。'
 ].join('\n')
 
-/** 右侧标题:选中的是插件就显示插件名,市场页则跟着它的页签走 */
+const selectedExtension = computed(() =>
+  settingsNav.page === 'plugin'
+    ? extensionStore.list.find(ext => ext.descriptor.id === settingsNav.pluginId)
+    : undefined
+)
+
+/** 右侧标题:选中的是扩展就显示扩展名,市场页则跟着它的页签走 */
 const title = computed(() => {
   if (settingsNav.page === 'market') {
     const tab: MarketNav['tab'] = settingsNav.market.tab
-    if (tab === 'browse') return settingsNav.market.detailId ? '插件详情' : '浏览市场'
-    if (tab === 'hosts') return '扩展宿主'
-    return tab === 'publish' ? '发布插件' : '已安装插件'
+    if (tab === 'browse') return settingsNav.market.detailId ? '扩展详情' : '浏览市场'
+    if (tab === 'hosts') return '扩展分配'
+    return tab === 'publish' ? '发布扩展' : '已安装扩展'
   }
   if (settingsNav.page === 'editor') return '编辑器'
   if (settingsNav.page === 'system') return '系统'
-  if (settingsNav.page === 'plugin') {
-    return (
-      extensionStore.list.find(ext => ext.descriptor.id === settingsNav.pluginId)?.descriptor
-        .displayName ?? '扩展'
-    )
-  }
+  if (settingsNav.page === 'plugin') return selectedExtension.value?.descriptor.displayName ?? '扩展'
   return '外观'
 })
 
@@ -114,7 +115,7 @@ function onFontSizeCommit(e: Event): void {
   void setEditorFontSize(Number((e.target as HTMLInputElement).value))
 }
 
-/** 市场入口在左栏「插件」分组里排第一项(与 Obsidian 的心智一致) */
+/** 市场入口在左栏「扩展」分组里排第一项(与 Obsidian 的心智一致) */
 function openMarket(): void {
   openMarketSettings()
 }
@@ -417,7 +418,7 @@ onBeforeUnmount(() => {
             :class="`plugin-status-${extensionTone(ext.descriptor.id)}`"
             :title="
               ext.enabled
-                ? `宿主 ${ext.runtime.hostId ?? '未启动'} · ${ext.runtime.status}`
+                ? `进程 ${ext.runtime.hostId ?? '未启动'} · ${ext.runtime.status}`
                 : '已停用'
             "
           />
@@ -429,6 +430,11 @@ onBeforeUnmount(() => {
       <section class="settings-main">
         <!-- 标题栏就是拖动把手:标题文字上按下并拖动即可挪动整个面板 -->
         <header class="settings-main-header" @pointerdown="onDragStart">
+          <PluginIcon
+            v-if="selectedExtension?.descriptor.icon"
+            :id="selectedExtension.descriptor.id"
+            :size="22"
+          />
           <h1>{{ title }}</h1>
           <button class="settings-close" title="关闭（Esc）" @click="closeSettings()">
             <X :size="16" />

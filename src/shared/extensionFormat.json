@@ -61,7 +61,7 @@
   ],
 
   "_agentCore": [
-    "Agent Core 的扩展 ID 与 provider 贡献点。Core、provider 插件、校验器和市场服务端",
+    "Agent Core 的扩展 ID 与 provider 贡献点。Core、provider 扩展、校验器和市场服务端",
     "都从这一份读，避免把同一个约定抄成两份。"
   ],
   "agentCoreExtensionId": "imark.agent",
@@ -88,7 +88,7 @@
   "_allowedExtensions": [
     "允许出现在扩展包里的文件扩展名。**服务端、客户端、打包器共用这一份**:",
     "服务端比客户端严 → 作者发不出本来能装的包;服务端比客户端松 → 包收下了但装不上。",
-    "webview 需要 html;PDF.js 需要 wasm 与字体/CMap 资源。"
+    "webview 需要 html;较大的前端依赖可能需要 wasm 与字体资源。"
   ],
   "allowedExtensions": [
     "js",
@@ -128,8 +128,8 @@
   "reservedSegment": "__imark",
 
   "_limits": [
-    "体积与数量上限。AI 的 webview 入口内联 PDF.js 后约 2-3 MiB,所以入口上限是 8 MiB、",
-    "整包 16 MiB。数量上限防止一个扩展把命令面板/设置页/菜单挤爆。"
+    "体积与数量上限。入口 8 MiB、整包 16 MiB,给 webview 自带的前端资源留出余量。",
+    "数量上限防止一个扩展把命令面板/设置页/菜单挤爆。"
   ],
   "limits": {
     "envelopeBytes": 16777216,

@@ -1,7 +1,7 @@
 /**
  * Claude Code 命令行参数矩阵（纯函数，方便单测）。
  *
- * 只读模式硬隔离；read+parse 允许 Bash/Write，但仍把 cwd 限在会话目录、
+ * 只读模式硬隔离；read+parse 允许 shell/Write，但仍把 cwd 限在会话目录、
  * 只用白名单命令，且永远不传 bypassPermissions。
  */
 
@@ -20,7 +20,19 @@ export interface ClaudeArgsInput {
 }
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
-const PARSE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Bash']
+/**
+ * Windows 上 CLI 的 shell 工具是 PowerShell；只有检测到 Git Bash
+ * （CLAUDE_CODE_GIT_BASH_PATH）时才提供 Bash。两个都声明，让 CLI 取可用的那个，
+ * 否则 read+parse 在 Windows 上会没有任何可执行工具。
+ */
+const PARSE_TOOLS = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Write',
+  'Bash',
+  ...(process.platform === 'win32' ? ['PowerShell'] : [])
+]
 
 /** 只对探测到的命令放行；不会为缺失的工具生成规则 */
 const BASH_RULES: ReadonlyArray<[command: string, rule: string]> = [
@@ -57,10 +69,17 @@ const BASH_RULES: ReadonlyArray<[command: string, rule: string]> = [
   ['which', 'Bash(which:*)']
 ]
 
-export function bashAllowRules(available: readonly string[] | undefined): string[] {
+export function shellAllowRules(available: readonly string[] | undefined): string[] {
   if (!available || available.length === 0) return []
   const set = new Set(available)
-  return BASH_RULES.filter(([command]) => set.has(command)).map(([, rule]) => rule)
+  const rules: string[] = []
+  for (const [command, rule] of BASH_RULES) {
+    if (!set.has(command)) continue
+    rules.push(rule)
+    // Windows 上没有 Git Bash 时 CLI 用的是 PowerShell 工具；同一条命令两种前缀都放行。
+    if (process.platform === 'win32') rules.push(`PowerShell(${command}:*)`)
+  }
+  return rules
 }
 
 export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
@@ -101,7 +120,7 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
     args.push('--allowedTools', READ_TOOLS.join(','))
   } else {
     args.push('--tools', PARSE_TOOLS.join(','))
-    const allowed = [...READ_TOOLS, 'Write', ...bashAllowRules(input.availableCommands)]
+    const allowed = [...READ_TOOLS, 'Write', ...shellAllowRules(input.availableCommands)]
     args.push('--allowedTools', allowed.join(','))
   }
 

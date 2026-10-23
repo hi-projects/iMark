@@ -69,7 +69,7 @@ const LINE_MENU_ID_RE = /^[a-z0-9-]{1,40}$/
 const KEYBINDING_RE = /^(?:(?:ctrl|cmd|alt|shift|super|meta)\+)+[a-z0-9][a-z0-9+-]{0,20}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 const ENGINE_RE = /^(>=|>|\^)?\s*v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'targets', 'endpoints']
+const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'targets', 'endpoints', 'external']
 /** 对话框里允许出现的字段 kind —— 密钥与目标列表是一次性对话框装不下的东西 */
 const DIALOG_FIELD_KINDS = ['text', 'number', 'boolean', 'select']
 
@@ -512,6 +512,9 @@ function validateConfiguration(value, id, errors) {
       if (meta.kind !== undefined && !FIELD_KINDS.includes(meta.kind)) {
         errors.push(`${at}.imark.kind 非法:${String(meta.kind)}`)
       }
+      if (meta.scope !== undefined && meta.scope !== 'global' && meta.scope !== 'workspace') {
+        errors.push(`${at}.imark.scope 只能是 global / workspace`)
+      }
       if (meta.showWhen !== undefined) {
         if (!isObject(meta.showWhen) || typeof meta.showWhen.key !== 'string') {
           errors.push(`${at}.imark.showWhen 必须是 { key, value }`)
@@ -529,6 +532,20 @@ function validateConfiguration(value, id, errors) {
       }
       if (meta.kind === 'select' && !Array.isArray(raw.enum) && !Array.isArray(meta.options)) {
         errors.push(`${at} 是 select,但既没有 enum 也没有 imark.options`)
+      }
+      if (meta.kind === 'external') {
+        if (typeof meta.file !== 'string' || !meta.file.trim()) {
+          errors.push(`${at}.imark.file 必须是非空字符串`)
+        }
+        if (typeof meta.pointer !== 'string' || !meta.pointer.startsWith('/') || meta.pointer === '/') {
+          errors.push(`${at}.imark.pointer 必须是以 / 开头的 JSON 指针`)
+        }
+        if (meta.dirEnv !== undefined && typeof meta.dirEnv !== 'string') {
+          errors.push(`${at}.imark.dirEnv 必须是字符串`)
+        }
+        if (meta.secret !== undefined && typeof meta.secret !== 'boolean') {
+          errors.push(`${at}.imark.secret 必须是布尔值`)
+        }
       }
     }
   }

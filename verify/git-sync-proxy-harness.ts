@@ -2,11 +2,12 @@
  * git-sync 的**本机代理路径**验收。
  *
  * 为什么单独一套：浏览器走系统代理，git 的 libcurl 不读它 —— 「浏览器能打开
- * GitHub，插件测试连接却超时」是最容易踩到、又最难自查的配置。这里钉住三件事：
+ * GitHub，扩展测试连接却超时」是最容易踩到、又最难自查的配置。这里钉住三件事：
  *   1. 手动代理：起一个真正的 forward proxy，远端域名用解析不了的 `.invalid`，
  *      只有请求真的经过代理，`ls-remote` 才可能成功；
  *   2. 自动检测：环境变量里的 HTTP_PROXY 被宿主进程读到并显式交给 git；
- *   3. 直连：同一个环境变量还在，但 off 模式必须压过它（并断言代理没收到新请求）。
+ *   3. 找不到代理：手动地址为空时直接连接，环境变量里的代理也不能生效
+ *      （并断言代理没收到新请求）。
  * 另外验一次**推送**也带上了代理参数，而不是只有「测试连接」这一条路。
  *
  * git 跑在扩展宿主进程里。宿主在 fork 时继承主进程环境变量，
@@ -376,7 +377,7 @@ async function main(): Promise<void> {
   )
   check(
     '扩展日志写明了代理与来源',
-    (await logText()).includes(`经代理 ${proxy.url}`) && (await logText()).includes('插件设置'),
+    (await logText()).includes(`经代理 ${proxy.url}`) && (await logText()).includes('扩展设置'),
     (await logText()).slice(-300)
   )
 
@@ -415,26 +416,34 @@ async function main(): Promise<void> {
   check('重复检测不会破坏状态', detectAgain?.ok === true, JSON.stringify(detectAgain))
   await settle()
 
-  // ---------- 三、直连：必须压过环境变量 ----------
+  // ---------- 三、找不到代理：直接连接，且压过环境变量 ----------
 
-  console.log('\n【3】直连模式：环境变量还在，但不应再走代理')
-  await service.setExtensionConfig(EXT_ID, configOf(target, 'off', proxy.url))
+  console.log('\n【3】手动代理地址为空：直接连接（环境变量里的代理也不应生效）')
+  await service.setExtensionConfig(EXT_ID, configOf(target, 'manual', ''))
   await sleep(300)
-  const beforeOff = proxy.seen.length
-  const offProbe = (await service.executeCommand('imark.git-sync.testTarget', [
+  const beforeDirect = proxy.seen.length
+  const directProbe = (await service.executeCommand('imark.git-sync.testTarget', [
     { targetId: 'p1' }
   ])) as { ok: boolean; message: string; detail?: string }
-  check('直连模式连接失败（.invalid 解析不了）', offProbe?.ok === false, JSON.stringify(offProbe))
-  check('直连模式没有向代理发请求', proxy.seen.length === beforeOff, `${beforeOff} → ${proxy.seen.length}`)
+  check('没有可用代理时连接失败（.invalid 解析不了）', directProbe?.ok === false, JSON.stringify(directProbe))
   check(
-    '失败提示说清了是「直连」而不是笼统的「网络错误」',
-    (offProbe.detail ?? '').includes('直连'),
-    offProbe.detail ?? ''
+    '没有可用代理时没有向代理发请求',
+    proxy.seen.length === beforeDirect,
+    `${beforeDirect} → ${proxy.seen.length}`
   )
-  const detectOff = (await service.executeCommand('imark.git-sync.detectProxy')) as {
+  check(
+    '失败提示说清了已直接连接',
+    (directProbe.detail ?? '').includes('直接连接'),
+    directProbe.detail ?? ''
+  )
+  const detectEmpty = (await service.executeCommand('imark.git-sync.detectProxy')) as {
     message: string
   }
-  check('「检测本机代理」如实报告直连', (detectOff?.message ?? '').includes('直连'), detectOff?.message)
+  check(
+    '「检测本机代理」报告手动地址为空',
+    (detectEmpty?.message ?? '').includes('无法识别'),
+    detectEmpty?.message
+  )
   await settle()
 
   // ---------- 四、推送路径也带代理 ----------

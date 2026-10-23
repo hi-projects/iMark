@@ -4,7 +4,7 @@
  * 设置键在清单里是 `imark.agent.*`；扩展宿主拿到的 WorkspaceConfiguration
  * 已经按扩展归属过滤，所以这里用相对 key（如 `mode`）。
  *
- * Claude Code 等后端的命令、模型、超时、密钥属于对应 provider 插件，Core
+ * Claude Code 等后端的命令、模型、超时、密钥属于对应 provider 扩展，Core
  * 不读取、不保存，也不在 UI 里展示。
  */
 
@@ -21,7 +21,6 @@ export interface AgentConfig {
 
 export interface ConfigReadResult {
   config: AgentConfig
-  warnings: string[]
 }
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
@@ -42,8 +41,7 @@ export function readConfig(): ConfigReadResult {
     config: {
       mode,
       attachmentMaxMB: clampInt(config.get<number>('attachmentMaxMB', 32), 1, 100, 32)
-    },
-    warnings: []
+    }
   }
 }
 

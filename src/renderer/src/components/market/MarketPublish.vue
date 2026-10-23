@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 市场 · 发布插件。
+ * 市场 · 发布扩展。
  *
  * 这一页同时是**第一次接市场时的设置页**:地址、账号、发布三件事挤在一条
  * 从上到下的流程里,因为它们本来就是一回事 —— 你想发布,于是要有个账号,
@@ -131,7 +131,7 @@ onMounted(async () => {
         <div>
           <b>这个地址用的是明文 HTTP，而且不在本机。</b>
           <p>
-            加密、插件包以及<b>你登录时输入的口令</b>都会以明文经过网络，
+            加密、扩展包以及<b>你登录时输入的口令</b>都会以明文经过网络，
             同一网段上的任何人都能看到。自建服务请在前面加一层 HTTPS
             （nginx 或 caddy 都行），或者只在可信网络里使用。
           </p>
@@ -202,7 +202,7 @@ onMounted(async () => {
           @click="previewPublish()"
         >
           <Package :size="13" />
-          选择插件目录…
+          选择扩展目录…
         </button>
         <span v-if="remoteStore.publishDir" class="market-mono market-dim market-ellipsis">
           {{ remoteStore.publishDir }}
@@ -288,8 +288,8 @@ onMounted(async () => {
         <div v-else-if="preview.existingOwner && preview.existingOwner !== auth?.user" class="market-alert market-alert-danger">
           <AlertTriangle :size="14" />
           <div>
-            <b>插件 id「{{ preview.id }}」属于 {{ preview.existingOwner }}。</b>
-            <p>换一个 id，或者请服务端管理员把这个插件的所有权转移给你。</p>
+            <b>扩展 id「{{ preview.id }}」属于 {{ preview.existingOwner }}。</b>
+            <p>换一个 id，或者请服务端管理员把这个扩展的所有权转移给你。</p>
           </div>
         </div>
         <div v-else-if="preview.existingOwner" class="market-alert">

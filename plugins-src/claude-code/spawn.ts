@@ -186,13 +186,11 @@ function spawnFor(command: ResolvedCommand, args: string[], cwd: string, env: No
   return spawn(command.command, args, options)
 }
 
-export function claudeEnv(apiKey?: string): NodeJS.ProcessEnv {
+export function claudeEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
   env.NO_COLOR = '1'
   env.FORCE_COLOR = '0'
-  if (apiKey && apiKey.trim()) env.ANTHROPIC_API_KEY = apiKey
-  else delete env.ANTHROPIC_API_KEY
   return env
 }
 

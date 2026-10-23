@@ -42,7 +42,7 @@ const DEFAULTS: Settings = {
   // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
   userStyle: null,
   extensions: {},
-  extensionHost: { mode: 'isolated', affinity: {} },
+  extensionHost: { mode: 'shared', affinity: {} },
   // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
   marketUrl: 'http://127.0.0.1:8787',
   marketAutoCheck: true,
@@ -81,9 +81,10 @@ function normalize(raw: Partial<Settings>): Settings {
   }
   const host = merged.extensionHost
   if (!host || typeof host !== 'object' || Array.isArray(host)) {
-    merged.extensionHost = { mode: 'isolated', affinity: {} }
+    merged.extensionHost = { mode: 'shared', affinity: {} }
   } else {
-    const mode = host.mode === 'shared' ? 'shared' : 'isolated'
+    // 默认共享;只有明确选择「独立进程」时才保留 isolated
+    const mode = host.mode === 'isolated' ? 'isolated' : 'shared'
     const affinity: Record<string, number> = {}
     if (host.affinity && typeof host.affinity === 'object' && !Array.isArray(host.affinity)) {
       for (const [id, value] of Object.entries(host.affinity)) {
@@ -130,7 +131,7 @@ export async function getSettings(): Promise<Settings> {
 }
 
 /**
- * 同步读取已载入的设置缓存。**只给那些无法等待的路径用**(插件宿主在加载脚本插件时
+ * 同步读取已载入的设置缓存。**只给那些无法等待的路径用**(扩展宿主在加载脚本扩展时
  * 必须立即拿到配置,没法把 createRequire 变成异步)。
  * 返回 null 表示还没载入过 —— 应用启动流程保证 `loadSettings()` 早就跑过了。
  */
@@ -142,11 +143,11 @@ export function getSettingsSync(): Settings | null {
  * 设置变更的订阅者。
  *
  * 为什么要在这里、而不是在 IPC 处理器里判:改设置的路径不止一条 ——
- * 渲染层、市场配置、插件宿主自己都在写。把「换了仓库要通知插件」挂在其中一条上,
- * 另外几条就静默漏掉了,而漏掉的表现是插件的行为对不上实际设置,极难查。
+ * 渲染层、市场配置、扩展宿主自己都在写。把「换了仓库要通知扩展」挂在其中一条上,
+ * 另外几条就静默漏掉了,而漏掉的表现是扩展的行为对不上实际设置,极难查。
  * saveSettings 是唯一的漏斗,挂在它上面天然覆盖全部路径。
  *
- * 用订阅而不是让这里直接调插件宿主:host.ts 已经 import 了本文件,
+ * 用订阅而不是让这里直接调扩展宿主:extensions/service.ts 已经 import 了本文件,
  * 反过来 import 会绕成一个圈。
  */
 type SettingsListener = (next: Settings, prev: Settings) => void

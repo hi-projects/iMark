@@ -128,7 +128,7 @@
   min-width: 0;
 }
 
-/* 来源标签:只有插件/浏览器才显示,应用自己的通知标题就是 iMark */
+/* 来源标签:只有扩展/浏览器才显示,应用自己的通知标题就是 iMark */
 .notif-source {
   flex: none;
   padding: 0 4px;

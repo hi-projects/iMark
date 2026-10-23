@@ -10,7 +10,6 @@
 import type {
   AgentDetection,
   AgentError,
-  AgentErrorCode,
   AgentEvent,
   AgentMode,
   AgentProviderInfo,
@@ -119,21 +118,6 @@ export interface ApplyResult {
 
 // ---------- webview → host ----------
 
-export interface WebviewRequest {
-  type: 'request'
-  id: string
-  kind: string
-  payload?: unknown
-}
-
-export interface WebviewResponse {
-  type: 'response'
-  id: string
-  ok: boolean
-  value?: unknown
-  error?: { code: AgentErrorCode; message: string; detail?: string }
-}
-
 export interface InitPayload {
   providers: readonly ProviderView[]
   config: SafeConfig
@@ -142,21 +126,8 @@ export interface InitPayload {
   activeSessionId: string | null
 }
 
-export interface TurnStartPayload {
-  sessionId: string
-  text: string
-  /** 本次任务模式 */
-  mode: AgentTaskMode
-  /** 覆盖会话的权限模式；缺省用会话 meta.mode */
-  permissionMode?: AgentMode
-  attachmentIds: readonly string[]
-  target?: TurnTarget
-}
-
 export interface UiIntent {
   mode: AgentTaskMode
-  prompt?: string
-  target?: TurnTarget
   auto?: boolean
 }
 
@@ -164,7 +135,7 @@ export interface UiIntent {
 
 export type HostPush =
   | { type: 'push'; kind: 'init'; value: InitPayload }
-  | { type: 'push'; kind: 'config'; value: { config: SafeConfig; providers?: readonly ProviderView[] } }
+  | { type: 'push'; kind: 'config'; value: { config: SafeConfig } }
   | { type: 'push'; kind: 'doc'; value: { doc: DocMeta | null } }
   | { type: 'push'; kind: 'sessions'; value: { documentKey: string; sessions: readonly SessionSummary[] } }
   | { type: 'push'; kind: 'session'; value: { session: SessionView } }
@@ -184,42 +155,18 @@ export type HostPush =
         sessionId: string
         status: 'ok' | 'error' | 'cancelled'
         message: SessionMessage
-        artifacts: readonly ArtifactInfo[]
       }
     }
-  | { type: 'push'; kind: 'artifacts'; value: { sessionId: string; artifacts: readonly ArtifactInfo[] } }
   | { type: 'push'; kind: 'uiIntent'; value: UiIntent }
   | { type: 'push'; kind: 'error'; value: { scope: string; error: AgentError } }
 
 // ---------- 上传 ----------
-
-export interface UploadBeginPayload {
-  sessionId?: string
-  documentKey: string
-  documentName: string
-  name: string
-  size: number
-  mime: string
-}
 
 export interface UploadBeginResult {
   sessionId: string
   uploadId: string
   chunkBytes: number
   maxBytes: number
-}
-
-export interface UploadChunkPayload {
-  uploadId: string
-  index: number
-  total: number
-  /** base64，无 data: 前缀 */
-  data: string
-}
-
-export interface UploadFinishResult {
-  sessionId: string
-  attachment: AttachmentMeta
 }
 
 export function toAttachmentMeta(attachment: StagedAttachment): AttachmentMeta {

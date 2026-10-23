@@ -220,7 +220,7 @@ export function registerMarketIpc(): void {
     IPC.MarketInstall,
     async (_e, o: { id: string; version: string | null }): Promise<PendingInstall> => {
       const registry = await getRegistryUrl()
-      if (!registry) throw new Error('还没有设置插件市场地址')
+      if (!registry) throw new Error('还没有设置扩展市场地址')
 
       // 版本号为空表示「最新非下架版本」;顺便把发布者也取回来 ——
       // 它是安装确认框的一部分(用户有权知道包是谁发的),而下载响应里没有它

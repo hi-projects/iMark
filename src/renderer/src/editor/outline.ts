@@ -1,7 +1,7 @@
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language'
 import { EditorSelection, type EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { appStore, type OutlineItem } from '../stores/app'
+import { activeTab, appStore, type OutlineItem } from '../stores/app'
 
 /** 去掉行内标记,得到标题纯文本 */
 function plainHeadingText(raw: string): string {
@@ -49,7 +49,7 @@ export function extractOutline(state: EditorState): OutlineItem[] {
 
 /** 滚动跟随:视口顶部所在章节的标题高亮 */
 export function updateActiveOutline(view: EditorView): void {
-  const items = appStore.outline
+  const items = activeTab()?.outline ?? []
   if (items.length === 0) {
     appStore.outlineActive = null
     return

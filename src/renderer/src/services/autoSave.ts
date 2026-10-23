@@ -1,7 +1,7 @@
 import { watch } from 'vue'
-import { appStore, editorHolder } from '../stores/app'
+import { activeTab, appStore, editorHolder } from '../stores/app'
 import { saveAllFileTabsSilently, writeTabInPlace } from './fileService'
-import { activeTab, tabById } from './tabs'
+import { tabById } from './tabs'
 
 /**
  * 自动保存:把文档的改动写回它自己的文件。四种方式(与 VS Code 的 files.autoSave 对齐):
@@ -121,7 +121,7 @@ async function delayTick(): Promise<void> {
  * 另外两种方式由焦点/窗口事件触发,这里不排队。
  */
 export function noteDocChangeForAutoSave(): void {
-  if (!isAfterDelay() || !appStore.filePath) return
+  if (!isAfterDelay() || !activeTab()?.filePath) return
   scheduleDelay()
 }
 
@@ -139,7 +139,7 @@ function onTabDeactivated(tabId: string): void {
     // 旧标签干净也把它的计时取消掉,别让这一拍稍后落到新标签头上
     clearTimeout(delayTimer)
     delayTimer = undefined
-    if (isAfterDelay() && appStore.filePath) scheduleDelay()
+    if (isAfterDelay() && activeTab()?.filePath) scheduleDelay()
     return
   }
   clearTimeout(delayTimer)
@@ -216,7 +216,6 @@ export function stopAutoSave(): void {
 /** 设置面板改动保存方式或延迟后调用:从现在重新计时,别等上一拍的旧节奏走完 */
 export function restartAutoSave(): void {
   stopAutoSave()
-  // 切到定时模式时,已有的未保存改动也该在延迟后落盘,而不是等下一次输入。
-  // 这里不看 appStore.dirty:它比实际输入晚 250ms 更新,刚敲完字就切模式会漏掉
-  if (isAfterDelay() && appStore.filePath) scheduleDelay()
+  // 切到定时模式时,已有的未保存改动也该在延迟后落盘,而不是等下一次输入
+  if (isAfterDelay() && activeTab()?.filePath) scheduleDelay()
 }

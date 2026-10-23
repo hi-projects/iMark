@@ -36,7 +36,7 @@ import {
   openDetail,
   openSource,
   remoteStore,
-  uninstallPlugin
+  uninstallFromMarket
 } from '../../services/marketService'
 import { renderMarkdownFragment } from '../../services/exportHtml'
 import { appStore } from '../../stores/app'
@@ -106,7 +106,7 @@ async function doUninstall(): Promise<void> {
   if (!id.value) return
   const target = id.value
   uninstallOpen.value = false
-  await uninstallPlugin(target)
+  await uninstallFromMarket(target)
 }
 
 // 切到别的扩展时,上一页打开的确认框不能跟过去

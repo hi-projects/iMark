@@ -30,7 +30,7 @@ export const IPC = {
    *
    * 主进程本来完全不知道用户开着哪个文件 —— 它只知道标题里的文件名。但有两件事
    * 必须要它知道:① imark:// 协议只允许读「当前文档所在目录 + 仓库根」里的图片
-   * (见 main/protocol.ts);② 插件往文档里写字时要先让编辑器落盘、写完再让编辑器重载。
+   * (见 main/protocol.ts);② 扩展往文档里写字时要先让编辑器落盘、写完再让编辑器重载。
    * 两者都以「当前文档是谁」为基准。
    *
    * 单独开一个通道而不是塞进 SetTitle:标题的 watcher 盯的是文件名,而两个不同
@@ -68,10 +68,18 @@ export const IPC = {
   // ---------- 扩展 ----------
   /** 渲染→主:整份扩展视图(含密钥掩码) */
   ExtensionList: 'extension:list',
+  /** 渲染→主:取扩展包内图标,返回 data: URL;没有图标时 null */
+  ExtensionIcon: 'extension:icon',
+  /** 渲染→主:读取扩展清单声明的外部 JSON 设置(如 ~/.claude/settings.json) */
+  ExtensionExternalGet: 'extension:external-get',
+  /** 渲染→主:写入扩展清单声明的外部 JSON 设置;空串表示删除该键 */
+  ExtensionExternalSet: 'extension:external-set',
+  /** 渲染→主:用系统默认程序打开外部设置文件(如 ~/.claude/settings.json) */
+  ExtensionExternalOpen: 'extension:external-open',
   /** 渲染→主:启用/禁用;返回最新视图 */
   ExtensionSetEnabled: 'extension:set-enabled',
-  /** 渲染→主:保存非密配置(值为完整配置键);返回最新视图 */
-  ExtensionSetConfig: 'extension:set-config',
+  /** 渲染→主:保存单个配置项;按清单里的 imark.scope 落到全局层或当前仓库层 */
+  ExtensionSetField: 'extension:set-field',
   /** 渲染→主:写/清一条密钥(key 为 `<扩展内键>` 或 `<字段>:<目标>`);返回最新视图 */
   ExtensionSetSecret: 'extension:set-secret',
   /** 渲染→主:重新加载单个扩展 */
@@ -100,19 +108,19 @@ export const IPC = {
   /** 主→渲染:编辑器请求 / 贡献点 / webview / UI 请求(MainToRendererMessage) */
   ExtensionToRenderer: 'extension:to-renderer',
 
-  // ---------- 插件市场 ----------
+  // ---------- 扩展市场 ----------
   /** 挑一个本地 .imkpkg.json 包 → 预览(不安装) */
   MarketPickPackage: 'market:pick-package',
-  /** 挑一个插件目录 → 打包 → 预览(不安装) */
+  /** 挑一个扩展目录 → 打包 → 预览(不安装) */
   MarketPackDir: 'market:pack-dir',
   /** 丢弃一个待确认的安装(用户点了取消) */
   MarketDropPending: 'market:drop-pending',
   /** 确认安装一个待确认项(只回传令牌,不回传字节) */
   MarketInstallPending: 'market:install-pending',
   MarketUninstall: 'market:uninstall',
-  /** 已安装插件 + 来源/更新信息的整体视图 */
+  /** 已安装扩展 + 来源/更新信息的整体视图 */
   MarketInstalled: 'market:installed',
-  /** 把应用自带的兜底插件重新装回来(离线可用) */
+  /** 把应用自带的兜底扩展重新装回来(离线可用) */
   MarketRestoreBundled: 'market:restore-bundled',
   /** 主→渲染:安装/下载进度 */
   MarketProgress: 'market:progress',
@@ -122,7 +130,7 @@ export const IPC = {
   MarketTestRegistry: 'market:test-registry',
   MarketSearch: 'market:search',
   MarketDetail: 'market:detail',
-  /** 取插件图标,转成 data: URL(CSP 不让渲染层直接加载 http 图片) */
+  /** 取扩展图标,转成 data: URL(CSP 不让渲染层直接加载 http 图片) */
   MarketIcon: 'market:icon',
   /** 从市场下载一个版本 → 预览(不安装) */
   MarketInstall: 'market:install',
@@ -136,7 +144,7 @@ export const IPC = {
   MarketPublishPreview: 'market:publish-preview',
   /** 上传一个目录的当前内容 */
   MarketPublish: 'market:publish',
-  /** 检查已安装插件有没有新版本 */
+  /** 检查已安装扩展有没有新版本 */
   MarketCheckUpdates: 'market:check-updates',
   /** 读某个版本包里的文本文件(装之前先看源码) */
   MarketSource: 'market:source',

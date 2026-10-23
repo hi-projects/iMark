@@ -72,7 +72,7 @@ interface GitSyncConfig {
   writeGitignore: boolean
   /** 初始化仓库时是否创建一个 README.md（已存在则不覆盖） */
   writeReadme: boolean
-  /** 网络代理：auto = 自动探测环境变量 / Windows 系统代理；manual = 用下面填的地址；off = 直连 */
+  /** 网络代理：auto = 自动探测环境变量 / Windows 系统代理；manual = 用下面填的地址；找不到代理时直接连接 */
   proxyMode: ProxyMode
   /** 手动模式的代理地址（支持 http/https/socks5） */
   proxyUrl: string
@@ -93,7 +93,7 @@ interface ActionResult {
 interface NetworkSetup {
   /** 追加到 git 命令行（在子命令之前）的 -c 参数 */
   args: string[]
-  /** 追加到子进程环境变量的部分（NO_PROXY / 强制直连） */
+  /** 追加到子进程环境变量的部分（NO_PROXY 等） */
   env: Record<string, string>
   mode: ProxyMode
   /** 实际生效的代理地址；null = 直连（已脱敏，可直接展示） */
@@ -200,18 +200,15 @@ function classifyPushError(stderr: string, ctx?: FailureContext): string {
     )
   ) {
     if (ctx?.proxyUrl) {
-      return `无法连接远端：已尝试经代理 ${ctx.proxyUrl}（${ctx.proxySource ?? '来源未知'}）。请确认代理客户端正在运行；不需要代理时可把「连接方式」改为「直连」。`
-    }
-    if (ctx?.mode === 'off') {
-      return '无法连接远端：当前为直连（不使用代理）。若浏览器能打开而这里超时，请在插件设置里开启「自动检测」或填写本机代理。'
+      return `无法连接远端：已尝试经代理 ${ctx.proxyUrl}（${ctx.proxySource ?? '来源未知'}）。请确认代理客户端正在运行；清空「代理地址」后会直接连接。`
     }
     if (ctx?.mode === 'manual') {
-      return '无法连接远端：手动代理地址为空或无法识别，请检查插件设置里的「代理地址」。'
+      return '无法连接远端：没有可用的手动代理（地址为空或无法识别），已直接连接仍失败。请检查扩展设置里的「代理地址」。'
     }
     if (ctx && isSshRemote(ctx.remoteUrl)) {
       return '无法连接远端：SSH 地址不经过 HTTP 代理。请检查网络，或改用 HTTPS 地址（HTTPS 才能走本机代理）。'
     }
-    return '无法连接远端：未检测到本机代理。若浏览器能访问而这里超时，请在插件设置里填写本机代理（Clash / FlClash 常见为 http://127.0.0.1:7890）。'
+    return '无法连接远端：未检测到本机代理。若浏览器能访问而这里超时，请在扩展设置里填写本机代理（Clash / FlClash 常见为 http://127.0.0.1:7890）。'
   }
   if (/repository not found|does not exist/.test(value)) {
     return '远端仓库不存在或无权访问：请检查地址与令牌权限。'
@@ -334,7 +331,7 @@ class GitSyncPlugin {
 
   /**
    * 配置一改就尽快试跑一次。
-   * 没有它的话：用户先启用插件（此时还没填远端）、「启动后同步一次」当场失败并被
+   * 没有它的话：用户先启用扩展（此时还没填远端）、「启动后同步一次」当场失败并被
    * 消耗掉，之后要干等一个完整间隔才会再试。
    */
   private scheduleConfigSync(): void {
@@ -374,6 +371,13 @@ class GitSyncPlugin {
     const targets = allTargets.filter(t => t.url.trim().length > 0)
 
     const fail = (message: string, detail?: string): ActionResult => {
+      // 状态卡只放得下一行摘要,具体原因必须同时写进扩展日志,否则用户只看到
+      // 「推送失败」却不知道该去查什么。
+      if (message === '同步已取消') this.output.info(message)
+      else {
+        this.output.error(message)
+        if (detail) this.output.error(detail)
+      }
       this.report({ status: 'error', lastRunAt: Date.now(), message, detail })
       return { ok: false, message, detail }
     }
@@ -434,6 +438,9 @@ class GitSyncPlugin {
           })
           .join('\n')
         const detail = failed.map(f => `${f.label}：${f.detail}`).join('\n')
+        // 失败原因同时落到扩展日志里;状态卡只显示「第 N 个远端：推送失败」。
+        this.output.error(`推送失败（${failed.length}/${targets.length}）`)
+        this.output.error(detail)
         this.report({
           status: pushed.length > 0 ? 'partial' : 'error',
           lastRunAt: Date.now(),
@@ -473,7 +480,7 @@ class GitSyncPlugin {
   // ---------- 代理 ----------
 
   private proxyMode(cfg: GitSyncConfig): ProxyMode {
-    return cfg.proxyMode === 'manual' || cfg.proxyMode === 'off' ? cfg.proxyMode : 'auto'
+    return cfg.proxyMode === 'manual' ? 'manual' : 'auto'
   }
 
   /**
@@ -484,7 +491,18 @@ class GitSyncPlugin {
    */
   private async networkSetup(url: string, cfg: GitSyncConfig): Promise<NetworkSetup> {
     const mode = this.proxyMode(cfg)
-    if (mode === 'off') {
+    let detected: DetectedProxy | null = null
+    if (mode === 'manual') {
+      const normalized = normalizeProxyUrl(cfg.proxyUrl)
+      if (normalized) detected = { url: normalized, source: '扩展设置', bypass: [] }
+    } else {
+      const scheme = /^https:/i.test(url.trim()) ? 'https' : /^http:/i.test(url.trim()) ? 'http' : null
+      // SSH / 本地路径：没有 HTTP 代理可用，也不必白跑一次注册表查询
+      if (scheme) detected = await detectSystemProxy(scheme)
+    }
+    const effective = proxyForUrl(url, detected)
+    if (!effective) {
+      // 没有可用代理就直连；显式清空，避免宿主环境里的 HTTP_PROXY 又被 git 捡起来。
       return {
         args: ['-c', 'http.proxy='],
         env: { NO_PROXY: '*', no_proxy: '*' },
@@ -493,29 +511,18 @@ class GitSyncPlugin {
         proxySource: null
       }
     }
-
-    let detected: DetectedProxy | null = null
-    if (mode === 'manual') {
-      const normalized = normalizeProxyUrl(cfg.proxyUrl)
-      if (normalized) detected = { url: normalized, source: '插件设置', bypass: [] }
-    } else {
-      const scheme = /^https:/i.test(url.trim()) ? 'https' : /^http:/i.test(url.trim()) ? 'http' : null
-      // SSH / 本地路径：没有 HTTP 代理可用，也不必白跑一次注册表查询
-      if (scheme) detected = await detectSystemProxy(scheme)
-    }
-    const effective = proxyForUrl(url, detected)
     const env: Record<string, string> = {}
-    if (effective && detected && detected.bypass.length > 0) {
+    if (detected && detected.bypass.length > 0) {
       const bypass = detected.bypass.join(',')
       env.NO_PROXY = bypass
       env.no_proxy = bypass
     }
     return {
-      args: effective ? ['-c', `http.proxy=${effective}`] : [],
+      args: ['-c', `http.proxy=${effective}`],
       env,
       mode,
-      proxyUrl: effective ? redactUrl(effective) : null,
-      proxySource: effective ? (detected?.source ?? null) : null
+      proxyUrl: redactUrl(effective),
+      proxySource: detected?.source ?? null
     }
   }
 
@@ -529,8 +536,7 @@ class GitSyncPlugin {
       this.log('info', `${label}：经代理 ${setup.proxyUrl}（${setup.proxySource ?? '来源未知'}）`)
       return
     }
-    if (setup.mode === 'off') this.log('info', `${label}：直连（插件里已关闭代理）`)
-    else if (setup.mode === 'manual') {
+    if (setup.mode === 'manual') {
       this.log('warn', `${label}：手动代理地址为空或无法识别，已按直连处理`)
     } else this.log('info', `${label}：直连（未检测到本机代理）`)
   }
@@ -541,9 +547,7 @@ class GitSyncPlugin {
     const mode = this.proxyMode(cfg)
 
     let result: ActionResult
-    if (mode === 'off') {
-      result = { ok: true, message: '当前为直连：不使用代理（环境变量里的代理也会被忽略）' }
-    } else if (mode === 'manual') {
+    if (mode === 'manual') {
       const url = normalizeProxyUrl(cfg.proxyUrl)
       if (!url) {
         result = {
@@ -568,7 +572,7 @@ class GitSyncPlugin {
           ok: true,
           message: `未检测到本机代理（已检查${checked}）`,
           detail:
-            '可在插件设置里把「连接方式」改为「手动指定代理」；Clash / FlClash 的默认混合端口是 http://127.0.0.1:7890。'
+            '可在扩展设置里把「连接方式」改为「手动指定代理」；Clash / FlClash 的默认混合端口是 http://127.0.0.1:7890。'
         }
       } else {
         const reachable = await probeProxy(found.url)
@@ -582,8 +586,13 @@ class GitSyncPlugin {
 
     this.output.info(result.message)
     if (result.detail) this.output.info(result.detail)
-    if (result.ok) await imark.window.showInformationMessage(result.message)
-    else await imark.window.showWarningMessage(result.message)
+    // 结果写进设置页的状态卡(面板里的展示位置),不再弹通知
+    this.report({
+      status: result.ok ? 'ok' : 'error',
+      lastRunAt: Date.now(),
+      message: result.message,
+      ...(result.detail ? { detail: result.detail } : {})
+    })
     return result
   }
 
@@ -649,7 +658,7 @@ class GitSyncPlugin {
 
   /**
    * 不是 git 仓库时按配置初始化。
-   * 插件**不改动仓库的 remote 配置** —— 推送一律直接给 URL，凭据由每次现挂的
+   * 扩展**不改动仓库的 remote 配置** —— 推送一律直接给 URL，凭据由每次现挂的
    * credential helper 提供。
    */
   private async ensureRepo(
@@ -659,19 +668,11 @@ class GitSyncPlugin {
   ): Promise<void> {
     if (existsSync(join(vaultPath, '.git'))) return
     if (!cfg.autoInitRepo) {
-      throw new Error('当前仓库还不是 git 仓库（可在插件设置中开启自动初始化）')
+      throw new Error('当前仓库还不是 git 仓库（可在扩展设置中开启自动初始化）')
     }
     const wantBranch = cfg.initBranch?.trim() || 'main'
-    let init = await runGit(['init', '-b', wantBranch], { cwd: vaultPath, signal })
-    if (!init.ok) {
-      // 老版本 git 不支持 -b
-      init = await runGit(['init'], { cwd: vaultPath, signal })
-      if (!init.ok) throw new Error(`初始化仓库失败：${summarize(init.stderr, 3)}`)
-      await runGit(['symbolic-ref', 'HEAD', `refs/heads/${wantBranch}`], {
-        cwd: vaultPath,
-        signal
-      })
-    }
+    const init = await runGit(['init', '-b', wantBranch], { cwd: vaultPath, signal })
+    if (!init.ok) throw new Error(`初始化仓库失败：${summarize(init.stderr, 3)}`)
     if (cfg.writeGitignore) {
       // wx：已存在则不动
       await writeFile(join(vaultPath, '.gitignore'), DEFAULT_GITIGNORE, { flag: 'wx' }).catch(
@@ -682,7 +683,7 @@ class GitSyncPlugin {
       const name = basename(vaultPath) || 'Notes'
       await writeFile(
         join(vaultPath, 'README.md'),
-        `# ${name}\n\n> 由 iMark 的「定时上传」插件在初始化仓库时创建。\n`,
+        `# ${name}\n\n> 由 iMark 的「定时上传」扩展在初始化仓库时创建。\n`,
         { flag: 'wx' }
       ).catch(() => {})
     }
@@ -694,7 +695,7 @@ class GitSyncPlugin {
     return result.ok ? result.stdout.trim() : ''
   }
 
-  /** 仓库没配 user.name/user.email 时用插件配置兜底，否则 commit 会直接失败 */
+  /** 仓库没配 user.name/user.email 时用扩展配置兜底，否则 commit 会直接失败 */
   private async identityArgs(
     vaultPath: string,
     cfg: GitSyncConfig,
@@ -841,6 +842,10 @@ class GitSyncPlugin {
     const overall = allOk ? '成功' : okCount > 0 ? '部分失败' : '失败'
     const message = targets.length === 1 ? lines[0]! : lines.join('\n')
     const detail = reasons.length > 0 ? reasons.join('\n') : undefined
+    if (reasons.length > 0) {
+      this.output.error(`连接测试失败（${reasons.length}/${targets.length}）`)
+      for (const reason of reasons) this.output.error(reason)
+    }
     this.report({
       status: allOk ? 'ok' : okCount > 0 ? 'partial' : 'error',
       lastRunAt: Date.now(),

@@ -49,8 +49,7 @@ export interface Settings {
    * 上次会话开着的仓库内文件,顺序即标签页顺序(不含无法跨启动恢复的未命名文档)。
    *
    * 与 lastFile 并存而不是替代它:lastFile 是「当前页」,决定启动后激活哪个标签;
-   * 这个数组是「还有哪些页开着」。设置里没有这个字段时按空数组处理,
-   * 恢复逻辑会退回到只有 lastFile 的单标签行为。
+   * 这个数组是「还有哪些页开着」。
    */
   openFiles: string[]
   /** 自动保存方式(设置面板「编辑器」页) */
@@ -87,11 +86,11 @@ export interface Settings {
   /** 宿主拓扑:isolated(默认,每扩展一进程)或 shared;affinity 按扩展 ID 分组 */
   extensionHost: ExtensionHostSettings
   /**
-   * 插件市场的服务地址。默认指向本机的自托管服务(仓库里的 server/)。
+   * 扩展市场的服务地址。默认指向本机的自托管服务(仓库里的 server/)。
    * 留空表示不使用市场 —— 浏览页会提示去设置里填地址,其余功能照常。
    */
   marketUrl: string
-  /** 启动后自动检查插件更新(只在窗口就绪后跑一次,失败静默) */
+  /** 启动后自动检查扩展更新(只在窗口就绪后跑一次,失败静默) */
   marketAutoCheck: boolean
   /**
    * 已经警告过「非回环地址用明文 http」的市场地址。

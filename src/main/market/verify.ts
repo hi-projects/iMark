@@ -9,7 +9,6 @@
  * 前者防的是「市场被换了一个包」,后者防的是「传输过程中包坏了 / 有人改了包内字节」。
  */
 
-import { createHash } from 'node:crypto'
 import { extensionIdOf, type ExtensionManifest } from '@shared/extensionPackage'
 import {
   verifyExtensionPackage,
@@ -33,10 +32,6 @@ export function peekIdentity(raw: unknown): { id: string; version: string } | nu
   } catch {
     return null
   }
-}
-
-export function sha256(data: Buffer | string): string {
-  return createHash('sha256').update(data).digest('hex')
 }
 
 /**

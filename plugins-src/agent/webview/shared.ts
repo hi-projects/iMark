@@ -8,16 +8,11 @@
  */
 
 export interface ThemePayload {
-  kind?: string
   colors?: Record<string, string>
 }
 
 export interface BootstrapPayload {
-  mode: 'chat' | string
-  panelId: string
-  extensionId: string
   config: Record<string, unknown>
-  theme?: ThemePayload
 }
 
 export interface HostResponse {
@@ -97,15 +92,11 @@ function install(): void {
 
 export function readBootstrap(): BootstrapPayload {
   const el = document.getElementById('imark-bootstrap')
-  const fallback: BootstrapPayload = { mode: 'chat', panelId: '', extensionId: '', config: {} }
+  const fallback: BootstrapPayload = { config: {} }
   if (!el || !el.textContent) return fallback
   try {
     const parsed = JSON.parse(el.textContent) as Partial<BootstrapPayload>
-    return {
-      ...fallback,
-      ...parsed,
-      config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {}
-    }
+    return { config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {} }
   } catch {
     return fallback
   }

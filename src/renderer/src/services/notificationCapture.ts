@@ -2,12 +2,12 @@
  * 把浏览器的 HTML5 通知也接到通知中心。
  *
  * 应用内自己的通知走 `services/notice.ts`,但渲染进程里还有一个绕开它的入口:
- * `new Notification(title, options)`。render 层插件与页面脚本都跑在这个窗口里,
- * 它们可以直接调用它 —— 那些通知会交给 Chromium / 系统,应用内看不见。
+ * `new Notification(title, options)`。页面脚本可以直接调用它 ——
+ * 那些通知会交给 Chromium / 系统,应用内看不见。
  *
  * 这里包一层构造器,**只记录,不改行为**:通知该不该弹、弹成什么样,仍然由
  * 浏览器决定;通知中心只是多留一份历史。包装放在 `main.ts` 的最前面,
- * 保证任何插件界面起来之前就已经生效。
+ * 保证任何扩展界面起来之前就已经生效。
  *
  * 静态成员(`permission` / `requestPermission`)由 Proxy 原样透传,
  * `instanceof Notification` 也仍然成立(原型还是原生构造器的原型)。

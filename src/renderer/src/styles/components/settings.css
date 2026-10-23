@@ -130,7 +130,7 @@
   letter-spacing: 0.05em;
 }
 
-/* 分组标题旁的小问号(目前只有「插件」用):原生 title 足够,不引入新的浮层 */
+/* 分组标题旁的小问号(目前只有「扩展」用):原生 title 足够,不引入新的浮层 */
 .settings-nav-help {
   display: inline-flex;
   color: var(--text-tertiary);
@@ -141,7 +141,7 @@
   color: var(--text-secondary);
 }
 
-/* 第二组起(「插件」)与上面拉开一点距离 */
+/* 第二组起(「扩展」)与上面拉开一点距离 */
 .settings-nav-group:not(:first-child) {
   margin-top: 14px;
 }
@@ -229,7 +229,7 @@
   flex: 1 1 auto;
   overflow-y: auto;
   /* 常驻预留滚动条的宽度。
-     内容是「点一下才变高」的(展开「可以改哪些东西?」、插件报错横幅等),不预留的话,
+     内容是「点一下才变高」的(展开「可以改哪些东西?」、扩展报错横幅等),不预留的话,
      展开瞬间滚动条冒出来把正文挤窄一格,上面的说明文字就会**重新折行** ——
      同一个面板点一下前后长得不一样,像是点坏了。这里把位置一直留着,两种状态
      的可用宽度相等,展开就只影响下面,不影响上面。 */
@@ -416,8 +416,8 @@
   color: var(--text-tertiary);
 }
 
-/* 开关:与插件设置页同一套观感。类名不复用那边的是因为 `.plugin-switch` 长在插件域,
-   插件页改版时不该把设置页一起带走 */
+/* 开关:与扩展设置页同一套观感。类名不复用那边的是因为 `.plugin-switch` 长在扩展域,
+   扩展页改版时不该把设置页一起带走 */
 .settings-switch {
   position: relative;
   flex: 0 0 auto;
@@ -513,6 +513,16 @@
   font-family: var(--font-editor);
   font-size: 12px;
   outline: none;
+}
+
+/* 深色主题下数字输入的加减按钮默认画成白底方块:让原生控件跟随主题着色 */
+:root[data-theme='dark'] .settings-number {
+  color-scheme: dark;
+}
+
+:root[data-theme='dark'] .settings-number::-webkit-inner-spin-button,
+:root[data-theme='dark'] .settings-number::-webkit-outer-spin-button {
+  background: transparent;
 }
 
 .settings-number:focus {

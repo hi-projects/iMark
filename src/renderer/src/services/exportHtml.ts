@@ -95,11 +95,11 @@ const EXPORT_CSS = `
 `
 
 /**
- * 只返回正文片段，供 render 层插件做「预览窗口」。
+ * 只返回正文片段，供扩展做「预览窗口」。
  *
  * 与导出共用同一个 markdown-it 实例（html:false、链接校验、KaTeX、Mermaid），
- * 但不带导出的整页模板与亮色 CSS —— 预览要跟着应用当前主题走，样式由插件容器
- * 自己负责。HTML 原始标签在 md 里已被转义，插件拿到的片段可以直接放进容器。
+ * 但不带导出的整页模板与亮色 CSS —— 预览要跟着应用当前主题走，样式由扩展容器
+ * 自己负责。HTML 原始标签在 md 里已被转义，扩展拿到的片段可以直接放进容器。
  */
 export async function renderMarkdownFragment(
   source: string,

@@ -2,10 +2,10 @@
  * 光标行行首的「+」按钮。
  *
  * 为什么是独立的 ViewPlugin,而不是塞进 wysiwyg/ 那套按语法树分发的规则里:
- * 那个插件每次文档变更都要全量重建装饰,还带一段 IME 组合期的重映射分支;
+ * 那个扩展每次文档变更都要全量重建装饰,还带一段 IME 组合期的重映射分支;
  * 而这里只关心「光标在第几行」,两件事的生命周期完全不同,挂在一起只会互相拖累。
  *
- * 只**画**按钮,不决定菜单里有什么 —— 条目来自插件贡献点(services/lineMenu.ts)。
+ * 只**画**按钮,不决定菜单里有什么 —— 条目来自扩展贡献点(services/lineMenu.ts)。
  */
 
 import {
@@ -127,7 +127,7 @@ function inCodeBlock(state: EditorState, from: number, to: number): boolean {
 }
 
 function buildDecorations(view: EditorView): DecorationSet {
-  // 没有插件贡献菜单条目时不画按钮 —— 免得点了弹出一个空菜单
+  // 没有扩展贡献菜单条目时不画按钮 —— 免得点了弹出一个空菜单
   if (lineMenuEntries().length === 0) return Decoration.none
   const line = view.state.doc.lineAt(view.state.selection.main.head)
   // 引用行不画:见 inBlockquote

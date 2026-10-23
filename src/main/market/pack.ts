@@ -28,7 +28,7 @@ import {
   type ExtensionPackageEnvelope,
   type PackageFileEntry
 } from '@shared/extensionPackage'
-import { sha256 } from './verify'
+import { sha256 } from '../extensions/paths'
 
 /** 不参与打包的目录 */
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.github', '.vscode', '.cache'])

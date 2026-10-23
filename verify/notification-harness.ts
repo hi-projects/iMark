@@ -3,12 +3,12 @@
  *
  * 这一轮改了两件事,必须一起钉住:
  *   1. 主题切换 / 设置按钮移到状态栏**左边**(侧栏开关旁边);
- *   2. 状态栏最右侧新增通知铃铛,点开在右下角弹一个小框,列出插件与浏览器
+ *   2. 状态栏最右侧新增通知铃铛,点开在右下角弹一个小框,列出扩展与浏览器
  *      (`new Notification(...)`)发过的通知;未读数走铃铛角标,打开即已读。
  *
  * 断言尽量走**真实路径**:
- *   - 插件通知由开发目录里的探针插件执行命令,经 `imk.ui.notify` → 宿主 →
- *     渲染层 → 通知中心,不是直接往 store 里塞一条;
+ *   - 扩展通知由测试用探针扩展执行命令,经 `imark.window.showInformationMessage`
+ *     → 宿主 → 渲染层 → 通知中心,不是直接往 store 里塞一条;
  *   - 浏览器通知在页面里真的 `new Notification(...)`,走 `notificationCapture.ts`
  *     的包装;
  *   - 布局断言量的是元素在窗口里的实际坐标,不是类名在不在。
@@ -48,13 +48,13 @@ const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 const PROBE_ID = 'harness.notice-probe'
 const PROBE_NAME = '通知探针'
-const PLUGIN_TEXT = '来自插件的通知'
-const PLUGIN_TEXT_2 = '第二条插件通知'
+const PLUGIN_TEXT = '来自扩展的通知'
+const PLUGIN_TEXT_2 = '第二条扩展通知'
 const BROWSER_TITLE = '浏览器通知标题'
 const BROWSER_BODY = '浏览器通知正文'
 
 /**
- * 探针插件:只注册两条命令,执行时各发一条插件通知。
+ * 探针扩展:只注册两条命令,执行时各发一条扩展通知。
  *
  * 不在 `onEnable` 里直接发:那时窗口还没建,宿主会(正确地)把通知丢掉,
  * 断言就会变成一条永远等不到的红灯。
@@ -63,12 +63,12 @@ const PROBE_MAIN = `const imark = require('imark')
 exports.activate = function (context) {
   context.subscriptions.push(
     imark.commands.registerCommand('harness.notice-probe.probe-notify', function () {
-      imark.window.showInformationMessage('来自插件的通知')
+      imark.window.showInformationMessage('来自扩展的通知')
     })
   )
   context.subscriptions.push(
     imark.commands.registerCommand('harness.notice-probe.probe-notify-2', function () {
-      imark.window.showWarningMessage('第二条插件通知')
+      imark.window.showWarningMessage('第二条扩展通知')
     })
   )
   // 状态栏条目:布局断言需要一个真实的「扩展图标组」
@@ -177,7 +177,7 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  // 不补装内置插件:这一轮只需要一个干净的窗口 + 探针,少一个变量少一处噪音
+  // 不补装内置扩展:这一轮只需要一个干净的窗口 + 探针,少一个变量少一处噪音
   const service = await initExtensions({ appVersion: APP_VERSION })
   // 先激活探针:它贡献的状态栏条目要在首帧就出现在布局里(这时还没有任何通知)
   try {
@@ -325,14 +325,14 @@ async function main(): Promise<void> {
     JSON.stringify({ sep: layout.seps[0], appActions: layout.appActions, toggles: layout.toggles })
   )
   check(
-    '目录、大纲在插件图标之前',
+    '目录、大纲在扩展图标之前',
     layout.toggles !== null &&
       layout.pluginGroup !== null &&
       layout.toggles.right <= layout.pluginGroup.left,
     JSON.stringify({ toggles: layout.toggles, pluginGroup: layout.pluginGroup })
   )
   check(
-    '第二条竖线在目录 / 大纲与插件图标之间',
+    '第二条竖线在目录 / 大纲与扩展图标之间',
     layout.seps.length >= 2 &&
       layout.toggles !== null &&
       layout.pluginGroup !== null &&
@@ -341,7 +341,7 @@ async function main(): Promise<void> {
     JSON.stringify({ sep: layout.seps[1], toggles: layout.toggles, pluginGroup: layout.pluginGroup })
   )
   check(
-    '插件图标组在状态栏左半边,且里面是扩展自己贡献的条目',
+    '扩展图标组在状态栏左半边,且里面是扩展自己贡献的条目',
     layout.pluginGroup !== null && layout.pluginGroup.left < layout.viewportWidth / 2 && layout.slotInPluginGroup,
     JSON.stringify({ pluginGroup: layout.pluginGroup, slotInPluginGroup: layout.slotInPluginGroup })
   )
@@ -412,7 +412,7 @@ async function main(): Promise<void> {
   check('再点铃铛能打开', await click('.status-notify') && (await waitFor(`document.querySelector('.notif-panel')`, 2000)))
   check('点铃铛本身只收起、不会再弹开', await click('.status-notify') && (await waitFor(`!document.querySelector('.notif-panel')`, 2000)))
 
-  console.log('\n[C] 插件通知:未读角标、来源标签、打开即已读')
+  console.log('\n[C] 扩展通知:未读角标、来源标签、打开即已读')
 
   check('探针命令执行成功', await firePluginNotice('probe-notify'))
   check('铃铛冒出未读角标 1', (await waitFor(`document.querySelector('.status-notify-badge')`, 3000)) && (await badgeText()) === '1', String(await badgeText()))
@@ -421,7 +421,7 @@ async function main(): Promise<void> {
     (await evalJs<string | null>(`document.querySelector('.status-notify')?.getAttribute('title') ?? null`)) === '通知（1 条未读）'
   )
   check(
-    '气泡里出现插件通知',
+    '气泡里出现扩展通知',
     await waitFor(
       `(() => { const t = document.querySelector('.toast'); return !!t && t.textContent.includes(${JSON.stringify(PLUGIN_TEXT)}) && t.textContent.includes(${JSON.stringify(PROBE_NAME)}) })()`,
       3000
@@ -431,10 +431,10 @@ async function main(): Promise<void> {
   await click('.status-notify')
   check('打开小框', await waitFor(`document.querySelector('.notif-panel')`, 2000))
   let items = await panelItems()
-  check('小框里有一条插件通知', items.length === 1, JSON.stringify(items))
+  check('小框里有一条扩展通知', items.length === 1, JSON.stringify(items))
   check(
-    '插件通知带「插件」来源标签、标题是插件名',
-    items[0]?.source === '插件' && items[0]?.name === PROBE_NAME && items[0]?.message === PLUGIN_TEXT,
+    '扩展通知带「扩展」来源标签、标题是扩展名',
+    items[0]?.source === '扩展' && items[0]?.name === PROBE_NAME && items[0]?.message === PLUGIN_TEXT,
     JSON.stringify(items)
   )
   // showInformationMessage 没有 success 这一档;info 是它与通知中心的对应等级
@@ -448,7 +448,7 @@ async function main(): Promise<void> {
   items = await panelItems()
   check(
     '第二条在最上面(新的在前)',
-    items[0]?.message === PLUGIN_TEXT_2 && items[0]?.source === '插件',
+    items[0]?.message === PLUGIN_TEXT_2 && items[0]?.source === '扩展',
     JSON.stringify(items)
   )
 

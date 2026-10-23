@@ -30,7 +30,7 @@ export const extensionStore = reactive<{
 }>({
   list: [],
   contribs: null,
-  hostSettings: { mode: 'isolated', affinity: {} },
+  hostSettings: { mode: 'shared', affinity: {} },
   busy: null
 })
 
@@ -67,7 +67,7 @@ export async function refreshExtensions(): Promise<void> {
 async function refreshHostSettings(): Promise<void> {
   try {
     const settings = await api.getSettings()
-    extensionStore.hostSettings = settings.extensionHost ?? { mode: 'isolated', affinity: {} }
+    extensionStore.hostSettings = settings.extensionHost
   } catch {
     // 读设置失败不阻塞扩展页面:显示上一次已知的宿主设置比整页报错好
   }
@@ -91,11 +91,9 @@ export function setExtensionEnabled(id: string, enabled: boolean): Promise<boole
   return mutate(enabled ? '启用扩展' : '停用扩展', () => api.setExtensionEnabled(id, enabled))
 }
 
-export function saveExtensionConfig(
-  id: string,
-  config: Record<string, unknown>
-): Promise<boolean> {
-  return mutate('保存扩展配置', () => api.setExtensionConfig(id, plain(config)))
+/** 保存单个配置项:主进程按清单声明决定写全局层还是当前仓库层 */
+export function saveExtensionField(id: string, key: string, value: unknown): Promise<boolean> {
+  return mutate('保存扩展配置', () => api.setExtensionField(id, key, plain(value)))
 }
 
 /** key 是完整密钥键(`<id>:<property>[:<slot>]`);value 为 null 时删除 */
@@ -114,7 +112,7 @@ export function reloadExtension(id: string): Promise<boolean> {
 }
 
 export function reloadExtensionHost(hostId: number): Promise<boolean> {
-  return mutate(`重新加载宿主 #${hostId}`, () => api.reloadExtensionHost(hostId))
+  return mutate(`重新加载进程 #${hostId}`, () => api.reloadExtensionHost(hostId))
 }
 
 export function uninstallExtension(id: string): Promise<boolean> {

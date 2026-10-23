@@ -17,7 +17,7 @@
 import { StateEffect } from '@codemirror/state'
 import { reactive, watch } from 'vue'
 import type { ExtensionLineMenuView } from '@shared/extensions'
-import { appStore, editorHolder } from '../stores/app'
+import { activeTab, editorHolder } from '../stores/app'
 import { extensionStore, runExtensionCommand } from './extensionService'
 
 /** 菜单里的一条 = 某个扩展声明的某个条目 */
@@ -126,7 +126,7 @@ async function executeAction(
     source: 'lineMenu',
     line,
     lineText: text,
-    filePath: appStore.filePath
+    filePath: activeTab()?.filePath ?? null
   }
   await runExtensionCommand(entry.item.command, [args], 'lineMenu')
 }

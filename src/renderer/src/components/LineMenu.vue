@@ -2,8 +2,8 @@
 /**
  * 行首「+」按钮点开的那张小菜单。
  *
- * 条目全部来自插件贡献点(descriptor.lineMenu),这里一条也不写死 ——
- * 以后「+」里能加什么,取决于装了哪些插件。
+ * 条目全部来自扩展贡献点(descriptor.lineMenu),这里一条也不写死 ——
+ * 以后「+」里能加什么,取决于装了哪些扩展。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {

@@ -24,18 +24,18 @@ env -u ELECTRON_RUN_AS_NODE xvfb-run -a node verify/run.mjs agent
 Linux 有桌面/不需要无头时可去掉 `xvfb-run -a`。`env -u ELECTRON_RUN_AS_NODE` 只在这台
 开发机的 shell 默认设置它时需要；别的机器没有这个变量也无害。
 
-接着跑「6. 尚未跑完的验收」里的 18 个。全部通过后，再做「8. 手工冒烟」。
+接着跑「6. 尚未跑完的验收」里的 17 个。全部通过后，再做「8. 手工冒烟」。
 
 ## 1. 这次改了什么
 
-把原来的 Agent 插件拆成两个官方扩展：
+把原来的 Agent 扩展拆成两个官方扩展：
 
 ```
 Agent Core (imark.agent)                 Claude Code (imark.claude-code)
   ├─ 对话 / 会话 / 附件 / 产物             ├─ extensionDependencies: ["imark.agent"]
   ├─ 权限模式 / 写回文档                   ├─ contributes["imark.agentProviders"]: ["claude-code"]
-  ├─ ProviderRegistry（惰性扫描同宿主）     ├─ 自己的配置 imark.claude-code.*
-  └─ 不含任何 Claude CLI 代码               └─ 自己的 secret: apiKey
+  ├─ ProviderRegistry（惰性扫描同宿主）     ├─ 调用参数 imark.claude-code.*
+  └─ 不含任何 Claude CLI 代码               └─ CLI 配置读写 ~/.claude/settings.json
 ```
 
 - Core 扩展 ID **保留 `imark.agent`**，只改 `displayName` 为 **Agent Core**。命令、设置键、
@@ -69,11 +69,11 @@ Agent Core (imark.agent)                 Claude Code (imark.claude-code)
 | `plugins-src/claude-code/package.json` | Claude Code 清单、依赖、配置、provider 贡献 |
 | `plugins-src/claude-code/main.ts` | `activate()` 返回 `{ apiVersion, providers }` |
 | `plugins-src/claude-code/provider.ts` | `ClaudeCodeProvider` / `ClaudeSession` |
-| `plugins-src/claude-code/config.ts` | 读 `imark.claude-code.*` 与 secret `apiKey` |
+| `plugins-src/claude-code/config.ts` | 读 `imark.claude-code.*` 调用参数；模型/端点/令牌直接读写 `~/.claude/settings.json` |
 | `plugins-src/claude-code/claudeArgs.ts` | CLI 参数拼装 |
 | `plugins-src/claude-code/claudeStream.ts` | stream-json 解析、错误分类 |
 | `plugins-src/claude-code/spawn.ts` | CLI 探测与子进程管理 |
-| `plugins-src/claude-code/README.md` | 插件说明 |
+| `plugins-src/claude-code/README.md` | 扩展说明 |
 | `src/main/market/builtin/imark.claude-code.imkpkg.json` | `plugins:build` 生成的内置包（已纳入工作树） |
 
 删除：`plugins-src/agent/providers/`（`claude-code.ts`、`claudeArgs.ts`、`claudeStream.ts`、
@@ -87,14 +87,14 @@ Agent Core (imark.agent)                 Claude Code (imark.claude-code)
   `Extension.exports`，每次激活先清空）。
 - 依赖生命周期：`src/main/extensions/installer.ts`（依赖未安装拒绝安装）、
   `src/main/extensions/service.ts`（被依赖时拒绝卸载/禁用；启用时递归启用依赖）。
-- 内置包：`src/main/market/bundled.ts`（五款，Core 在 Claude 前，
-  两者 `enable: false`）、`src/main/index.ts`（注释改五款）。
+- 内置包：`src/main/market/bundled.ts`（四款，Core 在 Claude 前，
+  两者 `enable: false`）、`src/main/index.ts`（注释改四款）。
 - Agent Core：`plugins-src/agent/package.json`、`plugins-src/agent/main.ts`、
   `core/config.ts`、`core/protocol.ts`、`core/types.ts`、`webview/chat.ts`、
   `plugins-src/agent/README.md`。
 - 构建：`plugins-src/tsconfig.json`（加入 `claude-code/**/*.ts`）、
   `scripts/build-plugins.mjs`（esbuild 显式 `@shared` alias）。
-- 文档：`README.md`（五款官方扩展、provider 契约、默认策略）。
+- 文档：`README.md`（四款官方扩展、provider 契约、默认策略）。
 - 验收：`verify/agent-harness.ts`、`extensions-host-groups-harness.ts`、
   `bundled-upgrade-harness.ts`、`market-ui-harness.ts`、
   `install-confirm-harness.ts`、`market-package-harness.ts`。
@@ -106,7 +106,8 @@ Agent Core (imark.agent)                 Claude Code (imark.claude-code)
 3. **无死锁**：Core 的 `activate()` 绝不能 `await providers.list()`。注册表有
    `ready` 门闩，入口在 `host.start().finally()` 里调 `markProvidersReady()`。
 4. **provider 自带配置**：Core 只传通用会话参数（`hostSessionId`、`cwd`、`mode`、
-   `model`、`availableCommands`、`signal`）。超时/隔离/额外参数/API key 由 provider 自己读。
+   `model`、`availableCommands`、`signal`）。超时/隔离/额外参数由 provider 自己读；
+   模型、端点与令牌的唯一事实是 `~/.claude/settings.json`，不是 Core 或插件配置。
 5. **每轮重读**：Core 每轮（含重试）都调用 `createSession()`，所以 provider 设置下一轮生效。
 6. **协议版本**：`apiVersion` 不等于 1 的导出对象只产生诊断，不注册。
 7. **清单校验双端一致**：`imark.agentProviders` 必须非空、≤8、id 匹配
@@ -160,10 +161,10 @@ console.log(validateEnvelope(raw));
 | install-confirm | 35 / 0 |
 | extensions-editor / extensions-webview / quick-edit / git-sync / git-sync-auth / git-sync-proxy | exit 0 |
 
-**尚未跑完的 18 个**（全量回归在第 9 个 `ai-for-edit` 处被中断）：
+**尚未跑完的 17 个**（全量回归此前被中断）：
 
 ```bash
-for n in ai-for-edit table-render code-block code-indent font-zoom math-block mermaid \
+for n in table-render code-block code-indent font-zoom math-block mermaid \
          editor-enter cursor session-restore tabs image-paste autosave-modes data-dir \
          settings-reflow settings-system notification userstyle-dir; do
   echo "=== $n ==="
@@ -171,11 +172,11 @@ for n in ai-for-edit table-render code-block code-indent font-zoom math-block me
 done
 ```
 
-之后建议再跑一次全部 31 个（列表固定在 `verify/run.mjs` 的帮助输出里）：
+之后建议再跑一次全部 30 个（列表固定在 `verify/run.mjs` 的帮助输出里）：
 
 ```bash
 for n in extensions-model extensions-host-groups extensions-editor extensions-webview \
-         quick-edit git-sync git-sync-auth git-sync-proxy ai-for-edit agent \
+         quick-edit git-sync git-sync-auth git-sync-proxy agent \
          market-package market-ui install-confirm bundled-upgrade table-render \
          code-block code-indent font-zoom math-block mermaid editor-enter cursor \
          session-restore tabs image-paste autosave-modes data-dir settings-reflow \
@@ -221,20 +222,20 @@ git push -u origin <分支名>
 
 ## 8. 手工冒烟（验收全绿之后）
 
-内置包版本仍是 `1.0.0`，而本地开发数据里可能已经装过同版本的旧 Agent
-（`displayName` 还是「Agent」）。补装逻辑只在**版本更高**时升级，所以开发环境要先清插件数据：
+四款官方扩展的版本固定为 `1.0.0`。补装按整包 integrity 对齐，本地/市场来源的同 ID
+安装也会被内置包覆盖，所以改完代码跑一次 `npm run plugins:build` 再启动即可，不用
+清扩展数据。若确实要回到全新状态：
 
 ```bash
-rm -rf .imark/plugins        # 仅开发数据；会触发五款内置包重新补装
+rm -rf .imark/plugins        # 仅开发数据；会触发四款内置包重新补装
 env -u ELECTRON_RUN_AS_NODE npm run dev
 ```
 
 然后在「设置 → 扩展」里确认：
 
-1. 五款内置扩展都出现：quick-edit 默认开，git-sync / ai-for-edit / Agent Core /
-   Claude Code 默认关。
+1. 四款内置扩展都出现：quick-edit 默认开，git-sync / Agent Core / Claude Code 默认关。
 2. 先启用 Agent Core：菜单能打开聊天面板，显示「Agent Core」，选择器显示「无可用后端」，
-   发送按钮禁用，提示「未安装或未启用任何 Agent 后端插件」。
+   发送按钮禁用，提示「未安装或未启用任何 Agent 后端扩展」。
 3. 再启用 Claude Code（会自动带上对 Core 的依赖）：Core 所在宿主重启，聊天面板重开后
    provider 选择器出现 Claude Code。
 4. 在 Claude Code 设置里填本机 CLI 路径（留空自动探测），发一轮消息；确认流式文本、
@@ -246,8 +247,8 @@ env -u ELECTRON_RUN_AS_NODE npm run dev
 ## 9. 剩余风险 / 下次优先看
 
 - `plugins-src/claude-code/provider.ts` 最后一处 import 修复尚未 typecheck/构建/跑 harness。
-- 全量 31 项回归未跑完；先跑 `agent`，再跑上面 18 个。
+- 全量 30 项回归未跑完；先跑 `agent`，再跑上面 17 个。
 - provider 的 `detect()` 缓存 60 秒（key = command + timeoutSec）；改设置后最多等 1 分钟，
   或重载宿主。
 - 没有做 provider 管理器 UI、热插拔、跨宿主对象传输、旧配置迁移（有意不做）。
-- 发布时 Core/Provider 版本应随应用正常递增；目前都是 `1.0.0`。
+- 开发阶段所有插件版本固定为 `1.0.0`；内置包按 integrity 覆盖，不保留版本升级兼容逻辑。

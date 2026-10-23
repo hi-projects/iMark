@@ -89,12 +89,18 @@ const api = {
     request(IPC.VaultConfirmDelete, { name, isDir }),
   // ---------- 扩展 ----------
   listExtensions: (): Promise<ExtensionView[]> => request(IPC.ExtensionList),
+  extensionIcon: (id: string): Promise<string | null> => request(IPC.ExtensionIcon, id),
+  readExtensionExternal: (id: string, key: string): Promise<string> =>
+    request(IPC.ExtensionExternalGet, { id, key }),
+  writeExtensionExternal: (id: string, key: string, value: string): Promise<void> =>
+    request(IPC.ExtensionExternalSet, { id, key, value }),
   setExtensionEnabled: (id: string, enabled: boolean): Promise<ExtensionView[]> =>
     request(IPC.ExtensionSetEnabled, { id, enabled }),
-  setExtensionConfig: (
+  setExtensionField: (
     id: string,
-    config: Record<string, unknown>
-  ): Promise<ExtensionView[]> => request(IPC.ExtensionSetConfig, { id, config }),
+    key: string,
+    value: unknown
+  ): Promise<ExtensionView[]> => request(IPC.ExtensionSetField, { id, key, value }),
   /** value 为 null 时清除该密钥;key 是完整键(`<id>:<property>[:<slot>]`) */
   setExtensionSecret: (
     id: string,
@@ -109,6 +115,8 @@ const api = {
   uninstallExtension: (id: string): Promise<ExtensionView[]> =>
     request(IPC.ExtensionUninstall, id),
   openExtensionLog: (id: string): Promise<void> => request(IPC.ExtensionLogOpen, id),
+  openExtensionExternalFile: (id: string, key: string): Promise<void> =>
+    request(IPC.ExtensionExternalOpen, { id, key }),
   /** 首次挂载时主动要一次贡献点快照(不必等下一次变更) */
   getExtensionContributions: (): Promise<ExtensionContributionsSnapshot> =>
     request(IPC.ExtensionContribGet),
@@ -145,15 +153,15 @@ const api = {
     cb: (invocation: Pick<ExtensionCommandInvocation, 'command' | 'from'>) => void
   ): (() => void) =>
     subscribe<Pick<ExtensionCommandInvocation, 'command' | 'from'>>(IPC.ExtensionCommand, cb),
-  // ---------- 插件市场 ----------
+  // ---------- 扩展市场 ----------
   pickMarketPackage: () => request(IPC.MarketPickPackage),
   packMarketDir: () => request(IPC.MarketPackDir),
   dropMarketPending: (token: string): Promise<void> =>
     request(IPC.MarketDropPending, token),
   installMarketPending: (token: string) => request(IPC.MarketInstallPending, token),
-  uninstallPlugin: (id: string) => request(IPC.MarketUninstall, id),
+  uninstallMarketExtension: (id: string) => request(IPC.MarketUninstall, id),
   listMarketInstalled: () => request(IPC.MarketInstalled),
-  restoreBundledPlugins: () => request(IPC.MarketRestoreBundled),
+  restoreBundledExtensions: () => request(IPC.MarketRestoreBundled),
   onMarketProgress: (cb: (p: MarketProgress) => void): (() => void) =>
     subscribe<MarketProgress>(IPC.MarketProgress, cb),
   setMarketRegistry: (url: string) => request(IPC.MarketSetRegistry, url),
@@ -192,13 +200,13 @@ const api = {
 /**
  * 桥**只暴露一次取用函数**,不再直接暴露 `api` 对象。
  *
- * 原因:render 层(见清单的 render)与主界面跑在同一个 realm 里,contextBridge
- * 暴露的属性既不可删除也不可改写(实测 configurable:false / writable:false)。
- * 只要 `window.api` 存在,插件就能调用应用的全部 IPC —— 那渲染半"没有系统能力"
- * 的承诺就不成立。改成一次性取用后:
+ * 原因:扩展页面与主界面跑在同一个 realm 里,contextBridge 暴露的属性
+ * 既不可删除也不可改写(实测 configurable:false / writable:false)。
+ * 只要 `window.api` 存在,扩展就能调用应用的全部 IPC —— 那「页面脚本没有
+ * 系统能力」的承诺就不成立。改成一次性取用后:
  *   - 应用在入口(renderer/src/main.ts 的第一条 import)取走并保存在模块闭包里;
- *   - 之后任何页面脚本(包括插件)再调用这个函数都只能拿到 null。
- * 注意:取用必须发生在**任何插件代码加载之前** —— 由 main.ts 的 import 顺序保证。
+ *   - 之后任何页面脚本(包括扩展)再调用这个函数都只能拿到 null。
+ * 注意:取用必须发生在**任何扩展代码加载之前** —— 由 main.ts 的 import 顺序保证。
  */
 let apiTaken = false
 contextBridge.exposeInMainWorld('__imarkTakeApi', () => {

@@ -2,10 +2,8 @@
 /**
  * 市场 · 已安装 —— 扩展的落地页,也是离线时唯一有内容的页。
  *
- * 每行回答的是「这是什么、从哪来、现在什么状态」:名字与版本、形态徽标
- * (含代码 / 纯声明)、来源(内置 / 市场 / 本地 / 开发)、启用态,以及可复制的
- * 安装 sha256。没有权限行 —— 扩展没有权限沙箱,清单里的 capabilities 是告知,
- * 只在安装确认框与详情页展示。
+ * 每行回答的是「这是什么、什么时候装的、现在什么状态」:名字与版本、安装时间、
+ * 启用态(只由左侧状态圆点表达),以及可复制的安装 sha256。
  */
 
 import { computed, onMounted, ref, watch } from 'vue'
@@ -22,11 +20,10 @@ import {
   refreshInstalled,
   remoteStore,
   restoreBundled,
-  sourceLabel,
-  uninstallPlugin
+  uninstallFromMarket
 } from '../../services/marketService'
 import { selectExtensionSettings } from '../../services/extensionService'
-import { shapeLabels, shapeOf } from '../../services/pluginShape'
+import PluginIcon from '../plugins/PluginIcon.vue'
 import MarketProgress from './MarketProgress.vue'
 
 const extensions = computed(() => marketStore.installed?.extensions ?? [])
@@ -53,7 +50,7 @@ function syncLabelColumn(): void {
     widest = Math.max(widest, Math.ceil(el.getBoundingClientRect().width))
   }
   // 「安装于 …」也在这一列里:它比名字宽时列要跟着变宽,否则时间会顶到 sha256 上。
-  // 用 Range 量文字本身,不受 grid 轨道(尤其是跨列的开发模式提示)影响。
+  // 用 Range 量文字本身,不受 grid 轨道影响。
   for (const el of list.querySelectorAll<HTMLElement>('.market-row-sub-main')) {
     const range = document.createRange()
     range.selectNodeContents(el)
@@ -71,12 +68,19 @@ onMounted(() => {
   void document.fonts?.ready.then(syncLabelColumn)
 })
 
-function shapeOfView(view: ExtensionView) {
-  return shapeOf({ hasMain: Boolean(view.descriptor.main) })
-}
-
 function versionOf(view: ExtensionView): string {
   return view.installed?.version ?? view.descriptor.version
+}
+
+/** 直接依赖的显示名;依赖尚未安装时退回扩展 ID,不让标签空着 */
+function dependencyTagsOf(view: ExtensionView): { id: string; label: string }[] {
+  const names = new Map(
+    extensions.value.map(item => [item.descriptor.id, item.descriptor.displayName])
+  )
+  return (view.descriptor.extensionDependencies ?? []).map(id => ({
+    id,
+    label: names.get(id) ?? id
+  }))
 }
 
 /** 圆点的颜色:失败/崩溃优先,其次激活中,再其次启用态 */
@@ -102,16 +106,12 @@ function statusMessage(view: ExtensionView): string {
     case 'failed':
       return '激活失败'
     case 'crashed':
-      return '宿主崩溃'
+      return '进程崩溃'
     case 'crash-loop':
       return '连续崩溃，已停止自动重启'
     default:
       return view.enabled ? '已启用' : '已停用'
   }
-}
-
-function isBundled(view: ExtensionView): boolean {
-  return view.source === 'bundled' || marketStore.bundled.includes(view.descriptor.id)
 }
 
 /**
@@ -140,7 +140,7 @@ function toggleUninstall(id: string): void {
 
 async function doUninstall(id: string): Promise<void> {
   uninstallId.value = null
-  await uninstallPlugin(id)
+  await uninstallFromMarket(id)
 }
 
 async function copy(id: string, text: string): Promise<void> {
@@ -202,7 +202,6 @@ async function refreshAll(): Promise<void> {
         <div class="market-update-main">
           <b>{{ u.name }}</b>
           <span class="market-mono market-dim">{{ u.currentVersion }} → {{ u.latestVersion }}</span>
-          <span class="market-badge">{{ u.hasMain ? '含代码' : '纯声明' }}</span>
         </div>
         <div class="market-row-actions">
           <button
@@ -246,20 +245,19 @@ async function refreshAll(): Promise<void> {
             <div class="market-row-name">
               <!-- 名字+版本占一列定宽,徽标才能在所有行上对齐成同一竖列 -->
               <span class="market-row-name-main">
+                <PluginIcon v-if="p.descriptor.icon" :id="p.descriptor.id" :size="18" />
                 <b :title="p.descriptor.displayName">{{ p.descriptor.displayName }}</b>
                 <span class="market-mono market-dim">v{{ versionOf(p) }}</span>
               </span>
               <span class="market-row-badges">
                 <span
-                  v-for="s in shapeLabels(shapeOfView(p))"
-                  :key="s.label"
+                  v-for="dep in dependencyTagsOf(p)"
+                  :key="dep.id"
                   class="market-badge"
-                  :class="`market-shape-${s.tone}`"
-                  >{{ s.label }}</span
+                  :title="`依赖扩展 ${dep.label}（${dep.id}）`"
                 >
-                <span class="market-badge">{{ sourceLabel(p.source, isBundled(p)) }}</span>
-                <span v-if="!p.enabled" class="market-badge market-badge-warn">已停用</span>
-                <span v-if="p.dev" class="market-badge market-badge-bad">开发模式</span>
+                  依赖扩展 {{ dep.label }}
+                </span>
                 <span v-if="p.runtime.status === 'crash-loop'" class="market-badge market-badge-bad">
                   连续崩溃，已停止自动重启
                 </span>
@@ -272,16 +270,17 @@ async function refreshAll(): Promise<void> {
               </span>
             </div>
             <div class="market-row-sub">
-              <span v-if="p.dev" class="market-row-sub-dev">
-                代码来自开发目录，重启应用后按安装目录加载
-              </span>
               <span v-if="p.installed" class="market-row-sub-main">
                 安装于 {{ formatTime(p.installed.installedAt) }}
               </span>
               <button
                 v-if="p.installed?.integrity"
                 class="market-hash-chip"
-                :title="p.installed.integrity"
+                :title="
+                  p.installed.mainSha256
+                    ? `integrity ${p.installed.integrity}\n入口 sha256 ${p.installed.mainSha256}`
+                    : `integrity ${p.installed.integrity}`
+                "
                 @click="copy(p.descriptor.id, p.installed!.integrity)"
               >
                 {{ copiedId === p.descriptor.id ? '已复制' : `sha256 ${p.installed.integrity.slice(0, 12)}…` }}
@@ -291,7 +290,6 @@ async function refreshAll(): Promise<void> {
           <div class="market-row-actions">
             <button class="plugin-btn" @click="selectExtensionSettings(p.descriptor.id)">设置</button>
             <button
-              v-if="!p.dev"
               class="plugin-icon-btn"
               title="卸载"
               :disabled="marketStore.busy"

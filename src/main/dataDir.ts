@@ -5,10 +5,10 @@
  *
  *   <应用目录>/.imark/        应用自有数据(可备份、可整份拷走)
  *   ├── css/                  自定义样式
- *   ├── plugins/              插件包 + installed.json + .staging/ + <id>.old/
- *   ├── logs/plugins/         插件完整日志(操作结果 + 插件自己 log() 的行,按插件分文件)
+ *   ├── plugins/              扩展包 + installed.json + .staging/ + <id>.old/
+ *   ├── logs/extensions/      扩展完整日志(操作结果 + 扩展自己 log() 的行,按扩展分文件)
  *   ├── settings.json
- *   ├── secrets.json          插件令牌 + 市场令牌(加密后)
+ *   ├── secrets.json          扩展令牌 + 市场令牌(加密后)
  *   └── profile/              Chromium 的 userData 整体搬进来
  *       ├── Local State       safeStorage 的解密密钥在这里,必须跟着 profile 走
  *       ├── Cache/ Network/ Partitions/ …
@@ -35,14 +35,14 @@ import { app } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
-/** 数据根开关。写法与 `--plugin-dev` 保持一致(带等号 / 空格分开都认) */
+/** 数据根开关。带等号 / 空格分开两种写法都认 */
 export const DATA_DIR_FLAG = '--imark-data-dir='
 
 /**
  * 从命令行里挑出 `--imark-data-dir=<目录>`,两种写法都认。
  *
- * 认错了的表现是"参数没生效但也没报错",所以这里与 `plugins/dev.ts` 的
- * `devDirsFromArgv` 用同一套规则:后面跟的是另一个开关就不算值。
+ * 认错了的表现是"参数没生效但也没报错",所以这里只按开关后面的值解析:
+ * 后面跟的是另一个开关就不算值。
  */
 export function dataDirFromArgv(argv: readonly string[]): string | null {
   for (let i = 0; i < argv.length; i++) {
@@ -287,7 +287,7 @@ export function prepareDataDirs(): void {
     app.setPath('crashDumps', crashDumps)
     // userData 与 sessionData **都要设**:Electron 文档写得很清楚,cookie 与缓存看的是
     // sessionData(默认等于 userData,但覆盖 userData 不会带动它)。只设前者的话,
-    // 缓存、登录态、沙箱插件的 Partitions/ 会全留在原目录 —— 看起来"设了",其实一半没设。
+    // 缓存、登录态、沙箱扩展的 Partitions/ 会全留在原目录 —— 看起来"设了",其实一半没设。
     app.setPath('userData', paths.profileDir)
     app.setPath('sessionData', paths.profileDir)
   } catch (err) {
@@ -296,9 +296,4 @@ export function prepareDataDirs(): void {
   }
 
   cached = paths
-}
-
-/** 仅验收使用:把缓存清掉,让下一次调用重新解析 */
-export function resetDataPathsCache(): void {
-  cached = null
 }

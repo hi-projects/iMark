@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { EditorView } from '@codemirror/view'
 import { createEditor } from '../editor/setup'
-import { appStore, editorHolder } from '../stores/app'
+import { activeTab, editorHolder } from '../stores/app'
 import { openFileByPath } from '../services/fileService'
 import { noteDocChangeForAutoSave } from '../services/autoSave'
 import { attachActiveTab, handleEditorDocChange } from '../services/tabs'
@@ -10,6 +10,7 @@ import { notifyEditorReady } from '../services/editorBridge'
 import { api } from '../services/api'
 
 const container = ref<HTMLElement | null>(null)
+const hasDocument = computed(() => activeTab() !== null)
 
 function onDocChange(view: EditorView): void {
   // 字数 / 脏标记 / 大纲都归当前标签自己(见 services/tabs.ts);
@@ -40,7 +41,7 @@ onMounted(() => {
   if (!container.value) return
   // 没有文档时以只读状态创建:光标不会先闪一下再被清掉,也堵住「随手一敲就新建」
   const view = createEditor(container.value, v => editorHolder.onDocChange?.(v), {
-    editable: appStore.hasDocument
+    editable: hasDocument.value
   })
   editorHolder.view = view
   editorHolder.onDocChange = onDocChange
@@ -48,7 +49,7 @@ onMounted(() => {
   attachActiveTab()
   // 视图与当前标签都就位后再向扩展宿主报「编辑器就绪」
   notifyEditorReady()
-  if (appStore.hasDocument) view.focus()
+  if (hasDocument.value) view.focus()
 })
 
 onBeforeUnmount(() => {
@@ -66,7 +67,7 @@ onBeforeUnmount(() => {
       空状态是一块不可穿透的占位面:盖住编辑器(连同行首「+」与光标),
       点击不会聚焦、也不会在里面留下一个可输入的空白文档。
     -->
-    <div v-if="!appStore.hasDocument" class="editor-empty-hint">
+    <div v-if="!hasDocument" class="editor-empty-hint">
       从左侧选择文件,或按 Ctrl+N 新建
     </div>
   </div>

@@ -61,7 +61,7 @@ function addLine(ctx: RuleContext, pos: number, cls: string): void {
 
 /**
  * 隐藏标记字符(replace 装饰同时进入 atomicRanges,方向键整体跳过)。
- * CM 不允许插件提供跨行 replace,跨行会直接抛 RangeError 并把视图 DOM 搞坏,
+ * CM 不允许扩展提供跨行 replace,跨行会直接抛 RangeError 并把视图 DOM 搞坏,
  * 所以这里兜底拦掉(少数多行语法如跨行链接的 `](url` 段只能保持源码态)。
  */
 function hide(ctx: RuleContext, from: number, to: number): void {
@@ -538,7 +538,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         return false
       }
       // 多行:首行渲染公式,其余行清空内容并折叠高度
-      // (插件的装饰不能跨行 replace,故逐行处理)
+      // (扩展的装饰不能跨行 replace,故逐行处理)
       hideWithWidget(ctx, firstLine.from, firstLine.to, new MathWidget(tex, true))
       for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
         const line = ctx.doc.line(n)

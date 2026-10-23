@@ -89,7 +89,7 @@ export function verifyExtensionPackage(
 }
 
 export interface InstallExtensionOptions {
-  source: Exclude<ExtensionSource, 'dev'>
+  source: ExtensionSource
   registryUrl?: string | null
   /** 外部给出的期望 integrity（市场响应头）；本地/内置包不传 */
   expectedIntegrity?: string | null

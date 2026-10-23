@@ -26,7 +26,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
@@ -37,7 +36,6 @@ import * as esbuild from 'esbuild'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC = join(ROOT, 'plugins-src')
 const OUT = join(ROOT, 'src/main/market/builtin')
-const DIST = join(SRC, 'dist')
 
 const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', '.cache'])
 /** provider 契约等共享模块走 tsconfig 的 @shared/* 别名；esbuild 不读 tsconfig paths */
@@ -45,7 +43,7 @@ const SHARED_ALIAS = { '@shared': join(ROOT, 'src/shared') }
 /** 源码与构建中间产物不进包;清单单独进 envelope.manifest */
 const EXCLUDE_FILE = /(^|\/)(package\.json|tsconfig[^/]*\.json|.*\.(ts|tsx|mts|cts|map))$/
 /** webview 下不作为入口打包的共享模块 */
-const WEBVIEW_NON_ENTRIES = new Set(['shim.ts', 'shared.ts'])
+const WEBVIEW_NON_ENTRIES = new Set(['shared.ts'])
 
 const sha256 = buf => createHash('sha256').update(buf).digest('hex')
 
@@ -229,17 +227,6 @@ async function buildOne(dirName, shared) {
     throw new Error(`${dirName}: 包体积超过上限`)
   }
 
-  // 同时铺一份可直接用于开发模式的目录
-  const devDir = join(DIST, id)
-  rmSync(devDir, { recursive: true, force: true })
-  mkdirSync(devDir, { recursive: true })
-  for (const [name, buf] of Object.entries(contents)) {
-    const target = join(devDir, name)
-    mkdirSync(dirname(target), { recursive: true })
-    writeFileSync(target, normalizeEol(name, buf))
-  }
-  writeFileSync(join(devDir, 'package.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8')
-
   return { envelope, files: Object.keys(files) }
 }
 
@@ -248,8 +235,6 @@ async function buildOne(dirName, shared) {
 const shared = await loadSharedValidator()
 const TEXT_EXT = new Set(shared.EXTENSION_TEXT_EXTENSIONS)
 const LIMITS = shared.EXTENSION_LIMITS
-
-rmSync(DIST, { recursive: true, force: true })
 
 const plugins = readdirSync(SRC).filter(
   name => !name.startsWith('.') && name !== 'dist' && statSync(join(SRC, name)).isDirectory()

@@ -2,9 +2,9 @@
 /**
  * 行首菜单里需要填参数的条目(如「表格」的行数/列数)弹的那个表单。
  *
- * 表单**完全由插件声明的字段表渲染**(复用设置面板那套 PluginField),
+ * 表单**完全由扩展声明的字段表渲染**(复用设置面板那套 PluginField),
  * 宿主不知道「行数」是什么,只知道「这里有个 number 字段,默认 3」。
- * 用户确定后值交给插件,插件算出要插入的文本,再回宿主来插入。
+ * 用户确定后值交给扩展,扩展算出要插入的文本,再回宿主来插入。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 // 类型与下面的组件同名,按设置面板的惯例把类型改名(PluginSettings.vue 同样处理)
@@ -84,7 +84,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown, tru
           hint=""
           :target-secrets="NO_SECRETS"
           :target-actions="NO_ACTIONS"
-          :busy-target="null"
           @change="value => onChange(field, value)"
         />
       </div>

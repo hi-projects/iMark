@@ -45,30 +45,6 @@ interface AppState {
   tabs: DocTab[]
   /** 当前激活的标签 id;null = 没有打开任何文档 */
   activeTabId: string | null
-  /**
-   * 当前标签的镜像 —— 状态栏、窗口标题、大纲、插件 API 都读这些字段。
-   * 由 services/tabs.ts 的 syncMirror() 维护,不要在别处直接改。
-   */
-  filePath: string | null
-  fileName: string
-  /**
-   * 编辑器里有没有文档。
-   *
-   * 与「有没有文件路径」是两件事:
-   * - 未命名的新文档没有路径,但它是一份文档(`hasDocument = true`);
-   * - 启动时若没有可恢复的页面,编辑器仍然挂着(命令行/拖放还要往里装文件),
-   *   但什么文档都没打开(`hasDocument = false`),此时标题栏与状态栏不该声称
-   *   正在编辑「未命名」。
-   */
-  hasDocument: boolean
-  dirty: boolean
-  eol: 'LF' | 'CRLF'
-  /** 最近一次保存/打开时的内容快照,脏检查用字符串全等比较 */
-  savedContent: string
-  words: number
-  chars: number
-  lines: number
-  outline: OutlineItem[]
   outlineVisible: boolean
   /** 大纲侧栏宽度(px),拖动分界线时更新 */
   outlineWidth: number
@@ -109,7 +85,7 @@ interface AppState {
   skipVaultPicker: boolean
 }
 
-/** 切换器的两种模式:搜仓库里的文件 / 搜插件命令 */
+/** 切换器的两种模式:搜仓库里的文件 / 搜扩展命令 */
 export type SwitcherMode = 'file' | 'command'
 
 export const appStore = reactive<AppState>({
@@ -118,16 +94,6 @@ export const appStore = reactive<AppState>({
   theme: 'light',
   tabs: [],
   activeTabId: null,
-  filePath: null,
-  fileName: '未命名',
-  hasDocument: false,
-  dirty: false,
-  eol: 'LF',
-  savedContent: '',
-  words: 0,
-  chars: 0,
-  lines: 1,
-  outline: [],
   outlineVisible: true,
   outlineWidth: 240,
   outlineActive: null,
@@ -150,6 +116,15 @@ export const appStore = reactive<AppState>({
   settingsOpen: false,
   skipVaultPicker: false
 })
+
+/**
+ * 当前激活的标签。状态栏、窗口标题、大纲、自动保存都从这里读文档，
+ * 不在 store 里另存一份镜像。
+ */
+export function activeTab(): DocTab | null {
+  const id = appStore.activeTabId
+  return id ? (appStore.tabs.find(tab => tab.id === id) ?? null) : null
+}
 
 /** 当前编辑器实例与文档变更回调(由 EditorPane 注入) */
 export const editorHolder: {
@@ -182,21 +157,16 @@ export function initStoreWatchers(): void {
     { immediate: true }
   )
   watch(
-    () =>
-      [
-        appStore.view,
-        appStore.hasDocument,
-        appStore.fileName,
-        appStore.dirty,
-        appStore.vaultName
-      ] as const,
     () => {
+      const tab = activeTab()
+      return [appStore.view, tab?.fileName ?? null, tab?.dirty ?? false, appStore.vaultName] as const
+    },
+    ([view, fileName, dirty, vaultName]) => {
       // 没有文档上下文时标题不该编一个「未命名」出来:
       // - 仓库选择页:连仓库名都不显示,只留应用名;
       // - 编辑器里但没打开页面:显示仓库名,告诉用户现在在哪个仓库里。
-      const atPicker = appStore.view === 'picker'
-      const documentName = atPicker || !appStore.hasDocument ? null : appStore.fileName
-      api.setWindowTitle(documentName, appStore.dirty, atPicker ? null : appStore.vaultName)
+      const atPicker = view === 'picker'
+      api.setWindowTitle(atPicker ? null : fileName, dirty, atPicker ? null : vaultName)
     },
     { immediate: true }
   )
@@ -210,9 +180,9 @@ export function initStoreWatchers(): void {
     }
   )
   // 文档路径单独盯:上面那个 watcher 盯的是文件名,而两个目录下的同名文件互相切换时
-  // 文件名根本不变 —— 主进程却必须跟着换基准(imark:// 的允许根、插件写文件的冲突判断)
+  // 文件名根本不变 —— 主进程却必须跟着换基准(imark:// 的允许根、扩展写文件的冲突判断)
   watch(
-    () => appStore.filePath,
+    () => activeTab()?.filePath ?? null,
     path => {
       api.setDocPath(path)
     },
@@ -279,7 +249,8 @@ export function toggleExplorerVisible(): void {
 
 /** 文档所在目录(用于解析相对路径图片),无文件路径时为 null */
 export function getDocDir(): string | null {
-  if (!appStore.filePath) return null
-  const stripped = appStore.filePath.replace(/[\\/][^\\/]*$/, '')
+  const filePath = activeTab()?.filePath
+  if (!filePath) return null
+  const stripped = filePath.replace(/[\\/][^\\/]*$/, '')
   return stripped || null
 }

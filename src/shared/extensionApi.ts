@@ -1,12 +1,12 @@
 /**
  * 扩展作者看到的 `imark` 模块。
  *
- * 这是**类型与少量纯工具类**的唯一定义处:插件工程的 tsconfig 把 `imark` 指到这里,
+ * 这是**类型与少量纯工具类**的唯一定义处:扩展工程的 tsconfig 把 `imark` 指到这里,
  * 宿主进程在运行时通过 `require('imark')` 注入按扩展归属构造的命名空间对象。
- * 两边共享同一份形状,插件作者写出的 `import * as imark from 'imark'` 在
+ * 两边共享同一份形状,扩展作者写出的 `import * as imark from 'imark'` 在
  * isolated / shared 两种宿主拓扑下逐字相同。
  *
- * 这里刻意不 import 任何 Node / Electron / DOM 模块:它同时被插件工程、宿主进程
+ * 这里刻意不 import 任何 Node / Electron / DOM 模块:它同时被扩展工程、宿主进程
  * 与渲染层类型检查引用,一旦引入 Node 就会把渲染层拖下水。文件系统能力只以
  * `workspace.fs` 的接口出现,真实实现在宿主进程里。
  *
@@ -22,7 +22,7 @@ export interface Disposable {
   dispose(): void
 }
 
-/** 把一个清理函数变成 Disposable —— 宿主内部与插件作者都用得上 */
+/** 把一个清理函数变成 Disposable —— 宿主内部与扩展作者都用得上 */
 export function toDisposable(fn: () => void): Disposable {
   let done = false
   return {
@@ -44,7 +44,7 @@ interface DisposableConstructor {
  *
  * 原因：扩展工具函数（例如 `toDisposable`）返回的是普通对象，不应该被迫携带
  * 类的私有字段。TS 里带私有字段的 class 是名义类型，一个 `{ dispose() {} }`
- * 字面量就赋不过去；而插件作者与宿主都需要这种结构化的小对象。运行时仍然是
+ * 字面量就赋不过去；而扩展作者与宿主都需要这种结构化的小对象。运行时仍然是
  * 一个真正的类，`new imark.Disposable(fn)` 与 `Disposable.from(...)` 都成立。
  */
 export const Disposable: DisposableConstructor = class implements Disposable {
@@ -556,7 +556,7 @@ export interface TextEditorDecorationType extends Disposable {
  * 装饰样式白名单。
  *
  * 只接受 CSS 值,不接受任意样式表/选择器:装饰最终由渲染层的 CM6 生成,
- * 插件无法借它注入 `position: fixed` 之类会盖住界面的规则。
+ * 扩展无法借它注入 `position: fixed` 之类会盖住界面的规则。
  */
 export interface DecorationRenderOptions {
   backgroundColor?: string
@@ -783,7 +783,7 @@ export interface WorkspaceConfiguration {
     workspaceValue?: T
     workspaceFolderValue?: T
   } | undefined
-  update(section: string, value: unknown, target?: ConfigurationTarget | boolean): Thenable<void>
+  update(section: string, value: unknown, target?: ConfigurationTarget): Thenable<void>
 }
 
 export interface FileStat {
@@ -910,8 +910,8 @@ export interface ImarkApi {
 
 // ---------- 模块级命名空间 ----------
 //
-// 这些是**声明**:运行时由宿主进程按扩展归属构造并注入,插件工程只拿它们做类型检查。
-// 插件代码里 `imark.window...` / `imark.commands...` 的写法即在两种宿主拓扑下都成立。
+// 这些是**声明**:运行时由宿主进程按扩展归属构造并注入,扩展工程只拿它们做类型检查。
+// 扩展代码里 `imark.window...` / `imark.commands...` 的写法即在两种宿主拓扑下都成立。
 
 export declare const version: string
 export declare const commands: CommandsApi

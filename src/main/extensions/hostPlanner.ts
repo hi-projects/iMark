@@ -1,10 +1,10 @@
 /**
  * 宿主分组规划:决定哪些扩展跑在同一个 utility process 里。
  *
- * 这不是插件作者能控制的契约(清单里没有 execution 字段),而是**用户设置**:
+ * 这不是扩展作者能控制的契约(清单里没有 execution 字段),而是**用户设置**:
  *
- *   extensionHost.mode = 'isolated'(默认)  每个扩展一个宿主
- *   extensionHost.mode = 'shared'            所有扩展一个宿主
+ *   extensionHost.mode = 'shared'(默认)      所有扩展一个宿主
+ *   extensionHost.mode = 'isolated'          每个扩展一个宿主
  *   extensionHost.affinity: { id: n }        正整数相同的扩展进同一组
  *
  * 无论哪种模式,以下两条都会强制合并(与 VS Code 一致):

@@ -315,8 +315,8 @@ async function main(): Promise<void> {
 
   registerIpc()
   registerImarkProtocol()
-  // 渲染层的插件服务一挂载就会 listPlugins();不给宿主的话界面右下角会弹一条
-  // 「插件系统尚未就绪」—— 不影响断言,但会出现在截图里
+  // 渲染层的扩展服务一挂载就会 listPlugins();不给宿主的话界面右下角会弹一条
+  // 「扩展系统尚未就绪」—— 不影响断言,但会出现在截图里
   await initExtensions({ appVersion: APP_VERSION })
   const settings = await loadSettings()
   // 模拟「双击 .md 启动」:文件在 argv 里,主进程暂存,渲染层初始化完来取

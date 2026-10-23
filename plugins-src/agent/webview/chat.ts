@@ -11,30 +11,21 @@ import type {
   AgentMode,
   AgentTaskMode,
   ArtifactInfo,
-  DocMeta,
-  ToolKind
+  DocMeta
 } from '../core/types'
 import type {
   ArtifactPreview,
   AttachmentMeta,
+  ProviderView,
   SafeConfig,
   SessionMessage,
   SessionSummary,
   SessionView,
+  ToolCallView,
   TurnTarget,
   UiIntent
 } from '../core/protocol'
-import type { ProviderView } from '../core/protocol'
 import { announceReady, errorText, onPush, readBootstrap, request } from './shared'
-
-interface ToolCallView {
-  toolId: string
-  name: string
-  kind: ToolKind
-  inputSummary: string
-  ok?: boolean
-  summary?: string
-}
 
 interface Streaming {
   el: HTMLElement
@@ -48,7 +39,7 @@ interface Streaming {
 }
 
 const bootstrap = readBootstrap()
-const NO_PROVIDER_MESSAGE = '未安装或未启用任何 Agent 后端插件'
+const NO_PROVIDER_MESSAGE = '未安装或未启用任何 Agent 后端扩展'
 
 const state = {
   providers: [] as ProviderView[],
@@ -64,7 +55,6 @@ const state = {
   permissionMode: 'read+parse' as AgentMode,
   providerId: '',
   model: '',
-  target: undefined as TurnTarget | undefined,
   uploads: new Map<string, { name: string; done: number; total: number }>()
 }
 
@@ -329,14 +319,10 @@ function messageActions(message: SessionMessage): HTMLElement | null {
     row.append(button)
   }
   add('插入光标处', { kind: 'insert-at-cursor' })
-  if (state.target?.kind === 'insert-below-line') {
-    add(`插入第 ${state.target.line + 1} 行后`, state.target)
-  } else {
-    add('插入下一行', {
-      kind: 'insert-below-line',
-      line: state.doc?.selection.line ?? 0
-    })
-  }
+  add('插入下一行', {
+    kind: 'insert-below-line',
+    line: state.doc?.selection.line ?? 0
+  })
   add('替换整篇', { kind: 'replace-all' })
   const copy = el('button', 'agent-small', '复制')
   copy.addEventListener('click', () => {
@@ -412,7 +398,7 @@ function renderMessages(): void {
       el(
         'p',
         undefined,
-        '打开文档，添加附件，然后提问。插件只把附件落盘并把路径交给 Agent，怎么读取由 Agent 自己决定。'
+        '打开文档，添加附件，然后提问。扩展只把附件落盘并把路径交给 Agent，怎么读取由 Agent 自己决定。'
       )
     )
     empty.append(
@@ -720,8 +706,7 @@ async function sendTurn(): Promise<void> {
       text,
       mode: state.taskMode,
       permissionMode: state.permissionMode,
-      attachmentIds: attachments.map(item => item.id),
-      target: state.target
+      attachmentIds: attachments.map(item => item.id)
     })
     state.activeTurnId = result.turnId
     inputEl.value = ''
@@ -961,20 +946,11 @@ onPush(push => {
     }
     return
   }
-  if (push.kind === 'artifacts') {
-    const data = value as { sessionId: string; artifacts: ArtifactInfo[] }
-    if (state.session?.summary.id === data.sessionId) state.session.artifacts = data.artifacts
-    return
-  }
   if (push.kind === 'uiIntent') {
     const intent = value as unknown as UiIntent
     state.taskMode = intent.mode
     taskModeEl.value = intent.mode
-    if (intent.prompt !== undefined) inputEl.value = intent.prompt
-    state.target = intent.target
-    if (intent.auto && (intent.prompt || intent.target)) {
-      window.setTimeout(() => void sendTurn(), 60)
-    }
+    if (intent.auto) window.setTimeout(() => void sendTurn(), 60)
     return
   }
   if (push.kind === 'error') {

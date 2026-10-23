@@ -34,7 +34,7 @@ const VERSION_TIMEOUT_MS = 5000
 const INFO: AgentProviderInfo = {
   id: 'claude-code',
   label: 'Claude Code',
-  description: '使用本机安装并登录的 Claude Code CLI；附件路径由插件提供，Agent 自行读取/解析。',
+  description: '使用本机安装并登录的 Claude Code CLI；附件路径由扩展提供，Agent 自行读取/解析。',
   capabilities: {
     roles: ['agent'],
     inputs: { image: 'path', pdf: 'path', file: 'path' },
@@ -132,7 +132,7 @@ class ClaudeSession implements AgentSession {
       cwd: this.options.cwd,
       sessionId: this.currentProviderSessionId ? undefined : this.options.hostSessionId,
       resumeId: this.currentProviderSessionId,
-      model: this.options.model || this.config.model,
+      model: this.options.model,
       extraArgs: this.config.extraArgs,
       availableCommands: this.options.availableCommands
     })
@@ -170,7 +170,7 @@ class ClaudeSession implements AgentSession {
             ? { code: 'timeout', message: 'Agent 运行超时' }
             : reason === 'turn-limit'
               ? { code: 'turn-limit', message: `超过单轮工具轮数上限（${this.config.maxTurns}）` }
-              : { code: 'cancelled', message: reason === 'dispose' ? '插件已停用' : '已停止' }
+              : { code: 'cancelled', message: reason === 'dispose' ? '扩展已停用' : '已停止' }
       })
     }
 
@@ -185,7 +185,7 @@ class ClaudeSession implements AgentSession {
     try {
       handle = spawnClaude(this.command, args, {
         cwd: this.options.cwd,
-        env: claudeEnv(this.config.apiKey),
+        env: claudeEnv(),
         signal: this.options.signal,
         onStdoutLine: line => {
           if (terminal) return
@@ -285,9 +285,12 @@ class ClaudeSession implements AgentSession {
     }
 
     try {
+      // 不能在这里用 `if (terminal) break` 提前退出：终止事件可能排在已产生但尚未
+      // yield 的事件后面（例如 result 紧跟 text delta、turn-limit 紧跟 tool 事件），
+      // 提前 break 会把它丢掉，上层只能看到空的迭代，判成“Agent 没有返回结果”。
+      // finish() 推入终止事件后立即 end()，所以排空队列自然会在这里结束。
       for await (const event of queue) {
         yield event
-        if (terminal) break
       }
     } finally {
       this.options.signal.removeEventListener('abort', onAbort)
@@ -316,10 +319,7 @@ class ClaudeCodeProvider implements AgentProvider {
   private readonly warned = new Set<string>()
   private cachedDetection: { key: string; at: number; result: AgentDetection } | null = null
 
-  constructor(
-    private readonly context: imark.ExtensionContext,
-    private readonly warn: (message: string) => void = () => undefined
-  ) {}
+  constructor(private readonly warn: (message: string) => void = () => undefined) {}
 
   /** 被拒绝的额外参数只提示一次；每轮 createSession 都会重读配置 */
   private reportWarnings(warnings: readonly string[]): void {
@@ -331,7 +331,7 @@ class ClaudeCodeProvider implements AgentProvider {
   }
 
   async detect(): Promise<AgentDetection> {
-    const { config, warnings } = await readConfig(this.context)
+    const { config, warnings } = readConfig()
     this.reportWarnings(warnings)
     const key = `${config.command}|${config.timeoutSec}`
     if (
@@ -371,7 +371,7 @@ class ClaudeCodeProvider implements AgentProvider {
   }
 
   async createSession(options: AgentSessionOptions): Promise<AgentSession> {
-    const { config, warnings } = await readConfig(this.context)
+    const { config, warnings } = readConfig()
     this.reportWarnings(warnings)
     let command: ResolvedCommand
     try {
@@ -399,9 +399,9 @@ export interface ClaudeCodeProviderHandle {
   dispose(): void
 }
 
-export function createClaudeCodeProvider(context: imark.ExtensionContext): ClaudeCodeProviderHandle {
+export function createClaudeCodeProvider(): ClaudeCodeProviderHandle {
   const output = imark.window.createOutputChannel('Claude Code')
-  const instance = new ClaudeCodeProvider(context, message => output.warn(message))
+  const instance = new ClaudeCodeProvider(message => output.warn(message))
   return {
     provider: instance,
     dispose: () => {

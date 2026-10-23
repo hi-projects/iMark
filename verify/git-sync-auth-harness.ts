@@ -132,8 +132,9 @@ const configOf = (targets: TargetConfig[]): Record<string, unknown> => ({
   [configKey('initBranch')]: 'main',
   [configKey('writeGitignore')]: false,
   [configKey('writeReadme')]: false,
-  [configKey('proxyMode')]: 'off',
-  [configKey('proxyUrl')]: 'http://127.0.0.1:7890'
+  // 空的手动地址 = 直连，避免宿主机环境变量里的代理影响认证用例
+  [configKey('proxyMode')]: 'manual',
+  [configKey('proxyUrl')]: ''
 })
 
 async function main(): Promise<void> {
@@ -267,7 +268,7 @@ async function main(): Promise<void> {
   check('远端有了 main 分支', branches.trim() === 'main', branches.trim())
   check('笔记被推上去了', (await gitSoft(remote, ['ls-tree', '-r', '--name-only', 'main'])).includes('笔记.md'))
   const author = (await gitSoft(remote, ['log', '-1', '--format=%an <%ae>', 'main'])).trim()
-  check('仓库/全局没有身份时用插件的兜底身份', author === 'iMark <imark@local>', author)
+  check('仓库/全局没有身份时用扩展的兜底身份', author === 'iMark <imark@local>', author)
   await waitStatus('ok')
   check('推送结果按目标记下（t1 = ok）', (await view())?.status.targetResults?.t1 === 'ok', JSON.stringify((await view())?.status.targetResults))
 
@@ -370,7 +371,7 @@ async function main(): Promise<void> {
   const logPath = service.getLogPath(EXT_ID)
   await sleep(500)
   const logText = logPath ? await readFile(logPath, 'utf8').catch(() => '') : ''
-  check('输出通道写下了网络连接方式', logText.includes('直连（插件里已关闭代理）'), logText.slice(-300))
+  check('输出通道写下了网络连接方式', logText.includes('已按直连处理'), logText.slice(-300))
   check(
     '日志里没有明文密钥',
     ![TOKEN_LOCAL, TOKEN_HTTP, PASS_HTTP].some(secret => logText.includes(secret)),

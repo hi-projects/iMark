@@ -1,5 +1,5 @@
 /**
- * 插件市场的共享类型 —— 跨 IPC 的那些。主进程产出、渲染层展示。
+ * 扩展市场的共享类型 —— 跨 IPC 的那些。主进程产出、渲染层展示。
  *
  * 只有**进度**是单向播报,其余都是一问一答。
  *
@@ -81,7 +81,6 @@ export interface PackagePreview {
   mainSha256: string | null
   /** 本地已装的版本(用于把按钮文案变成「更新」并展示版本变化),没装过为 null */
   installed: { version: string; integrity: string } | null
-  installedVersion: string | null
   /** 这次安装是降级(本地版本更新) */
   downgraded: boolean
   /** 包从哪来:市场下载 / 本地文件 / 本地目录(内置兜底包走的是安装路径,不产生预览) */

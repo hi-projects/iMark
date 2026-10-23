@@ -1,6 +1,6 @@
 import { EditorSelection, type Extension, type Text } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { appStore } from '../stores/app'
+import { activeTab } from '../stores/app'
 import { api } from '../services/api'
 import { notePastedImage } from '../services/pastedImages'
 import { notifyError, pushNotice } from '../services/notice'
@@ -68,7 +68,7 @@ async function completePaste(item: PendingPaste): Promise<void> {
   if (!relPaths.length) return
   // 文档被整体换掉(打开/新建/切仓库),或者保存期间另存到了别处:
   // 这次粘贴已经不属于眼前这份文档(或它所在的目录)了
-  if (item.doc !== item.view.state.doc || appStore.filePath !== item.docPath) return
+  if (item.doc !== item.view.state.doc || activeTab()?.filePath !== item.docPath) return
 
   const insert = relPaths.map(rel => `![图片](${rel})`).join('\n') + ' '
   const docLength = item.view.state.doc.length
@@ -96,7 +96,7 @@ export function imagePaste(): Extension {
         // 剪贴板同时带文本和图片时(例如从 Word 复制图文)按图片处理。
         event.preventDefault()
 
-        const docPath = appStore.filePath
+        const docPath = activeTab()?.filePath ?? null
         if (!docPath) {
           // 没有落盘位置就没有 assets/ 目录;提示比静默失败好
           pushNotice('请先保存文档，再粘贴图片', { level: 'warn' })

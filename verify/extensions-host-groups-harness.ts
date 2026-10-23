@@ -200,7 +200,14 @@ async function main(): Promise<void> {
 
   const service = await initExtensions({ appVersion: APP_VERSION })
   try {
-    console.log('\n[1] isolated(默认):每个扩展一个宿主，依赖强制同组')
+    console.log('\n[1] shared(默认):所有扩展共用一个宿主')
+    check(
+      '默认模式是 shared',
+      service.getContributions().hostModeState === 'shared',
+      service.getContributions().hostModeState
+    )
+    console.log('\n[1b] isolated(显式选择):每个扩展一个宿主，依赖强制同组')
+    await service.setHostSettings({ mode: 'isolated' })
     await service.startup()
     check('五个扩展都已激活', IDS.every(id => service.isActivated(id)))
     const p1 = pidsOf(service)

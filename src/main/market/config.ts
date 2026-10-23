@@ -19,10 +19,10 @@ import { getSecret, isEncryptionAvailable, setSecret } from '../secrets'
 /**
  * 令牌在 secrets.json 里的键前缀。
  *
- * 用 `@` 开头是**为了避开插件密钥的命名空间**:插件密钥的键是
- * `<插件id>:<字段>[:<目标>]`,而插件 id 只允许 `[a-z0-9._-]` 开头。
- * 卸载插件时按 `<id>:` 前缀批量删密钥,任何一个合法 id 都匹配不到 `@market:`,
- * 所以市场令牌不可能被某个插件的卸载误删。
+ * 用 `@` 开头是**为了避开扩展密钥的命名空间**:扩展密钥的键是
+ * `<扩展id>:<字段>[:<目标>]`,而扩展 id 只允许 `[a-z0-9._-]` 开头。
+ * 卸载扩展时按 `<id>:` 前缀批量删密钥,任何一个合法 id 都匹配不到 `@market:`,
+ * 所以市场令牌不可能被某个扩展的卸载误删。
  */
 const TOKEN_PREFIX = '@market:'
 const USER_PREFIX = '@market-user:'

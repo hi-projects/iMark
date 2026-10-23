@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Loader2, PlugZap, Plus, Trash2 } from 'lucide-vue-next'
+import { Eye, EyeOff, PlugZap, Plus, Trash2 } from 'lucide-vue-next'
 import {
   targetSecretSlot,
   type PluginAuthMode,
@@ -19,8 +19,6 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** 每个目标的最近一次操作结果:卡片边框的颜色由它决定 */
     targetResults?: Record<string, PluginTargetResult>
-    /** 正在执行动作的目标 id */
-    busyTarget: string | null
   }>(),
   { targetResults: () => ({}) }
 )
@@ -34,6 +32,9 @@ const emit = defineEmits<{
 
 /** 已配置密钥时默认把输入框收起来,点「更换」才展开 */
 const replacing = ref<Record<string, boolean>>({})
+
+/** 密钥输入框当前是否显示明文(只影响正在输入的新密钥) */
+const revealed = ref<Record<string, boolean>>({})
 
 function update(index: number, patch: Partial<PluginTarget>): void {
   const next = props.targets.map((t, i) => (i === index ? { ...t, ...patch } : t))
@@ -52,18 +53,25 @@ function remove(index: number): void {
   emit('change', props.targets.filter((_, i) => i !== index))
 }
 
-function onSecretInput(targetId: string, e: Event): void {
+function onSecretInput(target: PluginTarget, e: Event): void {
   const input = e.target as HTMLInputElement
   const value = input.value.trim()
   if (!value) return
-  emit('save-secret', targetId, value)
+  emit('save-secret', targetSecretSlot(target), value)
   input.value = ''
-  replacing.value[targetId] = false
+  replacing.value[target.id] = false
+  revealed.value[target.id] = false
 }
 
-function clearSecret(targetId: string): void {
-  replacing.value[targetId] = false
-  emit('clear-secret', targetId)
+function clearSecret(target: PluginTarget): void {
+  replacing.value[target.id] = false
+  revealed.value[target.id] = false
+  emit('clear-secret', targetSecretSlot(target))
+}
+
+function cancelReplace(target: PluginTarget): void {
+  replacing.value[target.id] = false
+  revealed.value[target.id] = false
 }
 
 /** 密钥这一行随认证方式变名字与提示 */
@@ -217,17 +225,34 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
           <template v-if="secrets[targetSecretSlot(target)] && !replacing[target.id]">
             <b class="plugin-secret-mask plugin-secret-on">{{ secrets[targetSecretSlot(target)] }}</b>
             <button class="plugin-btn" @click="replacing[target.id] = true">更换</button>
-            <button class="plugin-btn" @click="clearSecret(targetSecretSlot(target))">清除</button>
+            <button class="plugin-btn" @click="clearSecret(target)">清除</button>
           </template>
           <template v-else>
-            <input
-              class="plugin-input plugin-target-secret"
-              type="password"
-              :aria-label="secretLabel(target)"
-              :placeholder="secretPlaceholder(target)"
-              @change="onSecretInput(targetSecretSlot(target), $event)"
-            />
-            <button v-if="secrets[targetSecretSlot(target)]" class="plugin-btn" @click="replacing[target.id] = false">
+            <div class="plugin-secret-wrap">
+              <input
+                class="plugin-input plugin-target-secret"
+                :type="revealed[target.id] ? 'text' : 'password'"
+                :aria-label="secretLabel(target)"
+                :placeholder="secretPlaceholder(target)"
+                @change="onSecretInput(target, $event)"
+              />
+              <button
+                type="button"
+                class="plugin-secret-eye"
+                :title="revealed[target.id] ? `隐藏${secretLabel(target)}` : `显示${secretLabel(target)}`"
+                :aria-label="revealed[target.id] ? `隐藏${secretLabel(target)}` : `显示${secretLabel(target)}`"
+                @mousedown.prevent
+                @click="revealed[target.id] = !revealed[target.id]"
+              >
+                <EyeOff v-if="revealed[target.id]" :size="14" />
+                <Eye v-else :size="14" />
+              </button>
+            </div>
+            <button
+              v-if="secrets[targetSecretSlot(target)]"
+              class="plugin-btn"
+              @click="cancelReplace(target)"
+            >
               取消
             </button>
           </template>
@@ -241,13 +266,11 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
           v-for="a in targetActions"
           :key="a.id"
           class="plugin-icon-btn plugin-icon-btn-accent"
-          :title="busyTarget === target.id ? '执行中…' : a.label"
+          :title="a.label"
           :aria-label="a.label"
-          :disabled="busyTarget === target.id"
           @click="emit('run-action', target.id, a.id)"
         >
-          <Loader2 v-if="busyTarget === target.id" :size="14" class="plugin-spin" />
-          <PlugZap v-else :size="14" />
+          <PlugZap :size="14" />
         </button>
         <button
           class="plugin-icon-btn"

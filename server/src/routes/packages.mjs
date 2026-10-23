@@ -1,5 +1,5 @@
 /**
- * 插件包相关接口:搜索、详情、下载、发布、下架。
+ * 扩展包相关接口:搜索、详情、下载、发布、下架。
  *
  * 三条贯穿本文件的设计:
  *
@@ -8,7 +8,7 @@
  *      如果同一个版本号底下的字节能悄悄换人,那个 sha256 就一文不值。
  *
  *   2. **下架不是删除。** yanked 的版本从搜索、latest 与版本列表里消失,
- *      但按精确版本号仍然可下载 —— 别人锁定了这个版本装好的插件不该被我们弄坏。
+ *      但按精确版本号仍然可下载 —— 别人锁定了这个版本装好的扩展不该被我们弄坏。
  *
  *   3. **服务端重算一切。** 收到信封后逐文件 sha256 与 integrity 全部重算,
  *      与包里声称的比对,不符就是 400。服务端不相信任何上传者(包括管理员)。
@@ -86,7 +86,7 @@ function latestVersion(pkg) {
 
 function requirePackage(data, id) {
   const pkg = data.packages[id]
-  if (!pkg) throw new HttpError(404, `没有这个插件:${id}`, 'not_found')
+  if (!pkg) throw new HttpError(404, `没有这个扩展:${id}`, 'not_found')
   return pkg
 }
 
@@ -113,7 +113,7 @@ export function register(router, app) {
         // 作者(author,清单里写的人)与发布者(owner,市场账号)是两回事,
         // 但用户搜「iMark」时通常指的是作者署名 —— 两边都放进搜索范围。
         // 括号不能省:否则 toLowerCase 只作用在第二个模板串上,作者/名称会变成
-        // 大小写敏感(搜 iMark 搜不到 iMark 的插件)
+        // 大小写敏感(搜 iMark 搜不到 iMark 的扩展)
         const hay = (
           `${id} ${latest.manifest.name} ${latest.manifest.displayName ?? ''} ` +
           `${authorName(latest.manifest.author) ?? ''} ` +
@@ -145,7 +145,7 @@ export function register(router, app) {
     const data = await store.readJson('packages.json', { packages: {} })
     const pkg = requirePackage(data, params.id)
     const latest = latestVersion(pkg)
-    if (!latest) throw new HttpError(404, '这个插件的所有版本都已下架', 'not_found')
+    if (!latest) throw new HttpError(404, '这个扩展的所有版本都已下架', 'not_found')
     sendJson(res, 200, {
       ...entryOf(params.id, pkg, latest),
       createdAt: pkg.createdAt,
@@ -168,7 +168,7 @@ export function register(router, app) {
     const data = await store.readJson('packages.json', { packages: {} })
     const pkg = requirePackage(data, params.id)
     const latest = latestVersion(pkg)
-    if (!latest) throw new HttpError(404, '这个插件的所有版本都已下架', 'not_found')
+    if (!latest) throw new HttpError(404, '这个扩展的所有版本都已下架', 'not_found')
     sendJson(res, 200, entryOf(params.id, pkg, latest))
   })
 
@@ -224,7 +224,7 @@ export function register(router, app) {
     const data = await store.readJson('packages.json', { packages: {} })
     const pkg = requirePackage(data, params.id)
     const latest = latestVersion(pkg)
-    if (!latest?.iconName) throw new HttpError(404, '这个插件没有图标', 'not_found')
+    if (!latest?.iconName) throw new HttpError(404, '这个扩展没有图标', 'not_found')
     const envelope = await store.getBlob(latest.integrity)
     const b64 = envelope?.data?.[latest.iconName]
     if (typeof b64 !== 'string') throw new HttpError(404, '图标丢失了', 'not_found')
@@ -246,7 +246,7 @@ export function register(router, app) {
       // 服务端重算:上传者说的一切都只是「声称」
       const checked = validateEnvelope(raw)
       if (!checked.ok) {
-        throw new HttpError(400, `插件包校验失败:${checked.errors.slice(0, 6).join(';')}`, 'invalid_package')
+        throw new HttpError(400, `扩展包校验失败:${checked.errors.slice(0, 6).join(';')}`, 'invalid_package')
       }
       const pkgValue = checked.value
       const { id, version } = pkgValue.manifest
@@ -272,7 +272,7 @@ export function register(router, app) {
           // 首次发布即认领 id;换人必须由管理员转移,不能靠「谁先动手」
           throw new HttpError(
             403,
-            `插件 id「${id}」已被 ${pkg.owner} 占用。请换一个 id,或让管理员转移所有权。`,
+            `扩展 id「${id}」已被 ${pkg.owner} 占用。请换一个 id,或让管理员转移所有权。`,
             'id_taken'
           )
         }
@@ -321,7 +321,7 @@ export function register(router, app) {
     const data = await store.readJson('packages.json', { packages: {} })
     const pkg = requirePackage(data, params.id)
     if (pkg.owner !== user && !app.isAdmin(user)) {
-      throw new HttpError(403, '只有插件作者本人能下架这个版本', 'forbidden')
+      throw new HttpError(403, '只有扩展作者本人能下架这个版本', 'forbidden')
     }
     if (!pkg.versions[params.version]) {
       throw new HttpError(404, `没有这个版本:${params.id}@${params.version}`, 'not_found')

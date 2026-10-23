@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { relative, resolve, sep } from 'node:path'
+import { resolve, sep } from 'node:path'
 import type {
   WebviewAnchorDto,
   WebviewPanelCreateRequest,
@@ -292,11 +292,4 @@ function normalizeRoots(extensionRoot: string, roots: readonly string[] | undefi
 export function isWithinRoots(filePath: string, roots: readonly string[]): boolean {
   const full = resolve(filePath)
   return roots.some(root => full === root || full.startsWith(root + sep))
-}
-
-/** 扩展 HTML 里允许的本地资源相对路径（不含 token）；用于校验 asWebviewUri 的结果 */
-export function relativeResourcePath(extensionRoot: string, filePath: string): string | null {
-  const rel = relative(extensionRoot, filePath)
-  if (rel.startsWith('..') || rel.startsWith(sep) || rel === '') return null
-  return rel
 }

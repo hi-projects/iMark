@@ -1,7 +1,7 @@
 /**
  * Agent Core 的类型层。
  *
- * provider 契约在 `@shared/agentProvider`（Core 与 provider 插件共用）；这里只
+ * provider 契约在 `@shared/agentProvider`（Core 与 provider 扩展共用）；这里只
  * 保留 Core 自己的任务模式与附件/文档/产物形状，并把共享类型重新导出，避免
  * Core 内部每个文件都要认识两个 import 路径。
  *
@@ -60,7 +60,6 @@ export interface DocMeta {
   fileName: string
   version: number
   isDirty: boolean
-  editable: boolean
   selection: { line: number; character: number; offset: number }
 }
 

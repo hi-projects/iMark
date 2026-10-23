@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 市场 · 扩展宿主 —— 集中管理全部插件的宿主分配。
+ * 市场 · 扩展分配 —— 集中管理全部扩展的进程分配。
  *
- * 宿主模式与 affinity 是**全局**设置,所以不放在单个插件页里:这一页按宿主
- * 分组展示正在运行的插件,把已停用 / 加载失败 / 纯声明的插件放进「未分配宿主」,
+ * 进程模式与 affinity 是**全局**设置,所以不放在单个扩展页里:这一页按进程
+ * 分组展示正在运行的扩展,把已停用 / 加载失败 / 纯声明的扩展放进「未分配」,
  * 让用户在一屏里决定谁和谁同进程。
  *
  * 分组结果只认主进程推送的 `contribs.hostGroups`:渲染层不重算规划器
@@ -27,9 +27,11 @@ import {
 import { formatBytes } from '../../utils/text'
 
 const mode = computed(() => extensionStore.hostSettings.mode)
+/** 当前分组等同于哪个模式按钮;手填编号且结果两种模式都解释不了时,两个都不选中 */
+const modeState = computed(() => extensionStore.contribs?.hostModeState ?? mode.value)
 const groups = computed(() => extensionStore.contribs?.hostGroups ?? [])
 
-/** 每张宿主卡:分组本身 + 能在已安装列表里找到的成员视图 */
+/** 每张进程卡:分组本身 + 能在已安装列表里找到的成员视图 */
 const groupRows = computed(() =>
   groups.value.map(group => ({
     group,
@@ -40,10 +42,8 @@ const groupRows = computed(() =>
 )
 
 const assigned = computed(() => new Set(groups.value.flatMap(group => group.extensionIds)))
-const assignedCount = computed(() => assigned.value.size)
-const groupCount = computed(() => groups.value.length)
 
-/** 未进入宿主计划的插件:已停用、加载失败、纯声明,或刚改完设置还没推送 */
+/** 未进入进程计划的扩展:已停用、加载失败、纯声明,或刚改完设置还没推送 */
 const unassigned = computed(() =>
   [...extensionStore.list]
     .filter(view => !assigned.value.has(view.descriptor.id))
@@ -73,9 +73,11 @@ function enqueue(task: () => Promise<void>): void {
 }
 
 function setMode(next: ExtensionHostMode): void {
-  if (mode.value === next) return
+  const hasAffinity = Object.keys(extensionStore.hostSettings.affinity).length > 0
+  // 已经是指定模式且没有手填编号时不用重复写盘;有编号时点按钮要回到该模式的默认分组
+  if (mode.value === next && !hasAffinity) return
   enqueue(async () => {
-    await setExtensionHostSettings({ mode: next })
+    await setExtensionHostSettings({ mode: next, affinity: {} })
   })
 }
 
@@ -84,21 +86,60 @@ function affinityOf(view: ExtensionView): number | null {
 }
 
 /**
+ * 与这个扩展通过 `extensionDependencies` 连成一组的全部扩展(无向)。
+ *
+ * 规划器本来就强制有依赖的扩展同组,用户不必挨个填同一个编号 —— 改一个
+ * 就整条依赖链一起改,反向依赖同理。
+ */
+function dependencyComponent(id: string): Set<string> {
+  const installed = new Set(extensionStore.list.map(view => view.descriptor.id))
+  const peers = new Map<string, Set<string>>()
+  const link = (a: string, b: string): void => {
+    const set = peers.get(a) ?? new Set<string>()
+    set.add(b)
+    peers.set(a, set)
+  }
+  for (const view of extensionStore.list) {
+    for (const dep of view.descriptor.extensionDependencies) {
+      if (!installed.has(dep)) continue
+      link(view.descriptor.id, dep)
+      link(dep, view.descriptor.id)
+    }
+  }
+  const out = new Set<string>([id])
+  const queue = [id]
+  while (queue.length > 0) {
+    for (const peer of peers.get(queue.shift()!) ?? []) {
+      if (out.has(peer)) continue
+      out.add(peer)
+      queue.push(peer)
+    }
+  }
+  return out
+}
+
+/** 把编号写进整条依赖链;`null` 表示清空 */
+function affinityWith(view: ExtensionView, value: number | null): Record<string, number> {
+  const affinity = { ...extensionStore.hostSettings.affinity }
+  for (const id of dependencyComponent(view.descriptor.id)) {
+    if (value === null) delete affinity[id]
+    else affinity[id] = value
+  }
+  return affinity
+}
+
+/**
  * 提交分组编号:留空 / 非法 / 小于 1 都等于删除编号(按模式自动分组)。
  *
- * 用 @change 而不是 @input:每敲一位就写盘会立刻重启宿主。提交后按 store 里的
+ * 用 @change 而不是 @input:每敲一位就写盘会立刻重启进程。提交后按 store 里的
  * 规范值回写 input —— 非法输入(如 0)不会改变 store,单靠 :value 不会复原输入框。
  */
 function commitAffinity(view: ExtensionView, event: Event): void {
   const input = event.target as HTMLInputElement
   const raw = input.value
-  const affinity = { ...extensionStore.hostSettings.affinity }
   const value = Number(raw)
-  if (raw.trim() === '' || !Number.isFinite(value) || value <= 0) {
-    delete affinity[view.descriptor.id]
-  } else {
-    affinity[view.descriptor.id] = Math.trunc(value)
-  }
+  const clearing = raw.trim() === '' || !Number.isFinite(value) || value <= 0
+  const affinity = affinityWith(view, clearing ? null : Math.trunc(value))
   enqueue(async () => {
     await setExtensionHostSettings({ affinity })
     input.value = String(affinityOf(view) ?? '')
@@ -110,15 +151,30 @@ function onAffinityEnter(event: KeyboardEvent): void {
   ;(event.target as HTMLInputElement).blur()
 }
 
-/** 共享组里把某个插件挪到独立编号;依赖关系拆不开的行不显示这个按钮 */
+/** 把某个扩展(连同它的依赖组)挪到一个新的分组编号 */
 function isolate(view: ExtensionView): void {
   const used = Object.values(extensionStore.hostSettings.affinity)
   const next = Math.max(0, ...used) + 1
   enqueue(async () => {
-    await setExtensionHostSettings({
-      affinity: { ...extensionStore.hostSettings.affinity, [view.descriptor.id]: next }
-    })
+    await setExtensionHostSettings({ affinity: affinityWith(view, next) })
   })
+}
+
+/**
+ * 这个成员所在进程里还有不属于它依赖组的扩展吗?
+ *
+ * 有才显示「独立」——点下去才有东西可拆。如果整个进程本来就只有这一条
+ * 依赖链,再分配一个编号只是原地打转。
+ */
+function canIsolate(view: ExtensionView, group: ExtensionHostGroupView): boolean {
+  const component = dependencyComponent(view.descriptor.id)
+  return group.extensionIds.some(id => !component.has(id))
+}
+
+function isolateTitle(view: ExtensionView): string {
+  return dependencyComponent(view.descriptor.id).size > 1
+    ? '给这条依赖链分配一个新的分组编号，一起挪到独立进程'
+    : '分配一个新的分组编号，把它从这个进程里挪出去'
 }
 
 function reloadHost(hostId: number): void {
@@ -148,30 +204,43 @@ function hostTone(state: ExtensionHostGroupView['state']): 'idle' | 'running' | 
   return 'idle'
 }
 
-function memberTone(view: ExtensionView): 'idle' | 'running' | 'ok' | 'error' {
+function memberTone(
+  view: ExtensionView,
+  group?: ExtensionHostGroupView
+): 'idle' | 'running' | 'ok' | 'error' {
   if (view.loadError) return 'error'
   if (!view.enabled) return 'idle'
   const status = view.runtime.status
-  if (status === 'failed' || status === 'crashed' || status === 'crash-loop') return 'error'
+  if (status === 'failed') return 'error'
+  // 宿主进程的状态比扩展视图新:切换模式/重启后视图里的 runtime 还停在
+  // inactive,但进程已经跑起来了,成员必然已随之激活。
+  if (group) {
+    if (group.state === 'crashed' || group.state === 'crash-loop') return 'error'
+    if (group.state === 'running') return 'ok'
+    if (group.state === 'starting') return 'running'
+  }
+  if (status === 'crashed' || status === 'crash-loop') return 'error'
   if (status === 'activating') return 'running'
   if (status === 'active') return 'ok'
   return 'idle'
 }
 
-function memberStateLabel(view: ExtensionView): string {
+function memberStateLabel(view: ExtensionView, group?: ExtensionHostGroupView): string {
   if (view.loadError) return '加载失败'
   if (!view.enabled) return '已停用'
-  switch (view.runtime.status) {
+  const status = view.runtime.status
+  if (status === 'failed') return '激活失败'
+  if (status === 'crashed' || status === 'crash-loop') return '进程已退出'
+  if (group) {
+    if (group.state === 'crashed' || group.state === 'crash-loop') return '进程已退出'
+    if (group.state === 'running') return '已激活'
+    if (group.state === 'starting') return '正在激活'
+  }
+  switch (status) {
     case 'active':
       return '已激活'
     case 'activating':
       return '正在激活'
-    case 'failed':
-      return '激活失败'
-    case 'crashed':
-      return '宿主已退出'
-    case 'crash-loop':
-      return '反复崩溃'
     case 'inactive':
       return '已启用，等待激活'
     default:
@@ -179,19 +248,28 @@ function memberStateLabel(view: ExtensionView): string {
   }
 }
 
-function memoryLabel(bytes: number | null): string {
-  return bytes ? formatBytes(bytes) : '—'
+/**
+ * 进程卡片的副标题:状态 + 有值才显示的 PID/内存。
+ *
+ * 未启动(或启动中)的进程没有 PID,不展示「PID —」这种占位符 ——
+ * 一个破折号既不是信息,又让人以为进程信息丢了。
+ */
+function hostMeta(group: ExtensionHostGroupView): string {
+  const parts = [hostStateLabel(group.state)]
+  if (group.pid !== null) parts.push(`PID ${group.pid}`)
+  if (group.memoryBytes) parts.push(formatBytes(group.memoryBytes))
+  return parts.join(' · ')
 }
 
-/** 懒激活的插件分配了宿主但还没拉起进程;重启对它没有意义 */
+/** 懒激活的扩展分配了进程但还没拉起来;重启对它没有意义 */
 function canReload(group: ExtensionHostGroupView): boolean {
   return group.state !== 'stopped' && group.state !== 'starting'
 }
 
 function reloadTitle(group: ExtensionHostGroupView): string {
-  if (group.state === 'stopped') return '重新加载这个宿主（尚未启动，无需重启）'
-  if (group.state === 'starting') return '重新加载这个宿主（正在启动）'
-  return '重新加载这个宿主'
+  if (group.state === 'stopped') return '重新加载这个进程（尚未启动，无需重启）'
+  if (group.state === 'starting') return '重新加载这个进程（正在启动）'
+  return '重新加载这个进程'
 }
 
 /** 同组内存在依赖边时,affinity 编号也拆不开它们 */
@@ -215,134 +293,124 @@ onMounted(() => {
 <template>
   <div class="market-tab-body market-hosts">
     <section class="market-host-mode">
-      <div class="market-host-mode-info">
-        <div class="market-host-mode-title">宿主模式</div>
-        <p class="market-hint">
-          每个扩展跑在独立的扩展宿主进程里：一个扩展崩溃不会影响其他扩展。共享宿主更省内存，
-          但同组扩展共享进程、globalThis 与事件循环。
-        </p>
-      </div>
+      <p class="market-hint">
+        分配扩展运行环境。若干扩展运行在若干进程中，分组编号相同的扩展运行在同一进程，
+        未指定分组编号的扩展默认在同一进程。
+      </p>
       <span class="settings-presets">
         <button
           class="settings-preset"
-          :class="{ 'settings-preset-active': mode === 'isolated' }"
+          :class="{ 'settings-preset-active': modeState === 'isolated' }"
           :disabled="busy"
           title="每个扩展一个进程：一个扩展崩溃不影响其他扩展"
           @click="setMode('isolated')"
         >
-          每扩展独立进程
+          独立进程
         </button>
         <button
           class="settings-preset"
-          :class="{ 'settings-preset-active': mode === 'shared' }"
+          :class="{ 'settings-preset-active': modeState === 'shared' }"
           :disabled="busy"
-          title="所有扩展共用一个进程：省内存，但崩溃半径也共享"
+          title="扩展共用一个进程：省内存，但崩溃半径也共享"
           @click="setMode('shared')"
         >
-          共享宿主
+          共享进程
         </button>
       </span>
     </section>
 
-    <p v-if="groups.length > 0" class="market-hint">
-      当前 {{ groupCount }} 个宿主、{{ assignedCount }} 个含代码插件。分组编号相同的插件进同一宿主，
-      留空按模式自动分组；编号只是分组标记，不等于宿主号。清单里的
-      <code class="market-mono">extensionDependencies</code> 与
-      <code class="market-mono">extensionAffinity</code> 会强制同组。
-    </p>
-
     <div v-if="extensionStore.contribs === null" class="market-empty">
-      <p>正在读取宿主状态…</p>
+      <p>正在读取进程状态…</p>
     </div>
 
     <template v-else>
-      <div v-if="groups.length > 0" class="market-host-groups">
-        <section
-          v-for="row in groupRows"
-          :key="row.group.hostId"
-          class="market-host-card"
-        >
-          <header class="market-host-head">
-            <span
-              class="plugin-status-dot"
-              :class="`plugin-status-${hostTone(row.group.state)}`"
-              :title="hostStateLabel(row.group.state)"
-            />
-            <b>宿主 #{{ row.group.hostId }}</b>
-            <span class="market-host-meta">
-              {{ hostStateLabel(row.group.state) }} · PID {{ row.group.pid ?? '—' }} ·
-              {{ memoryLabel(row.group.memoryBytes) }}
-            </span>
-            <span class="market-host-count">{{ row.members.length }} 个插件</span>
-            <button
-              class="plugin-icon-btn"
-              :title="reloadTitle(row.group)"
-              :disabled="busy || !canReload(row.group)"
-              @click="reloadHost(row.group.hostId)"
-            >
-              <RotateCw :size="13" />
-            </button>
-          </header>
-
-          <ul class="market-host-members">
-            <li
-              v-for="view in row.members"
-              :key="view.descriptor.id"
-              class="market-host-row"
-            >
-              <span
-                class="plugin-status-dot"
-                :class="`plugin-status-${memberTone(view)}`"
-                :title="memberStateLabel(view)"
-              />
-              <span class="market-host-name" :title="view.descriptor.displayName">
-                {{ view.descriptor.displayName }}
-              </span>
-              <span v-if="forcedByDependency(view)" class="market-badge">依赖同组</span>
-              <label class="market-host-affinity">
-                <span>分组编号</span>
-                <input
-                  class="settings-number"
-                  type="number"
-                  min="1"
-                  step="1"
-                  :value="affinityOf(view) ?? ''"
-                  :placeholder="mode === 'isolated' ? '自动' : '与同号同组'"
-                  :disabled="busy"
-                  @change="commitAffinity(view, $event)"
-                  @keydown.enter="onAffinityEnter"
-                />
-              </label>
+      <section v-if="groups.length > 0" class="market-host-assigned">
+        <div class="market-host-section-head">
+          <b>已分配</b>
+        </div>
+        <div class="market-host-groups">
+          <section
+            v-for="row in groupRows"
+            :key="row.group.hostId"
+            class="market-host-card"
+            :class="`market-host-card-${hostTone(row.group.state)}`"
+          >
+            <header class="market-host-head">
+              <b>进程 #{{ row.group.hostId }}</b>
+              <span class="market-host-meta">{{ hostMeta(row.group) }}</span>
+              <span class="market-host-count">{{ row.members.length }} 个扩展</span>
               <button
-                v-if="row.members.length > 1 && !forcedByDependency(view)"
-                class="plugin-btn"
-                :disabled="busy"
-                title="分配一个新的分组编号，把它从这个宿主里挪出去"
-                @click="isolate(view)"
+                class="plugin-icon-btn"
+                :title="reloadTitle(row.group)"
+                :disabled="busy || !canReload(row.group)"
+                @click="reloadHost(row.group.hostId)"
               >
-                独立
+                <RotateCw :size="13" />
               </button>
-            </li>
-          </ul>
-        </section>
-      </div>
+            </header>
+
+            <ul class="market-host-members">
+              <li
+                v-for="view in row.members"
+                :key="view.descriptor.id"
+                class="market-host-row"
+              >
+                <span
+                  class="plugin-status-dot"
+                  :class="`plugin-status-${memberTone(view, row.group)}`"
+                  :title="memberStateLabel(view, row.group)"
+                />
+                <span class="market-host-ident">
+                  <span class="market-host-name" :title="view.descriptor.displayName">
+                    {{ view.descriptor.displayName }}
+                  </span>
+                  <span v-if="forcedByDependency(view)" class="market-badge">依赖同组</span>
+                </span>
+                <button
+                  v-if="canIsolate(view, row.group)"
+                  class="plugin-btn"
+                  :disabled="busy"
+                  :title="isolateTitle(view)"
+                  @click="isolate(view)"
+                >
+                  独立
+                </button>
+                <label class="market-host-affinity">
+                  <span>分组编号</span>
+                  <input
+                    class="settings-number"
+                    type="number"
+                    min="1"
+                    step="1"
+                    :value="affinityOf(view) ?? ''"
+                    :placeholder="mode === 'isolated' ? '自动' : '与同号同组'"
+                    :disabled="busy"
+                    @change="commitAffinity(view, $event)"
+                    @keydown.enter="onAffinityEnter"
+                  />
+                </label>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </section>
 
       <div v-else-if="codeCount === 0" class="market-empty">
-        <p>还没有含代码的插件，纯声明插件不需要宿主进程。</p>
+        <p>还没有含代码的扩展，纯声明扩展不需要进程。</p>
       </div>
 
       <div v-else-if="enabledCodeCount === 0" class="market-empty">
-        <p>当前没有运行中的扩展宿主，启用代码插件后会启动。</p>
+        <p>当前没有运行中的扩展进程，启用代码扩展后会启动。</p>
       </div>
 
       <div v-else class="market-empty">
-        <p>宿主分组正在更新…</p>
+        <p>进程分组正在更新…</p>
       </div>
 
       <section v-if="unassigned.length > 0" class="market-host-paused">
-        <div class="market-host-paused-head">
-          <b>未分配宿主</b>
-          <span class="market-host-meta">停用、加载失败与纯声明插件不进入宿主计划</span>
+        <div class="market-host-section-head">
+          <b>未分配</b>
+          <span class="market-host-meta">停用、加载失败与纯声明扩展不进入进程计划</span>
         </div>
         <ul class="market-host-card market-host-members">
           <li
@@ -359,13 +427,12 @@ onMounted(() => {
               {{ view.descriptor.displayName }}
             </span>
             <span v-if="view.loadError" class="market-badge market-badge-bad">加载失败</span>
-            <span v-if="!view.enabled" class="market-badge market-badge-warn">已停用</span>
-            <span v-if="!view.descriptor.main" class="market-badge">无需宿主</span>
+            <span v-if="!view.descriptor.main" class="market-badge">无需进程</span>
             <span
               v-if="view.enabled && !view.loadError && view.descriptor.main"
               class="market-badge market-badge-warn"
             >
-              等待宿主
+              等待进程
             </span>
             <label v-if="view.descriptor.main && !view.loadError" class="market-host-affinity">
               <span>分组编号</span>

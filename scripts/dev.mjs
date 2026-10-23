@@ -10,7 +10,7 @@
  * 这条日志**在崩溃上报初始化阶段**就打出来了,早于 Chromium 的日志级别设置,
  * 所以开关也压不住。它在功能上无害,只是很吵。这里对 electron-vite(以及它继承
  * 同一个 stderr 的 Electron 子进程)的 stderr 做**逐行过滤**,只丢弃包含
- * `registration_protocol_win.cc` 的那一行;其它输出(主进程 console.log、插件日志、
+ * `registration_protocol_win.cc` 的那一行;其它输出(主进程 console.log、扩展日志、
  * 渲染层 console-message、真正的错误)原样保留。不要用 `--log-level=3` 一刀切,
  * 那会把 GPU/网络等真正有用的错误也一起藏掉。
  *

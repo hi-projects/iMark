@@ -4,7 +4,7 @@
  * 只放类型、零运行时依赖,与 `market.ts` / `plugins.ts` 同一个惯例。
  *
  * **凡是过 contextBridge 的都必须能结构化克隆**:所以读失败用字符串表示,
- * 而不是 Error 对象(Error 克隆过去会变成一个 `{}`,见 pluginService.ts 里
+ * 而不是 Error 对象(Error 克隆过去会变成一个 `{}`,见 extensionService.ts 里
  * `plain()` 的说明)。
  */
 

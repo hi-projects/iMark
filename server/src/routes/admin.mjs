@@ -1,5 +1,5 @@
 /**
- * 管理接口。只有一件事现在真的需要:转移插件所有权。
+ * 管理接口。只有一件事现在真的需要:转移扩展所有权。
  *
  * 「首次发布即认领 id」这套规则在公开注册表上有个已知的坑:官方 id
  * (如 git-sync)如果没有被先占掉,任何人都能抢走它。与其做一个「保留 id 表」
@@ -25,7 +25,7 @@ export function register(router, app) {
 
     const from = await store.update('packages.json', { packages: {} }, data => {
       const pkg = data.packages[params.id]
-      if (!pkg) throw new HttpError(404, `没有这个插件:${params.id}`, 'not_found')
+      if (!pkg) throw new HttpError(404, `没有这个扩展:${params.id}`, 'not_found')
       const previous = pkg.owner
       pkg.owner = to
       pkg.updatedAt = Date.now()

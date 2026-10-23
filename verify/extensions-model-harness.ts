@@ -21,6 +21,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dataRoot } from '../src/main/dataDir'
 import { initExtensions, shutdownExtensions, type ExtensionService } from '../src/main/extensions/service'
+import { saveSettings } from '../src/main/settings'
 import type { ExtensionManifest } from '../src/shared/extensionPackage'
 
 let pass = 0
@@ -88,7 +89,11 @@ const ALPHA = manifestOf(
   [
     { command: 'test.alpha.hello', title: 'Alpha Hello' },
     { command: 'test.alpha.secret', title: 'Alpha Secret' },
-    { command: 'test.alpha.count', title: 'Alpha Count' }
+    { command: 'test.alpha.count', title: 'Alpha Count' },
+    { command: 'test.alpha.remote', title: 'Alpha Remote' },
+    { command: 'test.alpha.setRemote', title: 'Alpha Set Remote' },
+    { command: 'test.alpha.setRemoteGlobal', title: 'Alpha Set Remote Global' },
+    { command: 'test.alpha.inspectRemote', title: 'Alpha Inspect Remote' }
   ],
   {
     'test.alpha.greeting': {
@@ -102,6 +107,12 @@ const ALPHA = manifestOf(
       default: '',
       title: 'API Key',
       imark: { kind: 'password', section: '基础' }
+    },
+    'test.alpha.remote': {
+      type: 'string',
+      default: '',
+      title: 'Remote',
+      imark: { kind: 'text', section: '按仓库', scope: 'workspace' }
     }
   }
 )
@@ -141,6 +152,26 @@ exports.activate = async (context) => {
     const next = (context.globalState.get('calls', 0)) + 1
     await context.globalState.update('calls', next)
     return next
+  }))
+  // 按仓库配置:读生效值、自己写回、读分层值(globalValue / workspaceValue)
+  context.subscriptions.push(imark.commands.registerCommand('test.alpha.remote', () => {
+    return imark.workspace.getConfiguration('test.alpha').get('remote', 'none')
+  }))
+  context.subscriptions.push(imark.commands.registerCommand('test.alpha.setRemote', async (value) => {
+    await imark.workspace.getConfiguration('test.alpha').update('remote', value)
+    return 'set'
+  }))
+  context.subscriptions.push(imark.commands.registerCommand('test.alpha.setRemoteGlobal', async (value) => {
+    await imark.workspace.getConfiguration('test.alpha').update('remote', value, imark.ConfigurationTarget.Global)
+    return 'set-global'
+  }))
+  context.subscriptions.push(imark.commands.registerCommand('test.alpha.inspectRemote', () => {
+    const info = imark.workspace.getConfiguration('test.alpha').inspect('remote') || {}
+    return {
+      global: info.globalValue === undefined ? null : info.globalValue,
+      workspace: info.workspaceValue === undefined ? null : info.workspaceValue,
+      defaultValue: info.defaultValue === undefined ? null : info.defaultValue
+    }
   }))
   // 清单里没声明的命令：贡献快照里应以 source === 'runtime' 出现
   context.subscriptions.push(imark.commands.registerCommand('test.alpha.runtimeOnly', () => 'runtime'))
@@ -195,17 +226,35 @@ async function main(): Promise<void> {
   await writeExtension(LAZY, LAZY_CODE)
   await writeExtension(BAD, BAD_CODE)
   await writeExtension(CRASHY, CRASHY_CODE)
+  // 这一组用例验证的是「一个扩展崩溃不波及别的扩展」,必须在显式 isolated
+  // 下跑;应用默认已改成 shared。
+  await saveSettings({ extensionHost: { mode: 'isolated', affinity: {} } })
 
   const service = await initExtensions({ appVersion: APP_VERSION })
   try {
+    /** 配置推送是异步的:轮询宿主读到的生效值,别用固定 sleep 赌时序 */
+    const waitRemote = async (expected: string): Promise<boolean> => {
+      const started = Date.now()
+      while (Date.now() - started < 5000) {
+        try {
+          if ((await service.executeCommand('test.alpha.remote')) === expected) return true
+        } catch {
+          /* 宿主可能还没起来 */
+        }
+        await sleep(50)
+      }
+      return false
+    }
+
     console.log('\n[1] 扫描与初始状态')
     const views = await service.getExtensionViewsWithSecrets()
     check('四份清单都被扫描到', views.length === 4, views.map(v => v.descriptor.id).join(','))
     const alphaView = views.find(v => v.descriptor.id === 'test.alpha')!
     check(
-      '清单配置被翻译成设置字段(含 password)',
-      alphaView.descriptor.settingsFields.length === 2 &&
-        alphaView.descriptor.settingsFields.some(field => field.kind === 'password')
+      '清单配置被翻译成设置字段(含 password 与按仓库范围)',
+      alphaView.descriptor.settingsFields.length === 3 &&
+        alphaView.descriptor.settingsFields.some(field => field.kind === 'password') &&
+        alphaView.descriptor.settingsFields.some(field => field.scope === 'workspace')
     )
     check('启动前没有宿主进程', service.hostGroupsView().every(group => group.pid === null))
 
@@ -248,6 +297,106 @@ async function main(): Promise<void> {
     check(
       '设置页写入的配置立刻推给宿主',
       (await service.executeCommand('test.alpha.hello', ['x'])) === 'alpha:你好:x'
+    )
+
+    console.log('\n[3b] 按仓库配置')
+    const vaultA = join(dataRoot(), 'vaults', 'alpha-a')
+    const vaultB = join(dataRoot(), 'vaults', 'alpha-b')
+    await saveSettings({ vaultPath: vaultA })
+    await service.setExtensionField('test.alpha', 'test.alpha.remote', 'https://a.example/repo.git')
+    check(
+      '按仓库字段写入当前仓库',
+      (await service.getExtensionView('test.alpha'))!.config['test.alpha.remote'] ===
+        'https://a.example/repo.git'
+    )
+    check('宿主读到仓库 A 的值', await waitRemote('https://a.example/repo.git'))
+    const inspectA = (await service.executeCommand('test.alpha.inspectRemote')) as {
+      global: unknown
+      workspace: unknown
+      defaultValue: unknown
+    }
+    check(
+      'inspect 区分全局值与仓库值',
+      inspectA.global === null &&
+        inspectA.workspace === 'https://a.example/repo.git' &&
+        inspectA.defaultValue === '',
+      JSON.stringify(inspectA)
+    )
+
+    await saveSettings({ vaultPath: vaultB })
+    check(
+      '切换仓库后回落到默认值',
+      (await service.getExtensionView('test.alpha'))!.config['test.alpha.remote'] === ''
+    )
+    check('宿主收到仓库切换后的值', await waitRemote(''))
+    await service.setExtensionField('test.alpha', 'test.alpha.remote', 'https://b.example/repo.git')
+    check('仓库 B 有自己的值', await waitRemote('https://b.example/repo.git'))
+
+    await saveSettings({ vaultPath: vaultA })
+    check('切回仓库 A 仍保留各自的值', await waitRemote('https://a.example/repo.git'))
+    const settingsFile = JSON.parse(
+      await readFile(join(dataRoot(), 'settings.json'), 'utf8')
+    ) as {
+      extensions: Record<string, { workspaceConfig?: Record<string, Record<string, unknown>> }>
+    }
+    const scoped = settingsFile.extensions['test.alpha']?.workspaceConfig ?? {}
+    check(
+      '两个仓库的覆盖值分别落盘',
+      Object.keys(scoped).length === 2 &&
+        Object.values(scoped).every(
+          bucket => typeof bucket['test.alpha.remote'] === 'string'
+        ),
+      JSON.stringify(scoped)
+    )
+
+    // 插件自己 update():清单声明 workspace 时默认写当前仓库,不必显式传 target
+    check('插件可写回按仓库配置', (await service.executeCommand('test.alpha.setRemote', ['from-plugin'])) === 'set')
+    check('插件写入后生效', await waitRemote('from-plugin'))
+    const afterWrite = JSON.parse(
+      await readFile(join(dataRoot(), 'settings.json'), 'utf8')
+    ) as {
+      extensions: Record<string, { workspaceConfig?: Record<string, Record<string, unknown>> }>
+    }
+    const buckets = Object.values(afterWrite.extensions['test.alpha']?.workspaceConfig ?? {})
+    check(
+      '插件写入只更新当前仓库',
+      buckets.filter(bucket => bucket['test.alpha.remote'] === 'from-plugin').length === 1 &&
+        buckets.some(bucket => bucket['test.alpha.remote'] === 'https://b.example/repo.git'),
+      JSON.stringify(buckets)
+    )
+
+    // 显式写全局层:当前仓库已有覆盖,生效值不变,但分层值仍要同步给宿主,
+    // 否则 inspect() 会在下一次推送前一直看到旧的全局值。
+    check(
+      '插件可显式写全局层',
+      (await service.executeCommand('test.alpha.setRemoteGlobal', ['https://global.example/repo.git'])) ===
+        'set-global'
+    )
+    check('全局层不越过仓库覆盖', await waitRemote('from-plugin'))
+    const inspectGlobal = (await service.executeCommand('test.alpha.inspectRemote')) as {
+      global: unknown
+      workspace: unknown
+      defaultValue: unknown
+    }
+    check(
+      'inspect 同时反映全局层与仓库层',
+      inspectGlobal.global === 'https://global.example/repo.git' &&
+        inspectGlobal.workspace === 'from-plugin' &&
+        inspectGlobal.defaultValue === '',
+      JSON.stringify(inspectGlobal)
+    )
+
+    const vaultC = join(dataRoot(), 'vaults', 'alpha-c')
+    await saveSettings({ vaultPath: vaultC })
+    check('没有覆盖的仓库继承全局值', await waitRemote('https://global.example/repo.git'))
+    const inspectC = (await service.executeCommand('test.alpha.inspectRemote')) as {
+      global: unknown
+      workspace: unknown
+    }
+    check(
+      '仓库 C 没有自己的覆盖值',
+      inspectC.global === 'https://global.example/repo.git' && inspectC.workspace === null,
+      JSON.stringify(inspectC)
     )
 
     await service.setExtensionSecret('test.alpha', 'apiKey', 's3cret-value')
@@ -307,7 +456,7 @@ async function main(): Promise<void> {
       service.getContributions().commands.some(item => item.command === 'test.alpha.hello')
     )
     // 关键回归:启动之后再启用，onStartupFinished 已经过去；扩展仍应被立即激活，
-    // 否则 AI for Edit 这类「激活里创建状态栏/浮动面板」的扩展在启用后什么都不出现
+    // 否则「激活里创建状态栏」的扩展在启用后什么都不出现
     check(
       '重新启用后 onStartupFinished 扩展自动激活(不必等命令)',
       await waitFor('alpha auto activated', () => service.isActivated('test.alpha'))

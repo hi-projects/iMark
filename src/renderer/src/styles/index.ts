@@ -4,7 +4,7 @@
  * **手动导入(核心)**:`main.ts` 里只写一行 `import './styles'`,
  * 层叠顺序与主题变量都在这里统一维护,组件与服务不再直接引用 CSS 文件。
  *
- * **间接导入(插件)**:插件模块从 `@renderer/styles` 取注册表 API
+ * **间接导入(扩展)**:扩展模块从 `@renderer/styles` 取注册表 API
  * (`registerStyle` / `unregisterStyle`),把自己的一段 CSS 交给注册表运行时注入 ——
  * 用法与样式约定见 `./registry.ts`。
  *
@@ -23,8 +23,8 @@
 
 import 'katex/dist/katex.min.css'
 
-// 令牌从 @shared 来:同一份文件还要被主进程(?raw 内联)与插件 preload(insertCSS)消费,
-// 插件窗口的配色必须与应用逐字一致,各存一份迟早会漂移
+// 令牌从 @shared 来:同一份文件还要被主进程(?raw 内联)与扩展 preload(insertCSS)消费,
+// 扩展窗口的配色必须与应用逐字一致,各存一份迟早会漂移
 import '@shared/theme/tokens.css'
 import './base.css'
 import './shell.css'

@@ -7,39 +7,171 @@
   "author": "iMark",
   "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
+  "icon": "./icon.svg",
+  "activationEvents": ["onCommand:imark.claude-code.check"],
   "extensionDependencies": ["imark.agent"],
   "capabilities": {
     "filesystem": "user",
     "network": true,
-    "secrets": true,
     "process": true,
     "shell": true
   },
   "contributes": {
     "imark.agentProviders": ["claude-code"],
+    "commands": [
+      {
+        "command": "imark.claude-code.check",
+        "title": "检查 Claude Code",
+        "category": "Claude Code"
+      }
+    ],
     "configuration": {
       "title": "Claude Code",
       "properties": {
-        "imark.claude-code.command": {
+        "imark.claude-code.baseUrl": {
           "type": "string",
           "default": "",
-          "title": "Claude Code 可执行文件",
-          "description": "留空自动探测 PATH、~/.local/bin/claude。也可以填本机 claude / claude.exe / claude.cmd 的完整路径。",
+          "title": "API 端点",
+          "description": "写入 settings.json 的 env.ANTHROPIC_BASE_URL。DeepSeek 填 https://api.deepseek.com/anthropic；留空表示不设置。",
           "imark": {
-            "kind": "text",
-            "section": "Claude Code",
-            "placeholder": "留空自动探测"
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_BASE_URL",
+            "placeholder": "https://api.deepseek.com/anthropic"
+          }
+        },
+        "imark.claude-code.authToken": {
+          "type": "string",
+          "default": "",
+          "title": "认证令牌",
+          "description": "写入 env.ANTHROPIC_AUTH_TOKEN（Authorization: Bearer）。DeepSeek 等 Anthropic 兼容端点通常用它；与 API 密钥同时设置时 AUTH_TOKEN 优先。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_AUTH_TOKEN",
+            "secret": true,
+            "placeholder": "留空表示不设置"
+          }
+        },
+        "imark.claude-code.apiKey": {
+          "type": "string",
+          "default": "",
+          "title": "API 密钥",
+          "description": "写入 env.ANTHROPIC_API_KEY（x-api-key）。官方 Anthropic API 用它；与 AUTH_TOKEN 同时设置时以 AUTH_TOKEN 为准。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_API_KEY",
+            "secret": true,
+            "placeholder": "留空表示不设置"
           }
         },
         "imark.claude-code.model": {
           "type": "string",
           "default": "",
           "title": "默认模型",
-          "description": "留空使用 Claude Code 自己的默认模型。可填 sonnet / opus / haiku 或完整模型名；对话面板里的模型输入框可覆盖它。",
+          "description": "写入 env.ANTHROPIC_MODEL，作为 CLI 的默认模型。对话面板里选择 Sonnet/Opus/Haiku 或具体模型时会覆盖它。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_MODEL",
+            "placeholder": "例如 deepseek-flash[1m]"
+          }
+        },
+        "imark.claude-code.opusModel": {
+          "type": "string",
+          "default": "",
+          "title": "Opus 别名模型",
+          "description": "写入 env.ANTHROPIC_DEFAULT_OPUS_MODEL。对话面板选择 Opus 时映射到的模型 ID。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "placeholder": "例如 deepseek-flash[1m]"
+          }
+        },
+        "imark.claude-code.sonnetModel": {
+          "type": "string",
+          "default": "",
+          "title": "Sonnet 别名模型",
+          "description": "写入 env.ANTHROPIC_DEFAULT_SONNET_MODEL。对话面板选择 Sonnet 时映射到的模型 ID。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "placeholder": "例如 deepseek-flash[1m]"
+          }
+        },
+        "imark.claude-code.haikuModel": {
+          "type": "string",
+          "default": "",
+          "title": "Haiku 别名模型",
+          "description": "写入 env.ANTHROPIC_DEFAULT_HAIKU_MODEL。对话面板选择 Haiku 时映射到的模型 ID。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "placeholder": "例如 deepseek-flash"
+          }
+        },
+        "imark.claude-code.subagentModel": {
+          "type": "string",
+          "default": "",
+          "title": "子代理模型",
+          "description": "写入 env.CLAUDE_CODE_SUBAGENT_MODEL。留空表示不设置。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/CLAUDE_CODE_SUBAGENT_MODEL",
+            "placeholder": "例如 deepseek-flash"
+          }
+        },
+        "imark.claude-code.effort": {
+          "type": "string",
+          "default": "",
+          "title": "推理强度",
+          "description": "写入 env.CLAUDE_CODE_EFFORT_LEVEL。留空表示不设置，由 CLI 自己决定。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/CLAUDE_CODE_EFFORT_LEVEL",
+            "options": [
+              { "value": "low", "label": "low" },
+              { "value": "medium", "label": "medium" },
+              { "value": "high", "label": "high" },
+              { "value": "xhigh", "label": "xhigh" },
+              { "value": "max", "label": "max" },
+              { "value": "auto", "label": "auto" }
+            ]
+          }
+        },
+        "imark.claude-code.command": {
+          "type": "string",
+          "default": "",
+          "title": "Claude Code 可执行文件",
+          "description": "留空自动探测 PATH、~/.local/bin 与 VS Code 扩展内的 native binary。也可以填 claude / claude.exe / claude.cmd 的完整路径。",
           "imark": {
             "kind": "text",
-            "section": "Claude Code",
-            "placeholder": "留空使用 CLI 默认"
+            "section": "扩展调用",
+            "placeholder": "留空自动探测"
           }
         },
         "imark.claude-code.isolation": {
@@ -47,10 +179,10 @@
           "default": "safe",
           "enum": ["safe", "restricted", "off"],
           "title": "隔离",
-          "description": "safe：禁用 CLAUDE.md/技能/hooks 等自定义，保留登录态；restricted：进一步限制文件工具与设置文件（可能影响自定义认证配置）；off：完全交给 Claude Code 自己的设置。",
+          "description": "safe：禁用 CLAUDE.md/技能/hooks 等自定义，保留 settings.json 的认证与模型；restricted：忽略用户 settings.json（第三方端点与令牌会失效）；off：完全交给 Claude Code 自己的设置。",
           "imark": {
             "kind": "select",
-            "section": "Claude Code"
+            "section": "扩展调用"
           }
         },
         "imark.claude-code.timeoutSec": {
@@ -62,7 +194,7 @@
           "description": "超过这个时间会终止 Agent 子进程；文档和会话不会改动。",
           "imark": {
             "kind": "number",
-            "section": "Claude Code"
+            "section": "扩展调用"
           }
         },
         "imark.claude-code.maxTurns": {
@@ -74,7 +206,7 @@
           "description": "Agent 单次回答最多允许多少个 assistant 轮次；超过后宿主会终止子进程。",
           "imark": {
             "kind": "number",
-            "section": "Claude Code"
+            "section": "扩展调用"
           }
         },
         "imark.claude-code.extraArgs": {
@@ -84,21 +216,19 @@
           "description": "每行一个参数，追加到 claude 命令行。会拒绝会改变协议/权限/会话的参数（如 -p、--output-format、--dangerously-*）。",
           "imark": {
             "kind": "textarea",
-            "section": "Claude Code",
+            "section": "扩展调用",
             "rows": 3
-          }
-        },
-        "imark.claude-code.apiKey": {
-          "type": "string",
-          "default": "",
-          "title": "API 密钥",
-          "description": "可选。留空则复用本机 Claude Code 的登录态；填写后只通过子进程环境变量注入，不进入界面、日志或会话文件。",
-          "imark": {
-            "kind": "password",
-            "section": "Claude Code"
           }
         }
       }
-    }
+    },
+    "imark.actions": [
+      {
+        "command": "imark.claude-code.check",
+        "label": "检查 Claude Code",
+        "scope": "global",
+        "primary": true
+      }
+    ]
   }
 }

@@ -2,14 +2,14 @@ import { reactive } from 'vue'
 import type { PluginNoticeLevel } from '@shared/plugins'
 
 /**
- * 右下角气泡 + 通知中心。插件发来的通知和宿主自己要说的话都走这里。
+ * 右下角气泡 + 通知中心。扩展发来的通知和宿主自己要说的话都走这里。
  *
  * 之前全仓没有 toast,失败信息一律 `alert()`:模态框会**掐断用户正在做的事**
  * (正在打字、正在拖文件),而绝大多数失败根本不需要用户当场做决定 ——
  * 它只需要被看见。所以这里的原则是:
  *   - 不打断输入焦点(纯 DOM 元素,不抢焦点、不挡鼠标,除非鼠标正停在它上面);
  *   - 自己会消失(error 停久一点,因为它更可能要看第二眼);
- *   - 一个插件连着报同一件事时合并计数,而不是堆成一摞。
+ *   - 一个扩展连着报同一件事时合并计数,而不是堆成一摞。
  *
  * 气泡会消失,但**通知本身不该跟着消失**:用户去泡了杯茶回来,右下角已经空了,
  * 刚才那条报错却还想再看一眼。所以这里同时留一份历史(noticeHistory),
@@ -19,7 +19,7 @@ import type { PluginNoticeLevel } from '@shared/plugins'
  * 那些不是"通知",不该挪到这里来。
  */
 
-/** 通知从哪来。界面上的小标签靠它区分「插件说的」和「应用自己说的」 */
+/** 通知从哪来。界面上的小标签靠它区分「扩展说的」和「应用自己说的」 */
 export type NoticeSource = 'app' | 'plugin' | 'browser'
 
 export interface NoticeRecord {
@@ -34,7 +34,7 @@ export interface NoticeRecord {
 
 export interface Notice {
   id: number
-  /** 显示在气泡上的来源(插件名 / iMark) */
+  /** 显示在气泡上的来源(扩展名 / iMark) */
   title: string
   message: string
   level: PluginNoticeLevel
@@ -58,7 +58,7 @@ const MAX_VISIBLE = 4
 /**
  * 历史保留多少条。
  *
- * 上限存在的理由和气泡不同:气泡怕糊住界面,历史怕的是「一个插件每分钟报十条」
+ * 上限存在的理由和气泡不同:气泡怕糊住界面,历史怕的是「一个扩展每分钟报十条」
  * 把内存吃成一个日志文件。通知中心是让人回看"刚才错过了什么",不是审计系统;
  * 一百多条之后,更早的那些已经没人会翻了。
  */
@@ -156,8 +156,8 @@ export function notifyError(action: string, err: unknown): void {
 /**
  * 浏览器通知（HTML5 `new Notification(...)`）也收进历史。
  *
- * 这类通知不经过 `pushNotice`:它由渲染进程（包括跑在同一窗口里的 render 层插件）
- * 直接交给 Chromium。包装只在 `notificationCapture.ts` 里做一次，这里只负责记下来 ——
+ * 这类通知不经过 `pushNotice`:它由渲染进程里的页面脚本直接交给 Chromium。
+ * 包装只在 `notificationCapture.ts` 里做一次，这里只负责记下来 ——
  * **不再额外弹一个应用内气泡**:系统通知已经弹过了,再叠一层只会变成两条。
  */
 export function recordBrowserNotice(title: string, body: string): void {

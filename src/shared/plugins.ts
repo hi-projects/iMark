@@ -15,16 +15,30 @@ export type PluginFieldKind =
   | 'select'
   | 'targets'
   | 'endpoints'
+  /** 读写扩展包外的 JSON 配置文件(值是字符串);文件与键由清单的 imark 元数据声明 */
+  | 'external'
 
 export interface PluginFieldOption {
   value: string
   label: string
 }
 
+/**
+ * 配置字段的保存范围。
+ *
+ * - `global`:全局一份(默认);
+ * - `workspace`:每个仓库各存一份覆盖值。未覆盖时回落到全局值,再回落到默认值。
+ *
+ * 密钥永远是全局的;这里只描述非密配置。
+ */
+export type PluginFieldScope = 'global' | 'workspace'
+
 export interface PluginField {
   key: string
   kind: PluginFieldKind
   label: string
+  /** 清单里声明 `imark.scope` 时才有;缺省视为 global */
+  scope?: PluginFieldScope
   /** 分组标题:相邻且同名(含都为空)的字段会被归到一组,渲染时插入标题与分隔线 */
   section?: string
   /** 联动显示:只有当另一个字段等于某个值时才显示本字段 */
@@ -46,6 +60,17 @@ export interface PluginField {
   options?: PluginFieldOption[]
   /** 目标列表里每一行各自的密钥槽位(如每个远端一个 token) */
   targetSecret?: { label: string; placeholder?: string }
+  /** kind: 'external' 的文件位置与 JSON 指针 */
+  external?: {
+    /** 展开 `~` 后的绝对路径;与 dirEnv 同时存在时,dirEnv 优先 */
+    file: string
+    /** 用这个环境变量的值替换文件的父目录(例如 CLAUDE_CONFIG_DIR) */
+    dirEnv?: string
+    /** JSON 指针,如 `/env/ANTHROPIC_BASE_URL` */
+    pointer: string
+    /** 输入框按密码显示 */
+    secret?: boolean
+  }
 }
 
 /**

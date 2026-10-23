@@ -20,7 +20,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import { basename } from 'node:path'
+import { basename, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app } from 'electron'
 import { descriptorFromManifest, entryFileOf } from '@shared/extensionPackage'
@@ -266,8 +266,31 @@ function normalizeFieldValue(field: PluginField, raw: unknown): unknown {
   }
 }
 
+/**
+ * 按仓库配置的键:绝对路径。
+ *
+ * Windows / macOS 的文件系统默认不区分大小写,`D:\Notes` 与 `d:\notes` 是同一个
+ * 仓库;折叠大小写后,从最近仓库列表(用户可能用不同写法打开过)切回来也能命中。
+ * 不访问磁盘 —— 仓库可能暂时不可用,配置仍应能读出来。
+ */
+function workspaceConfigKey(root: string): string {
+  const absolute = resolvePath(root)
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? absolute.toLowerCase()
+    : absolute
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
 function secretPath(extensionId: string, key: string): string {
   return `${extensionId}:${key}`
+}
+
+function fieldOf(entry: ExtensionEntry, key: string): PluginField | undefined {
+  const fullKey = key.startsWith(`${entry.id}.`) ? key : `${entry.id}.${key}`
+  return entry.descriptor.settingsFields.find(field => fullKey === `${entry.id}.${field.key}`)
 }
 
 function shortSecretKey(extensionId: string, key: string): string {
@@ -324,6 +347,19 @@ function sameHostSettings(a: ExtensionHostSettings, b: ExtensionHostSettings): b
   return aKeys.every(key => a.affinity[key] === b.affinity[key])
 }
 
+/**
+ * 分组的**等价签名**:只看「哪些扩展在一组」,不看组的编号。
+ *
+ * 同一份设置反复规划会得到相同编号,但比较默认模式与当前模式时编号可能不同
+ * (比如共享模式默认组固定是 0),所以不能直接比对 hostId。
+ */
+function planPartitionKey(plan: HostPlan): string {
+  return plan.groups
+    .map(group => [...group.extensionIds].sort().join('\0'))
+    .sort()
+    .join('\u0001')
+}
+
 function installInfoOf(record: ExtensionRecord): ExtensionInstallInfo {
   return {
     version: record.version,
@@ -363,7 +399,7 @@ export class ExtensionService {
 
   private readonly entries = new Map<string, ExtensionEntry>()
   private preferences: Record<string, ExtensionPreference> = {}
-  private hostSettings: ExtensionHostSettings = { mode: 'isolated', affinity: {} }
+  private hostSettings: ExtensionHostSettings = { mode: 'shared', affinity: {} }
   private hostPlan: HostPlan = { groups: [], byExtension: new Map() }
   private readonly hosts = new Map<number, HostRecord>()
 
@@ -391,6 +427,8 @@ export class ExtensionService {
   }
   private theme: ThemeDto = { kind: 'light', colors: {} }
   private workspaceFolders: WorkspaceFolderDto[] = []
+  /** 当前仓库根目录;按仓库配置的键由它派生 */
+  private workspaceRoot: string | null = null
 
   private readonly pendingRenderer = new Map<string, PendingRendererRequest>()
   private readonly pendingUi = new Map<string, PendingUiRequest>()
@@ -422,7 +460,7 @@ export class ExtensionService {
   async init(): Promise<void> {
     const settings = await loadSettings()
     this.preferences = settings.extensions ?? {}
-    this.hostSettings = settings.extensionHost ?? { mode: 'isolated', affinity: {} }
+    this.hostSettings = settings.extensionHost ?? { mode: 'shared', affinity: {} }
     this.savedWebviews = await this.webviewStore.load()
     await cleanupOldDirs()
     await this.reloadEntries()
@@ -586,6 +624,7 @@ export class ExtensionService {
       entries: this.entries.values(),
       context: this.context,
       hostGroups: this.hostGroupsView(),
+      hostModeState: this.hostModeState(),
       statusItems: this.statusBarItems,
       runtimeCommands: this.runtimeCommands,
       ...(reserved ? { reservedKeys: reserved } : {}),
@@ -726,6 +765,69 @@ export class ExtensionService {
     if (!this.entries.has(id)) throw new Error(`扩展 ${id} 未安装`)
     await this.writePreference(id, current => ({ ...current, config: { ...config } }))
     return this.getExtensionView(id)
+  }
+
+  /**
+   * 写一个配置项。设置页用它而不是整份替换 —— 整份提交会把「从全局继承来的值」
+   * 固化进当前仓库的覆盖层,以后改全局默认值时这些仓库就不再跟随。
+   *
+   * 保存范围按清单里字段声明的 `imark.scope` 决定;`target` 是插件自己通过
+   * `configuration.update()` 指定的显式范围(1 = Global,2/3 = Workspace)。
+   */
+  async setExtensionField(
+    id: string,
+    key: string,
+    value: unknown,
+    target?: number
+  ): Promise<ExtensionView | null> {
+    if (!this.entries.has(id)) throw new Error(`扩展 ${id} 未安装`)
+    const entry = this.entries.get(id)!
+    const field = fieldOf(entry, key)
+    if (!field) throw new Error(`扩展 ${id} 没有配置项 ${key}`)
+    const fullKey = `${id}.${field.key}`
+    const scope = this.scopeForUpdate(field, target)
+    if (scope === 'workspace') {
+      const root = this.workspaceRoot
+      if (!root) throw new Error('未打开仓库，无法保存按仓库生效的设置')
+      await this.writeWorkspaceValue(id, root, fullKey, value)
+    } else {
+      await this.writePreference(id, current => {
+        const config = { ...current.config }
+        if (value === undefined) delete config[fullKey]
+        else config[fullKey] = value
+        return { ...current, config }
+      })
+    }
+    return this.getExtensionView(id)
+  }
+
+  /** 显式 target 优先;没给就按字段声明的范围。WorkspaceFolder 与 Workspace 同义 */
+  private scopeForUpdate(field: PluginField, target?: number): 'global' | 'workspace' {
+    if (target === 2 || target === 3) return 'workspace'
+    if (target === 1) return 'global'
+    return field.scope === 'workspace' ? 'workspace' : 'global'
+  }
+
+  /**
+   * 写当前仓库的覆盖层。值从覆盖层删掉(而不是写空串)才会重新跟随全局值;
+   * 覆盖层空了就顺手删掉这个仓库的键,settings.json 不会留一串空对象。
+   */
+  private async writeWorkspaceValue(
+    id: string,
+    root: string,
+    key: string,
+    value: unknown
+  ): Promise<void> {
+    const vault = workspaceConfigKey(root)
+    await this.writePreference(id, current => {
+      const all = isPlainRecord(current.workspaceConfig) ? { ...current.workspaceConfig } : {}
+      const bucket = isPlainRecord(all[vault]) ? { ...all[vault] } : {}
+      if (value === undefined) delete bucket[key]
+      else bucket[key] = value
+      if (Object.keys(bucket).length > 0) all[vault] = bucket
+      else delete all[vault]
+      return { ...current, workspaceConfig: all }
+    })
   }
 
   async setExtensionSecret(id: string, key: string, value: string | null): Promise<void> {
@@ -957,15 +1059,35 @@ export class ExtensionService {
     return 'stopped'
   }
 
-  private computePlan(): HostPlan {
-    const extensions: HostPlannerExtension[] = [...this.entries.values()].map(entry => ({
+  private plannerExtensions(): HostPlannerExtension[] {
+    return [...this.entries.values()].map(entry => ({
       id: entry.id,
       enabled: entry.enabled && !entry.loadError,
       hasMain: Boolean(entryFileOf(entry.manifest)),
       extensionDependencies: entry.manifest.extensionDependencies ?? [],
       extensionAffinity: entry.manifest.extensionAffinity ?? []
     }))
-    return planHosts(extensions, this.hostSettings.mode, this.hostSettings.affinity)
+  }
+
+  private computePlan(): HostPlan {
+    return planHosts(this.plannerExtensions(), this.hostSettings.mode, this.hostSettings.affinity)
+  }
+
+  /**
+   * 当前分组是否仍等同于某个模式按钮的默认行为。
+   *
+   * 用户手填分组编号之后,实际结果可能既不是「每个扩展各自一组」,也不是
+   * 「所有扩展一组」;这时返回 `custom`,界面上两个模式按钮都不选中。
+   * 先比当前模式:只有启用的扩展为一个时,两种模式的默认分组本来就相同。
+   */
+  private hostModeState(): ExtensionHostMode | 'custom' {
+    const extensions = this.plannerExtensions()
+    const actual = planPartitionKey(this.hostPlan)
+    const current = this.hostSettings.mode
+    for (const mode of [current, current === 'shared' ? 'isolated' : 'shared'] as const) {
+      if (planPartitionKey(planHosts(extensions, mode, {})) === actual) return mode
+    }
+    return 'custom'
   }
 
   /**
@@ -1113,16 +1235,18 @@ export class ExtensionService {
       await this.stateStore.preload(id)
       const storage = await this.stateStore.ensureStorage(id)
       const state = this.stateStore.snapshotSync(id)
+      const config = this.configStateFor(entry)
       extensions.push({
         id,
         extensionPath: entry.root,
         manifest: entry.manifest,
-        config: this.configFor(entry),
+        config: config.values,
+        globalConfig: config.globalConfig,
+        workspaceConfig: config.workspaceConfig,
         globalState: state.global,
         workspaceState: state.workspace,
         globalStoragePath: storage,
-        logPath: this.logStorePath(id),
-        mode: entry.dev ? 'development' : 'production'
+        logPath: this.logStorePath(id)
       })
     }
     const visible = this.documents.visible.slice(0, MAX_OPEN_DOCUMENTS)
@@ -1325,7 +1449,7 @@ export class ExtensionService {
         this.stateStore.set(message.extensionId, message.scope, message.key, message.value)
         return
       case 'output.append':
-        this.handleOutputAppend(message.extensionId, message.channel, message.text)
+        this.handleOutputAppend(message.extensionId, message.channel, message.text, message.level)
         return
       case 'statusbar':
         this.handleStatusBar(rec, message)
@@ -1451,11 +1575,17 @@ export class ExtensionService {
     this.logStore.add(message.extensionId, message.level, message.message)
   }
 
-  private handleOutputAppend(extensionId: string, channel: string, text: string): void {
+  private handleOutputAppend(
+    extensionId: string,
+    channel: string,
+    text: string,
+    level: 'debug' | 'info' | 'warn' | 'error' = 'info'
+  ): void {
     if (!this.entries.has(extensionId)) return
+    const safeLevel = level === 'debug' || level === 'warn' || level === 'error' ? level : 'info'
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue
-      this.logStore.add(extensionId, 'info', channel ? `[${channel}] ${line}` : line)
+      this.logStore.add(extensionId, safeLevel, channel ? `[${channel}] ${line}` : line)
     }
   }
 
@@ -1683,10 +1813,31 @@ export class ExtensionService {
           if (!message.key.startsWith(`${message.extensionId}.`)) {
             throw new Error(`扩展只能修改自己命名空间下的配置：${message.key}`)
           }
-          await this.writePreference(message.extensionId, current => ({
-            ...current,
-            config: { ...current.config, [message.key]: message.value }
-          }))
+          const entry = this.entries.get(message.extensionId)
+          const field = entry ? fieldOf(entry, message.key) : undefined
+          const scope = field
+            ? this.scopeForUpdate(field, message.target)
+            : message.target === 2 || message.target === 3
+              ? 'workspace'
+              : 'global'
+          if (scope === 'workspace') {
+            if (!this.workspaceRoot) {
+              throw new Error('未打开仓库，无法写入按仓库生效的配置')
+            }
+            await this.writeWorkspaceValue(
+              message.extensionId,
+              this.workspaceRoot,
+              message.key,
+              message.value
+            )
+          } else {
+            await this.writePreference(message.extensionId, current => {
+              const config = { ...current.config }
+              if (message.value === undefined) delete config[message.key]
+              else config[message.key] = message.value
+              return { ...current, config }
+            })
+          }
           host.respond(requestId, true)
           return
         }
@@ -1831,7 +1982,35 @@ export class ExtensionService {
     if (!registration || registration.extensionId !== owner) {
       throw new Error(`命令「${command}」没有处理器`)
     }
-    return rec.process.requestCommand(command, [...args], this.options.commandTimeoutMs ?? 120000)
+    // 设置页的「调试」要能看到最近做过什么。命令执行结果记成一条 operation 日志,
+    // 与扩展自己 log() 的行共用同一个尾巴和同一个文件。
+    const declared = this.entries
+      .get(owner)
+      ?.manifest.contributes?.commands?.find(item => item.command === command)
+    const label = registration.title ?? declared?.title ?? command
+    try {
+      const value = await rec.process.requestCommand(
+        command,
+        [...args],
+        this.options.commandTimeoutMs ?? 120000
+      )
+      // 动作类命令返回 `{ ok: false, message }` 而不是抛错:日志要照实记失败,
+      // 否则状态卡写着失败、调试区却还挂一条「成功」。
+      const failedAction =
+        value !== null && typeof value === 'object' && (value as { ok?: unknown }).ok === false
+      if (failedAction) {
+        const actionMessage = (value as { message?: unknown }).message
+        const reason =
+          typeof actionMessage === 'string' && actionMessage ? actionMessage : '命令返回失败'
+        this.logStore.add(owner, 'operation', `${label} · 失败：${reason}`)
+      } else {
+        this.logStore.add(owner, 'operation', `${label} · 成功`)
+      }
+      return value
+    } catch (err) {
+      this.logStore.add(owner, 'operation', `${label} · 失败：${errorMessage(err)}`)
+      throw err
+    }
   }
 
   private commandOwner(command: string): string | null {
@@ -1866,9 +2045,12 @@ export class ExtensionService {
 
   private onSettingsChanged(next: Awaited<ReturnType<typeof loadSettings>>, prev: typeof next): void {
     if (this.disposing) return
-    const nextHost = next.extensionHost ?? { mode: 'isolated' as const, affinity: {} }
+    const nextHost = next.extensionHost ?? { mode: 'shared' as const, affinity: {} }
     const hostChanged = !sameHostSettings(this.hostSettings, nextHost)
     this.hostSettings = nextHost
+    // 先留一份「变更前」的快照:下面刷新仓库根之后,effective 配置要按旧值判断
+    const previousPreferences = this.preferences
+    const previousRoot = this.workspaceRoot
     const { toDeactivate, toActivate, enabledChanged } = this.applyPreferenceChanges(
       next.extensions ?? {}
     )
@@ -1892,6 +2074,22 @@ export class ExtensionService {
       }
     }
     if (next.vaultPath !== prev.vaultPath) this.refreshWorkspaceFolders()
+    // 生效配置可能因为全局值、当前仓库覆盖值或仓库本身切换而变化。
+    // 只给真正变化的扩展推 configuration.changed,插件收到的永远是合并后的值。
+    for (const entry of this.entries.values()) {
+      if (!entry.enabled) continue
+      const before = this.configStateFor(entry, previousPreferences, previousRoot)
+      const after = this.configStateFor(entry)
+      // 比较三层:即使生效值相同,「这条值存在全局层还是当前仓库层」也可能变了
+      // (inspect() 要准确,切换仓库时尤其如此)。
+      if (
+        JSON.stringify(before.values) !== JSON.stringify(after.values) ||
+        JSON.stringify(before.globalConfig) !== JSON.stringify(after.globalConfig) ||
+        JSON.stringify(before.workspaceConfig) !== JSON.stringify(after.workspaceConfig)
+      ) {
+        this.pushConfig(entry.id)
+      }
+    }
     this.scheduleContributions()
   }
 
@@ -1900,7 +2098,6 @@ export class ExtensionService {
     toActivate: string[]
     enabledChanged: boolean
   } {
-    const previous = this.preferences
     this.preferences = nextPrefs
     const toDeactivate: string[] = []
     const toActivate: string[] = []
@@ -1917,11 +2114,6 @@ export class ExtensionService {
           this.setRuntimeStatus(entry.id, 'inactive', { lastError: null, activationFailures: 0 })
         }
         if (!entry.enabled) this.setRuntimeStatus(entry.id, 'disabled')
-      }
-      if (entry.enabled && before) {
-        const beforeConfig = JSON.stringify(previous[entry.id]?.config ?? {})
-        const afterConfig = JSON.stringify(preference?.config ?? {})
-        if (beforeConfig !== afterConfig) this.pushConfig(entry.id)
       }
     }
     // 声明命令的归属只含启用中的扩展；启用/禁用后必须重算，否则命令面板
@@ -1952,10 +2144,13 @@ export class ExtensionService {
   private pushConfig(id: string): void {
     const entry = this.entries.get(id)
     if (!entry) return
+    const config = this.configStateFor(entry)
     this.pushToExtensionHost(id, {
       kind: 'configuration.changed',
       extensionId: id,
-      values: this.configFor(entry)
+      values: config.values,
+      globalConfig: config.globalConfig,
+      workspaceConfig: config.workspaceConfig
     })
   }
 
@@ -2236,7 +2431,7 @@ export class ExtensionService {
     if (!uri) return false
     try {
       const value = await this.requestRenderer({ op: 'saveDocument', uri }, 30000)
-      return value === true || (typeof value === 'object' && value !== null && (value as { ok?: unknown }).ok === true)
+      return value === true
     } catch {
       return false
     }
@@ -2278,6 +2473,7 @@ export class ExtensionService {
 
   private refreshWorkspaceFolders(): void {
     const root = this.options.getWorkspaceRoot?.() ?? getSettingsSync()?.vaultPath ?? null
+    this.workspaceRoot = root
     const folders: WorkspaceFolderDto[] = root
       ? [{ uri: pathToFileURL(root).toString(), name: basename(root) || root }]
       : []
@@ -2312,7 +2508,6 @@ export class ExtensionService {
       secrets: {},
       logs: this.logStore.list(id),
       ...(entry.installed ? { installed: entry.installed } : {}),
-      ...(entry.dev ? { dev: true } : {}),
       ...(entry.loadError ? { loadError: entry.loadError } : {})
     }
     return version
@@ -2447,8 +2642,7 @@ export class ExtensionService {
         descriptor: descriptorFromManifest(manifest),
         enabled: preference?.enabled !== false,
         source: record?.source ?? 'local',
-        installed: record ? installInfoOf(record) : null,
-        dev: false
+        installed: record ? installInfoOf(record) : null
       }
       next.set(id, entry)
     }
@@ -2482,14 +2676,64 @@ export class ExtensionService {
     await this.reloadEntries()
   }
 
-  private configFor(entry: ExtensionEntry): Record<string, unknown> {
-    const stored = this.preferences[entry.id]?.config ?? {}
+  /** 某个偏好里当前仓库的覆盖表;没有 / 形状不对时按空表处理 */
+  private workspaceOverrides(
+    preference: ExtensionPreference | undefined,
+    root: string | null
+  ): Record<string, unknown> {
+    if (!root) return {}
+    const all = preference?.workspaceConfig
+    if (!isPlainRecord(all)) return {}
+    const bucket = all[workspaceConfigKey(root)]
+    return isPlainRecord(bucket) ? bucket : {}
+  }
+
+  /** 全局层里显式保存的值(不补默认值) */
+  private globalValues(preference: ExtensionPreference | undefined): Record<string, unknown> {
+    return isPlainRecord(preference?.config) ? { ...preference.config } : {}
+  }
+
+  /**
+   * 生效配置 = 默认值 ← 全局值 ← 当前仓库覆盖值,最后按清单声明的形状归一化。
+   *
+   * `preferences` / `root` 可以传「本次变更之前」的快照:设置变更时用它算旧值,
+   * 判断哪些扩展的生效配置真的变了,只给这些扩展推 `configuration.changed`。
+   */
+  private configFor(
+    entry: ExtensionEntry,
+    preferences: Record<string, ExtensionPreference> = this.preferences,
+    root: string | null = this.workspaceRoot
+  ): Record<string, unknown> {
+    const preference = preferences[entry.id]
+    const global = this.globalValues(preference)
+    const overrides = this.workspaceOverrides(preference, root)
     const config: Record<string, unknown> = {}
     for (const field of entry.descriptor.settingsFields) {
       const fullKey = `${entry.id}.${field.key}`
-      config[fullKey] = normalizeFieldValue(field, stored[fullKey])
+      const raw = Object.prototype.hasOwnProperty.call(overrides, fullKey)
+        ? overrides[fullKey]
+        : global[fullKey]
+      config[fullKey] = normalizeFieldValue(field, raw)
     }
     return config
+  }
+
+  /** 宿主初始化 / 配置推送用:生效值 + 两层显式值 */
+  private configStateFor(
+    entry: ExtensionEntry,
+    preferences: Record<string, ExtensionPreference> = this.preferences,
+    root: string | null = this.workspaceRoot
+  ): {
+    values: Record<string, unknown>
+    globalConfig: Record<string, unknown>
+    workspaceConfig: Record<string, unknown>
+  } {
+    const preference = preferences[entry.id]
+    return {
+      values: this.configFor(entry, preferences, root),
+      globalConfig: this.globalValues(preference),
+      workspaceConfig: this.workspaceOverrides(preference, root)
+    }
   }
 }
 

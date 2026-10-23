@@ -9,6 +9,7 @@
     "imark": "^1.0.0"
   },
   "main": "./main.js",
+  "icon": "./icon.svg",
   "activationEvents": [
     "onStartupFinished",
     "onCommand:imark.git-sync.syncNow",
@@ -60,10 +61,11 @@
           "type": "array",
           "default": [],
           "title": "远端仓库",
-          "description": "每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub、GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，插件也不改动你仓库的 remote 设置。",
+          "description": "每个仓库分别保存自己的远端列表：切换仓库后自动换用该仓库的配置。每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub、GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，扩展也不改动你仓库的 remote 设置。",
           "imark": {
             "kind": "targets",
             "section": "远程仓库",
+            "scope": "workspace",
             "targetSecret": {
               "label": "访问令牌",
               "placeholder": "必填（私有仓库需要访问令牌）"
@@ -96,16 +98,14 @@
           "type": "string",
           "default": "auto",
           "title": "连接方式",
-          "description": "git 不会读取 Windows 的系统代理，所以浏览器能打开 GitHub 时这里仍可能超时。自动模式会依次检查 HTTP_PROXY / HTTPS_PROXY 环境变量与 Windows 系统代理（Clash、FlClash 等客户端开启「系统代理」时写入）。代理只作用于 HTTP(S) 远端；SSH 地址不经过它。",
+          "description": "git 不会读取 Windows 的系统代理，所以浏览器能打开 GitHub 时这里仍可能超时。自动模式会依次检查 HTTP_PROXY / HTTPS_PROXY 环境变量与 Windows 系统代理（Clash、FlClash 等客户端开启「系统代理」时写入）。找不到可用代理时直接连接。代理只作用于 HTTP(S) 远端；SSH 地址不经过它。",
           "enum": [
             "auto",
-            "manual",
-            "off"
+            "manual"
           ],
           "enumDescriptions": [
             "自动检测本机代理",
-            "手动指定代理",
-            "直连（不使用代理）"
+            "手动指定代理"
           ],
           "imark": {
             "kind": "select",

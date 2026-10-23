@@ -173,7 +173,6 @@ export function previewEnvelope(
         .sort((a, b) => a.name.localeCompare(b.name)),
       mainSha256,
       installed: installed ? { version: installed.version, integrity: installed.integrity } : null,
-      installedVersion: installed?.version ?? null,
       downgraded: Boolean(installed && isNewerVersion(installed.version, manifest.version)),
       origin: origin.kind,
       originLabel: origin.label

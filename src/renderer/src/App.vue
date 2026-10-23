@@ -17,6 +17,7 @@ import LineActionDialog from './components/LineActionDialog.vue'
 import ExtensionDialogHost from './components/ExtensionDialogHost.vue'
 import ToastHost from './components/ToastHost.vue'
 import {
+  activeTab,
   appStore,
   applyTheme,
   editorHolder,
@@ -41,7 +42,7 @@ import {
   saveCurrentFile,
   saveFileAs
 } from './services/fileService'
-import { activeTab, stepTab } from './services/tabs'
+import { stepTab } from './services/tabs'
 import {
   enterEditorAndWait,
   initVaultList,
@@ -225,13 +226,13 @@ onBeforeUnmount(() => {
     <!-- 状态栏铃铛的小框:固定在右下角,层级低于设置 / 市场这些模态层 -->
     <NotificationCenter />
     <QuickSwitcher />
-    <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有插件贡献菜单条目时什么都不渲染 -->
+    <!-- 行首「+」的菜单与参数对话框:两者自带 v-if,没有扩展贡献菜单条目时什么都不渲染 -->
     <LineMenu />
     <LineActionDialog />
     <!-- 扩展要的模态框（消息/输入/快速选择），与行首菜单的参数框共用一套外观 -->
     <ExtensionDialogHost />
     <SettingsDialog />
-    <!-- 右下角通知:层级最高,插件在用户翻设置时报的错也要看得见 -->
+    <!-- 右下角通知:层级最高,扩展在用户翻设置时报的错也要看得见 -->
     <ToastHost />
   </div>
 </template>

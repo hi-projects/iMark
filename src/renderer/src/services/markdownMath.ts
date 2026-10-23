@@ -4,7 +4,7 @@ import katex from 'katex'
 /**
  * markdown-it 的 LaTeX 支持:行内 $...$ / \(...\) 与块级 $$...$$ / \[...\](可跨行)。
  *
- * 导出 HTML、插件预览(renderMarkdownFragment)和编辑器表格单元格共用这一份规则 ——
+ * 导出 HTML、扩展预览(renderMarkdownFragment)和编辑器表格单元格共用这一份规则 ——
  * 同一篇文档在编辑器里与导出后必须长得一样,公式尤其不能一处渲染、一处裸奔。
  * 这里只装语法和渲染器,html/linkify/highlight 等配置仍由调用方的实例决定。
  *

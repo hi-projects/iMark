@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import type { EditorView } from '@codemirror/view'
-import { appStore, type OutlineItem } from '../stores/app'
+import { activeTab, appStore, editorHolder, type OutlineItem } from '../stores/app'
 import { jumpToHeading } from '../editor/outline'
-import { editorHolder } from '../stores/app'
 
+const outline = computed(() => activeTab()?.outline ?? [])
 const itemEls = new Map<number, HTMLElement>()
 
 function setItemRef(from: number, el: unknown): void {
@@ -37,7 +37,7 @@ function indent(level: number): string {
     <div class="outline-header">大纲</div>
     <div class="outline-list">
       <div
-        v-for="item in appStore.outline"
+        v-for="item in outline"
         :key="item.from"
         :ref="el => setItemRef(item.from, el)"
         class="outline-item"
@@ -48,7 +48,7 @@ function indent(level: number): string {
       >
         {{ item.text }}
       </div>
-      <div v-if="appStore.outline.length === 0" class="outline-empty">暂无标题,使用 # 创建标题后显示大纲</div>
+      <div v-if="outline.length === 0" class="outline-empty">暂无标题,使用 # 创建标题后显示大纲</div>
     </div>
   </aside>
 </template>

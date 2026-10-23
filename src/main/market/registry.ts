@@ -23,7 +23,7 @@ import { downloadEnvelope, downloadIcon, getJson, postJson, resolveUrl } from '.
 /** 每个需要地址的接口都先过这里,好让「没配置市场地址」是一句人话而不是一个 URL 错误 */
 async function base(): Promise<string> {
   const registry = await getRegistryUrl()
-  if (!registry) throw new Error('还没有设置插件市场地址 —— 在「发布插件」页填一个，或先用仓库里的 server/ 起一个本机市场')
+  if (!registry) throw new Error('还没有设置扩展市场地址 —— 在「发布扩展」页填一个，或先用仓库里的 server/ 起一个本机市场')
   return registry
 }
 
@@ -176,6 +176,6 @@ export async function health(url?: string): Promise<HealthInfo> {
     registry = await base()
   }
   const info = await getJson<HealthInfo>(resolveUrl(registry, '/api/v1/health'), { timeoutMs: 4000 })
-  if (!info?.ok) throw new Error('这个地址上的服务没有响应健康检查,它可能不是 iMark 插件市场')
+  if (!info?.ok) throw new Error('这个地址上的服务没有响应健康检查,它可能不是 iMark 扩展市场')
   return info
 }

@@ -5,7 +5,7 @@ import { writeFileAtomic } from './files'
 import { dataRoot } from './dataDir'
 
 /**
- * 插件密钥(token 等)存储。
+ * 扩展密钥(token 等)存储。
  *
  * - 默认用 Electron safeStorage 加密(Windows 走 DPAPI,绑定当前用户),磁盘上只落 base64 密文;
  * - 每条记录自带 enc 标记,所以「加密可用性发生变化」时旧记录仍能正确读回;
@@ -123,9 +123,9 @@ export async function setSecret(key: string, value: string | null): Promise<void
 }
 
 /**
- * 删除某个插件名下的全部密钥(卸载时用)。
+ * 删除某个扩展名下的全部密钥(卸载时用)。
  *
- * 用前缀删除而不是逐个 key:插件可能改过认证方式,留下 `<id>:<field>:<target>#password`
+ * 用前缀删除而不是逐个 key:扩展可能改过认证方式,留下 `<id>:<field>:<target>#password`
  * 这类当前配置里已不存在的槽位,按配置推算的 key 列表会漏掉它们。
  *
  * 必须逐个 `hintCache.delete()`:这个缓存是「掩码」的缓存,不清的话下一次状态广播

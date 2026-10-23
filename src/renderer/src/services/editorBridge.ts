@@ -32,14 +32,13 @@ import type {
   ThemeDto
 } from '@shared/extensionProtocol'
 import type { ExtensionContextKeys } from '@shared/extensions'
-import { appStore, editorHolder } from '../stores/app'
+import { activeTab, appStore, editorHolder } from '../stores/app'
 import { setEditorUpdateObserver } from '../editor/setup'
 import { setExtensionDecorationsEffect } from '../editor/extensionDecorations'
 import { focusRenderedTableAtPosition } from '../editor/wysiwyg/widgets'
 import { renderMarkdownFragment } from './exportHtml'
 import {
   activateTab,
-  activeTab,
   applyTabChanges,
   setTabDocumentObserver,
   tabById,
@@ -656,7 +655,7 @@ export function initEditorBridge(): () => void {
     () => sendActive()
   )
   const stopDirtyWatch = watch(
-    () => appStore.dirty,
+    () => activeTab()?.dirty ?? false,
     () => sendContext()
   )
   const stopVaultWatch = watch(

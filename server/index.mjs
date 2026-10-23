@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * iMark 插件市场 —— 自托管服务端。
+ * iMark 扩展市场 —— 自托管服务端。
  *
  * 零依赖:只用 node: 内置模块,所以「跑起来」这件事的成本是
  * `node server/index.mjs`,不需要 npm install、不需要数据库、不需要构建。
@@ -83,7 +83,7 @@ const server = createServer(router.handler())
 
 server.listen(PORT, HOST, async () => {
   await store.init()
-  console.log(`[market] iMark 插件市场 ${VERSION}`)
+  console.log(`[market] iMark 扩展市场 ${VERSION}`)
   console.log(`[market] 监听 http://${HOST}:${PORT}`)
   console.log(`[market] 数据目录 ${DATA}`)
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {

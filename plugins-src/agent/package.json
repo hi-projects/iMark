@@ -3,16 +3,15 @@
   "publisher": "imark",
   "version": "1.0.0",
   "displayName": "Agent Core",
-  "description": "Agent 对话宿主：会话、附件、提示词与权限模式；具体后端由 Agent provider 插件提供",
+  "description": "Agent 对话宿主：会话、附件、提示词与权限模式；具体后端由 Agent provider 扩展提供",
   "author": "iMark",
   "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
+  "icon": "./icon.svg",
   "activationEvents": [
     "onStartupFinished",
     "onCommand:imark.agent.openChat",
-    "onCommand:imark.agent.generate",
     "onCommand:imark.agent.beautify",
-    "onCommand:imark.agent.checkProvider",
     "onCommand:imark.agent.stop",
     "onWebviewPanel:imark.agent.chat"
   ],
@@ -28,19 +27,8 @@
         "category": "Agent Core"
       },
       {
-        "command": "imark.agent.generate",
-        "title": "Agent Core 生成内容",
-        "category": "Agent Core",
-        "detail": "在对话面板里根据一句话描述生成 Markdown"
-      },
-      {
         "command": "imark.agent.beautify",
         "title": "Agent Core 整理当前文档",
-        "category": "Agent Core"
-      },
-      {
-        "command": "imark.agent.checkProvider",
-        "title": "检查 Agent Core 可用性",
         "category": "Agent Core"
       },
       {
@@ -69,42 +57,13 @@
           "minimum": 1,
           "maximum": 100,
           "title": "单个附件上限（MB）",
-          "description": "超过上限的文件会在上传阶段被拒绝；插件不解析附件内容。",
+          "description": "超过上限的文件会在上传阶段被拒绝；扩展不解析附件内容。",
           "imark": {
             "kind": "number",
             "section": "附件"
           }
         }
       }
-    },
-    "imark.lineMenu": [
-      {
-        "id": "agent-generate",
-        "label": "Agent Core 生成内容",
-        "command": "imark.agent.generate",
-        "dialog": {
-          "title": "Agent Core 生成内容",
-          "confirmLabel": "生成",
-          "fields": [
-            {
-              "key": "prompt",
-              "kind": "text",
-              "label": "生成要求",
-              "default": "",
-              "placeholder": "例如：根据附件论文写一篇综述",
-              "description": "打开 Agent Core 对话，并把这条要求填进输入框。"
-            }
-          ]
-        }
-      }
-    ],
-    "imark.actions": [
-      {
-        "command": "imark.agent.checkProvider",
-        "label": "检查 Agent Core",
-        "scope": "global",
-        "primary": true
-      }
-    ]
+    }
   }
 }

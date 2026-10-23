@@ -4,10 +4,10 @@
  * 只有几百行,却换掉了整个 express 依赖树 —— 这个服务端的路由需求就是这么小:
  * 十来条路径、没有中间件体系、没有模板、没有静态资源(图标由 blob 现取)。
  * 依赖为零的另一个好处是它能在任何一台装了 Node 的机器上直接 `node index.mjs` 跑起来,
- * 不需要 npm install —— 自托管插件市场的门槛应该低到这个程度。
+ * 不需要 npm install —— 自托管扩展市场的门槛应该低到这个程度。
  */
 
-/** 请求体上限:**默认 1 MiB**。发布插件走的是一条单独放宽到 12 MiB 的路径 */
+/** 请求体上限:**默认 1 MiB**。发布扩展走的是一条单独放宽到 12 MiB 的路径 */
 export const DEFAULT_BODY_LIMIT = 1024 * 1024
 
 /**
@@ -118,7 +118,7 @@ export function createRouter(opts = {}) {
       method,
       parts: segments(pattern),
       handler,
-      // 每条路由可以单独放宽体积上限(发布插件需要)
+      // 每条路由可以单独放宽体积上限(发布扩展需要)
       limit: options.limit
     })
   }

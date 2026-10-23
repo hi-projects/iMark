@@ -26,7 +26,7 @@ import type { UserStyleImportOutcome, UserStyleItem, UserStyleState } from '@sha
 import { registerStyle, unregisterStyle } from '../styles'
 import { api } from './api'
 
-/** 注入 id 前缀,与将来可能出现的其他样式来源(插件等)区分开 */
+/** 注入 id 前缀,与将来可能出现的其他样式来源(扩展等)区分开 */
 const ID_PREFIX = 'user:'
 
 export const styleStore = reactive<{

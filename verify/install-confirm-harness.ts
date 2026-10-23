@@ -19,7 +19,6 @@ import { previewEnvelope } from '../src/main/market/installer'
 import { packDirectory } from '../src/main/market/pack'
 import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
 import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
-import aiForEditPackage from '../src/main/market/builtin/imark.ai-for-edit.imkpkg.json?raw'
 import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
 import claudeCodePackage from '../src/main/market/builtin/imark.claude-code.imkpkg.json?raw'
 
@@ -64,17 +63,7 @@ async function main(): Promise<void> {
     check('需要风险确认', quick.value.hasMain === true)
   }
 
-  // ---------- [C] AI 扩展 ----------
-  console.log('\n[C] 含代码扩展(ai-for-edit)')
-  const ai = previewEnvelope(JSON.parse(aiForEditPackage), origin)
-  check('预览成功', ai.ok, ai.ok ? '' : ai.errors.join(';'))
-  if (ai.ok) {
-    check('hasMain = true', ai.value.hasMain === true)
-    check('activationEvents 含 onWebviewPanel', ai.value.activationEvents.some(e => e.startsWith('onWebviewPanel:')), JSON.stringify(ai.value.activationEvents))
-    check('能力声明含 network/secrets', ai.value.capabilities.network === true && ai.value.capabilities.secrets === true)
-  }
-
-  // ---------- [C2] Agent Core ----------
+  // ---------- [C] Agent Core ----------
   console.log('\n[C2] 含代码扩展(agent)')
   const agent = previewEnvelope(JSON.parse(agentPackage), origin)
   check('预览成功', agent.ok, agent.ok ? '' : agent.errors.join(';'))
@@ -85,7 +74,7 @@ async function main(): Promise<void> {
     check('贡献摘要非全零', agent.value.contributesSummary.commands > 0, JSON.stringify(agent.value.contributesSummary))
   }
 
-  // ---------- [C3] Claude Code ----------
+  // ---------- [C2] Claude Code ----------
   console.log('\n[C3] 含代码扩展(claude-code)')
   const claude = previewEnvelope(JSON.parse(claudeCodePackage), origin)
   check('预览成功', claude.ok, claude.ok ? '' : claude.errors.join(';'))
@@ -93,12 +82,12 @@ async function main(): Promise<void> {
     check('hasMain = true', claude.value.hasMain === true)
     check('显示名为 Claude Code', claude.value.name === 'Claude Code', claude.value.name)
     check(
-      '能力声明含 network/secrets/process/shell',
+      '能力声明含 network/process/shell',
       claude.value.capabilities.network === true &&
-        claude.value.capabilities.secrets === true &&
         claude.value.capabilities.process === true &&
         claude.value.capabilities.shell === true
     )
+    check('不再声明 secrets 能力（令牌在 settings.json）', claude.value.capabilities.secrets !== true)
     check('贡献摘要带出配置', claude.value.contributesSummary.configuration > 0, JSON.stringify(claude.value.contributesSummary))
   }
 

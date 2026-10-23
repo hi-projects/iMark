@@ -99,7 +99,7 @@ function authorLine(entry: { author: string | null; publisher: string }): string
  *
  * 市场里可能留着一个比本地旧的版本(自托管市场尤其常见)。那种情况下按钮仍写
  * 「更新」的话,点下去只会下载一份注定被客户端校验拒绝的包 —— 用户看到的是
- * 一句 "插件包校验失败",而不是「你已经是最新的」。
+ * 一句 "扩展包校验失败",而不是「你已经是最新的」。
  */
 function canInstall(entry: { id: string; version: string }): boolean {
   const local = localVersion(entry.id)
@@ -139,7 +139,7 @@ onMounted(async () => {
         <input
           v-model="nav.query"
           type="search"
-          placeholder="搜索插件名、描述或作者…"
+          placeholder="搜索扩展名、描述或作者…"
           @keyup.enter="applyQuery()"
         />
       </label>
@@ -172,8 +172,8 @@ onMounted(async () => {
 
     <div v-else-if="result.items.length === 0" class="market-empty">
       <Package :size="22" />
-      <p v-if="nav.query">没有匹配「{{ nav.query }}」的插件。</p>
-      <p v-else>这个市场里还没有插件。第一个也可以是你 —— 见「发布插件」页。</p>
+      <p v-if="nav.query">没有匹配「{{ nav.query }}」的扩展。</p>
+      <p v-else>这个市场里还没有扩展。第一个也可以是你 —— 见「发布扩展」页。</p>
     </div>
 
     <template v-else>
@@ -218,7 +218,7 @@ onMounted(async () => {
                 可更新
               </span>
             </div>
-            <p class="market-card-desc">{{ item.description || '（这个插件还没有写说明）' }}</p>
+            <p class="market-card-desc">{{ item.description || '（这个扩展还没有写说明）' }}</p>
             <div class="market-row-sub">
               <span>{{ authorLine(item) }}</span>
               <span>{{ item.downloads }} 次下载</span>

@@ -50,6 +50,7 @@ function toolKind(name: string): ToolKind {
     case 'Edit':
       return 'edit'
     case 'Bash':
+    case 'PowerShell':
       return 'shell'
     case 'WebFetch':
     case 'WebSearch':
@@ -71,7 +72,7 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
     return clip(`${path}${content ? ` (${content.length} 字符)` : ''}`, 200)
   }
   if (name === 'Edit') return clip(path || '编辑文件', 200)
-  if (name === 'Bash') return clip(str(input.command) || '执行命令', 200)
+  if (name === 'Bash' || name === 'PowerShell') return clip(str(input.command) || '执行命令', 200)
   if (name === 'Glob') return clip(str(input.pattern) || path || '查找文件', 200)
   if (name === 'Grep') return clip(`${str(input.pattern)}${path ? ` @ ${path}` : ''}` || '搜索', 200)
   if (name === 'WebFetch') return clip(str(input.url) || '抓取网页', 200)
@@ -121,6 +122,8 @@ export class ClaudeEventMapper {
   private sawThinkingDelta = false
   private accumulatedText = ''
   private readonly toolNames = new Map<string, string>()
+  /** 已计过数的 assistant 消息 id；CLI 会把一条消息按内容块拆成多条记录 */
+  private readonly assistantMessageIds = new Set<string>()
 
   handle(raw: unknown): AgentEvent[] {
     if (!isRecord(raw)) return []
@@ -185,7 +188,14 @@ export class ClaudeEventMapper {
 
   private handleAssistant(message: unknown): AgentEvent[] {
     if (!isRecord(message)) return []
-    this.assistantCount += 1
+    // 带 --include-partial-messages 时，一条 assistant 消息会按内容块拆成多条
+    // stream-json 记录（thinking 一条、tool_use/text 一条），它们共享 message.id。
+    // 轮数以消息为单位计，否则一条消息算两轮，maxTurns 会提前一半触发。
+    const messageId = str(message.id)
+    if (!messageId || !this.assistantMessageIds.has(messageId)) {
+      if (messageId) this.assistantMessageIds.add(messageId)
+      this.assistantCount += 1
+    }
     const content = Array.isArray(message.content) ? message.content : []
     const events: AgentEvent[] = []
     for (const block of content) {

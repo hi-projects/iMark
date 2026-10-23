@@ -14,7 +14,11 @@ import type {
   SessionMessage,
   SessionSummary
 } from './protocol'
-import { MAX_ATTACHMENTS_PER_SESSION, MAX_SESSION_MESSAGES } from './protocol'
+import {
+  MAX_ATTACHMENTS_PER_SESSION,
+  MAX_SESSION_MESSAGES,
+  toAttachmentMeta
+} from './protocol'
 
 export interface SessionMeta {
   version: 1
@@ -74,17 +78,6 @@ function docIndexKey(documentKey: string): string {
 
 function emptyIndex(): IndexFile {
   return { version: 1, documents: {} }
-}
-
-function toAttachmentMeta(attachment: StagedAttachment): AttachmentMeta {
-  return {
-    id: attachment.id,
-    name: attachment.name,
-    size: attachment.size,
-    mime: attachment.mime,
-    sha256: attachment.sha256,
-    kind: attachment.kind
-  }
 }
 
 export function attachmentsOf(meta: SessionMeta): AttachmentMeta[] {

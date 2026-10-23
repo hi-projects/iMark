@@ -106,7 +106,7 @@ export class WysiwygPlugin {
     })
   }
 
-  /** 组合期间的临时态:平移装饰范围,并丢掉因变更而跨行的 replace(CM 禁止插件提供跨行 replace) */
+  /** 组合期间的临时态:平移装饰范围,并丢掉因变更而跨行的 replace(CM 禁止扩展提供跨行 replace) */
   private remap(changes: ChangeDesc): void {
     const doc = this.view.state.doc
     const decos: Range<Decoration>[] = []

@@ -252,7 +252,7 @@ body.pane-resizing * {
 }
 
 .explorer-menu-item {
-  /* 插件条目右边要挂来源名,所以是 flex 而不是 block */
+  /* 扩展条目右边要挂来源名,所以是 flex 而不是 block */
   display: flex;
   align-items: baseline;
   gap: 12px;
@@ -449,7 +449,7 @@ body.pane-resizing * {
   }
 }
 
-/* 右下角:通知铃铛(插件图标已挪到左侧插件组) */
+/* 右下角:通知铃铛(扩展图标已挪到左侧扩展组) */
 .status-bar .status-actions {
   display: inline-flex;
   align-items: center;
@@ -478,7 +478,7 @@ body.pane-resizing * {
   gap: 2px;
 }
 
-/* 插件图标组:插件状态条目 */
+/* 扩展图标组:扩展状态条目 */
 .status-bar .status-plugin-group {
   display: inline-flex;
   align-items: center;

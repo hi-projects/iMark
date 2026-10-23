@@ -145,7 +145,7 @@ export function buildExtensions(
  * 新建一份文档的 EditorState。
  *
  * 标签页各自持有一份:撤销栈、选区都随 state 走,切换标签不会串历史,
- * 也不需要为每个标签建一个 EditorView(重、且插件只认当前那个视图)。
+ * 也不需要为每个标签建一个 EditorView(重、且扩展只认当前那个视图)。
  */
 export function buildDocumentState(
   content: string,

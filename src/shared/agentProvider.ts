@@ -1,5 +1,5 @@
 /**
- * Agent Core 与 Agent 后端插件（provider）之间的唯一契约。
+ * Agent Core 与 Agent 后端扩展（provider）之间的唯一契约。
  *
  * Core 只依赖这里的事件/会话形状，不认识任何具体 CLI：
  *
@@ -157,7 +157,7 @@ export interface AgentProvider {
   createSession(options: AgentSessionOptions): Promise<AgentSession>
 }
 
-/** provider 插件从 `activate()` 返回的对象 */
+/** provider 扩展从 `activate()` 返回的对象 */
 export interface AgentProviderModule {
   readonly apiVersion: typeof AGENT_PROVIDER_API_VERSION
   readonly providers: readonly AgentProvider[]

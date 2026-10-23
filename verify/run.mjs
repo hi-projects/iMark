@@ -16,7 +16,7 @@
 //      harness 会往那里写桩 settings.json、还会 rm -rf 那里的 vault 和 plugins。
 //      有 `--user-data-dir` 时数据根就是它(见 src/main/dataDir.ts),所以**一切**
 //      ——包括样式目录与 profile——都在这一个临时目录里,碰不到用户真实的 ~/.imark;
-//   4. 每次都从这个干净目录重来(上次跑剩的插件登记会让断言结果不一样)。
+//   4. 每次都从这个干净目录重来(上次跑剩的扩展登记会让断言结果不一样)。
 //
 // ⚠️ **它只重新打包 harness,不会重新构建应用。** harness 是从源码 bundle 的,但
 // preload 与渲染层页面是按 `__dirname` 去 out/ 里找**构建产物**的 —— 改了
@@ -45,7 +45,6 @@ if (!name) {
         'git-sync',
         'git-sync-auth',
         'git-sync-proxy',
-        'ai-for-edit',
         'agent',
         'market-package',
         'market-ui',
@@ -116,7 +115,15 @@ if (!existsSync(electron)) {
   process.exit(2)
 }
 
+// 无人值守时把窗口做成"不可见但仍渲染",避免一个个 Electron 窗口弹到用户桌面上。
+// 默认关闭;设 IMARK_VERIFY_HIDDEN=1 打开(Windows/macOS;Linux 无头用 xvfb-run)。
+const hiddenLauncher = path.join(ROOT, 'verify', 'hidden-window-launcher.cjs')
+const hidden = process.env.IMARK_VERIFY_HIDDEN === '1' && existsSync(hiddenLauncher)
+const electronArgs = hidden
+  ? [hiddenLauncher, bundle, `--user-data-dir=${ud}`, ...rest]
+  : [bundle, `--user-data-dir=${ud}`, ...rest]
+
 console.log(`[verify] 跑 ${name}(userData = ${path.relative(ROOT, ud)},每次重来)`)
-const code = await run(electron, [bundle, `--user-data-dir=${ud}`, ...rest])
+const code = await run(electron, electronArgs)
 console.log(`[verify] ${name} 退出码 ${code}`)
 process.exit(code)

@@ -18,6 +18,7 @@ import type {
   ExtensionContextKeys,
   ExtensionContributionsSnapshot,
   ExtensionHostGroupView,
+  ExtensionHostMode,
   ExtensionInstallInfo,
   ExtensionKeybindingView,
   ExtensionLineMenuView,
@@ -30,17 +31,16 @@ import type { ExtensionManifest } from '@shared/extensionPackage'
 import type { StatusBarItemDto } from '@shared/extensionProtocol'
 import { evaluateWhenClause } from '@shared/whenClause'
 
-/** main 里一个已安装/已挂载扩展的静态信息 */
+/** main 里一个已安装扩展的静态信息 */
 export interface ExtensionEntry {
   id: string
-  /** 扩展目录（dev 挂载时是源码目录） */
+  /** 扩展目录 */
   root: string
   manifest: ExtensionManifest
   descriptor: ExtensionDescriptor
   enabled: boolean
   source: ExtensionSource
   installed: ExtensionInstallInfo | null
-  dev: boolean
   loadError?: string
 }
 
@@ -59,6 +59,8 @@ interface ContributionsInput {
   runtimeCommands: ReadonlyMap<string, RuntimeCommandRegistration>
   /** 应用已有的快捷键（小写、`+` 连接）；冲突的扩展快捷键会被标成 dropped */
   reservedKeys?: ReadonlySet<string>
+  /** 当前分组等同于哪个模式按钮的默认行为；都不是则 `custom` */
+  hostModeState: ExtensionHostMode | 'custom'
   /** 本次运行宿主的 PID（宿主组视图用） */
   pidOf?: (hostId: number) => number | null
   /** 扩展最近一次上报的状态（状态栏着色与悬停说明用） */
@@ -278,6 +280,7 @@ export function buildContributions(input: ContributionsInput): ExtensionContribu
     actions,
     menus,
     context: { ...input.context },
-    hostGroups
+    hostGroups,
+    hostModeState: input.hostModeState
   }
 }

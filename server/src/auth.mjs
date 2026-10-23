@@ -8,7 +8,7 @@
  *   - 比较一律走 timingSafeEqual。
  *
  * 还有一件事这里**没做**:口令找回、邮箱验证、二次验证。自托管的定位是
- * 「小圈子里的插件分发」,做一半的账号体系比不做更危险 —— README 里明说了。
+ * 「小圈子里的扩展分发」,做一半的账号体系比不做更危险 —— README 里明说了。
  */
 
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto'

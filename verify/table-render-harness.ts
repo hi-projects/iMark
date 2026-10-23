@@ -4,7 +4,7 @@
  * 验的是规则表里 case 'Table' 的那一整套:整块渲染成真 <table>,**点击/移动光标
  * 都不再翻回 Markdown 源码** —— 单元格在渲染态就地编辑(见 TableWidget)。
  * 做法与块级公式一致 —— widget 挂在**表头那一行**上,其余行清空并折叠成零高度
- * (CM 不允许插件提供跨行 replace)。
+ * (CM 不允许扩展提供跨行 replace)。
  *
  * 因为"折叠成零高度"和"渲染出来"是两件必须同时成立的事,这里除了查 DOM 里的
  * <table>,还要盯一条**不变式**:表格要么整块渲染,要么整块是源码;
@@ -45,7 +45,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-/** n 行 m 列的表格源码(与 Advanced Table 插件生成的形状一致:行数含表头) */
+/** n 行 m 列的表格源码(与 Advanced Table 扩展生成的形状一致:行数含表头) */
 function makeTable(rows: number, cols: number): string {
   const blank = `|${'     |'.repeat(cols)}`
   const sep = `|${' --- |'.repeat(cols)}`

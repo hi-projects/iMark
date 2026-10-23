@@ -142,7 +142,7 @@ const mathPreviewPlugin = ViewPlugin.fromClass(
 
     /**
      * update() 跑在 CodeMirror 的事务里,此刻 coordsAtPos() 会报
-     * "Reading the editor layout isn't allowed during an update" 并把插件打崩。
+     * "Reading the editor layout isn't allowed during an update" 并把扩展打崩。
      * 推到本轮更新结束后的任务里再做(顺带合并同一轮里的多次变化)。
      */
     private scheduleRefresh(): void {

@@ -20,6 +20,12 @@ import type {
   ExtensionView
 } from '@shared/extensions'
 import type { RendererToMainMessage } from '@shared/extensionProtocol'
+import {
+  openExternalSettingFile,
+  readExternalSetting,
+  writeExternalSetting
+} from './externalSettings'
+import { extensionIconDataUrl } from './icons'
 import { getExtensionService, type ExtensionService } from './service'
 
 function service(): ExtensionService {
@@ -45,6 +51,25 @@ function stringArg(value: unknown, label: string): string {
 export function registerExtensionIpc(): void {
   ipcMain.handle(IPC.ExtensionList, () => views())
 
+  // 图标失败一律回 null:一个图标画不出来不该让设置页或列表报错
+  ipcMain.handle(IPC.ExtensionIcon, (_e, id: unknown) => extensionIconDataUrl(id))
+
+  ipcMain.handle(
+    IPC.ExtensionExternalGet,
+    (_e, payload: { id?: unknown; key?: unknown }) =>
+      readExternalSetting(payload?.id, payload?.key)
+  )
+  ipcMain.handle(
+    IPC.ExtensionExternalSet,
+    (_e, payload: { id?: unknown; key?: unknown; value?: unknown }) =>
+      writeExternalSetting(payload?.id, payload?.key, payload?.value)
+  )
+  ipcMain.handle(IPC.ExtensionExternalOpen, async (_e, payload: { id?: unknown; key?: unknown }) => {
+    const id = stringArg(payload?.id, '扩展 ID')
+    const key = stringArg(payload?.key, '配置键')
+    await openExternalSettingFile(id, key)
+  })
+
   ipcMain.handle(
     IPC.ExtensionSetEnabled,
     async (_e, payload: { id?: unknown; enabled?: unknown }) => {
@@ -55,14 +80,11 @@ export function registerExtensionIpc(): void {
   )
 
   ipcMain.handle(
-    IPC.ExtensionSetConfig,
-    async (_e, payload: { id?: unknown; config?: unknown }) => {
+    IPC.ExtensionSetField,
+    async (_e, payload: { id?: unknown; key?: unknown; value?: unknown }) => {
       const id = stringArg(payload?.id, '扩展 ID')
-      const config =
-        payload?.config && typeof payload.config === 'object'
-          ? (payload.config as Record<string, unknown>)
-          : {}
-      await service().setExtensionConfig(id, config)
+      const key = stringArg(payload?.key, '配置键')
+      await service().setExtensionField(id, key, payload?.value)
       return views()
     }
   )
@@ -106,7 +128,7 @@ export function registerExtensionIpc(): void {
     const path = service().getLogPath(extensionId)
     if (!path) throw new Error(`扩展 ${extensionId} 未安装`)
     // 日志文件可能还没产生过：先摸出来一个空文件，openPath 才不会返回
-    // “文件不存在”让用户以为插件出问题了
+    // “文件不存在”让用户以为扩展出问题了
     await mkdir(dirname(path), { recursive: true })
     await appendFile(path, '', 'utf8')
     const problem = await shell.openPath(path)

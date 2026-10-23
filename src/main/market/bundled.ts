@@ -1,22 +1,24 @@
 /**
- * 应用内置的「兜底」扩展包。
+ * 应用内置的官方扩展包。
  *
  * 官方扩展都随应用带一份包(由 `npm run plugins:build` 生成):
  *   - quick-edit:开箱即用(行首「+」菜单);
- *   - git-sync / ai-for-edit:要填仓库地址或 API 密钥才有意义,装上但默认关着;
+ *   - git-sync:要填仓库地址才有意义,装上但默认关着;
  *   - agent(Agent Core)与 claude-code(Claude Code):要配置本机 CLI,装上但默认关着。
  *     Claude Code 依赖 Agent Core,所以 Core 必须排在前面,安装依赖检查才能通过。
+ *
+ * 官方扩展**只认内置包**。开发阶段版本号统一固定为 1.0.0,不能靠版本比较判断
+ * 内容是否变化;这里按整包 integrity 对齐:内容一致就跳过,不一致就整包替换。
+ * 同 ID 的本地/市场安装也会被内置包覆盖 —— 否则旧副本会一直遮住新代码。
  *
  * 内置包走的是与市场下载**完全相同**的校验与安装路径
  * (`ExtensionService.installPackage`)。这里没有任何「因为是内置的所以跳过校验」
  * 的近道 —— 内置包坏了,用户看到的现象与下载到的包坏掉一模一样。
  */
 
-import { isNewerVersion } from '@shared/extensionPackage'
 import type { ExtensionService } from '../extensions/service'
 import { peekIdentity } from './verify'
 import agentPackage from './builtin/imark.agent.imkpkg.json?raw'
-import aiForEditPackage from './builtin/imark.ai-for-edit.imkpkg.json?raw'
 import claudeCodePackage from './builtin/imark.claude-code.imkpkg.json?raw'
 import gitSyncPackage from './builtin/imark.git-sync.imkpkg.json?raw'
 import quickEditPackage from './builtin/imark.quick-edit.imkpkg.json?raw'
@@ -39,9 +41,8 @@ interface BundledPackage {
 const BUNDLED: BundledPackage[] = [
   // 全新用户也开箱就有「+」:它不配置也能用
   { raw: quickEditPackage, enable: true },
-  // git-sync 要填仓库地址与令牌、AI 要填服务地址与密钥,装上但默认关着
+  // git-sync 要填仓库地址与令牌,装上但默认关着
   { raw: gitSyncPackage, enable: false },
-  { raw: aiForEditPackage, enable: false },
   // Agent Core 与 Claude Code 需要本机 CLI 与权限选择,装上但默认关着;
   // Core 在前,保证 provider 安装时的依赖检查能通过
   { raw: agentPackage, enable: false },
@@ -49,16 +50,20 @@ const BUNDLED: BundledPackage[] = [
 ]
 
 interface ParsedBundle {
-  /** 包本身的原文(升级时要原样交给安装路径,不能是重新序列化过的一份) */
+  /** 包本身的原文(安装时要原样交给安装路径,不能是重新序列化过的一份) */
   raw: string
   id: string
   version: string
+  /** 整包 integrity;与已安装记录比对,判断内容是否变化 */
+  integrity: string
 }
 
 function peek(raw: string): ParsedBundle | null {
   try {
-    const identity = peekIdentity(JSON.parse(raw))
-    return identity ? { raw, ...identity } : null
+    const envelope = JSON.parse(raw) as { integrity?: unknown }
+    const identity = peekIdentity(envelope)
+    if (!identity || typeof envelope.integrity !== 'string') return null
+    return { raw, ...identity, integrity: envelope.integrity }
   } catch {
     // 包本身坏了:交给下面安装时的校验去报错,这里只是读不了 id 而已
     return null
@@ -74,13 +79,19 @@ async function provisionOne(service: ExtensionService, item: BundledPackage): Pr
 
   const existing = await service.getExtensionView(parsed.id)
   if (existing) {
-    // 只碰「应用自己装进来的」那一份:市场来源有自己的更新流程,手动放进去的
-    // 目录是用户的安装。拿内置包去盖它们可能盖成一个更旧的版本,还会把来源抹掉。
-    if (existing.source !== 'bundled') return
-    const current = existing.installed?.version ?? ''
-    if (!parsed.version || !isNewerVersion(parsed.version, current)) return
+    // 版本号在开发阶段固定,只能比内容。来源是 bundled 且 integrity 一致 = 已是最新。
+    if (
+      existing.source === 'bundled' &&
+      existing.installed?.version === parsed.version &&
+      existing.installed.integrity === parsed.integrity
+    ) {
+      return
+    }
     await service.installPackage(JSON.parse(parsed.raw), { source: 'bundled' })
-    console.log(`[iMark] 已升级内置扩展 ${parsed.id} ${current} → ${parsed.version}`)
+    console.log(
+      `[iMark] 已用内置包覆盖 ${parsed.id} ` +
+        `${existing.installed?.version ?? existing.source} → ${parsed.version}`
+    )
     return
   }
 
@@ -91,7 +102,7 @@ async function provisionOne(service: ExtensionService, item: BundledPackage): Pr
 }
 
 /**
- * 补装缺失的内置包 / 升级版本落后的内置包。
+ * 补装缺失的内置包 / 用内置包覆盖同 ID 的旧副本。
  *
  * 由启动流程与「恢复自带扩展」按钮共同调用,所以要有并发保护:
  * 两次调用复用同一个 Promise,不会把同一个包装两遍。

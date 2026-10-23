@@ -1,7 +1,7 @@
 import type { EditorView } from '@codemirror/view'
 import type { Settings } from '@shared/types'
 import { managedImageRefs } from '@shared/imageAssets'
-import { appStore, editorHolder } from '../stores/app'
+import { activeTab, appStore, editorHolder } from '../stores/app'
 import { flushTableEdits } from '../editor/wysiwyg/widgets'
 import { basename, stripMarkdownExt, toEol } from '../utils/text'
 import { isInside } from '../utils/paths'
@@ -11,7 +11,6 @@ import { takePastedImages } from './pastedImages'
 import { api } from './api'
 import {
   activateTab,
-  activeTab,
   addTab,
   captureActiveTab,
   clearTabs,
@@ -158,7 +157,7 @@ export async function restoreSession(
   settings: Pick<Settings, 'lastFile' | 'openFiles'>
 ): Promise<void> {
   let lastFile = settings.lastFile
-  const remembered = (settings.openFiles ?? []).filter(p => isInside(vaultPath, p))
+  const remembered = settings.openFiles.filter(p => isInside(vaultPath, p))
   if (!lastFile) {
     // 当前页是未命名文档(它没有路径,内容也不跨启动保存),但同一会话里开着的
     // 文件标签仍然要恢复 —— 它们并没有被关掉。一个文件标签都没有才回空状态
@@ -243,7 +242,7 @@ export async function writeTabInPlace(tabId: string, path: string): Promise<void
   const text = tabText(tabId, { flush: true })
   if (text === null) throw new Error('编辑器未就绪')
   // 这一轮写盘之前的「已保存正文」:保存成功后拿它和 text 比,找出被删掉的图片引用。
-  // 取标签自己的基准,而不是当前标签的镜像 —— 自动保存/关闭流程可能正在后台保存别人
+  // 取目标标签自己的基准 —— 自动保存/关闭流程可能正在后台保存别人
   const before = tab.savedContent
   await api.writeFile(path, toEol(text, tab.eol))
   // markTabSaved 会在写盘这一小会儿里用户又改过/切走时保留脏标记
@@ -327,7 +326,7 @@ export async function saveAllDirtyTabs(): Promise<boolean> {
 
 /**
  * 静默保存所有**有路径**的脏标签(未命名文档跳过,绝不弹「另存为」)。
- * 插件同步前刷盘、切换窗口时自动保存走这条。
+ * 扩展同步前刷盘、切换窗口时自动保存走这条。
  */
 export async function saveAllFileTabsSilently(): Promise<void> {
   for (const tab of [...appStore.tabs]) {

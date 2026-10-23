@@ -87,6 +87,7 @@ import type {
   HostRequestMessage,
   HostToMainMessage,
   MainToHostMessage,
+  RendererApplyEditsResult,
   StatusBarItemDto,
   TextChangeDto,
   ThemeDto,
@@ -127,7 +128,12 @@ interface RuntimeExtension {
   manifest: ExtensionManifest
   root: string
   realRoot: string
+  /** 生效配置(合并后) */
   config: Record<string, unknown>
+  /** 显式全局值;`inspect().globalValue` 用 */
+  globalConfig: Record<string, unknown>
+  /** 当前仓库的显式覆盖值;`inspect().workspaceValue` 用 */
+  workspaceConfig: Record<string, unknown>
   globalState: Record<string, unknown>
   workspaceState: Record<string, unknown>
   module: { activate?: (context: unknown) => unknown; deactivate?: () => unknown } | null
@@ -522,7 +528,7 @@ class HostTextEditor implements TextEditor {
       }
     }
     try {
-      const result = await this.runtime.request<{ ok?: boolean } | boolean>(r => ({
+      const result = await this.runtime.request<RendererApplyEditsResult>(r => ({
         kind: 'editor.applyEdits',
         requestId: r,
         extensionId: this.ext.id,
@@ -530,7 +536,7 @@ class HostTextEditor implements TextEditor {
         edits,
         expectedVersion: doc.version
       }))
-      return typeof result === 'boolean' ? result : Boolean(result?.ok)
+      return result.ok === true
     } catch (err) {
       this.runtime.log(this.ext.id, 'error', `编辑文档失败：${String(err)}`)
       return false
@@ -1160,7 +1166,12 @@ export class ExtensionHostRuntime {
         void this.executeLocalCommand(message.requestId, message.command, message.args)
         return
       case 'configuration.changed':
-        this.applyConfiguration(message.extensionId, message.values)
+        this.applyConfiguration(
+          message.extensionId,
+          message.values,
+          message.globalConfig,
+          message.workspaceConfig
+        )
         return
       case 'secrets.changed': {
         // 外部改动(设置页填写/清空)也要让 onDidChange 收到;扩展自己 store/delete
@@ -1220,7 +1231,7 @@ export class ExtensionHostRuntime {
           message.viewType,
           message.state,
           message.panel,
-          message.token ?? ''
+          message.token
         )
         return
       case 'shutdown':
@@ -1258,6 +1269,8 @@ export class ExtensionHostRuntime {
         root,
         realRoot,
         config: { ...init.config },
+        globalConfig: { ...(init.globalConfig ?? {}) },
+        workspaceConfig: { ...(init.workspaceConfig ?? {}) },
         globalState: { ...init.globalState },
         workspaceState: { ...init.workspaceState },
         module: null,
@@ -1708,9 +1721,16 @@ export class ExtensionHostRuntime {
 
   // ---------- 配置 ----------
 
-  private applyConfiguration(extensionId: string, values: Record<string, unknown>): void {
+  private applyConfiguration(
+    extensionId: string,
+    values: Record<string, unknown>,
+    globalConfig?: Record<string, unknown>,
+    workspaceConfig?: Record<string, unknown>
+  ): void {
     const ext = this.extensions.get(extensionId)
     if (!ext) return
+    if (globalConfig) ext.globalConfig = { ...globalConfig }
+    if (workspaceConfig) ext.workspaceConfig = { ...workspaceConfig }
     const changed = new Set<string>()
     for (const [key, value] of Object.entries(values)) {
       if (ext.config[key] !== value) changed.add(key)
@@ -1767,15 +1787,18 @@ export class ExtensionHostRuntime {
       } | undefined => {
         const full = fullKey(key)
         const property = this.findProperty(full)
-        const has = Object.prototype.hasOwnProperty.call(ext.config, full)
-        if (!property && !has) return undefined
+        const hasEffective = Object.prototype.hasOwnProperty.call(ext.config, full)
+        const hasGlobal = Object.prototype.hasOwnProperty.call(ext.globalConfig, full)
+        const hasWorkspace = Object.prototype.hasOwnProperty.call(ext.workspaceConfig, full)
+        if (!property && !hasEffective && !hasGlobal && !hasWorkspace) return undefined
         return {
           key: full,
           defaultValue: property?.default as T | undefined,
-          globalValue: has ? (ext.config[full] as T) : undefined
+          ...(hasGlobal ? { globalValue: ext.globalConfig[full] as T } : {}),
+          ...(hasWorkspace ? { workspaceValue: ext.workspaceConfig[full] as T } : {})
         }
       },
-      update: async (key: string, value: unknown, _target?: ConfigurationTarget | boolean): Promise<void> => {
+      update: async (key: string, value: unknown, target?: ConfigurationTarget): Promise<void> => {
         const full = fullKey(key)
         await this.request<void>(
           r => ({
@@ -1783,11 +1806,13 @@ export class ExtensionHostRuntime {
             requestId: r,
             extensionId: ext.id,
             key: full,
-            value
+            value,
+            ...(target !== undefined ? { target } : {})
           }),
           15000
         )
-        ext.config[full] = value
+        // 不在本地乐观写入 `ext.config`:main 在响应前已经推了一份**合并后**的
+        // 配置(全局值可能被当前仓库的覆盖值压住),这里再写会把覆盖值盖掉。
       }
     }
   }
@@ -2206,9 +2231,12 @@ export class ExtensionHostRuntime {
 
   createOutputChannel(ext: RuntimeExtension, name: string): Record<string, unknown> {
     let disposed = false
-    const append = (text: string): void => {
+    const append = (
+      text: string,
+      level: 'debug' | 'info' | 'warn' | 'error' = 'info'
+    ): void => {
       if (disposed || !text) return
-      this.send({ kind: 'output.append', extensionId: ext.id, channel: name, text })
+      this.send({ kind: 'output.append', extensionId: ext.id, channel: name, text, level })
     }
     const channel = {
       name,
@@ -2218,12 +2246,15 @@ export class ExtensionHostRuntime {
       clear: () => append(''),
       show: () => undefined,
       hide: () => undefined,
-      info: (message: string) => append(`${message}\n`),
-      warn: (message: string) => append(`[warn] ${message}\n`),
+      info: (message: string) => append(`${message}\n`, 'info'),
+      warn: (message: string) => append(`[warn] ${message}\n`, 'warn'),
       error: (message: string | Error) =>
-        append(`[error] ${message instanceof Error ? message.stack ?? message.message : message}\n`),
-      debug: (message: string) => append(`[debug] ${message}\n`),
-      trace: (message: string) => append(`[trace] ${message}\n`),
+        append(
+          `[error] ${message instanceof Error ? message.stack ?? message.message : message}\n`,
+          'error'
+        ),
+      debug: (message: string) => append(`[debug] ${message}\n`, 'debug'),
+      trace: (message: string) => append(`[trace] ${message}\n`, 'debug'),
       dispose: () => {
         disposed = true
       }

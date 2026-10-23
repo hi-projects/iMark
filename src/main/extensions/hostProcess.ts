@@ -8,7 +8,7 @@
  *   - 收集 stdout/stderr 当日志；
  *   - 退出时通知 service（重启策略在 service 里，不在这里）。
  *
- * 不在这里加载扩展代码：main 进程永远不 `require` 插件入口。
+ * 不在这里加载扩展代码：main 进程永远不 `require` 扩展入口。
  */
 
 import { join } from 'node:path'

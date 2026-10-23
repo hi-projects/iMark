@@ -107,9 +107,9 @@ const baseConfig = (targets: TargetConfig[]): Record<string, unknown> => ({
   [configKey('initBranch')]: 'main',
   [configKey('writeGitignore')]: true,
   [configKey('writeReadme')]: false,
-  // 本地路径远端不需要代理；固定直连，避免宿主机环境变量里的代理影响结果
-  [configKey('proxyMode')]: 'off',
-  [configKey('proxyUrl')]: 'http://127.0.0.1:7890'
+  // 本地路径远端不需要代理；空的手动地址会直接连接，避免宿主机环境变量里的代理影响结果
+  [configKey('proxyMode')]: 'manual',
+  [configKey('proxyUrl')]: ''
 })
 
 const target1 = (remote: string): TargetConfig => ({
@@ -252,6 +252,12 @@ async function main(): Promise<void> {
   const fields = v?.descriptor.settingsFields ?? []
   check('配置翻译成 targets 字段', fields.some(f => f.key === 'targets' && f.kind === 'targets'))
   check('代理模式是下拉选择', fields.some(f => f.key === 'proxyMode' && f.kind === 'select'))
+  const proxyField = fields.find(f => f.key === 'proxyMode')
+  check(
+    '连接方式只保留自动/手动（直连是兜底，不单独列选项）',
+    proxyField?.options?.map(option => option.value).join(',') === 'auto,manual',
+    JSON.stringify(proxyField?.options)
+  )
   check(
     '同步间隔是数字且有 0–1440 限制',
     fields.some(f => f.key === 'intervalMinutes' && f.kind === 'number' && f.min === 0 && f.max === 1440)
@@ -333,6 +339,17 @@ async function main(): Promise<void> {
   check('提示里说明远端已有分支', (testAll?.message ?? '').includes('连接测试通过'), testAll?.message)
   check('状态卡记录 t1 连接成功', (await waitStatus('ok'))?.status.targetResults?.t1 === 'ok', JSON.stringify((await view())?.status.targetResults))
 
+  await sleep(400)
+  const testToasts = (await wc.executeJavaScript(
+    `[...document.querySelectorAll('.toast')].map(el => el.textContent || '')`,
+    true
+  )) as string[]
+  check(
+    '测试结果只在设置页状态卡显示，不弹右下角通知',
+    !testToasts.some(text => text.includes('连接测试通过') || text.includes('连接失败')),
+    JSON.stringify(testToasts)
+  )
+
   const testOne = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
     ok: boolean
     message: string
@@ -360,6 +377,19 @@ async function main(): Promise<void> {
   check('错误说明缺的是访问令牌', (missing?.message ?? '').includes('访问令牌'), missing?.message)
   const failedStatus = await waitStatus('error')
   check('状态卡标记 error', failedStatus?.status.status === 'error', failedStatus?.status.status)
+  const missingLogs = (await view())?.logs ?? []
+  check(
+    '失败原因同时写进扩展日志',
+    missingLogs.some(entry => entry.level === 'error' && entry.message.includes('访问令牌')),
+    JSON.stringify(missingLogs.slice(-3))
+  )
+  check(
+    '操作日志不再把失败记成成功',
+    missingLogs.some(
+      entry => entry.level === 'operation' && entry.message.includes('失败')
+    ),
+    JSON.stringify(missingLogs.filter(entry => entry.level === 'operation').slice(-2))
+  )
 
   // ---------- 7. 多远端部分失败 ----------
 
@@ -388,6 +418,15 @@ async function main(): Promise<void> {
       (partial?.status.lastDetail ?? '').includes('remote'),
     partial?.status.lastDetail
   )
+  const partialLogs = (await view())?.logs ?? []
+  check(
+    '推送失败原因同时写进扩展日志',
+    partialLogs.some(entry => entry.level === 'error' && entry.message.includes('推送失败')) &&
+      partialLogs.some(
+        entry => entry.level === 'error' && entry.message.includes('第 2 个远端')
+      ),
+    JSON.stringify(partialLogs.slice(-4))
+  )
   check(`成功的那个远端收到了新提交（${beforePartial} → ${await count()}）`, (await count()) === beforePartial + 1)
   const partialItem = await waitFor(statusItem, x => x?.text === '$(alert) Git 同步')
   check('状态栏切成告警图标', partialItem?.text === '$(alert) Git 同步', JSON.stringify(partialItem?.text))
@@ -404,15 +443,15 @@ async function main(): Promise<void> {
   }
   check('单测成功的远端返回成功', testGoodAgain?.ok === true, JSON.stringify(testGoodAgain))
 
-  // ---------- 8. 检测代理（直连模式） ----------
+  // ---------- 8. 检测代理（手动地址为空） ----------
 
-  console.log('\n【8】检测本机代理：直连模式下如实说明')
+  console.log('\n【8】检测本机代理：手动地址为空时提示地址问题')
   const proxy = (await service.executeCommand('imark.git-sync.detectProxy')) as {
     ok: boolean
     message: string
   }
-  check('detectProxy 返回成功', proxy?.ok === true, JSON.stringify(proxy))
-  check('说明当前为直连', (proxy?.message ?? '').includes('直连'), proxy?.message)
+  check('detectProxy 返回失败', proxy?.ok === false, JSON.stringify(proxy))
+  check('说明手动地址无法识别', (proxy?.message ?? '').includes('无法识别'), proxy?.message)
 
   // ---------- 9. 停用 / 重新启用 / 卸载 ----------
 

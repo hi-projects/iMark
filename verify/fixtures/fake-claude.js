@@ -190,6 +190,45 @@ async function main() {
     return
   }
 
+  if (scenario === 'split-turns') {
+    // 真实 CLI 在 --include-partial-messages 下会把同一条 assistant 消息按内容块
+    // 拆成多条记录（thinking / tool_use 各一条），它们共享 message.id。
+    init()
+    for (let i = 0; i < 12; i++) {
+      const messageId = `msg-split-${i}`
+      emit({
+        type: 'assistant',
+        message: {
+          id: messageId,
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: `思考 ${i}` }]
+        }
+      })
+      await sleep(20)
+      emit({
+        type: 'assistant',
+        message: {
+          id: messageId,
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: `tu-split-${i}`,
+              name: 'Bash',
+              input: { command: `python worker.py ${i}` }
+            }
+          ]
+        }
+      })
+      await sleep(20)
+      toolResult(`tu-split-${i}`, `done ${i}`)
+      await sleep(20)
+    }
+    result('不该走到这里')
+    await new Promise(() => undefined)
+    return
+  }
+
   if (scenario === 'slow' || scenario === 'timeout') {
     init()
     text('正在读取附件')

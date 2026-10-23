@@ -6,7 +6,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { StagedAttachment } from './types'
 import type { AttachmentMeta, UploadBeginResult } from './protocol'
@@ -229,17 +229,5 @@ export class AttachmentStager {
       suffix += 1
     }
     return candidate
-  }
-
-  /** 只用于诊断：报告磁盘上的附件数，不做内容读取 */
-  async diskCount(sessionId: string): Promise<number> {
-    const entries = await readdir(this.sessions.attachmentsDir(sessionId), { withFileTypes: true }).catch(() => [])
-    let count = 0
-    for (const entry of entries) {
-      if (!entry.isFile()) continue
-      const info = await stat(join(this.sessions.attachmentsDir(sessionId), entry.name)).catch(() => null)
-      if (info) count += 1
-    }
-    return count
   }
 }

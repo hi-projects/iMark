@@ -17,7 +17,7 @@ import { IPC } from '@shared/ipc-channels'
 import type { ExtensionMenuGroup } from './menu'
 
 /**
- * 启动后查一次插件更新。
+ * 启动后查一次扩展更新。
  *
  * 三条自我约束,都是为了让这件事**不打扰人**:
  *   - 延迟 8 秒:窗口刚出来时正在加载仓库、渲染首屏,别在这会儿抢网络与磁盘;
@@ -117,7 +117,7 @@ protocol.registerSchemesAsPrivileged([
 
 /**
  * 数据目录:`app.getPath('userData')` / `sessionData` 指到数据根下的 `profile/`,
- * 应用自有数据(插件、设置、密钥、窗口几何、样式)放在数据根顶层
+ * 应用自有数据(扩展、设置、密钥、窗口几何、样式)放在数据根顶层
  * (见 main/dataDir.ts:应用目录可写时是 `<应用目录>/.imark`,否则回退 `~/.imark`)。
  *
  * 位置与"同步"这两个要求都是硬的:
@@ -164,8 +164,8 @@ if (!app.requestSingleInstanceLock()) {
       reservedKeys: reservedAccelerators,
       onContributions: applyContributionMenu
     })
-    // 五款官方扩展按内置包补装(已是 bundled 来源的会跟随应用版本升级;
-    // 市场/本地来源一律不碰)。必须在建菜单之前:它们贡献的命令与快捷键是菜单来源。
+    // 四款官方扩展按内置包补装:开发阶段版本固定为 1.0.0,内容按 integrity 对齐,
+    // 同 ID 的本地/市场副本也会被内置包替换。必须在建菜单之前:它们贡献的命令与快捷键是菜单来源。
     await ensureBundledProvisioned(service)
     // 窗口出现之前先建一次菜单:扩展贡献的快捷键是靠原生菜单加速键生效的,
     // 等窗口建完再建菜单的话,首屏那几十毫秒里按键会丢。
