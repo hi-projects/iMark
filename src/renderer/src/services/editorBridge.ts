@@ -150,7 +150,16 @@ const THEME_COLORS = [
   '--bg-selection',
   '--success',
   '--warn',
-  '--danger'
+  '--danger',
+  // 字体与正文排版：webview 里的 Markdown 要和编辑器保持同一套度量
+  '--font-text',
+  '--font-mono',
+  '--font-editor',
+  '--editor-font-size',
+  '--quote-bar',
+  '--scrollbar-thumb-bg',
+  '--scrollbar-hover-thumb-bg',
+  '--scrollbar-active-thumb-bg'
 ] as const
 
 /** webview 的 bootstrap 与主题推送复用同一份取值，避免两边颜色漂移 */

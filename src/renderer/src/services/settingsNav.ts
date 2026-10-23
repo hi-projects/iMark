@@ -9,9 +9,9 @@
 import { reactive } from 'vue'
 import { openSettings } from '../stores/app'
 
-/** 市场页内部的子导航:四个页签 + 列表页的搜索条件 */
+/** 市场页内部的子导航:两个页签 + 列表页的搜索条件 */
 export interface MarketNav {
-  tab: 'browse' | 'installed' | 'hosts' | 'publish'
+  tab: 'browse' | 'publish'
   /** 打开某个扩展的详情页(仅 browse 页签用);null = 显示列表 */
   detailId: string | null
   query: string
@@ -21,9 +21,9 @@ export interface MarketNav {
   hasMain: boolean | null
 }
 
-/** 设置面板当前选中项:外观、编辑器、系统、某个扩展的配置,或扩展市场 */
+/** 设置面板当前选中项:外观、编辑器、系统、某个扩展的配置、扩展市场、扩展分配或已安装 */
 export const settingsNav = reactive<{
-  page: 'appearance' | 'editor' | 'system' | 'plugin' | 'market'
+  page: 'appearance' | 'editor' | 'system' | 'plugin' | 'market' | 'hosts' | 'installed'
   pluginId: string | null
   /**
    * 市场内部的子导航放在这里,而不是继续往 page 联合里塞 ——
@@ -34,8 +34,7 @@ export const settingsNav = reactive<{
 }>({
   page: 'appearance',
   pluginId: null,
-  // 默认落在「已安装」:没有市场服务端时这一页照样有内容,不会一进来就看到报错
-  market: { tab: 'installed', detailId: null, query: '', page: 1, sort: 'updated', hasMain: null }
+  market: { tab: 'browse', detailId: null, query: '', page: 1, sort: 'updated', hasMain: null }
 })
 
 /** 打开设置面板并定位到扩展市场(菜单项与左栏入口用) */

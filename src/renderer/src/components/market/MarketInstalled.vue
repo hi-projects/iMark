@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 市场 · 已安装 —— 扩展的落地页,也是离线时唯一有内容的页。
+ * 设置 · 已安装 —— 扩展的落地页,也是离线时唯一有内容的页。
  *
  * 每行回答的是「这是什么、什么时候装的、现在什么状态」:名字与版本、安装时间、
  * 启用态(只由左侧状态圆点表达),以及可复制的安装 sha256。
@@ -62,10 +62,14 @@ function syncLabelColumn(): void {
 // flush: 'post' 保证量到的是这一轮渲染之后的 DOM
 watch(extensions, syncLabelColumn, { flush: 'post' })
 
-onMounted(() => {
+onMounted(async () => {
   syncLabelColumn()
   // 字体晚一点就绪时宽度会变,再量一次
   void document.fonts?.ready.then(syncLabelColumn)
+  // 这一页是独立入口,不再借市场页的挂载时机取数据
+  await refreshInstalled()
+  // 更新检查是背景动作:失败静默(见 marketService.checkUpdates)
+  await checkUpdates()
 })
 
 function versionOf(view: ExtensionView): string {

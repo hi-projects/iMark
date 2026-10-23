@@ -2,13 +2,14 @@
 /**
  * 设置 → 系统:与操作系统打交道的那几项。目前只有「默认 Markdown 编辑器」。
  *
- * 文案刻意不承诺「一键设成默认」:Windows 8 起应用写不进 UserChoice(有哈希保护),
- * 主进程能做的是**注册成候选** + 打开系统设置页,最后一下必须由用户点
- * (见 main/system.ts 顶部)。Windows 11 会直接落在 iMark 的应用页,但确认仍在
- * 系统设置里;按钮和提示都照着这两步说,免得用户点完以为没生效。
+ * 文案跟着平台走(见 main/system.ts 顶部):
+ *   - Windows 8 起应用写不进 UserChoice(有哈希保护),主进程只能**注册成候选**
+ *     + 打开系统设置页,最后一下必须由用户点。文案不承诺「一键设成默认」,
+ *     免得用户点完以为没生效。
+ *   - Linux 走 `xdg-mime`,应用能一步改完(`status.direct`),文案就直说改好了。
  */
 
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { DefaultEditorStatus } from '@shared/types'
 import { api } from '../services/api'
 
@@ -22,14 +23,19 @@ function message(err: unknown): string {
 }
 
 /**
- * 把注册表里的 ProgID 换成人话:
- * `Applications\MarkText.exe` → MarkText。其它形式(如 `VSCode.md`)原样显示 ——
- * 它本身就是那个应用注册的名字,硬拆只会拆出更看不懂的东西。
+ * 把系统里的标识换成人话:
+ * `Applications\MarkText.exe` → MarkText(Linux 的 `org.gnome.TextEditor.desktop`
+ * 同理去掉后缀)。其它形式(如 `VSCode.md`)原样显示 —— 它本身就是那个应用
+ * 注册的名字,硬拆只会拆出更看不懂的东西。
  */
 function appLabel(value: string): string {
-  const m = /^Applications\\(.+?)\.exe$/i.exec(value)
-  return m ? m[1]! : value
+  const win = /^Applications\\(.+?)\.exe$/i.exec(value)
+  if (win) return win[1]!
+  return value.endsWith('.desktop') ? value.slice(0, -'.desktop'.length) : value
 }
+
+/** 平台是否缺了可关联的桌面条目(Linux 未安装 / AppImage 未集成) */
+const missingEntry = computed(() => status.value?.desktopEntry === null)
 
 async function refresh(): Promise<void> {
   if (busy.value) return
@@ -52,7 +58,10 @@ async function setDefault(): Promise<void> {
     status.value = await api.setDefaultEditor()
     if (status.value.error) {
       note.value = status.value.error
-    } else if (!status.value.isDefault) {
+    } else if (status.value.isDefault) {
+      // Linux 是一步改完的;Windows 只可能在用户去系统设置点过之后走到这里
+      if (status.value.direct) note.value = '已把 iMark 设为 .md、.markdown 的默认打开程序。'
+    } else {
       note.value =
         '已注册并打开系统设置。请把 .md、.markdown 的默认应用选成 iMark，选完回到这里点「刷新」确认。'
     }
@@ -94,7 +103,7 @@ onMounted(refresh)
         </div>
         <button
           class="plugin-btn"
-          :disabled="busy || !status?.supported || status?.isDefault"
+          :disabled="busy || !status?.supported || status?.isDefault || missingEntry"
           @click="setDefault()"
         >
           {{ status?.isDefault ? '已是默认' : busy ? '正在注册…' : '设为默认…' }}
@@ -103,6 +112,9 @@ onMounted(refresh)
     </div>
 
     <p v-if="note" class="settings-note">{{ note }}</p>
+    <p v-else-if="missingEntry" class="settings-note">
+      没有找到 iMark 的桌面启动条目（.desktop）。安装 deb 包，或把 AppImage 集成到应用菜单后再试。
+    </p>
     <p v-else-if="status && !status.supported" class="settings-note">
       当前平台暂不支持由应用代注册，请手动在系统设置里把 .md 关联到 iMark。
     </p>

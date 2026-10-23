@@ -515,15 +515,7 @@
   outline: none;
 }
 
-/* 深色主题下数字输入的加减按钮默认画成白底方块:让原生控件跟随主题着色 */
-:root[data-theme='dark'] .settings-number {
-  color-scheme: dark;
-}
-
-:root[data-theme='dark'] .settings-number::-webkit-inner-spin-button,
-:root[data-theme='dark'] .settings-number::-webkit-outer-spin-button {
-  background: transparent;
-}
+/* 数字输入框的深色加减按钮样式见 base.css(全局生效,含扩展设置页) */
 
 .settings-number:focus {
   border-color: var(--accent);

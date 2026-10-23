@@ -43,7 +43,7 @@ const BUNDLED: BundledPackage[] = [
   { raw: quickEditPackage, enable: true },
   // git-sync 要填仓库地址与令牌,装上但默认关着
   { raw: gitSyncPackage, enable: false },
-  // Agent Core 与 Claude Code 需要本机 CLI 与权限选择,装上但默认关着;
+  // Agent Core 与 Claude Code 需要本机 CLI,装上但默认关着;
   // Core 在前,保证 provider 安装时的依赖检查能通过
   { raw: agentPackage, enable: false },
   { raw: claudeCodePackage, enable: false }

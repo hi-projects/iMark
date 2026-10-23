@@ -62,6 +62,7 @@ const FIELD_KINDS: readonly string[] = [
   'number',
   'boolean',
   'select',
+  'list',
   'targets',
   'endpoints',
   'external'
@@ -511,8 +512,16 @@ function validateConfigProperties(
         errors.push(`${at}.imark.secret 必须是布尔值`)
       }
     }
-    if (meta.kind === 'targets' || meta.kind === 'endpoints') {
-      warnings.push(`${at} 使用 ${String(meta.kind)} 字段,请确认 targetSecret 与 targetSetting 已配置`)
+    if (
+      (meta.kind === 'targets' || meta.kind === 'endpoints') &&
+      meta.targetSecret === undefined
+    ) {
+      // 有 targetSecret 才会去读每行已保存的密钥并回填设置页;缺了它,用户
+      // 明明存过密钥却看到一行空输入框。targetSetting 由动作校验负责(错会报错),
+      // 所以这里只提醒真正会静默出问题的那一项。
+      warnings.push(
+        `${at} 使用 ${String(meta.kind)} 字段,但没有声明 targetSecret:已保存的目标密钥不会回填到设置页`
+      )
     }
   }
 }
@@ -1285,7 +1294,7 @@ function optionsOfProperty(property: ExtensionConfigurationProperty): PluginFiel
  * configuration → 现有设置表单的 PluginField[]。
  *
  * 设置页不需要认识 JSON Schema:所有“怎么画”的差异都在这里被翻译成既有的
- * 字段类型(text/textarea/password/number/boolean/select/targets/endpoints)。
+ * 字段类型(text/textarea/password/number/boolean/select/list/targets/endpoints/external)。
  */
 export function settingsFieldsOf(manifest: ExtensionManifest): PluginField[] {
   const id = extensionIdOf(manifest)

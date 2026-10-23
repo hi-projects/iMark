@@ -56,3 +56,13 @@ export function takePendingOpenFile(): string | null {
   pending = null
   return path
 }
+
+/**
+ * 是否有还没被渲染层取走的文件。
+ *
+ * 建窗时用它决定直接以编辑器尺寸开窗:双击 .md 启动时窗口本来就该是编辑器的样子,
+ * 先以小尺寸露出再最大化会闪一下。
+ */
+export function hasPendingOpenFile(): boolean {
+  return pending !== null
+}

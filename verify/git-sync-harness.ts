@@ -10,7 +10,8 @@
  *   3 首次同步：远端建分支、文件与忽略项写入、提交信息模板生效
  *   4 无改动不造空提交；有改动 +1 提交
  *   5 `testAll` / `testTarget`（逐远端）与状态卡结果
- *   6 密钥缺失时在动 git 之前失败，并说清是哪一行
+ *   6 密钥缺失时在动 git 之前失败，说清是哪一行；且不写日志/状态卡
+ *     （配置问题只由设置页的黄色提示展示）
  *   7 多远端：一个成功一个失败 → partial，逐个远端结果可见
  *   8 配置变更 → 防抖后自动补跑一轮（onDidChangeConfiguration）
  *   9 停用释放宿主；重新启用后命令再激活；卸载清目录与贡献点
@@ -358,7 +359,9 @@ async function main(): Promise<void> {
 
   // ---------- 6. 密钥缺失 ----------
 
-  console.log('\n【6】缺密钥：在动 git 之前失败，并指出是哪一行')
+  console.log('\n【6】缺密钥：在动 git 之前失败；配置问题只在黄色提示里说')
+  // 先记下配置前的状态:缺密钥属于「远端没填完」,不该把状态卡从 ok 改成 error
+  const beforeMissing = (await view())?.status.status
   const tokenTarget: TargetConfig = {
     id: 't2',
     url: 'https://example.invalid/notes.git',
@@ -371,23 +374,29 @@ async function main(): Promise<void> {
   const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
+    silent?: boolean
   }
   check('命令返回失败', missing?.ok === false, JSON.stringify(missing))
+  check('结果标记为 silent（交给设置页的黄色提示）', missing?.silent === true, JSON.stringify(missing))
   check('错误指到第 2 个远端', (missing?.message ?? '').includes('第 2 个远端'), missing?.message)
   check('错误说明缺的是访问令牌', (missing?.message ?? '').includes('访问令牌'), missing?.message)
-  const failedStatus = await waitStatus('error')
-  check('状态卡标记 error', failedStatus?.status.status === 'error', failedStatus?.status.status)
-  const missingLogs = (await view())?.logs ?? []
+  // 配置变更 3 秒后还会自动试跑一次;等它过去,确认状态卡仍未被这次校验覆盖
+  await sleep(3500)
+  const afterMissing = await view()
   check(
-    '失败原因同时写进扩展日志',
-    missingLogs.some(entry => entry.level === 'error' && entry.message.includes('访问令牌')),
+    '状态卡保持原状态，不因配置未填完变红',
+    afterMissing?.status.status === beforeMissing,
+    `${beforeMissing} → ${afterMissing?.status.status}`
+  )
+  const missingLogs = afterMissing?.logs ?? []
+  check(
+    '不把缺密钥写进扩展日志',
+    !missingLogs.some(entry => entry.level === 'error' && entry.message.includes('访问令牌')),
     JSON.stringify(missingLogs.slice(-3))
   )
   check(
-    '操作日志不再把失败记成成功',
-    missingLogs.some(
-      entry => entry.level === 'operation' && entry.message.includes('失败')
-    ),
+    '操作日志不记录这次失败（silent）',
+    !missingLogs.some(entry => entry.level === 'operation' && entry.message.includes('失败')),
     JSON.stringify(missingLogs.filter(entry => entry.level === 'operation').slice(-2))
   )
 

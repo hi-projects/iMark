@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { RotateCcw } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { Plus, RotateCcw, X } from 'lucide-vue-next'
 import HelpTip from '../HelpTip.vue'
 import type { PluginEndpoint, PluginField, PluginTarget, PluginTargetResult } from '@shared/plugins'
 import EndpointsField from './EndpointsField.vue'
@@ -99,6 +99,53 @@ function onSecretInput(e: Event): void {
   input.value = ''
   replacing.value = false
 }
+
+/**
+ * 字符串列表字段(kind: 'list')的本地草稿。
+ *
+ * 与 textarea 同理:新增一行为空时不立刻提交,失焦/回车时才把非空项写回,
+ * 避免配置里留下空字符串;外部值变化(保存回写、别的窗口改动)会重置草稿。
+ */
+const listDraft = ref<string[]>(normalizeList(props.value))
+const listEl = ref<HTMLElement | null>(null)
+watch(
+  () => props.value,
+  value => {
+    listDraft.value = normalizeList(value)
+  }
+)
+
+function normalizeList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map(item => String(item ?? ''))
+}
+
+function emitList(): void {
+  emit(
+    'change',
+    listDraft.value.map(item => item.trim()).filter(Boolean)
+  )
+}
+
+function onListInput(index: number, e: Event): void {
+  const next = [...listDraft.value]
+  next[index] = (e.target as HTMLInputElement).value
+  listDraft.value = next
+}
+
+function addListItem(): void {
+  listDraft.value = [...listDraft.value, '']
+  void nextTick(() => {
+    const inputs = listEl.value?.querySelectorAll<HTMLInputElement>('input')
+    const last = inputs?.[inputs.length - 1]
+    last?.focus()
+  })
+}
+
+function removeListItem(index: number): void {
+  listDraft.value = listDraft.value.filter((_, i) => i !== index)
+  emitList()
+}
 </script>
 
 <template>
@@ -145,7 +192,6 @@ function onSecretInput(e: Event): void {
       <span class="plugin-field-label">
         {{ field.label }}
         <HelpTip v-if="field.description" :text="field.description" />
-        <span v-if="field.scope === 'workspace'" class="plugin-scope-tag">按仓库</span>
       </span>
       <div v-if="field.resettable" class="plugin-field-actions">
         <button
@@ -170,13 +216,59 @@ function onSecretInput(e: Event): void {
     />
   </div>
 
+  <!-- 字符串列表:标签在上,点 + 追加一行输入框 -->
+  <div v-else-if="field.kind === 'list'" class="plugin-field plugin-field-block">
+    <div class="plugin-field-head">
+      <span class="plugin-field-label">
+        {{ field.label }}
+        <HelpTip v-if="field.description" :text="field.description" />
+      </span>
+      <div class="plugin-field-actions">
+        <button
+          type="button"
+          class="plugin-icon-btn plugin-icon-btn-accent"
+          title="添加参数"
+          aria-label="添加参数"
+          @click="addListItem"
+        >
+          <Plus :size="14" />
+        </button>
+      </div>
+    </div>
+    <div ref="listEl" class="plugin-list">
+      <div v-for="(item, index) in listDraft" :key="index" class="plugin-list-row">
+        <input
+          class="plugin-input"
+          type="text"
+          :value="item"
+          :placeholder="field.placeholder"
+          spellcheck="false"
+          @input="onListInput(index, $event)"
+          @change="emitList"
+          @keydown.enter.prevent="emitList"
+        />
+        <button
+          type="button"
+          class="plugin-icon-btn"
+          title="删除"
+          aria-label="删除"
+          @click="removeListItem(index)"
+        >
+          <X :size="13" />
+        </button>
+      </div>
+      <p v-if="listDraft.length === 0" class="plugin-list-empty">
+        还没有参数。点右上角的 + 添加。
+      </p>
+    </div>
+  </div>
+
   <!-- 其余字段统一「标签在左、控件在右」一行 -->
   <div v-else class="plugin-field plugin-field-row">
     <!-- 标签与问号占固定宽度的一格,后面的控件(输入框/开关)因此左边缘对齐 -->
     <span class="plugin-field-label">
       {{ field.label }}
       <HelpTip v-if="field.description" :text="field.description" />
-      <span v-if="field.scope === 'workspace'" class="plugin-scope-tag">按仓库</span>
     </span>
 
     <label v-if="field.kind === 'boolean'" class="plugin-switch">

@@ -254,6 +254,13 @@ function normalizeFieldValue(field: PluginField, raw: unknown): unknown {
       if (options.some(option => option.value === value)) return value
       return textOf(field.default) || options[0]?.value || ''
     }
+    case 'list': {
+      const items = Array.isArray(raw) ? raw : []
+      return items
+        .filter((item): item is string => typeof item === 'string')
+        .map(item => item.trim())
+        .filter(Boolean)
+    }
     case 'targets':
       return normalizeTargets(raw, field)
     case 'endpoints':
@@ -771,7 +778,7 @@ export class ExtensionService {
    * 写一个配置项。设置页用它而不是整份替换 —— 整份提交会把「从全局继承来的值」
    * 固化进当前仓库的覆盖层,以后改全局默认值时这些仓库就不再跟随。
    *
-   * 保存范围按清单里字段声明的 `imark.scope` 决定;`target` 是插件自己通过
+   * 保存范围按清单里字段声明的 `imark.scope` 决定;`target` 是扩展自己通过
    * `configuration.update()` 指定的显式范围(1 = Global,2/3 = Workspace)。
    */
   async setExtensionField(
@@ -1464,6 +1471,7 @@ export class ExtensionService {
       case 'webview.setHtml':
       case 'webview.postMessage':
       case 'webview.setTitle':
+      case 'webview.setStatus':
       case 'webview.setPresentation':
       case 'webview.setState':
       case 'webview.dispose':
@@ -1501,6 +1509,7 @@ export class ExtensionService {
           | 'webview.setHtml'
           | 'webview.postMessage'
           | 'webview.setTitle'
+          | 'webview.setStatus'
           | 'webview.setPresentation'
           | 'webview.setState'
           | 'webview.dispose'
@@ -1534,6 +1543,13 @@ export class ExtensionService {
         this.webviews.setTitle(record, message.title)
         this.postToRenderer({ type: 'webview.update', panel: this.webviews.stateOf(record) })
         this.persistWebviews()
+        return
+      }
+      case 'webview.setStatus': {
+        const record = this.webviews.getOwned(message.panelId, message.extensionId)
+        if (!record) return
+        this.webviews.setStatus(record, message.status)
+        this.postToRenderer({ type: 'webview.update', panel: this.webviews.stateOf(record) })
         return
       }
       case 'webview.setPresentation': {
@@ -1998,11 +2014,17 @@ export class ExtensionService {
       // 否则状态卡写着失败、调试区却还挂一条「成功」。
       const failedAction =
         value !== null && typeof value === 'object' && (value as { ok?: unknown }).ok === false
+      // 扩展可以标记 silent:失败原因已在它自己的界面里展示(如远端配置的黄色提示),
+      // 宿主不再记一条看起来像「命令执行失败」的日志
+      const silent =
+        value !== null && typeof value === 'object' && (value as { silent?: unknown }).silent === true
       if (failedAction) {
-        const actionMessage = (value as { message?: unknown }).message
-        const reason =
-          typeof actionMessage === 'string' && actionMessage ? actionMessage : '命令返回失败'
-        this.logStore.add(owner, 'operation', `${label} · 失败：${reason}`)
+        if (!silent) {
+          const actionMessage = (value as { message?: unknown }).message
+          const reason =
+            typeof actionMessage === 'string' && actionMessage ? actionMessage : '命令返回失败'
+          this.logStore.add(owner, 'operation', `${label} · 失败：${reason}`)
+        }
       } else {
         this.logStore.add(owner, 'operation', `${label} · 成功`)
       }
@@ -2075,7 +2097,7 @@ export class ExtensionService {
     }
     if (next.vaultPath !== prev.vaultPath) this.refreshWorkspaceFolders()
     // 生效配置可能因为全局值、当前仓库覆盖值或仓库本身切换而变化。
-    // 只给真正变化的扩展推 configuration.changed,插件收到的永远是合并后的值。
+    // 只给真正变化的扩展推 configuration.changed,扩展收到的永远是合并后的值。
     for (const entry of this.entries.values()) {
       if (!entry.enabled) continue
       const before = this.configStateFor(entry, previousPreferences, previousRoot)

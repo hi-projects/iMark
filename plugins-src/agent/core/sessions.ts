@@ -1,14 +1,14 @@
 /**
  * 会话持久化。
  *
- * 每个会话一个目录：meta.json + messages.jsonl + document.md + attachments/ + prepared/。
- * webview 只拿到 summary/view；绝对路径、附件磁盘名、docHash 都留在宿主。
+ * 每个会话一个目录：meta.json + messages.jsonl + attachments/ + prepared/。
+ * webview 只拿到 summary/view；绝对路径与附件磁盘名都留在宿主。
  */
 
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentMode, ArtifactInfo, StagedAttachment } from './types'
+import type { ArtifactInfo, StagedAttachment } from './types'
 import type {
   AttachmentMeta,
   SessionMessage,
@@ -23,13 +23,10 @@ import {
 export interface SessionMeta {
   version: 1
   id: string
-  documentKey: string
-  documentName: string
-  title: string
+  /** 会话名，取第一条用户消息 */
+  title?: string
   provider: string
   providerSessionId?: string
-  model?: string
-  mode: AgentMode
   status: 'idle' | 'running' | 'error' | 'interrupted'
   createdAt: number
   updatedAt: number
@@ -39,54 +36,33 @@ export interface SessionMeta {
   attachments: StagedAttachment[]
 }
 
-/** messages.jsonl 的内部形状：多一个 docHash，只在宿主内使用 */
-export interface StoredMessage extends SessionMessage {
-  docHash?: string
-}
-
 export interface SessionOpen {
   meta: SessionMeta
-  messages: StoredMessage[]
+  messages: SessionMessage[]
 }
 
 export interface CreateSessionInput {
-  documentKey: string
-  documentName: string
   provider: string
-  model?: string
-  mode: AgentMode
-}
-
-interface IndexDocument {
-  documentKey: string
-  documentName: string
-  sessions: string[]
 }
 
 interface IndexFile {
   version: 1
-  documents: Record<string, IndexDocument>
+  sessions: string[]
 }
 
-const DEFAULT_TITLE = '新会话'
 const MAX_MESSAGE_BYTES = 1024 * 1024
 const INCOMING_TTL_MS = 60 * 60 * 1000
 
-function docIndexKey(documentKey: string): string {
-  return createHash('sha256').update(documentKey).digest('hex').slice(0, 16)
+function titleOf(meta: SessionMeta): string {
+  return meta.title?.trim() || '新会话'
 }
 
 function emptyIndex(): IndexFile {
-  return { version: 1, documents: {} }
+  return { version: 1, sessions: [] }
 }
 
 export function attachmentsOf(meta: SessionMeta): AttachmentMeta[] {
   return meta.attachments.map(toAttachmentMeta)
-}
-
-export function toViewMessage(message: StoredMessage): SessionMessage {
-  const { docHash: _docHash, ...rest } = message
-  return rest
 }
 
 export class SessionStore {
@@ -121,10 +97,6 @@ export class SessionStore {
     return join(this.sessionDir(id), 'meta.json')
   }
 
-  documentPath(id: string): string {
-    return join(this.sessionDir(id), 'document.md')
-  }
-
   attachmentsDir(id: string): string {
     return join(this.sessionDir(id), 'attachments')
   }
@@ -142,12 +114,7 @@ export class SessionStore {
     const meta: SessionMeta = {
       version: 1,
       id: randomUUID(),
-      documentKey: input.documentKey,
-      documentName: input.documentName,
-      title: DEFAULT_TITLE,
       provider: input.provider,
-      model: input.model,
-      mode: input.mode,
       status: 'idle',
       createdAt: now,
       updatedAt: now,
@@ -161,15 +128,7 @@ export class SessionStore {
     await mkdir(this.preparedDir(meta.id), { recursive: true })
     await this.saveMeta(meta)
     await this.enqueueIndex(() => {
-      const key = docIndexKey(meta.documentKey)
-      const doc = this.index.documents[key] ?? {
-        documentKey: meta.documentKey,
-        documentName: meta.documentName,
-        sessions: []
-      }
-      doc.documentName = meta.documentName
-      if (!doc.sessions.includes(meta.id)) doc.sessions.push(meta.id)
-      this.index.documents[key] = doc
+      if (!this.index.sessions.includes(meta.id)) this.index.sessions.push(meta.id)
       return this.saveIndex()
     })
     return meta
@@ -185,11 +144,10 @@ export class SessionStore {
     }
   }
 
-  async list(documentKey: string): Promise<SessionSummary[]> {
-    const key = docIndexKey(documentKey)
-    const ids = this.index.documents[key]?.sessions ?? []
+  /** 所有会话，按最近使用排序 */
+  async listAll(): Promise<SessionSummary[]> {
     const out: SessionSummary[] = []
-    for (const id of ids) {
+    for (const id of this.index.sessions) {
       const meta = await this.getMeta(id)
       if (!meta) continue
       out.push(this.summaryOf(meta))
@@ -201,12 +159,8 @@ export class SessionStore {
   summaryOf(meta: SessionMeta, artifacts: readonly ArtifactInfo[] = []): SessionSummary {
     return {
       id: meta.id,
-      title: meta.title,
-      documentKey: meta.documentKey,
-      documentName: meta.documentName,
+      title: titleOf(meta),
       provider: meta.provider,
-      model: meta.model,
-      mode: meta.mode,
       status: meta.status,
       createdAt: meta.createdAt,
       updatedAt: meta.updatedAt,
@@ -238,9 +192,7 @@ export class SessionStore {
   private async deleteUnlocked(id: string): Promise<void> {
     await rm(this.sessionDir(id), { recursive: true, force: true })
     await this.enqueueIndex(() => {
-      for (const doc of Object.values(this.index.documents)) {
-        doc.sessions = doc.sessions.filter(sessionId => sessionId !== id)
-      }
+      this.index.sessions = this.index.sessions.filter(sessionId => sessionId !== id)
       return this.saveIndex()
     })
   }
@@ -258,17 +210,17 @@ export class SessionStore {
     }
   }
 
-  async appendMessage(id: string, message: Omit<StoredMessage, 'seq' | 'createdAt'>): Promise<StoredMessage> {
+  async appendMessage(id: string, message: Omit<SessionMessage, 'seq' | 'createdAt'>): Promise<SessionMessage> {
     return this.serialize(() => this.appendMessageUnlocked(id, message))
   }
 
   private async appendMessageUnlocked(
     id: string,
-    message: Omit<StoredMessage, 'seq' | 'createdAt'>
-  ): Promise<StoredMessage> {
+    message: Omit<SessionMessage, 'seq' | 'createdAt'>
+  ): Promise<SessionMessage> {
     const meta = await this.getMeta(id)
     if (!meta) throw new Error(`会话不存在：${id}`)
-    const stored: StoredMessage = {
+    const stored: SessionMessage = {
       ...message,
       seq: meta.nextSeq,
       createdAt: Date.now()
@@ -279,12 +231,26 @@ export class SessionStore {
     meta.messageCount += 1
     meta.updatedAt = stored.createdAt
     meta.status = message.status === 'running' ? 'running' : message.status === 'ok' ? 'idle' : 'error'
-    if (message.role === 'user' && meta.title === DEFAULT_TITLE) {
+    if (message.role === 'user' && !meta.title) {
       const candidate = message.text.trim().replace(/\s+/g, ' ').slice(0, 40)
-      meta.title = candidate || message.attachmentIds[0] || DEFAULT_TITLE
+      meta.title = candidate || message.attachments?.[0]?.name || '新会话'
     }
     await this.saveMeta(meta)
     return stored
+  }
+
+  /** 一轮发出后把附件从「待发」里移除；文件仍留在会话目录里供 Agent 读取 */
+  async removeAttachments(id: string, attachmentIds: readonly string[]): Promise<void> {
+    if (attachmentIds.length === 0) return
+    return this.serialize(async () => {
+      const meta = await this.getMeta(id)
+      if (!meta) return
+      const drop = new Set(attachmentIds)
+      meta.attachments = meta.attachments.filter(item => !drop.has(item.id))
+      meta.attachmentCount = meta.attachments.length
+      meta.updatedAt = Date.now()
+      await this.saveMeta(meta)
+    })
   }
 
   async setStatus(id: string, status: SessionMeta['status']): Promise<void> {
@@ -342,18 +308,18 @@ export class SessionStore {
     return meta?.attachments.find(item => item.id === attachmentId) ?? null
   }
 
-  async readMessages(id: string): Promise<StoredMessage[]> {
+  async readMessages(id: string): Promise<SessionMessage[]> {
     let raw = ''
     try {
       raw = await readFile(join(this.sessionDir(id), 'messages.jsonl'), 'utf8')
     } catch {
       return []
     }
-    const parsed: StoredMessage[] = []
+    const parsed: SessionMessage[] = []
     for (const line of raw.split(/\r?\n/)) {
       if (!line.trim()) continue
       try {
-        const item = JSON.parse(line) as StoredMessage
+        const item = JSON.parse(line) as SessionMessage
         if (item && typeof item.seq === 'number' && (item.role === 'user' || item.role === 'assistant')) {
           parsed.push(item)
         }
@@ -362,7 +328,7 @@ export class SessionStore {
       }
     }
     const capped = parsed.slice(-MAX_SESSION_MESSAGES)
-    const out: StoredMessage[] = []
+    const out: SessionMessage[] = []
     let bytes = 0
     for (let i = capped.length - 1; i >= 0; i--) {
       const item = capped[i]
@@ -380,20 +346,15 @@ export class SessionStore {
     return { meta, messages: await this.readMessages(id) }
   }
 
-  async messageBySeq(id: string, seq: number): Promise<StoredMessage | null> {
+  async messageBySeq(id: string, seq: number): Promise<SessionMessage | null> {
     const messages = await this.readMessages(id)
     return messages.find(item => item.seq === seq) ?? null
-  }
-
-  async writeDocumentSnapshot(id: string, text: string): Promise<string> {
-    const path = this.documentPath(id)
-    await writeFile(path, text, 'utf8')
-    return path
   }
 
   async reconcile(): Promise<void> {
     const entries = await readdir(this.root, { withFileTypes: true }).catch(() => [])
     const seen = new Set<string>()
+    let changed = false
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
       if (entry.name.startsWith('.')) continue
@@ -405,26 +366,14 @@ export class SessionStore {
         await this.saveMeta(meta)
       }
       await this.cleanupIncoming(meta.id)
-      const key = docIndexKey(meta.documentKey)
-      const doc = this.index.documents[key] ?? {
-        documentKey: meta.documentKey,
-        documentName: meta.documentName,
-        sessions: []
-      }
-      doc.documentName = meta.documentName
-      if (!doc.sessions.includes(meta.id)) doc.sessions.push(meta.id)
-      this.index.documents[key] = doc
-    }
-    let changed = false
-    for (const [key, doc] of Object.entries(this.index.documents)) {
-      const before = doc.sessions.length
-      doc.sessions = doc.sessions.filter(id => seen.has(id))
-      if (doc.sessions.length !== before) changed = true
-      if (doc.sessions.length === 0) {
-        delete this.index.documents[key]
+      if (!this.index.sessions.includes(meta.id)) {
+        this.index.sessions.push(meta.id)
         changed = true
       }
     }
+    const before = this.index.sessions.length
+    this.index.sessions = this.index.sessions.filter(id => seen.has(id))
+    if (this.index.sessions.length !== before) changed = true
     if (changed) await this.saveIndex()
   }
 
@@ -452,7 +401,7 @@ export class SessionStore {
   private async loadIndex(): Promise<IndexFile> {
     try {
       const raw = JSON.parse(await readFile(join(this.root, 'index.json'), 'utf8')) as IndexFile
-      if (!raw || raw.version !== 1 || typeof raw.documents !== 'object') return emptyIndex()
+      if (!raw || raw.version !== 1 || !Array.isArray(raw.sessions)) return emptyIndex()
       return raw
     } catch {
       return emptyIndex()

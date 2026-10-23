@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
+import { Cpu, PackageCheck, Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
 import HelpTip from './HelpTip.vue'
 import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
@@ -30,6 +30,8 @@ import PluginSettings from './plugins/PluginSettings.vue'
 import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
 import MarketPage from './market/MarketPage.vue'
+import MarketHosts from './market/MarketHosts.vue'
+import MarketInstalled from './market/MarketInstalled.vue'
 import InstallConfirmDialog from './market/InstallConfirmDialog.vue'
 import MarketSource from './market/MarketSource.vue'
 
@@ -41,7 +43,7 @@ import MarketSource from './market/MarketSource.vue'
  */
 const LAYER_HELP = [
   '扩展代码以你的用户权限运行，能读写文件、执行命令、访问网络 —— 安装前请确认来源可信。',
-  '默认所有扩展跑在同一个共享扩展进程中（省内存）；需要隔离时可在 浏览市场 → 扩展分配 切换为独立进程，或按分组编号拆开。'
+  '默认所有扩展跑在同一个共享扩展进程中（省内存）；需要隔离时可在 扩展 → 扩展分配 切换为独立进程，或按分组编号拆开。'
 ].join('\n')
 
 const selectedExtension = computed(() =>
@@ -52,11 +54,12 @@ const selectedExtension = computed(() =>
 
 /** 右侧标题:选中的是扩展就显示扩展名,市场页则跟着它的页签走 */
 const title = computed(() => {
+  if (settingsNav.page === 'hosts') return '扩展分配'
+  if (settingsNav.page === 'installed') return '已安装扩展'
   if (settingsNav.page === 'market') {
     const tab: MarketNav['tab'] = settingsNav.market.tab
     if (tab === 'browse') return settingsNav.market.detailId ? '扩展详情' : '浏览市场'
-    if (tab === 'hosts') return '扩展分配'
-    return tab === 'publish' ? '发布扩展' : '已安装扩展'
+    return '发布扩展'
   }
   if (settingsNav.page === 'editor') return '编辑器'
   if (settingsNav.page === 'system') return '系统'
@@ -386,7 +389,7 @@ onBeforeUnmount(() => {
           <Settings2 :size="15" />
           <span>系统</span>
         </button>
-        <!-- 扩展单独一行分组:市场排第一项,下面直接列出每个已安装扩展 -->
+        <!-- 扩展单独一行分组:市场、扩展分配与已安装在前,下面直接列出每个已安装扩展 -->
         <div class="settings-nav-group">
           <span>扩展</span>
           <HelpTip :text="LAYER_HELP" :size="12" class="settings-nav-help" />
@@ -398,7 +401,23 @@ onBeforeUnmount(() => {
         >
           <Store :size="15" />
           <span>浏览市场</span>
-          <!-- 有可用更新时挂个角标:这是用户唯一会主动看的地方 -->
+        </button>
+        <button
+          class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'hosts' }"
+          @click="settingsNav.page = 'hosts'"
+        >
+          <Cpu :size="15" />
+          <span>扩展分配</span>
+        </button>
+        <button
+          class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'installed' }"
+          @click="settingsNav.page = 'installed'"
+        >
+          <PackageCheck :size="15" />
+          <span>已安装</span>
+          <!-- 有可用更新时挂个角标:更新最终是在这一页装回去的 -->
           <span v-if="remoteStore.updates.length > 0" class="settings-nav-badge">
             {{ remoteStore.updates.length }}
           </span>
@@ -443,6 +462,14 @@ onBeforeUnmount(() => {
 
         <div v-if="settingsNav.page === 'market'" class="settings-body">
           <MarketPage />
+        </div>
+
+        <div v-else-if="settingsNav.page === 'hosts'" class="settings-body">
+          <MarketHosts />
+        </div>
+
+        <div v-else-if="settingsNav.page === 'installed'" class="settings-body">
+          <MarketInstalled />
         </div>
 
         <div v-else-if="settingsNav.page === 'plugin'" class="settings-body">

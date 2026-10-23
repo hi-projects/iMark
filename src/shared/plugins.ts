@@ -13,6 +13,8 @@ export type PluginFieldKind =
   | 'number'
   | 'boolean'
   | 'select'
+  /** 字符串列表:一行一个值,设置页用「+」逐条添加 */
+  | 'list'
   | 'targets'
   | 'endpoints'
   /** 读写扩展包外的 JSON 配置文件(值是字符串);文件与键由清单的 imark 元数据声明 */
@@ -45,7 +47,7 @@ export interface PluginField {
   showWhen?: { key: string; value: unknown }
   /** 字段下方的说明文字 */
   description?: string
-  default: string | number | boolean | PluginTarget[] | PluginEndpoint[]
+  default: string | number | boolean | string[] | PluginTarget[] | PluginEndpoint[]
   placeholder?: string
   min?: number
   max?: number

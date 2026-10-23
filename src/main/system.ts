@@ -1,9 +1,11 @@
 /**
  * 系统集成:把 iMark 注册成 Markdown 文件的「打开方式」(设置 → 系统)。
  *
- * 为什么这件事不能一键完成:Windows 8 起,`…\Explorer\FileExts\.md\UserChoice`
- * 带哈希保护,**应用不能静默把自己设成默认程序**(写进去会被系统判为无效而忽略)。
- * 所以这里的职责分成两半:
+ * 两个平台的做法完全不同:
+ *
+ * **Windows**:Windows 8 起,`…\Explorer\FileExts\.md\UserChoice` 带哈希保护,
+ * **应用不能静默把自己设成默认程序**(写进去会被系统判为无效而忽略)。所以这里的
+ * 职责分成两半:
  *   1. 把 iMark 注册成一个**合法的候选**(ProgID + OpenWithProgids),让「打开方式」
  *      列表里出现它;
  *   2. 把用户送到系统「默认应用」设置页 —— 最后那一下必须由用户自己点。
@@ -11,13 +13,20 @@
  *      Windows 10 只能打开通用页。
  * 界面上的按钮文案也是照着这两半写的(见 SystemSettings.vue),不承诺做不到的事。
  *
+ * **Linux**:走 freedesktop 的 MIME 关联,`mimeapps.list` 没有哈希保护,应用**可以**
+ * 直接写成默认 —— 一条 `xdg-mime default <id> text/markdown` 就完了,GNOME/KDE/XFCE
+ * 都认。前提是 iMark 的 .desktop 条目已经装进 XDG 数据目录并声明了
+ * `MimeType=text/markdown;`(deb 安装即满足;AppImage 需要先做桌面集成)。
+ * 例外是 Flatpak/Snap:沙箱里的 mimeapps.list 不是宿主机的,改不到,只能手动设置。
+ *
  * 注册表只写 `HKCU\Software\Classes`(当前用户),不碰 HKLM、不需要管理员;
  * 也**不**改写 `.md` 的默认值 —— 那会悄悄改变用户的现状,候选归候选。
  */
 
 import { app, nativeImage, shell } from 'electron'
 import { execFile } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { DefaultEditorStatus } from '@shared/types'
@@ -265,6 +274,7 @@ export async function effectiveUserChoice(
  * 两种形式都认。
  */
 export async function defaultEditorStatus(): Promise<DefaultEditorStatus> {
+  if (process.platform === 'linux') return linuxDefaultEditorStatus()
   if (process.platform !== 'win32') {
     return { supported: false, isDefault: false, current: null }
   }
@@ -282,6 +292,262 @@ export async function defaultEditorStatus(): Promise<DefaultEditorStatus> {
       error: err instanceof Error ? err.message : String(err)
     }
   }
+}
+
+/* ------------------------------- Linux ------------------------------- */
+
+/**
+ * `.md` / `.markdown` 在 shared-mime-info 里都归 `text/markdown`;
+ * `text/x-markdown` 只是它的别名,写进 .desktop 供老工具识别。
+ */
+const LINUX_MIME = 'text/markdown'
+
+/**
+ * Flatpak/Snap 的 `mimeapps.list` 在沙箱里,写进去的是**沙箱内**的配置,
+ * 宿主机的文件管理器根本看不到 —— 这类安装只能让用户去系统设置里选。
+ * (`SNAP_NAME` 是 Snap 环境必有的,单独判断以防 SNAP 没导出。)
+ */
+function linuxSandboxed(): boolean {
+  return Boolean(process.env.FLATPAK_ID || process.env.SNAP || process.env.SNAP_NAME)
+}
+
+/** XDG 规定的数据目录,按优先级排序(先出现的 .desktop 同 ID 覆盖后面的) */
+function xdgDataDirs(): string[] {
+  const home = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share')
+  const system = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
+    .split(':')
+    .map(dir => dir.trim())
+    .filter(Boolean)
+  return [...new Set([home, ...system])]
+}
+
+interface LinuxDesktopEntry {
+  /** 条目 ID,即文件名(如 `iMark.desktop`)—— xdg-mime 收的就是这个 */
+  id: string
+  /** `[Desktop Entry]` 组里的 Exec 原样值 */
+  exec: string
+  /** `Name=`(用于显示「当前默认程序」;没有就退回 id) */
+  name: string
+}
+
+/** 从 .desktop 文件里取 `[Desktop Entry]` 组的 Exec / Name */
+export function parseDesktopEntry(text: string): Omit<LinuxDesktopEntry, 'id'> {
+  let inEntry = false
+  let exec = ''
+  let name = ''
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line.startsWith('[')) {
+      inEntry = line === '[Desktop Entry]'
+      continue
+    }
+    if (!inEntry) continue
+    if (!exec && line.startsWith('Exec=')) exec = line.slice('Exec='.length).trim()
+    else if (!name && line.startsWith('Name=')) name = line.slice('Name='.length).trim()
+  }
+  return { exec, name }
+}
+
+/**
+ * 扫一遍所有 XDG 数据目录里的 .desktop。
+ *
+ * 同一个 ID 只收第一个:XDG 的规矩是用户目录覆盖系统目录。
+ */
+async function linuxDesktopEntries(): Promise<LinuxDesktopEntry[]> {
+  const entries: LinuxDesktopEntry[] = []
+  const seen = new Set<string>()
+  for (const root of xdgDataDirs()) {
+    let names: string[]
+    try {
+      names = await readdir(join(root, 'applications'))
+    } catch {
+      continue
+    }
+    for (const id of names) {
+      if (!id.endsWith('.desktop') || seen.has(id)) continue
+      seen.add(id)
+      try {
+        const text = await readFile(join(root, 'applications', id), 'utf8')
+        entries.push({ id, ...parseDesktopEntry(text) })
+      } catch {
+        // 读不了就当没有:一次权限问题不该让整张列表消失
+      }
+    }
+  }
+  return entries
+}
+
+/**
+ * 认出「iMark 自己的」桌面条目。
+ *
+ * 先按 Exec 里的路径匹配 —— 这是最可靠的:dev 运行时指向 electron + 源码目录,
+ * deb 安装后指向 `/opt/iMark/imark`,AppImage 集成后指向 .AppImage 文件
+ * (Electron 把挂载点之外的真实路径放在 `APPIMAGE`,挂载点里的 execPath 匹配不上)。
+ * 都匹配不到才退回按 ID 猜(electron-builder 默认用 productFilename 命名)。
+ */
+export function ownDesktopEntry(
+  entries: readonly LinuxDesktopEntry[],
+  selfPaths: readonly string[]
+): string | null {
+  const hints = selfPaths.filter(Boolean)
+  const byExec = entries.find(e => e.exec && hints.some(p => e.exec.includes(p)))
+  if (byExec) return byExec.id
+  for (const id of ['iMark.desktop', `${app.name}.desktop`, 'imark.desktop']) {
+    if (entries.some(e => e.id === id)) return id
+  }
+  return null
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isMissingCommand(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+}
+
+/** XDG 配置目录:先用户后系统 */
+function xdgConfigDirs(): string[] {
+  const home = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
+  const system = (process.env.XDG_CONFIG_DIRS || '/etc/xdg').split(':').filter(Boolean)
+  return [...new Set([home, ...system])]
+}
+
+/** 系统里有没有 xdg-mime —— 有它才能改关联,xdg-utils 不是每个桌面都预装 */
+let xdgMimeReady: Promise<boolean> | null = null
+function xdgMimeAvailable(): Promise<boolean> {
+  xdgMimeReady ??= run('xdg-mime', ['--version']).then(
+    () => true,
+    err => (isMissingCommand(err) ? false : true)
+  )
+  return xdgMimeReady
+}
+
+/**
+ * 从一份 mimeapps.list 里取 `[Default Applications]` 下某个类型的值。
+ *
+ * 值可以是 `a.desktop;b.desktop`,按规范取第一个。
+ */
+async function defaultFromMimeappsList(file: string, mime: string): Promise<string | null> {
+  let text: string
+  try {
+    text = await readFile(file, 'utf8')
+  } catch {
+    return null
+  }
+  let inSection = false
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line.startsWith('[')) {
+      inSection = line === '[Default Applications]'
+      continue
+    }
+    if (!inSection) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const types = line
+      .slice(0, eq)
+      .split(';')
+      .map(t => t.trim())
+      .filter(Boolean)
+    if (!types.includes(mime)) continue
+    const first = line
+      .slice(eq + 1)
+      .split(';')
+      .map(v => v.trim())
+      .find(Boolean)
+    if (first) return first
+  }
+  return null
+}
+
+/**
+ * 「现在 .md 显式关联到谁」,按 freedesktop 规定的顺序读 mimeapps.list:
+ * 配置目录(先桌面环境专属、后通用)、再数据目录的 applications/。
+ *
+ * 不用 `xdg-mime query default` 是有教训的:xdg-utils 1.1.3 在哪儿都没配置时会
+ * 退化成「扫一遍所有 .desktop,谁声明支持这个类型就报谁」—— 我们自己声明了
+ * `text/markdown`,于是它在**从没设过默认**的机器上报 iMark 是默认,
+ * 可 GNOME 实际还是用别的程序打开。界面只该说显式配置过的事实。
+ */
+async function configuredDefaultApp(mime: string): Promise<string | null> {
+  const desktops = (process.env.XDG_CURRENT_DESKTOP ?? '')
+    .split(':')
+    .filter(Boolean)
+    .map(d => d.toLowerCase())
+  // 同一个目录里,桌面环境专属的文件优先于通用文件(规范顺序)
+  const prefixes = [...desktops.map(d => `${d}-`), '']
+  const dirs = [
+    ...xdgConfigDirs(),
+    ...xdgDataDirs().map(dir => join(dir, 'applications'))
+  ]
+  for (const dir of dirs) {
+    for (const prefix of prefixes) {
+      const found = await defaultFromMimeappsList(join(dir, `${prefix}mimeapps.list`), mime)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+async function linuxDefaultEditorStatus(): Promise<DefaultEditorStatus> {
+  if (linuxSandboxed()) {
+    return {
+      supported: false,
+      isDefault: false,
+      current: null,
+      error:
+        '当前运行在 Flatpak/Snap 沙箱里，应用改不到宿主机的文件关联，请在系统设置里手动把 .md 关联到 iMark。'
+    }
+  }
+  if (!(await xdgMimeAvailable())) {
+    return {
+      supported: false,
+      isDefault: false,
+      current: null,
+      error: '系统缺少 xdg-mime（xdg-utils），无法修改文件关联，请先在系统里安装 xdg-utils。'
+    }
+  }
+  const entries = await linuxDesktopEntries()
+  const own = ownDesktopEntry(entries, [
+    process.execPath,
+    app.getAppPath(),
+    process.env.APPIMAGE ?? ''
+  ])
+  const currentId = await configuredDefaultApp(LINUX_MIME)
+  const currentEntry = currentId ? entries.find(e => e.id === currentId) : undefined
+  return {
+    supported: true,
+    isDefault: own !== null && currentId === own,
+    current: currentEntry?.name || currentId,
+    desktopEntry: own,
+    // Linux 上应用能直接把默认改完,不需要用户再去设置页点一下
+    direct: true
+  }
+}
+
+/**
+ * Linux 的「设为默认」:一条命令就改完,不需要打开任何设置页。
+ *
+ * 失败分两种:没有桌面条目(没安装/AppImage 没集成)—— 没有可指向的 ID;
+ * xdg-mime 调不动 —— 环境缺 xdg-utils。两种都原样交代,不假装成功。
+ */
+async function linuxRegisterAsDefaultEditor(): Promise<DefaultEditorStatus> {
+  const before = await linuxDefaultEditorStatus()
+  if (!before.supported || before.desktopEntry == null) return before
+  try {
+    await run('xdg-mime', ['default', before.desktopEntry, LINUX_MIME])
+  } catch (err) {
+    return {
+      ...before,
+      isDefault: false,
+      error: isMissingCommand(err)
+        ? '系统缺少 xdg-mime（xdg-utils），无法写入文件关联，请先在系统里安装 xdg-utils。'
+        : `写入文件关联失败:${errorMessage(err)}`
+    }
+  }
+  // 报真实状态:命令成功不等于桌面环境已经认账,重新查一遍再说
+  return linuxDefaultEditorStatus()
 }
 
 /**
@@ -309,6 +575,7 @@ export function defaultAppsSettingsUri(systemVersion: string): string {
  * 是不是默认仍然取决于用户接下来在系统设置里点了什么。
  */
 export async function registerAsDefaultEditor(): Promise<DefaultEditorStatus> {
+  if (process.platform === 'linux') return linuxRegisterAsDefaultEditor()
   if (process.platform !== 'win32') return defaultEditorStatus()
   // 先生成 .ico(拿不到就退回 exe 自己的图标 —— 图标失败不该拖累注册)
   const iconPath = await ensureAssociationIcon()

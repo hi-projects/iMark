@@ -1,7 +1,6 @@
 /**
  * webview 通用启动与消息层。
  *
- * - 读取宿主注入的 bootstrap JSON；
  * - 应用渲染层送来的主题变量；
  * - 封装 request/response 与 host push；
  * - 不 import 任何宿主/Node 模块。
@@ -9,10 +8,6 @@
 
 export interface ThemePayload {
   colors?: Record<string, string>
-}
-
-export interface BootstrapPayload {
-  config: Record<string, unknown>
 }
 
 export interface HostResponse {
@@ -88,18 +83,6 @@ function install(): void {
       }
     }
   })
-}
-
-export function readBootstrap(): BootstrapPayload {
-  const el = document.getElementById('imark-bootstrap')
-  const fallback: BootstrapPayload = { config: {} }
-  if (!el || !el.textContent) return fallback
-  try {
-    const parsed = JSON.parse(el.textContent) as Partial<BootstrapPayload>
-    return { config: parsed.config && typeof parsed.config === 'object' ? parsed.config : {} }
-  } catch {
-    return fallback
-  }
 }
 
 export function applyTheme(theme: unknown): void {

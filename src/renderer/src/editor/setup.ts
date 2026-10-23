@@ -13,7 +13,7 @@ import { extensionDecorationsExtension } from './extensionDecorations'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { imagePaste } from './imagePaste'
-import { updateActiveOutline } from './outline'
+import { outlineFollower, updateActiveOutline } from './outline'
 
 /**
  * 光标颜色等外观覆盖。
@@ -132,7 +132,9 @@ export function buildExtensions(
       // 桥只关心「文档变了」与「选区变了」;一次事务里两者都发生也只通知一次
       if (update.docChanged || update.selectionSet) updateObserver?.(update)
     }),
-    // 滚动/选区变化时跟随高亮大纲激活项
+    // 滚动/选区变化时跟随高亮大纲激活项。
+    // 滚动本身由 outlineFollower 逐帧结算;这里管的是视口范围/文档/选区变化。
+    outlineFollower,
     EditorView.updateListener.of(update => {
       if (update.viewportChanged || update.docChanged || update.selectionSet) {
         updateActiveOutline(update.view)

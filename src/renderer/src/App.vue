@@ -36,7 +36,6 @@ import {
   closeTab,
   exportHtmlFile,
   newFile,
-  openFileFromSystem,
   openFileViaDialog,
   saveBeforeClose,
   saveCurrentFile,
@@ -47,6 +46,7 @@ import {
   enterEditorAndWait,
   initVaultList,
   loadVault,
+  openFileFromSystem,
   openSwitcher,
   openVaultViaDialog,
   requestVaultSwitch,
@@ -166,10 +166,16 @@ onMounted(async () => {
     // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
     initEditorSettings(settings)
 
+    // 启动参数里带的文件优先于「恢复上次会话」:用户双击的就是这一份,
+    // 不该先把上次那批标签恢复出来(它还可能属于另一个仓库)。
+    // openFileFromSystem 会自己决定要不要顺带载入文件所属的仓库。
+    const pending = await api.takePendingOpenFile()
     // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复
     const canResume =
       settings.skipVaultPicker && !!settings.vaultPath && settings.vaultPath.length > 0
-    if (canResume) {
+    if (pending) {
+      await openFileFromSystem(pending)
+    } else if (canResume) {
       const ok = await loadVault(settings.vaultPath!, { silent: true })
       if (ok) {
         // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
@@ -185,9 +191,6 @@ onMounted(async () => {
   api.onSaveBeforeClose(() => void saveBeforeClose())
   // 运行中系统又递来一个文件(第二个实例的 argv)
   offOpenFile = api.onOpenFile(path => void openFileFromSystem(path))
-  // 启动参数里带的那个文件,等上面这一整套初始化完成后再取 —— 顺序天然正确
-  const pending = await api.takePendingOpenFile()
-  if (pending) await openFileFromSystem(pending)
 })
 
 onBeforeUnmount(() => {

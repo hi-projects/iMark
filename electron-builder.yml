@@ -31,3 +31,7 @@ linux:
       Name: iMark
       Comment: 所见即所得 Markdown 编辑器
       Categories: Office;TextEditor;
+      # 声明能打开哪些类型,「打开方式」列表里才会出现 iMark;
+      # 「设为默认」也是靠这个 ID 走 xdg-mime(见 src/main/system.ts)。
+      # text/x-markdown 是 shared-mime-info 里 text/markdown 的别名,留给老工具认。
+      MimeType: text/markdown;text/x-markdown;

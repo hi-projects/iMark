@@ -64,10 +64,4 @@ export class ExtensionLogStore {
     await mkdir(dirname(extensionLogPath(id)), { recursive: true }).catch(() => {})
   }
 
-  /** 把多行文本拆成独立日志行，保留级别 */
-  addLines(id: string, level: PluginLogLevel, text: string): void {
-    for (const line of text.split(/\r?\n/)) {
-      if (line.trim()) this.add(id, level, line)
-    }
-  }
 }

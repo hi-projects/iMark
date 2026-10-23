@@ -23,7 +23,7 @@ import type {
 } from './extensions'
 import type { MainToRendererMessage, RendererToMainMessage } from './extensionProtocol'
 
-/** preload 通过 contextBridge 暴露到 window.api 的接口 */
+/** preload 暴露给渲染层、由一次性取用函数返回的接口 */
 export interface WindowApi {
   openFileDialog(): Promise<string | null>
   saveFileDialog(o: SaveDialogOptions): Promise<string | null>

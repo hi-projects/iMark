@@ -117,7 +117,6 @@ export class ClaudeEventMapper {
   model?: string
   tools?: readonly string[]
   assistantCount = 0
-  terminal = false
   private sawTextDelta = false
   private sawThinkingDelta = false
   private accumulatedText = ''
@@ -249,7 +248,6 @@ export class ClaudeEventMapper {
   }
 
   private handleResult(record: RawRecord): AgentEvent[] {
-    this.terminal = true
     const events: AgentEvent[] = []
     const denials = Array.isArray(record.permission_denials) ? record.permission_denials : []
     if (denials.length > 0) {
@@ -259,7 +257,7 @@ export class ClaudeEventMapper {
       events.push({
         type: 'notice',
         level: 'warn',
-        message: `Claude Code 拒绝了 ${denials.length} 个工具调用${names.length ? `：${names.join(', ')}` : ''}。可在设置里切换到 read+parse，或检查工具白名单。`
+        message: `Claude Code 拒绝了 ${denials.length} 个工具调用${names.length ? `：${names.join(', ')}` : ''}。`
       })
     }
 
@@ -321,7 +319,7 @@ export function classifyClaudeFailure(input: {
   if (/permission|denied|not allowed/i.test(stderr)) {
     return {
       code: 'permission-denied',
-      message: 'Claude Code 被权限规则拒绝；可切换到 read+parse，或检查工具白名单。',
+      message: 'Claude Code 被权限规则拒绝。',
       detail: clip(stderr, 500)
     }
   }

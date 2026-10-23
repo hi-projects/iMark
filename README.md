@@ -20,10 +20,10 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
-- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认所有扩展共用一个宿主(`shared`),也可切换 `isolated` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「浏览市场 → 扩展宿主」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
+- **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认所有扩展共用一个宿主(`shared`),也可切换 `isolated` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「设置 → 扩展分配」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
   - **定时上传(Git)**:市场里的官方扩展(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
   - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方扩展。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 扩展只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,扩展只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有扩展的 `lineMenu` 会合进同一个「+」菜单
-  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方扩展。**Agent Core** 是通用 Agent 面板:对话、会话、附件、产物与权限模式都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径、会话目录与工具权限交给后端,由后端自己决定 Read / Bash / 写脚本 / 调本机解析器。具体后端由 provider 扩展提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,支持 `read-only` 与 `read+parse` 两档权限、流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档只提供 `document.md` 快照,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里填可执行文件(留空自动探测)或先安装 CLI;模型、端点与令牌的唯一事实是 `~/.claude/settings.json`,设置页的对应字段直接读写它;「检查 Claude Code」会探测 CLI 并把结果显示在本扩展的状态卡里。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
+  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方扩展。**Agent Core** 是通用 Agent 面板:对话、会话、附件与产物都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径与会话目录交给后端,怎么读取/解析由后端自己决定。具体后端由 provider 扩展提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,启动参数只包含流式协议与会话续接,工具权限完全由 Claude Code 自己的设置决定;支持流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档需要时可用「＋ 本文档」作为一条普通附件加入会话,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里选择「自动检测」或手动指定可执行文件,也可以先安装 CLI;模型、端点与令牌的唯一事实是 `~/.claude/settings.json`,设置页的对应字段直接读写它;「检查 Claude Code」会探测 CLI 并把结果显示在本扩展的状态卡里。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
 - **扩展市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、扩展市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 深色两档,状态栏一键切换(主题与设置按钮在状态栏最左边),或在 **设置面板**(状态栏左侧齿轮 / `Ctrl+,`)的「外观」中挑选;深色的底色与边框对齐 Obsidian 的 Minimal 主题深色档(`#262626` 编辑区 / `#212121` 侧栏),文字仍用 iMark 默认配色(`#dadada` 正文 / `#8a5cf5` 强调色)。偏好持久化到数据目录的 `settings.json`
@@ -258,7 +258,7 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 | `isolated`(默认) | 每个扩展一个 `utilityProcess` 宿主 | 只影响该扩展;按 1s/2s/4s 退避重启,60 秒三次后停止 |
 | `shared` | 所有扩展共用一个宿主 | 同宿主内的**所有扩展**一起重启 |
 
-`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(未列出或 0 = 按模式自动分组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。「浏览市场 → 扩展宿主」页可以切换模式、设置分组编号,并查看每个宿主的 PID/内存/状态。
+`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(未列出或 0 = 按模式自动分组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。「设置 → 扩展分配」页可以切换模式、设置分组编号,并查看每个宿主的 PID/内存/状态。
 
 启用态驱动全部界面:扩展被禁用后,它贡献的命令、快捷键、状态栏、行首菜单会立即消失;没有激活过的扩展不会 fork 宿主。
 
@@ -417,7 +417,7 @@ npm run typecheck:plugins
 | `contributes` | | 命令 / 快捷键 / 命令面板菜单 / 设置 / 行首菜单 / 动作 |
 | `categories` / `keywords` | | 市场展示用 |
 
-`icon` 是包内相对路径,支持 PNG / SVG(≤128 KiB);设置左栏、扩展设置页头与市场「已安装」列表会显示它,未声明时这些位置不占位。
+`icon` 是包内相对路径,支持 PNG / SVG(≤128 KiB);设置左栏、扩展设置页头与「已安装」页会显示它,未声明时这些位置不占位。
 
 `configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/targets/endpoints/external)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
 
@@ -496,8 +496,7 @@ export function activate() {
             thinking: false,
             resume: false,
             systemPrompt: true
-          },
-          models: []
+          }
         },
         detect: async () => ({ available: true }),
         createSession: async options => ({
@@ -516,6 +515,7 @@ export function activate() {
 - `extensionDependencies` 同时保证 provider 与 Core 在同一宿主;`exports` 是进程内对象,**跨宿主读不到**。
 - provider 不需要 `activationEvents`;Core 的 `ProviderRegistry` 在首次列后端时才 `activate()` 它,避免与 Core 自己的激活互相等待。
 - provider 自己读自己的 `contributes.configuration` 与 `context.secrets`;Core 不读取、不转发后端专属设置。CLI 不存在或启动失败时,`detect()` / `createSession()` 返回 `provider-unavailable` 错误。
+- 模型由 provider 自己的配置文件决定,Core 不传也不保存;`detect()` 可以返回 `defaultModel`,对话面板只把它当只读名字显示。
 - 完整契约见 `src/shared/agentProvider.ts`,内置示例见 `plugins-src/claude-code/`。
 
 #### 配置、密钥与状态
@@ -547,6 +547,7 @@ panel.webview.postMessage({ type: 'hello' })
 - webview 跑在独立的 `imark-webview://<扩展 id>/…` origin 与独立 session 里,**与宿主隔离**;脚本只能通过 `postMessage` 与扩展通信。
 - `webview.asWebviewUri(uri)` 把包内资源变成可加载的 URL;`webview.cspSource` 用于拼 CSP。`localResourceRoots` 之外的路径会被协议层拒绝。
 - `presentation` 支持 `sidebar` / `overlay` / `floating`;`panel.imark.setPresentation/setSize/setPosition` 可在运行时调整。
+- `panel.imark.setStatus('idle' | 'busy')` 控制标题栏左侧的状态点:绿点表示空闲,强调色脉冲表示忙碌。
 - 用 `window.registerWebviewPanelSerializer(viewType, serializer)` 让面板在重启后恢复(`deserializeWebviewPanel` 重新生成 HTML)。
 
 #### 行首「+」菜单与动作

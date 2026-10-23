@@ -3,7 +3,7 @@
   "publisher": "imark",
   "version": "1.0.0",
   "displayName": "Agent Core",
-  "description": "Agent 对话宿主：会话、附件、提示词与权限模式；具体后端由 Agent provider 扩展提供",
+  "description": "Agent 对话宿主：会话、附件与提示词；具体后端由 Agent provider 扩展提供",
   "author": "iMark",
   "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
@@ -11,7 +11,6 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:imark.agent.openChat",
-    "onCommand:imark.agent.beautify",
     "onCommand:imark.agent.stop",
     "onWebviewPanel:imark.agent.chat"
   ],
@@ -27,11 +26,6 @@
         "category": "Agent Core"
       },
       {
-        "command": "imark.agent.beautify",
-        "title": "Agent Core 整理当前文档",
-        "category": "Agent Core"
-      },
-      {
         "command": "imark.agent.stop",
         "title": "停止 Agent Core 运行",
         "category": "Agent Core"
@@ -40,15 +34,18 @@
     "configuration": {
       "title": "Agent Core",
       "properties": {
-        "imark.agent.mode": {
+        "imark.agent.systemPrompt": {
           "type": "string",
-          "default": "read+parse",
-          "enum": ["read+parse", "read-only"],
-          "title": "权限模式",
-          "description": "read+parse：允许 Agent 运行解析命令并写入会话目录，附件由 Agent 自行读取。read-only：只允许读取，PDF 需要模型原生支持；无法解析时 Agent 会明确说明。",
+          "default": "",
+          "title": "系统提示词",
+          "description": "每轮对话最前面的系统规则。清空或点右侧图标即恢复内置默认。",
           "imark": {
-            "kind": "select",
-            "section": "Agent Core"
+            "kind": "textarea",
+            "label": "提示词内容",
+            "section": "系统提示词",
+            "rows": 12,
+            "resettable": true,
+            "placeholder": "留空则使用内置默认提示词"
           }
         },
         "imark.agent.attachmentMaxMB": {

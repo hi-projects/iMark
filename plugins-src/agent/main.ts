@@ -2,20 +2,19 @@
  * Agent Core：对话面板与会话宿主，不认识任何具体 Agent 后端。
  *
  * 设计边界（用户明确要求）：
- * - 扩展不解析附件：只把 webview 传来的字节落盘，给 Agent 绝对路径与工具权限；
+ * - 扩展不解析附件：只把 webview 传来的字节落盘，给 Agent 绝对路径；
  * - 怎么读文件（Read / Bash / 写脚本 / 调本地工具）由 Agent 自行决定；
  * - 后端通过 `imark.agentProviders` 贡献点接入；Claude Code 是独立扩展；
- * - 当前文档只提供 document.md 快照，结果通过 TextEditor.edit 写回，不直接改 vault。
+ * - 文档只有用户主动「添加本文档」时才作为普通附件进入会话；结果通过 TextEditor.edit 写回，不直接改 vault。
  */
 
 import { randomUUID } from 'node:crypto'
+import { dirname, join } from 'node:path'
 import * as imark from 'imark'
 import type {
   AgentError,
   AgentErrorCode,
-  AgentMode,
   AgentSession,
-  AgentTaskMode,
   AgentUsage,
   DocMeta,
   StagedAttachment
@@ -25,11 +24,10 @@ import type {
   ArtifactPreview,
   HostPush,
   InitPayload,
+  SessionMessage,
   SessionSummary,
   SessionView,
-  ToolCallView,
-  TurnTarget,
-  UiIntent
+  ToolCallView
 } from './core/protocol'
 import { MAX_TURN_TEXT, toAttachmentMeta } from './core/protocol'
 import { readConfig, safeConfigView, type AgentConfig } from './core/config'
@@ -37,19 +35,13 @@ import { AttachmentStager } from './core/attachments'
 import { ArtifactStore } from './core/artifacts'
 import { DocumentApplyError, DocumentBridge } from './core/document'
 import { Inventory } from './core/inventory'
-import { buildReplay, buildTurnPrompt, writeDocumentSnapshot } from './core/prompt'
-import {
-  attachmentsOf,
-  SessionStore,
-  toViewMessage,
-  type SessionMeta,
-  type StoredMessage
-} from './core/sessions'
+import { inlineImageSources } from './core/markdown'
+import { buildReplay, buildTurnPrompt } from './core/prompt'
+import { attachmentsOf, SessionStore, type SessionMeta } from './core/sessions'
 import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
 const CMD_OPEN = 'imark.agent.openChat'
-const CMD_BEAUTIFY = 'imark.agent.beautify'
 const CMD_STOP = 'imark.agent.stop'
 
 const DOC_PUSH_DEBOUNCE_MS = 80
@@ -65,9 +57,7 @@ const AGENT_ERROR_CODES = new Set<AgentErrorCode>([
   'config-invalid',
   'attachment-too-large',
   'attachment-missing',
-  'stale-document',
   'no-editor',
-  'invalid-target',
   'edit-rejected',
   'not-found'
 ])
@@ -83,6 +73,7 @@ interface TurnRuntime {
 interface TurnOutcome {
   status: 'ok' | 'error' | 'cancelled'
   text: string
+  thinking?: string
   toolCalls: ToolCallView[]
   usage?: AgentUsage
   costUsd?: number
@@ -93,14 +84,9 @@ interface TurnInput {
   turnId: string
   sessionId: string
   meta: SessionMeta
-  taskMode: AgentTaskMode
-  permissionMode: AgentMode
   text: string
   attachments: StagedAttachment[]
-  documentPath?: string
-  documentHash?: string
-  documentTruncated?: boolean
-  history: StoredMessage[]
+  history: SessionMessage[]
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -111,14 +97,6 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback
-}
-
-function isTaskMode(value: unknown): value is AgentTaskMode {
-  return value === 'ask' || value === 'generate' || value === 'beautify'
-}
-
-function isPermissionMode(value: unknown): value is AgentMode {
-  return value === 'read-only' || value === 'read+parse'
 }
 
 function errorOf(err: unknown): AgentError {
@@ -151,18 +129,6 @@ function escapeAttr(value: string): string {
     .replace(/>/g, '&gt;')
 }
 
-function parseTarget(value: unknown): TurnTarget {
-  const raw = asRecord(value)
-  const kind = str(raw.kind)
-  if (kind === 'replace-all') return { kind: 'replace-all' }
-  if (kind === 'insert-at-cursor') return { kind: 'insert-at-cursor' }
-  if (kind === 'insert-below-line') {
-    const line = Number(raw.line)
-    return { kind: 'insert-below-line', line: Number.isFinite(line) ? Math.max(0, Math.trunc(line)) : 0 }
-  }
-  throw new Error('未知的写入目标')
-}
-
 class AgentHost {
   private readonly sessions: SessionStore
   private readonly attachments: AttachmentStager
@@ -193,7 +159,6 @@ class AgentHost {
 
     this.context.subscriptions.push(
       imark.commands.registerCommand(CMD_OPEN, () => this.openChat()),
-      imark.commands.registerCommand(CMD_BEAUTIFY, () => this.beautify()),
       imark.commands.registerCommand(CMD_STOP, () => this.cancelAllTurns()),
       imark.window.registerWebviewPanelSerializer(VIEW_TYPE, {
         deserializeWebviewPanel: async panel => this.adoptPanel(panel)
@@ -263,8 +228,8 @@ class AgentHost {
     return this.documents.meta(this.documents.current())
   }
 
-  private async listSessions(documentKey: string): Promise<SessionSummary[]> {
-    return this.sessions.list(documentKey)
+  private async listSessions(): Promise<SessionSummary[]> {
+    return this.sessions.listAll()
   }
 
   private async summaryOf(meta: SessionMeta, withArtifacts = false): Promise<SessionSummary> {
@@ -278,6 +243,8 @@ class AgentHost {
     if (this.disposed) return
     if (this.panel) {
       this.panel.reveal()
+      // 重新显示时再探测一次后端：默认模型等只读信息可能已在设置里改过
+      this.push({ type: 'push', kind: 'refresh' })
       return
     }
     const panel = imark.window.createWebviewPanel(
@@ -301,6 +268,7 @@ class AgentHost {
     }
     if (this.panel && this.panel !== panel) this.panel.dispose()
     this.panel = panel
+    this.updateStatusBar()
     this.context.subscriptions.push(
       panel.webview.onDidReceiveMessage(message => {
         void this.onMessage(message).catch(err => {
@@ -330,9 +298,10 @@ class AgentHost {
     const styleUri = panel.webview.asWebviewUri(
       imark.Uri.joinPath(this.context.extensionUri, 'webview', 'styles.css')
     )
-    const bootstrap = JSON.stringify({
-      config: this.config ? safeConfigView(this.config) : {}
-    }).replace(/</g, '\\u003c')
+    // 公式样式与字体随扩展包分发（构建时从 katex 复制），见 scripts/build-plugins.mjs
+    const katexUri = panel.webview.asWebviewUri(
+      imark.Uri.joinPath(this.context.extensionUri, 'webview', 'katex', 'katex.min.css')
+    )
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -341,9 +310,9 @@ class AgentHost {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Agent Core</title>
 <link rel="stylesheet" href="${escapeAttr(styleUri.toString())}" />
+<link rel="stylesheet" href="${escapeAttr(katexUri.toString())}" />
 </head>
 <body>
-<script type="application/json" id="imark-bootstrap">${bootstrap}</script>
 <script nonce="${nonce}" src="${escapeAttr(scriptUri.toString())}"></script>
 </body>
 </html>`
@@ -351,7 +320,7 @@ class AgentHost {
 
   private async pushInitialState(): Promise<void> {
     const doc = this.currentDocMeta()
-    const sessions = doc ? await this.listSessions(doc.key) : []
+    const sessions = await this.listSessions()
     const { providers, errors } = await this.providers.list()
     const payload: InitPayload = {
       providers: providers.map(provider => ({ info: provider.info })),
@@ -390,20 +359,21 @@ class AgentHost {
     }, DOC_PUSH_DEBOUNCE_MS)
   }
 
+  /**
+   * 只更新当前文档信息，不动会话列表。
+   *
+   * 会话与会话列表都是全局的：切换文档时面板保持原样，新会话与文档无关。
+   */
   private async pushDocState(): Promise<void> {
     const doc = this.currentDocMeta()
     this.push({ type: 'push', kind: 'doc', value: { doc } })
-    const sessions = doc ? await this.listSessions(doc.key) : []
-    this.push({
-      type: 'push',
-      kind: 'sessions',
-      value: { documentKey: doc?.key ?? 'no-document', sessions }
-    })
   }
 
   private updateStatusBar(): void {
-    if (!this.statusItem) return
     const running = this.activeTurns.size > 0
+    // 标题栏的小圆点由宿主绘制（它在 webview 沙箱之外），扩展只报告忙闲
+    this.panel?.imark.setStatus(running ? 'busy' : 'idle')
+    if (!this.statusItem) return
     this.statusItem.text = running ? '$(sync~spin) Agent Core' : '$(hubot) Agent Core'
     this.statusItem.tooltip = running ? 'Agent Core 正在运行' : '打开 Agent Core 对话'
   }
@@ -438,8 +408,6 @@ class AgentHost {
         return this.createSession(asRecord(payload))
       case 'session.open':
         return { session: await this.viewOf(str(asRecord(payload).sessionId)) }
-      case 'session.update':
-        return this.updateSession(asRecord(payload))
       case 'session.delete':
         return this.deleteSession(str(asRecord(payload).sessionId))
       case 'attach.begin':
@@ -479,18 +447,32 @@ class AgentHost {
       }
       case 'turn.start':
         return this.startTurn(asRecord(payload))
+      case 'prompt.preview':
+        return this.previewPrompt(asRecord(payload))
       case 'turn.cancel':
         return { cancelled: this.cancelTurn(str(asRecord(payload).turnId)) }
       case 'artifact.preview':
         return this.previewArtifact(asRecord(payload))
+      case 'doc.attach':
+        return this.attachDocument(asRecord(payload))
       case 'doc.apply':
         return this.applyMessage(asRecord(payload))
       case 'doc.applyArtifact':
         return this.applyArtifact(asRecord(payload))
       case 'markdown.render': {
-        const text = str(asRecord(payload).text)
+        const record = asRecord(payload)
+        const text = str(record.text)
         if (text.length > 1024 * 1024) throw new Error('Markdown 文本过大')
-        return { html: await imark.imark.renderMarkdown(text) }
+        const html = await imark.imark.renderMarkdown(text)
+        // 面板的 CSP 不放行 file:/http:，把会话目录内的图片内联成 data URI
+        const sessionId = str(record.sessionId)
+        const meta = sessionId ? await this.sessions.getMeta(sessionId) : null
+        return {
+          html: await inlineImageSources(
+            html,
+            meta ? this.sessions.sessionDir(meta.id) : undefined
+          )
+        }
       }
       default:
         throw new Error(`未知请求：${kind}`)
@@ -514,7 +496,6 @@ class AgentHost {
   // ---------- 会话 ----------
 
   private async createSession(input: Record<string, unknown>): Promise<unknown> {
-    const config = this.config ?? this.refreshConfig()
     const { providers } = await this.providers.list()
     const requested = str(input.provider)
     const providerId = requested || providers[0]?.info.id
@@ -524,32 +505,12 @@ class AgentHost {
     if (!providers.some(provider => provider.info.id === providerId)) {
       throw codedError('config-invalid', `未知 provider：${providerId}`)
     }
-    const mode = isPermissionMode(input.mode) ? input.mode : config.mode
-    const documentKey = str(input.documentKey, 'no-document')
-    const documentName = str(input.documentName, '未关联文档')
-    const meta = await this.sessions.create({
-      documentKey,
-      documentName,
-      provider: providerId,
-      model: str(input.model) || undefined,
-      mode
-    })
+    // 会话不绑定文档：文档只作为每一轮的可选上下文
+    const meta = await this.sessions.create({ provider: providerId })
     // 不在这里 push sessions：webview 的 createSession 请求会拿到同一份 view；
     // 额外 push 会让列表处理器在 state.session 还没赋值时自动 open，造成重复打开
     // 和“附件刚 finish 就被旧 view 覆盖”的竞态。
     return { session: await this.viewOf(meta.id) }
-  }
-
-  private async updateSession(input: Record<string, unknown>): Promise<unknown> {
-    const sessionId = str(input.sessionId)
-    const patch = asRecord(input.patch)
-    const update: { model?: string; mode?: AgentMode } = {}
-    if (typeof patch.model === 'string') update.model = patch.model.trim() || undefined
-    if (isPermissionMode(patch.mode)) update.mode = patch.mode
-    const meta = await this.sessions.update(sessionId, update)
-    const summary = await this.summaryOf(meta)
-    this.push({ type: 'push', kind: 'sessionSummary', value: { summary } })
-    return { summary }
   }
 
   private async deleteSession(sessionId: string): Promise<unknown> {
@@ -557,13 +518,11 @@ class AgentHost {
     if (turnId) this.cancelTurn(turnId)
     const meta = await this.sessions.getMeta(sessionId)
     await this.sessions.delete(sessionId)
+    // 会话目录里的硬链接没了，回收不再被引用的共享 blob
+    await this.attachments.gcAll()
     this.push({ type: 'push', kind: 'sessionDeleted', value: { sessionId } })
     if (meta) {
-      this.push({
-        type: 'push',
-        kind: 'sessions',
-        value: { documentKey: meta.documentKey, sessions: await this.listSessions(meta.documentKey) }
-      })
+      this.push({ type: 'push', kind: 'sessions', value: { sessions: await this.listSessions() } })
     }
     return { deleted: true }
   }
@@ -574,7 +533,7 @@ class AgentHost {
     const artifacts = await this.artifacts.scan(sessionId)
     return {
       summary: this.sessions.summaryOf(open.meta, artifacts),
-      messages: open.messages.map(toViewMessage),
+      messages: open.messages,
       attachments: attachmentsOf(open.meta),
       artifacts
     }
@@ -591,20 +550,9 @@ class AgentHost {
       if (!provider) {
         throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端扩展')
       }
-      const documentKey = str(input.documentKey, 'no-document')
-      const documentName = str(input.documentName, '未关联文档')
-      const created = await this.sessions.create({
-        documentKey,
-        documentName,
-        provider: provider.info.id,
-        mode: config.mode
-      })
+      const created = await this.sessions.create({ provider: provider.info.id })
       sessionId = created.id
-      this.push({
-        type: 'push',
-        kind: 'sessions',
-        value: { documentKey, sessions: await this.listSessions(documentKey) }
-      })
+      this.push({ type: 'push', kind: 'sessions', value: { sessions: await this.listSessions() } })
       this.push({ type: 'push', kind: 'session', value: { session: await this.viewOf(sessionId) } })
     }
     const maxBytes = (config.attachmentMaxMB || 32) * 1024 * 1024
@@ -620,16 +568,48 @@ class AgentHost {
 
   // ---------- turn ----------
 
+  /**
+   * 提示词预览（不改会话状态）。
+   *
+   * 用与 `startTurn` 完全相同的拼装逻辑生成这一轮会发给 Agent 的文本（系统规则
+   * 在 `buildTurnPrompt` 里一起拼上），但不写会话状态。会话还没创建时只预览文本
+   * 部分，目录用占位说明。
+   */
+  private async previewPrompt(input: Record<string, unknown>): Promise<{ prompt: string }> {
+    const sessionId = str(input.sessionId)
+    const meta = sessionId ? await this.sessions.getMeta(sessionId) : null
+    const text = str(input.text).trim()
+    const ids = Array.isArray(input.attachmentIds)
+      ? [...new Set(input.attachmentIds.filter((item): item is string => typeof item === 'string'))]
+      : []
+    const attachments: StagedAttachment[] = []
+    if (meta) {
+      for (const id of ids) {
+        const attachment = await this.sessions.findAttachment(meta.id, id)
+        if (attachment) attachments.push(attachment)
+      }
+    }
+
+    const inventory = await this.inventory.detect()
+    const config = this.config ?? this.refreshConfig()
+    return {
+      prompt: buildTurnPrompt({
+        userText: text,
+        attachments,
+        artifacts: meta ? await this.artifacts.scan(meta.id) : [],
+        preparedDir: meta ? this.sessions.preparedDir(meta.id) : '（会话会在发送时创建）',
+        inventoryLine: this.inventory.promptLine(inventory),
+        systemPrompt: config.systemPrompt
+      })
+    }
+  }
+
   private async startTurn(input: Record<string, unknown>): Promise<unknown> {
     const sessionId = str(input.sessionId)
     const meta = await this.sessions.getMeta(sessionId)
     if (!meta) throw new Error('会话不存在')
     if (this.turnBySession.has(sessionId)) throw new Error('这个会话正在运行，请先停止或等待完成')
 
-    const taskMode = isTaskMode(input.mode) ? input.mode : 'ask'
-    const permissionMode = isPermissionMode(input.permissionMode)
-      ? input.permissionMode
-      : meta.mode
     const text = str(input.text).trim()
     if (text.length > MAX_TURN_TEXT) throw new Error(`单条消息最多 ${MAX_TURN_TEXT} 字符`)
 
@@ -642,39 +622,26 @@ class AgentHost {
       if (!attachment) throw new Error('附件已失效，请重新上传')
       attachments.push(attachment)
     }
-    if (!text && attachments.length === 0 && taskMode !== 'beautify') {
+    if (!text && attachments.length === 0) {
       throw new Error('请输入内容或添加附件')
     }
 
-    const snapshot = this.documents.current()
-    if (taskMode === 'beautify' && !snapshot) throw new Error('请先打开要整理的文档')
-    if (snapshot && meta.documentKey !== snapshot.key) {
-      throw new Error('当前打开的文档与会话不一致，请新建会话')
-    }
-
-    let documentPath: string | undefined
-    let documentHash: string | undefined
-    let documentTruncated = false
-    if (taskMode !== 'generate' && snapshot) {
-      const written = await writeDocumentSnapshot(this.sessions, sessionId, snapshot)
-      documentPath = written.path
-      documentHash = written.hash
-      documentTruncated = written.truncated
-    }
-
     const history = await this.sessions.readMessages(sessionId)
-    if (permissionMode !== meta.mode) {
-      await this.sessions.update(sessionId, { mode: permissionMode })
-      meta.mode = permissionMode
-    }
     const userMessage = await this.sessions.appendMessage(sessionId, {
       role: 'user',
       text,
       status: 'ok',
-      mode: taskMode,
       attachmentIds: attachments.map(item => item.id),
+      attachments: attachments.map(toAttachmentMeta),
       toolCalls: []
     })
+    // 附件只属于这一条消息：从待发区移除（文件留在会话目录里供 Agent 读取）
+    await this.sessions.removeAttachments(sessionId, attachments.map(item => item.id))
+    if (attachments.length > 0) {
+      const sent = new Set(attachments.map(item => item.id))
+      meta.attachments = meta.attachments.filter(item => !sent.has(item.id))
+      meta.attachmentCount = meta.attachments.length
+    }
     await this.sessions.setStatus(sessionId, 'running')
     meta.status = 'running'
 
@@ -693,7 +660,7 @@ class AgentHost {
     this.push({
       type: 'push',
       kind: 'turnStarted',
-      value: { turnId, sessionId, message: toViewMessage(userMessage) }
+      value: { turnId, sessionId, message: userMessage }
     })
     this.push({
       type: 'push',
@@ -705,13 +672,8 @@ class AgentHost {
       turnId,
       sessionId,
       meta,
-      taskMode,
-      permissionMode,
       text,
       attachments,
-      documentPath,
-      documentHash,
-      documentTruncated,
       history
     })
 
@@ -764,9 +726,6 @@ class AgentHost {
             hostSessionId: attempt === 0 ? meta.id : randomUUID(),
             providerSessionId: meta.providerSessionId,
             cwd: this.sessions.sessionDir(meta.id),
-            mode: input.permissionMode,
-            model: meta.model || undefined,
-            availableCommands: inventory.available,
             signal: turn.controller.signal
           })
         } catch (err) {
@@ -783,17 +742,15 @@ class AgentHost {
         if (turn.cancelled || turn.controller.signal.aborted) {
           session.cancel('user')
         }
+        const config = this.config ?? this.refreshConfig()
         const prompt = buildTurnPrompt({
-          mode: input.taskMode,
           userText: input.text,
-          documentPath: input.documentPath,
-          documentTruncated: input.documentTruncated,
           attachments: input.attachments,
           artifacts: await this.artifacts.scan(meta.id),
           preparedDir: this.sessions.preparedDir(meta.id),
           inventoryLine: this.inventory.promptLine(inventory),
-          isReadOnly: input.permissionMode === 'read-only',
-          replay
+          replay,
+          systemPrompt: config.systemPrompt
         })
 
         outcome = await this.runAttempt(input, session, prompt)
@@ -850,6 +807,7 @@ class AgentHost {
     const turn = this.activeTurns.get(input.turnId)
     const toolCalls = new Map<string, ToolCallView>()
     let text = ''
+    let thinking = ''
     let usage: AgentUsage | undefined
     let costUsd: number | undefined
     let error: AgentError | undefined
@@ -864,6 +822,8 @@ class AgentHost {
         })
         if (event.type === 'text') {
           text += event.delta
+        } else if (event.type === 'thinking') {
+          thinking += event.delta
         } else if (event.type === 'tool' && event.phase === 'start') {
           toolCalls.set(event.toolId, {
             toolId: event.toolId,
@@ -915,23 +875,30 @@ class AgentHost {
         ? 'cancelled'
         : 'error'
       : 'ok'
-    return { status, text, toolCalls: [...toolCalls.values()], usage, costUsd, error }
+    return {
+      status,
+      text,
+      thinking: thinking || undefined,
+      toolCalls: [...toolCalls.values()],
+      usage,
+      costUsd,
+      error
+    }
   }
 
   private async completeTurn(input: TurnInput, outcome: TurnOutcome): Promise<void> {
     const artifacts = await this.artifacts.scan(input.sessionId)
-    const message: Omit<StoredMessage, 'seq' | 'createdAt'> = {
+    const message: Omit<SessionMessage, 'seq' | 'createdAt'> = {
       role: 'assistant',
       text: outcome.text || outcome.error?.message || '',
+      thinking: outcome.thinking,
       status: outcome.status,
-      mode: input.taskMode,
       attachmentIds: [],
       toolCalls: outcome.toolCalls,
       usage: outcome.usage,
       costUsd: outcome.costUsd,
       error: outcome.error,
-      artifacts,
-      docHash: input.documentHash
+      artifacts
     }
     const stored = await this.sessions.appendMessage(input.sessionId, message)
     await this.sessions.setStatus(
@@ -945,7 +912,7 @@ class AgentHost {
         turnId: input.turnId,
         sessionId: input.sessionId,
         status: outcome.status,
-        message: toViewMessage(stored)
+        message: stored
       }
     })
     const meta = await this.sessions.getMeta(input.sessionId)
@@ -978,15 +945,41 @@ class AgentHost {
 
   private async previewArtifact(input: Record<string, unknown>): Promise<ArtifactPreview> {
     const sessionId = str(input.sessionId)
-    const preview = await this.artifacts.preview(sessionId, str(input.path))
+    const artifactPath = str(input.path)
+    const preview = await this.artifacts.preview(sessionId, artifactPath)
     if (preview.kind === 'markdown' && preview.text) {
       try {
-        preview.html = await imark.imark.renderMarkdown(preview.text)
+        const html = await imark.imark.renderMarkdown(preview.text)
+        // 产物里的图片通常相对产物文件本身（如 summary/figures/a.png）
+        preview.html = await inlineImageSources(
+          html,
+          this.sessions.sessionDir(sessionId),
+          dirname(join(this.sessions.preparedDir(sessionId), artifactPath))
+        )
       } catch {
         // 渲染失败时退回纯文本
       }
     }
     return preview
+  }
+
+  /**
+   * 把当前打开的文档快照成一条普通附件，放进会话的待发区。
+   *
+   * 文档环境和会话环境是分开的：只有用户主动点「添加本文档」时才这样做。
+   */
+  private async attachDocument(input: Record<string, unknown>): Promise<unknown> {
+    const sessionId = str(input.sessionId)
+    if (!(await this.sessions.getMeta(sessionId))) throw new Error('会话不存在')
+    const snapshot = this.documents.current()
+    if (!snapshot) throw new Error('当前没有打开的文档')
+    const config = this.config ?? this.refreshConfig()
+    const maxBytes = (config.attachmentMaxMB || 32) * 1024 * 1024
+    if (Buffer.byteLength(snapshot.text, 'utf8') > maxBytes) {
+      throw new Error(`文档超过附件上限（${config.attachmentMaxMB} MB）`)
+    }
+    const attachment = await this.attachments.attachDocument(sessionId, snapshot)
+    return { attachment: toAttachmentMeta(attachment) }
   }
 
   private async applyMessage(input: Record<string, unknown>): Promise<ApplyResult> {
@@ -998,72 +991,15 @@ class AgentHost {
     const message = await this.sessions.messageBySeq(sessionId, seq)
     if (!message) throw new Error('找不到这条消息')
     if (message.role !== 'assistant') throw new Error('只能写回 Agent 的回复')
-    const target = parseTarget(input.target)
-    return this.documents.apply(message.text, target, {
-      expectedKey: meta.documentKey === 'no-document' ? undefined : meta.documentKey,
-      expectedHash: message.docHash,
-      force: input.force === true
-    })
+    return this.documents.apply(message.text)
   }
 
   private async applyArtifact(input: Record<string, unknown>): Promise<ApplyResult> {
     const sessionId = str(input.sessionId)
-    const meta = await this.sessions.getMeta(sessionId)
-    if (!meta) throw new Error('会话不存在')
     const text = await this.artifacts.readText(sessionId, str(input.path))
-    const target = parseTarget(input.target)
-    return this.documents.apply(text, target, {
-      expectedKey: meta.documentKey === 'no-document' ? undefined : meta.documentKey,
-      force: input.force === true
-    })
+    return this.documents.apply(text)
   }
 
-  // ---------- 命令入口 ----------
-
-  private beautify(): void {
-    if (!this.documents.current()) {
-      void imark.window.showWarningMessage('请先打开一个 Markdown 文档')
-      return
-    }
-    void this.openIntent('beautify', true)
-  }
-
-  private async openIntent(taskMode: AgentTaskMode, auto: boolean): Promise<void> {
-    this.openChat()
-    const doc = this.currentDocMeta()
-    const documentKey = doc?.key ?? 'no-document'
-    const documentName = doc?.fileName ?? '未关联文档'
-    const config = this.config ?? this.refreshConfig()
-    const list = await this.listSessions(documentKey)
-    let sessionId = list[0]?.id
-    if (!sessionId) {
-      const { providers } = await this.providers.list()
-      const provider = providers[0]
-      if (!provider) {
-        this.pushError('provider', {
-          code: 'provider-unavailable',
-          message: '未安装或未启用任何 Agent 后端扩展'
-        })
-        await imark.window.showWarningMessage('未安装或未启用任何 Agent 后端扩展')
-        return
-      }
-      const meta = await this.sessions.create({
-        documentKey,
-        documentName,
-        provider: provider.info.id,
-        mode: config.mode
-      })
-      sessionId = meta.id
-      this.push({
-        type: 'push',
-        kind: 'sessions',
-        value: { documentKey, sessions: await this.listSessions(documentKey) }
-      })
-    }
-    this.push({ type: 'push', kind: 'session', value: { session: await this.viewOf(sessionId) } })
-    const intent: UiIntent = { mode: taskMode, auto }
-    this.push({ type: 'push', kind: 'uiIntent', value: intent })
-  }
 }
 
 // ---------- 激活 ----------

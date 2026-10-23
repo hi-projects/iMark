@@ -58,7 +58,7 @@ function message(err: unknown): string {
   return text.replace(/^Error:\s*/, '')
 }
 
-/** 已安装视图同时刷两份:市场页的(含 bundled 标记)与全局扩展列表的 */
+/** 已安装视图同时刷两份:市场与「已安装」页共用的(含 bundled 标记)与全局扩展列表的 */
 function applyExtensions(list: ExtensionView[]): void {
   extensionStore.list = list
   if (marketStore.installed) marketStore.installed.extensions = list

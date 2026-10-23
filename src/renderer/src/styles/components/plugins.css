@@ -288,6 +288,19 @@
   width: auto;
 }
 
+/*
+ * 「清除」按钮与输入框同高。
+ *
+ * 密钥字段的值是异步读进来的:按钮在加载完成后才出现,如果它比输入框高,
+ * 会把整行撑高 2-3px,下面的每一行都跟着往下跳。
+ */
+.plugin-external-control .plugin-btn {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
 .plugin-external-status {
   flex: none;
   max-width: 45%;
@@ -337,47 +350,39 @@
   resize: vertical;
 }
 
+/* 字符串列表:一行一个输入框,删除按钮跟在行尾 */
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugin-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-list-row .plugin-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.plugin-list-empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+/*
+ * 组内字段的标签是**内容标题**,不能比模块名还醒目:
+ * 用次级文字色、常规字重,让上面的 .plugin-group-title 成为这一屏的视觉层级。
+ */
 .plugin-field-label {
   flex: 1;
   font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-/* 「按仓库」范围标记:字段标签旁与分组标题旁共用 */
-.plugin-scope-tag {
-  display: inline-block;
-  flex: 0 0 auto;
-  margin-left: 6px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10.5px;
   font-weight: 500;
-  line-height: 16px;
-  color: var(--text-tertiary);
-  background: var(--bg-toolbar-btn-hover);
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-/* 插件页顶部的范围说明:只在存在按仓库字段时出现 */
-.plugin-scope-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-toolbar-btn-hover);
-  font-size: 12px;
-  line-height: 1.6;
   color: var(--text-secondary);
-}
-
-.plugin-scope-hint .plugin-scope-tag {
-  margin-left: 0;
-  margin-top: 2px;
 }
 
 /* 字段分组:标题 + 分隔线 */
@@ -391,6 +396,7 @@
   margin-top: 8px;
 }
 
+/* 模块名是这一屏的标题:主文字色 + 加粗,压过组内字段标签 */
 .plugin-group-title {
   display: flex;
   align-items: center;
@@ -398,9 +404,9 @@
   margin: 0;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 650;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 /* 字段说明的问号(悬停出提示) */

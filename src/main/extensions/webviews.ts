@@ -18,6 +18,7 @@ import type {
   WebviewPanelCreateRequest,
   WebviewPanelCreateResult,
   WebviewPanelStateDto,
+  WebviewPanelStatusDto,
   WebviewPresentationDto
 } from '@shared/extensionProtocol'
 import type { ExtensionWebviewPanelView } from '@shared/extensions'
@@ -32,6 +33,8 @@ export interface WebviewRecord {
   root: string
   viewType: string
   title: string
+  /** 标题栏上的状态点；不持久化，恢复后一律回到 idle */
+  status: WebviewPanelStatusDto
   presentation: WebviewPresentationDto
   width: number
   height: number
@@ -79,6 +82,7 @@ export class WebviewRegistry {
       root: resolve(extensionRoot),
       viewType: options.viewType,
       title: options.title,
+      status: 'idle',
       presentation,
       width: options.width ?? size.width,
       height: options.height ?? size.height,
@@ -126,6 +130,7 @@ export class WebviewRegistry {
       root: resolve(extensionRoot),
       viewType: saved.viewType,
       title: saved.title,
+      status: 'idle',
       presentation: saved.presentation,
       width: saved.width,
       height: saved.height,
@@ -198,6 +203,11 @@ export class WebviewRegistry {
     record.title = title
   }
 
+  /** 标题栏状态点。只影响观感，不进持久化记录 */
+  setStatus(record: WebviewRecord, status: WebviewPanelStatusDto): void {
+    record.status = status
+  }
+
   setState(record: WebviewRecord, state: unknown): void {
     record.state = state
   }
@@ -243,6 +253,7 @@ export class WebviewRegistry {
     return {
       panelId: record.panelId,
       title: record.title,
+      status: record.status,
       presentation: record.presentation,
       width: record.width,
       height: record.height,

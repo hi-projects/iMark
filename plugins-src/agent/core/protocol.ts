@@ -11,9 +11,7 @@ import type {
   AgentDetection,
   AgentError,
   AgentEvent,
-  AgentMode,
   AgentProviderInfo,
-  AgentTaskMode,
   AgentUsage,
   ArtifactInfo,
   DocMeta,
@@ -28,10 +26,8 @@ export const MAX_TURN_TEXT = 16_000
 export const MAX_SESSION_MESSAGES = 200
 export const MAX_PREVIEW_TEXT = 512 * 1024
 export const MAX_PREVIEW_IMAGE = 8 * 1024 * 1024
-export const MAX_DOCUMENT_SNAPSHOT = 2 * 1024 * 1024
 
 export interface SafeConfig {
-  mode: AgentMode
   attachmentMaxMB: number
 }
 
@@ -47,6 +43,7 @@ export interface AttachmentMeta {
   mime: string
   sha256: string
   kind: StagedAttachment['kind']
+  source?: StagedAttachment['source']
 }
 
 export interface ToolCallView {
@@ -62,9 +59,12 @@ export interface SessionMessage {
   seq: number
   role: 'user' | 'assistant'
   text: string
+  /** 模型输出的思考过程；只在 assistant 消息上有值 */
+  thinking?: string
   status: 'ok' | 'error' | 'cancelled' | 'running'
-  mode: AgentTaskMode
   attachmentIds: string[]
+  /** 这条消息一起发出的附件（宿主已去掉磁盘路径） */
+  attachments?: AttachmentMeta[]
   toolCalls: ToolCallView[]
   usage?: AgentUsage
   costUsd?: number
@@ -76,11 +76,7 @@ export interface SessionMessage {
 export interface SessionSummary {
   id: string
   title: string
-  documentKey: string
-  documentName: string
   provider: string
-  model?: string
-  mode: AgentMode
   status: 'idle' | 'running' | 'error' | 'interrupted'
   createdAt: number
   updatedAt: number
@@ -95,11 +91,6 @@ export interface SessionView {
   attachments: AttachmentMeta[]
   artifacts: ArtifactInfo[]
 }
-
-export type TurnTarget =
-  | { kind: 'replace-all' }
-  | { kind: 'insert-below-line'; line: number }
-  | { kind: 'insert-at-cursor' }
 
 export interface ArtifactPreview {
   kind: 'markdown' | 'text' | 'image' | 'other'
@@ -126,18 +117,13 @@ export interface InitPayload {
   activeSessionId: string | null
 }
 
-export interface UiIntent {
-  mode: AgentTaskMode
-  auto?: boolean
-}
-
 // ---------- host → webview ----------
 
 export type HostPush =
   | { type: 'push'; kind: 'init'; value: InitPayload }
   | { type: 'push'; kind: 'config'; value: { config: SafeConfig } }
   | { type: 'push'; kind: 'doc'; value: { doc: DocMeta | null } }
-  | { type: 'push'; kind: 'sessions'; value: { documentKey: string; sessions: readonly SessionSummary[] } }
+  | { type: 'push'; kind: 'sessions'; value: { sessions: readonly SessionSummary[] } }
   | { type: 'push'; kind: 'session'; value: { session: SessionView } }
   | { type: 'push'; kind: 'sessionSummary'; value: { summary: SessionSummary } }
   | { type: 'push'; kind: 'sessionDeleted'; value: { sessionId: string } }
@@ -157,7 +143,8 @@ export type HostPush =
         message: SessionMessage
       }
     }
-  | { type: 'push'; kind: 'uiIntent'; value: UiIntent }
+  /** 面板重新显示：让 webview 重新探测后端（刷新可选的默认模型等只读信息） */
+  | { type: 'push'; kind: 'refresh' }
   | { type: 'push'; kind: 'error'; value: { scope: string; error: AgentError } }
 
 // ---------- 上传 ----------
@@ -176,6 +163,7 @@ export function toAttachmentMeta(attachment: StagedAttachment): AttachmentMeta {
     size: attachment.size,
     mime: attachment.mime,
     sha256: attachment.sha256,
-    kind: attachment.kind
+    kind: attachment.kind,
+    ...(attachment.source ? { source: attachment.source } : {})
   }
 }

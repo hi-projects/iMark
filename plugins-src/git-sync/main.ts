@@ -72,7 +72,7 @@ interface GitSyncConfig {
   writeGitignore: boolean
   /** 初始化仓库时是否创建一个 README.md（已存在则不覆盖） */
   writeReadme: boolean
-  /** 网络代理：auto = 自动探测环境变量 / Windows 系统代理；manual = 用下面填的地址；找不到代理时直接连接 */
+  /** 网络代理：auto = 自动探测环境变量 / 系统代理（Windows 注册表、Linux GNOME）；manual = 用下面填的地址；找不到代理时直接连接 */
   proxyMode: ProxyMode
   /** 手动模式的代理地址（支持 http/https/socks5） */
   proxyUrl: string
@@ -87,6 +87,11 @@ interface ActionResult {
   ok: boolean
   message: string
   detail?: string
+  /**
+   * 失败已在扩展自己的界面里说明(如远端配置的黄色提示),宿主不必再记一条
+   * 「命令 · 失败」到调试日志。只影响命令执行日志,不影响调用方。
+   */
+  silent?: boolean
 }
 
 /** 一次网络操作实际用到的代理参数 */
@@ -382,15 +387,33 @@ class GitSyncPlugin {
       return { ok: false, message, detail }
     }
 
+    /**
+     * 远端本身没填完整(缺分支/账号/密钥)。
+     *
+     * 设置页顶部的黄色提示已经逐行列出还缺什么,这里**不写日志、也不覆盖状态卡** ——
+     * 否则用户刚点「添加远端」、还没填完,3 秒后的配置试跑就会在日志与最上方
+     * 留下一条看起来像「同步失败了」的错误。
+     */
+    const invalid = (message: string, detail?: string): ActionResult => ({
+      ok: false,
+      message,
+      detail,
+      silent: true
+    })
+
     try {
-      if (targets.length === 0) return fail('尚未配置远端仓库')
+      if (targets.length === 0) {
+        // 一行远端都没有时设置页里没有黄色提示可看,状态卡仍是唯一的说明;
+        // 有行但地址全空时,黄色提示已经覆盖,不再重复。
+        return cfg.targets.length > 0 ? invalid('远端配置尚未填写完整') : fail('尚未配置远端仓库')
+      }
       const vaultPath = this.vaultPath()
       if (!vaultPath) return fail('未打开仓库，无法上传')
       if (!existsSync(vaultPath)) return fail('仓库目录不存在')
       if (!(await isGitAvailable())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
       const noLocalBranch = targets.find(t => !t.localBranch.trim())
       if (noLocalBranch) {
-        return fail(
+        return invalid(
           `${targetLabel(allTargets, noLocalBranch)}没填本地分支`,
           '本地分支是必填项（要推送的那条本地分支，如 main）；远程分支留空则与本地同名。'
         )
@@ -401,13 +424,13 @@ class GitSyncPlugin {
         if (!/^https?:/i.test(target.url.trim())) continue
         const isPassword = target.auth === 'password'
         if (isPassword && !target.username.trim()) {
-          return fail(
+          return invalid(
             `${targetLabel(allTargets, target)}选了账号密码认证，但没填账号`,
             '把账号填上后重试。'
           )
         }
         if (!(await this.secretFor(target))) {
-          return fail(
+          return invalid(
             `${targetLabel(allTargets, target)}选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
             '在对应远端那一行填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
           )
@@ -486,8 +509,9 @@ class GitSyncPlugin {
   /**
    * 为一次网络操作准备代理参数。
    *
-   * 不能只靠环境变量：git/libcurl 不读 Windows 的「系统代理」，而 Clash / FlClash
-   * 开启系统代理时写的正是那里。这里把探测结果显式拼成 `-c http.proxy=…`。
+   * 不能只靠环境变量：git/libcurl 不读操作系统的「系统代理」，而 Clash / FlClash
+   * 开启系统代理时写的正是那里（Windows 注册表、Linux GNOME gsettings）。
+   * 这里把探测结果显式拼成 `-c http.proxy=…`。
    */
   private async networkSetup(url: string, cfg: GitSyncConfig): Promise<NetworkSetup> {
     const mode = this.proxyMode(cfg)
@@ -497,7 +521,7 @@ class GitSyncPlugin {
       if (normalized) detected = { url: normalized, source: '扩展设置', bypass: [] }
     } else {
       const scheme = /^https:/i.test(url.trim()) ? 'https' : /^http:/i.test(url.trim()) ? 'http' : null
-      // SSH / 本地路径：没有 HTTP 代理可用，也不必白跑一次注册表查询
+      // SSH / 本地路径：没有 HTTP 代理可用，也不必白跑一次系统代理查询
       if (scheme) detected = await detectSystemProxy(scheme)
     }
     const effective = proxyForUrl(url, detected)
@@ -567,7 +591,13 @@ class GitSyncPlugin {
       // 大多数远端是 HTTPS，先按它探；没有再按 HTTP 探（只设了 HTTP_PROXY 的情况）
       const found = (await detectSystemProxy('https')) ?? (await detectSystemProxy('http'))
       if (!found) {
-        const checked = process.platform === 'win32' ? '环境变量与 Windows 系统代理' : '环境变量'
+        // Windows 读注册表、Linux 读 GNOME gsettings;macOS 目前只看环境变量
+        const checked =
+          process.platform === 'win32'
+            ? '环境变量与 Windows 系统代理'
+            : process.platform === 'linux'
+              ? '环境变量与 GNOME 系统代理'
+              : '环境变量'
         result = {
           ok: true,
           message: `未检测到本机代理（已检查${checked}）`,

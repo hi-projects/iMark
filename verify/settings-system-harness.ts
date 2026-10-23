@@ -1,10 +1,12 @@
 /**
  * 验收:设置 → 系统(默认 Markdown 编辑器)与「设置面板可拖动」。
  *
- * 四段:
+ * 五段:
  *   [A] 注册表写入清单(**纯函数**,不真的写注册表)。一个自动化用例不该悄悄改掉
  *       跑测试那台机器的文件关联 —— 所以这里只检查「会写哪些键、值对不对」,
  *       包括两条底线:命令里带 `"%1"`;不碰 `.md` 的默认值(只当候选,不抢现有关联)。
+ *   [A3] Linux:解析 .desktop、认出 iMark 自己的条目(同样是纯函数;
+ *       真正写 mimeapps.list 的是系统自带 xdg-mime,不在用例里执行)。
  *   [B] 命令行参数 → 要打开的文件(纯函数 + 真实临时文件)。
  *   [C] 端到端:把文件放进「启动参数」,应用起来后编辑器里是它。
  *   [D] 设置面板:左栏有「系统」;标题栏能拖动、拖不出视口、从正文拖不动;关掉重开回到居中。
@@ -30,14 +32,20 @@ import { createMainWindow } from '../src/main/window'
 import { loadSettings } from '../src/main/settings'
 import { initExtensions } from '../src/main/extensions/service'
 
-import { defaultEditorStatus, effectiveUserChoice } from '../src/main/system'
+import {
+  defaultEditorStatus,
+  effectiveUserChoice,
+  registerAsDefaultEditor
+} from '../src/main/system'
 import {
   MARKDOWN_EXTS,
   PROG_ID,
   associationWrites,
   defaultAppsSettingsUri,
   ensureAssociationIcon,
-  icoFromImages
+  icoFromImages,
+  ownDesktopEntry,
+  parseDesktopEntry
 } from '../src/main/system'
 import { fileFromArgv, setPendingOpenFile } from '../src/main/openFile'
 
@@ -271,6 +279,119 @@ async function main(): Promise<void> {
     )
   }
 
+  // ---------- A3. Linux 的桌面条目(纯函数) ----------
+  // 和 [A] 同一个理由:不去改这台机器真实的 mimeapps.list,只钉住「怎么认自己的
+  // .desktop、怎么解析它」。真正写关联的那一步由 xdg-mime 负责,系统自带。
+  console.log('\n[A3] Linux:认出 iMark 的桌面条目')
+  const entryText = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=iMark',
+    'Exec=/opt/iMark/imark %U',
+    'MimeType=text/markdown;text/x-markdown;',
+    '',
+    '[Desktop Action new]',
+    'Exec=/opt/iMark/imark --new'
+  ].join('\n')
+  const parsed = parseDesktopEntry(entryText)
+  check('解析出 [Desktop Entry] 组的 Exec', parsed.exec === '/opt/iMark/imark %U', parsed.exec)
+  check('解析出显示名', parsed.name === 'iMark', parsed.name)
+  check(
+    '不会误取 Desktop Action 里的 Exec(动作组不是主条目)',
+    parseDesktopEntry('[Desktop Action new]\nExec=/bin/other\n').exec === ''
+  )
+
+  const entries = [
+    { id: 'org.gnome.TextEditor.desktop', exec: '/usr/bin/gnome-text-editor %U', name: '文本编辑器' },
+    { id: 'iMark.desktop', exec: '/opt/iMark/imark %U', name: 'iMark' },
+    { id: 'other.desktop', exec: '/home/me/work/another-app', name: 'Other' }
+  ]
+  check(
+    '按 Exec 里的路径认出自家的条目',
+    ownDesktopEntry(entries, ['/opt/iMark/imark']) === 'iMark.desktop',
+    String(ownDesktopEntry(entries, ['/opt/iMark/imark']))
+  )
+  check(
+    '别人把路径写在我们前面也不误认(只认自己那条)',
+    ownDesktopEntry(entries, ['/home/me/work/another-app']) === 'other.desktop'
+  )
+  check(
+    'Exec 对不上时退回按 ID 猜(electron-builder 用 productFilename 命名)',
+    ownDesktopEntry([{ id: 'iMark.desktop', exec: '/snap/iMark/current/imark', name: 'iMark' }], ['/tmp/.mount_x/imark']) ===
+      'iMark.desktop'
+  )
+  check(
+    '一个都没有 → null(界面据此禁用按钮并提示未安装)',
+    ownDesktopEntry([entries[0]!], ['/nope']) === null
+  )
+
+  // ---------- A4. Linux:真跑一遍「设为默认」,但在临时 XDG 目录里 ----------
+  // 这一步会写 mimeapps.list,所以把 XDG 数据/配置目录指到 userData 下的临时目录 ——
+  // 既验证了整条链路(查状态 → xdg-mime → 再查),又碰不到这台机器的默认应用。
+  if (process.platform === 'linux') {
+    console.log('\n[A4] Linux:在临时 XDG 目录里注册(不碰本机默认)')
+    const xdg = join(app.getPath('userData'), 'xdg')
+    const dataHome = join(xdg, 'data')
+    const configHome = join(xdg, 'config')
+    await mkdir(join(dataHome, 'applications'), { recursive: true })
+    await mkdir(configHome, { recursive: true })
+    await writeFile(
+      join(dataHome, 'applications', 'iMark.desktop'),
+      [
+        '[Desktop Entry]',
+        'Type=Application',
+        'Name=iMark',
+        `Exec=${process.execPath} %U`,
+        'MimeType=text/markdown;text/x-markdown;'
+      ].join('\n'),
+      'utf8'
+    )
+    // 系统级目录也一起指走:否则 /etc/xdg/mimeapps.list 或系统 applications/
+    // 里的关联会让「初始状态」随机器而变,断言就不稳了
+    const emptyDir = join(xdg, 'empty')
+    await mkdir(emptyDir, { recursive: true })
+    type SavedEnv = Record<string, string | undefined>
+    const saved: SavedEnv = {
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      XDG_DATA_DIRS: process.env.XDG_DATA_DIRS,
+      XDG_CONFIG_DIRS: process.env.XDG_CONFIG_DIRS
+    }
+    process.env.XDG_DATA_HOME = dataHome
+    process.env.XDG_CONFIG_HOME = configHome
+    process.env.XDG_DATA_DIRS = dataHome
+    process.env.XDG_CONFIG_DIRS = emptyDir
+    try {
+      const initial = await defaultEditorStatus()
+      check(
+        '临时环境里认出了自己的 .desktop',
+        initial.desktopEntry === 'iMark.desktop',
+        String(initial.desktopEntry)
+      )
+      check(
+        '还没设置时:不是默认、也没有当前程序',
+        initial.isDefault === false && initial.current === null,
+        JSON.stringify(initial)
+      )
+
+      const registered = await registerAsDefaultEditor()
+      check('设为默认后,状态直接变成「已是默认」', registered.isDefault === true, JSON.stringify(registered))
+      const list = await readFile(join(configHome, 'mimeapps.list'), 'utf8')
+      check(
+        '写的是 [Default Applications] 里的 text/markdown=iMark.desktop',
+        /\[Default Applications\][\s\S]*text\/markdown=iMark\.desktop/.test(list),
+        list
+      )
+      // 再查一次走的是读路径,证明「设完立刻刷新」也看得见
+      check('重新查询仍然认 iMark(读路径和写路径一致)', (await defaultEditorStatus()).isDefault === true)
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  }
+
   // ---------- B. 命令行参数 → 文件 ----------
   console.log('\n[B] 从启动参数里认出要打开的文件')
   const ud = app.getPath('userData')
@@ -418,12 +539,23 @@ async function main(): Promise<void> {
   // 宿主桥改成一次性取用后,渲染层不再有 window.api;直接调主进程侧的实现
   // (IPC 处理器 SystemDefaultEditorStatus 调的就是它)
   const apiStatus = await defaultEditorStatus()
-  // 断的是「平台契约」而不是某台机器的现状:Windows 上必须支持,其它平台必须老实说支持不了
+  // 断的是「平台契约」而不是某台机器的现状:Windows / Linux 上必须支持,
+  // 其它平台必须老实说支持不了
   check(
-    '平台契约:只有 Windows 声称自己支持代注册',
-    apiStatus.supported === (process.platform === 'win32'),
+    '平台契约:Windows 与 Linux 声称自己支持代注册,其它平台说不支持',
+    apiStatus.supported === (process.platform === 'win32' || process.platform === 'linux'),
     `supported=${apiStatus.supported} platform=${process.platform}`
   )
+  // Linux 上应用能直接把默认改完(不像 Windows 要用户去设置页点一下);
+  // 桌面条目则取决于这台机器装没装 —— 只断「要么是 .desktop,要么明说没有」
+  if (process.platform === 'linux') {
+    check('Linux:状态里标明可以一步改完(direct)', apiStatus.direct === true)
+    check(
+      'Linux:桌面条目要么是 .desktop ID,要么为 null(没装)',
+      apiStatus.desktopEntry == null || apiStatus.desktopEntry.endsWith('.desktop'),
+      String(apiStatus.desktopEntry)
+    )
+  }
   const buttonText = await evalJs<string>(
     `(() => [...document.querySelectorAll('.settings-body button')].map(b => b.textContent.trim()).find(t => t.includes('默认')) ?? '')()`
   )

@@ -2,7 +2,7 @@
  * Agent Core 的类型层。
  *
  * provider 契约在 `@shared/agentProvider`（Core 与 provider 扩展共用）；这里只
- * 保留 Core 自己的任务模式与附件/文档/产物形状，并把共享类型重新导出，避免
+ * 保留 Core 自己的附件/文档/产物形状，并把共享类型重新导出，避免
  * Core 内部每个文件都要认识两个 import 路径。
  *
  * 本文件不 import `imark` / Electron / DOM：webview 也会打包它。
@@ -15,21 +15,15 @@ export type {
   AgentErrorCode,
   AgentEvent,
   AgentInputMode,
-  AgentMode,
-  AgentModel,
   AgentProvider,
   AgentProviderInfo,
   AgentProviderModule,
-  AgentRole,
   AgentSession,
   AgentSessionOptions,
   AgentTurn,
   AgentUsage,
   ToolKind
 } from '@shared/agentProvider'
-
-/** 任务模式：这一次用户想让 Agent 做什么 */
-export type AgentTaskMode = 'ask' | 'generate' | 'beautify'
 
 /** 宿主内部使用的附件元数据；`path` 绝不下发给 webview */
 export interface StagedAttachment {
@@ -43,10 +37,11 @@ export interface StagedAttachment {
   sha256: string
   kind: 'image' | 'pdf' | 'text' | 'other'
   path: string
+  /** 由「添加本文档」生成的快照；界面据此把它显示在文档按钮上而不是附件条里 */
+  source?: 'document'
 }
 
 export interface DocumentSnapshot {
-  key: string
   fileName: string
   text: string
   version: number
@@ -56,7 +51,6 @@ export interface DocumentSnapshot {
 
 /** 推给 webview 的文档元数据：不带正文与真实路径 */
 export interface DocMeta {
-  key: string
   fileName: string
   version: number
   isDirty: boolean

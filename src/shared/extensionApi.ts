@@ -672,9 +672,11 @@ export interface ColorTheme {
 }
 
 export type WebviewPresentation = 'sidebar' | 'overlay' | 'floating'
+/** 面板状态:显示在宿主标题栏上的小圆点。idle = 绿点,busy = 蓝点脉冲 */
+export type WebviewPanelStatus = 'idle' | 'busy'
 
 export interface ImarkWebviewOptions {
-  /** 默认 sidebar;chat 用 sidebar,character 用 floating */
+  /** 默认 sidebar;需要浮层时用 floating */
   presentation?: WebviewPresentation
   width?: number
   height?: number
@@ -717,6 +719,8 @@ export interface WebviewPanel extends Disposable {
     setPresentation(presentation: WebviewPresentation): void
     setSize(width: number, height: number): void
     setPosition(anchor: ImarkWebviewOptions['anchor']): void
+    /** 标题栏状态点:扩展在忙/闲之间切换 */
+    setStatus(status: WebviewPanelStatus): void
   }
 }
 

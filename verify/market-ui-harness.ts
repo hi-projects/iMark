@@ -9,7 +9,7 @@
 
 import { app, BrowserWindow, dialog, shell } from 'electron'
 import { APP_VERSION } from './appVersion'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { registerIpc } from '../src/main/ipc'
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
     return false
   }
 
-  console.log('\n[A] 打开设置 → 浏览市场 → 已安装')
+  console.log('\n[A] 打开设置 → 已安装')
   const opened = await evalJs<boolean>(`(() => {
     const b = document.querySelector('button[title^="设置"]')
     if (!b) return false
@@ -143,22 +143,18 @@ async function main(): Promise<void> {
     await evalJs<boolean>(`!document.querySelector('.settings-nav-item .plugin-icon')`)
   )
 
-  const onMarket = await evalJs<boolean>(`(() => {
+  const installedNav = await evalJs<boolean>(`(() => {
     const b = [...document.querySelectorAll('.settings-nav-item')]
-      .find(x => x.textContent.includes('浏览市场'))
+      .find(x => x.textContent.trim() === '已安装')
     if (!b) return false
     b.click()
     return true
   })()`)
-  check('市场页入口可点', onMarket && (await waitFor(`document.querySelector('.market-page')`)))
-
-  const installedTab = await evalJs<boolean>(`(() => {
-    const t = [...document.querySelectorAll('.market-tab')].find(b => b.textContent.trim() === '已安装')
-    if (!t) return false
-    t.click()
-    return true
-  })()`)
-  check('已安装页签可点', installedTab)
+  check('左栏「已安装」可点', installedNav && (await waitFor(`document.querySelector('.market-row')`)))
+  check(
+    '右侧标题为「已安装扩展」',
+    await waitFor(`document.querySelector('.settings-main-header h1')?.textContent?.trim() === '已安装扩展'`)
+  )
   check('四款内置扩展出现在列表里', await waitFor(`document.querySelectorAll('.market-row').length === 4`))
   check(
     '四款扩展的图标都加载出来了',
@@ -169,7 +165,7 @@ async function main(): Promise<void> {
     )
   )
   check(
-    '已安装页签不显示市场地址与连接错误',
+    '已安装页不显示市场地址与连接错误',
     await evalJs<boolean>(
       `!document.querySelector('.market-registry') && !document.querySelector('.market-banner-error')`
     )
@@ -228,10 +224,14 @@ async function main(): Promise<void> {
   )
 
   console.log('\n[B] 浏览市场:离线提示,不崩')
-  await evalJs(`(() => {
-    const t = [...document.querySelectorAll('.market-tab')].find(b => b.textContent.trim() === '浏览市场')
-    if (t) t.click()
+  const onMarket = await evalJs<boolean>(`(() => {
+    const b = [...document.querySelectorAll('.settings-nav-item')]
+      .find(x => x.textContent.trim() === '浏览市场')
+    if (!b) return false
+    b.click()
+    return true
   })()`)
+  check('市场页入口可点', onMarket && (await waitFor(`document.querySelector('.market-page')`)))
   check('浏览页出现错误条而不是白屏', await waitFor(`document.querySelector('.market-banner-error')?.textContent?.includes('市场地址')`), await evalJs<string>(`document.querySelector('.market-banner-error')?.textContent ?? ''`))
 
   console.log('\n[C] 发布页:三个区块都渲染')
@@ -249,8 +249,9 @@ async function main(): Promise<void> {
 
   console.log('\n[D] 扩展设置页')
   await evalJs(`(() => {
-    const t = [...document.querySelectorAll('.market-tab')].find(b => b.textContent.trim() === '已安装')
-    if (t) t.click()
+    const b = [...document.querySelectorAll('.settings-nav-item')]
+      .find(x => x.textContent.trim() === '已安装')
+    if (b) b.click()
   })()`)
   await waitFor(`document.querySelectorAll('.market-row').length === 4`)
   const toSettings = await evalJs<boolean>(`(() => {
@@ -287,6 +288,157 @@ async function main(): Promise<void> {
     b.click()
     return true
   })()`)
+  const firstSection = await evalJs<string>(
+    `document.querySelector('.plugin-group-title')?.textContent.trim() ?? ''`
+  )
+  check('Claude Code 模块排在设置页最前', firstSection === 'Claude Code', firstSection)
+  // 视觉层级:模块名用主文字色,组内字段标签退成次级色(不能反过来)
+  const hierarchy = await evalJs<{
+    titleColor: string
+    titleWeight: string
+    labelColor: string
+    labelWeight: string
+    primary: string
+    secondary: string
+  } | null>(`(() => {
+    const title = document.querySelector('.plugin-group-title')
+    const label = document.querySelector('.plugin-field-label')
+    if (!title || !label) return null
+    const probe = document.createElement('span')
+    document.body.appendChild(probe)
+    probe.style.color = 'var(--text-primary)'
+    const primary = getComputedStyle(probe).color
+    probe.style.color = 'var(--text-secondary)'
+    const secondary = getComputedStyle(probe).color
+    probe.remove()
+    const ts = getComputedStyle(title)
+    const ls = getComputedStyle(label)
+    return {
+      titleColor: ts.color,
+      titleWeight: ts.fontWeight,
+      labelColor: ls.color,
+      labelWeight: ls.fontWeight,
+      primary,
+      secondary
+    }
+  })()`)
+  check(
+    '模块名比组内字段标签更醒目（模块名高亮、内容标题不抢）',
+    hierarchy?.titleColor === hierarchy?.primary &&
+      hierarchy?.labelColor === hierarchy?.secondary &&
+      Number(hierarchy?.titleWeight) >= Number(hierarchy?.labelWeight),
+    JSON.stringify(hierarchy)
+  )
+  const commandUi = await evalJs<{ options: string[]; value: string; manualVisible: boolean }>(`(() => {
+    const row = [...document.querySelectorAll('.plugin-field-row')]
+      .find(r => (r.querySelector('.plugin-field-label')?.textContent || '').includes('Claude Code 可执行文件'))
+    const select = row ? row.querySelector('select') : null
+    const manual = [...document.querySelectorAll('.plugin-field-row')]
+      .some(r => (r.querySelector('.plugin-field-label')?.textContent || '').includes('可执行文件路径'))
+    return {
+      options: select ? [...select.options].map(o => o.textContent.trim()) : [],
+      value: select ? select.value : '',
+      manualVisible: manual
+    }
+  })()`)
+  check(
+    '可执行文件是「自动检测 / 手动指定」下拉',
+    commandUi.options.join('/') === '自动检测/手动指定' && commandUi.value === 'auto',
+    JSON.stringify(commandUi)
+  )
+  check('自动检测时隐藏路径输入', !commandUi.manualVisible)
+  const switchedManual = await evalJs<boolean>(`(() => {
+    const row = [...document.querySelectorAll('.plugin-field-row')]
+      .find(r => (r.querySelector('.plugin-field-label')?.textContent || '').includes('Claude Code 可执行文件'))
+    const select = row ? row.querySelector('select') : null
+    if (!select) return false
+    select.value = 'manual'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  })()`)
+  check(
+    '切到手动指定后出现路径输入',
+    switchedManual &&
+      (await waitFor(
+        `[...document.querySelectorAll('.plugin-field-row')].some(r =>
+          (r.querySelector('.plugin-field-label')?.textContent || '').includes('可执行文件路径')
+        )`
+      ))
+  )
+  const claudeGroupFields = await evalJs<string[]>(`(() => {
+    const group = [...document.querySelectorAll('.plugin-group')]
+      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
+    return group
+      ? [...group.querySelectorAll('.plugin-field-label')].map(el => el.textContent.trim())
+      : []
+  })()`)
+  const effortAt = claudeGroupFields.findIndex(label => label.includes('推理强度'))
+  const extraAt = claudeGroupFields.findIndex(label => label.includes('额外参数'))
+  check(
+    '推理强度与额外参数在 Claude Code 模块内且顺序正确',
+    effortAt >= 0 && extraAt > effortAt,
+    JSON.stringify(claudeGroupFields)
+  )
+
+  const extraUi = await evalJs<{ textarea: boolean; add: boolean; rows: number }>(`(() => {
+    const group = [...document.querySelectorAll('.plugin-group')]
+      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
+    const field = group
+      ? [...group.querySelectorAll('.plugin-field')]
+          .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
+      : null
+    return {
+      textarea: !!field?.querySelector('textarea'),
+      add: !!field?.querySelector('button[title="添加参数"]'),
+      rows: field ? field.querySelectorAll('.plugin-list-row').length : -1
+    }
+  })()`)
+  check(
+    '额外参数是「+」列表，不是文本框',
+    !extraUi.textarea && extraUi.add && extraUi.rows === 0,
+    JSON.stringify(extraUi)
+  )
+
+  const addClicked = await evalJs<boolean>(`(() => {
+    const group = [...document.querySelectorAll('.plugin-group')]
+      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
+    const field = group
+      ? [...group.querySelectorAll('.plugin-field')]
+          .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
+      : null
+    const btn = field ? field.querySelector('button[title="添加参数"]') : null
+    if (!btn) return false
+    btn.click()
+    return true
+  })()`)
+  check(
+    '点 + 后出现参数输入框',
+    addClicked && (await waitFor(`document.querySelectorAll('.plugin-list-row input').length === 1`))
+  )
+
+  const typedExtra = await evalJs<boolean>(`(() => {
+    const input = document.querySelector('.plugin-list-row input')
+    if (!input) return false
+    input.value = '--debug'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  })()`)
+  let savedExtraArgs: unknown
+  for (let i = 0; i < 20; i++) {
+    savedExtraArgs = (await service.getExtensionView('imark.claude-code'))?.config[
+      'imark.claude-code.extraArgs'
+    ]
+    if (Array.isArray(savedExtraArgs) && savedExtraArgs.length === 1) break
+    await sleep(100)
+  }
+  check(
+    '参数按数组写回配置',
+    typedExtra && Array.isArray(savedExtraArgs) && savedExtraArgs.join(',') === '--debug',
+    JSON.stringify(savedExtraArgs)
+  )
+  await service.setExtensionField('imark.claude-code', 'imark.claude-code.extraArgs', [])
+
   check(
     '外部设置分组带「打开设置文件」图标',
     toClaudeExternal &&
@@ -418,20 +570,15 @@ async function main(): Promise<void> {
     if (input) input.value = ''
   })()`)
 
-  console.log('\n[E] 扩展分配页签:集中管理全部扩展')
-  await evalJs(`(() => {
+  console.log('\n[E] 扩展分配:集中管理全部扩展')
+  const hostsNav = await evalJs<boolean>(`(() => {
     const b = [...document.querySelectorAll('.settings-nav-item')]
-      .find(x => x.textContent.includes('浏览市场'))
-    if (b) b.click()
-  })()`)
-  await waitFor(`document.querySelector('.market-page')`)
-  const hostsTab = await evalJs<boolean>(`(() => {
-    const t = [...document.querySelectorAll('.market-tab')].find(b => b.textContent.trim() === '扩展分配')
-    if (!t) return false
-    t.click()
+      .find(x => x.textContent.trim() === '扩展分配')
+    if (!b) return false
+    b.click()
     return true
   })()`)
-  check('扩展分配页签可点', hostsTab)
+  check('左栏「扩展分配」可点', hostsNav)
   check(
     '进程面板渲染出来',
     await waitFor(
@@ -445,7 +592,7 @@ async function main(): Promise<void> {
     await waitFor(`document.querySelector('.settings-main-header h1')?.textContent?.trim() === '扩展分配'`)
   )
   check(
-    '扩展分配页签不显示市场连接错误',
+    '扩展分配页不显示市场连接错误',
     await evalJs<boolean>(`!document.querySelector('.market-banner-error')`)
   )
   const hostPanel = await evalJs<{
@@ -824,16 +971,11 @@ async function main(): Promise<void> {
   await sleep(500)
 
   console.log('\n[F] 卸载确认是两段式')
-  // 先回市场页(刚才在某个扩展的设置页里)
+  // 先回已安装页(刚才在某个扩展的设置页里)
   await evalJs(`(() => {
     const b = [...document.querySelectorAll('.settings-nav-item')]
-      .find(x => x.textContent.includes('浏览市场'))
+      .find(x => x.textContent.trim() === '已安装')
     if (b) b.click()
-  })()`)
-  await waitFor(`document.querySelector('.market-page')`)
-  await evalJs(`(() => {
-    const t = [...document.querySelectorAll('.market-tab')].find(b => b.textContent.trim() === '已安装')
-    if (t) t.click()
   })()`)
   await waitFor(`document.querySelectorAll('.market-row').length === 4`)
   await evalJs(`(() => {
@@ -954,6 +1096,21 @@ async function main(): Promise<void> {
     actionPlacement.labels.includes('检查 Claude Code') && actionPlacement.inCard === 0,
     JSON.stringify(actionPlacement)
   )
+  // 让「检查」慢一点（约 2 秒），才能稳定地验证：动作执行期间切到别的扩展，
+  // 对方不该继承这个「进行中」。
+  const slowClaude = join(ud, process.platform === 'win32' ? 'slow-claude.cmd' : 'slow-claude')
+  await writeFile(
+    slowClaude,
+    process.platform === 'win32'
+      ? '@echo off\r\nping -n 3 127.0.0.1 >NUL\r\necho 2.1.999 (slow fake)\r\n'
+      : '#!/bin/sh\nsleep 2\nprintf "2.1.999 (slow fake)\\n"\n',
+    'utf8'
+  )
+  if (process.platform !== 'win32') await chmod(slowClaude, 0o755)
+  await service.setExtensionField('imark.claude-code', 'imark.claude-code.commandMode', 'manual')
+  await service.setExtensionField('imark.claude-code', 'imark.claude-code.command', slowClaude)
+  await sleep(150)
+
   check(
     '点得到「检查 Claude Code」',
     await evalJs<boolean>(`(() => {
@@ -971,6 +1128,46 @@ async function main(): Promise<void> {
       2000
     )
   )
+
+  const switchedToAgent = await evalJs<boolean>(`(() => {
+    const nav = [...document.querySelectorAll('.settings-nav-item')]
+      .find(x => x.textContent.includes('Agent Core'))
+    if (!nav) return false
+    nav.click()
+    return true
+  })()`)
+  const agentPageReady =
+    switchedToAgent &&
+    (await waitFor(
+      `document.querySelector('.plugin-field-desc')?.textContent?.includes('Agent 对话宿主')`,
+      2000
+    ))
+  await sleep(100)
+  const agentStatusLabel = await evalJs<string>(
+    `document.querySelector('.plugin-status-line b')?.textContent?.trim() ?? ''`
+  )
+  check(
+    '切换扩展时不继承别的扩展的「进行中」',
+    agentPageReady && agentStatusLabel !== '进行中',
+    agentStatusLabel
+  )
+
+  const backToClaude = await evalJs<boolean>(`(() => {
+    const nav = [...document.querySelectorAll('.settings-nav-item')]
+      .find(x => x.textContent.includes('Claude Code'))
+    if (!nav) return false
+    nav.click()
+    return true
+  })()`)
+  check(
+    '切回仍在执行的扩展',
+    backToClaude &&
+      (await waitFor(
+        `document.querySelector('.plugin-field-desc')?.textContent?.includes('为 Agent Core 提供 Claude Code 后端')`,
+        2000
+      ))
+  )
+
   check(
     '检查结果写进 Claude Code 自己的状态卡',
     await waitFor(

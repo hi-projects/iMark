@@ -175,6 +175,8 @@ export interface StatusBarItemDto {
 
 export type WebviewPresentationDto = 'sidebar' | 'overlay' | 'floating'
 export type WebviewAnchorDto = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+/** 面板状态:标题栏上的小圆点。idle = 绿点,busy = 蓝点脉冲 */
+export type WebviewPanelStatusDto = 'idle' | 'busy'
 
 export interface WebviewPanelCreateRequest {
   viewType: string
@@ -214,6 +216,7 @@ export interface WebviewPanelCreateResult {
 export interface WebviewPanelStateDto {
   panelId: string
   title: string
+  status: WebviewPanelStatusDto
   presentation: WebviewPresentationDto
   width: number
   height: number
@@ -503,6 +506,12 @@ export type HostRequestMessage =
       extensionId: string
       panelId: string
       title: string
+    }
+  | {
+      kind: 'webview.setStatus'
+      extensionId: string
+      panelId: string
+      status: WebviewPanelStatusDto
     }
   | {
       kind: 'webview.setPresentation'

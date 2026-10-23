@@ -1,30 +1,23 @@
 <script setup lang="ts">
 /**
- * 扩展市场页 —— 设置面板里的第三个页面(外观 / 扩展 / 市场)。
+ * 扩展市场页 —— 设置面板里的「浏览市场」页面。
  *
  * 只做外壳:页签与市场错误条,具体内容交给各个 tab 组件。
  * 页签状态存在 settingsNav 的 market 里,所以从菜单打开市场、
  * 点到某个扩展详情再关掉设置、重新打开,看到的还是原来那一屏。
  */
 
-import { computed, onMounted } from 'vue'
-import { checkUpdates, marketStore, refreshInstalled, remoteStore } from '../../services/marketService'
+import { onMounted } from 'vue'
+import { checkUpdates, marketStore, refreshInstalled } from '../../services/marketService'
 import { settingsNav } from '../../services/settingsNav'
 import MarketBrowse from './MarketBrowse.vue'
 import MarketDetail from './MarketDetail.vue'
-import MarketHosts from './MarketHosts.vue'
-import MarketInstalled from './MarketInstalled.vue'
 import MarketPublish from './MarketPublish.vue'
 
 const TABS = [
-  { id: 'installed', label: '已安装' },
   { id: 'browse', label: '浏览市场' },
-  { id: 'hosts', label: '扩展分配' },
   { id: 'publish', label: '发布扩展' }
 ] as const
-
-/** 有可用更新时在「已安装」页签上挂个角标 —— 这是用户唯一会主动看的地方 */
-const updateCount = computed(() => remoteStore.updates.length)
 
 function selectTab(tab: (typeof TABS)[number]['id']): void {
   settingsNav.market.tab = tab
@@ -49,9 +42,6 @@ onMounted(async () => {
         @click="selectTab(tab.id)"
       >
         {{ tab.label }}
-        <span v-if="tab.id === 'installed' && updateCount > 0" class="market-tab-badge">
-          {{ updateCount }}
-        </span>
       </button>
     </div>
 
@@ -67,9 +57,7 @@ onMounted(async () => {
     <MarketDetail
       v-if="settingsNav.market.tab === 'browse' && settingsNav.market.detailId"
     />
-    <MarketInstalled v-else-if="settingsNav.market.tab === 'installed'" />
     <MarketBrowse v-else-if="settingsNav.market.tab === 'browse'" />
-    <MarketHosts v-else-if="settingsNav.market.tab === 'hosts'" />
     <MarketPublish v-else />
   </div>
 </template>

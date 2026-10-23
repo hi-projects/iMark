@@ -26,33 +26,38 @@ CLI 的端点、令牌、模型等配置**唯一的事实是 Claude Code 自己�
 | `env.ANTHROPIC_BASE_URL` | API 端点 |
 | `env.ANTHROPIC_AUTH_TOKEN` | 认证令牌（Bearer，DeepSeek 等兼容端点用） |
 | `env.ANTHROPIC_API_KEY` | API 密钥（x-api-key；与 AUTH_TOKEN 同时存在时以 AUTH_TOKEN 为准） |
-| `env.ANTHROPIC_MODEL` | 默认模型；对话面板选择具体模型时覆盖它 |
-| `env.ANTHROPIC_DEFAULT_OPUS/SONNET/HAIKU_MODEL` | 对话面板选择 Opus/Sonnet/Haiku 时的映射 |
+| `env.ANTHROPIC_MODEL` | 默认模型；对话面板只读显示这个值，不提供模型选择 |
+| `env.ANTHROPIC_DEFAULT_OPUS/SONNET/HAIKU_MODEL` | Claude Code 使用 Opus/Sonnet/Haiku 别名时的映射 |
 | `env.CLAUDE_CODE_SUBAGENT_MODEL` | 子代理模型 |
 | `env.CLAUDE_CODE_EFFORT_LEVEL` | 推理强度 |
 
-清空字段会从 `env` 里删除对应键。插件不再保存模型或 API 密钥的第二份副本。
+清空字段会从 `env` 里删除对应键。模型与 API 密钥只保存在 settings.json，应用配置里不另存副本。
 
-「扩展调用」里的设置只控制怎么启动 CLI：
+「Claude Code」与「扩展调用」里的设置只控制怎么启动 CLI：
 
 | 键 | 说明 |
 | --- | --- |
-| `imark.claude-code.command` | CLI 路径；留空自动探测 PATH、`~/.local/bin` 与 VS Code 扩展内的 native binary |
-| `imark.claude-code.isolation` | safe / restricted / off。restricted 会让 CLI 忽略用户 settings.json |
+| `imark.claude-code.commandMode` | 自动检测 / 手动指定；自动检测依次查找 PATH、`~/.local/bin` 与编辑器扩展自带的 claude |
+| `imark.claude-code.command` | 手动指定时的 CLI 完整路径；自动检测模式下忽略，留空会回退到自动检测 |
 | `imark.claude-code.timeoutSec` | 单轮超时 |
 | `imark.claude-code.maxTurns` | 单轮最大 assistant 轮数 |
-| `imark.claude-code.extraArgs` | 每行一个追加参数；会拒绝改变协议/权限/会话的参数 |
+| `imark.claude-code.extraArgs` | 字符串列表，一项一个追加参数；设置页用「+」逐条添加；会拒绝改变协议、配置或会话归属的参数 |
+
+自动检测会依次尝试：PATH 上的 `claude` / `claude.exe` / `claude.cmd`、`~/.local/bin`，
+以及编辑器扩展目录里 `anthropic.claude-code-*` 自带的 `resources/native-binary/claude`
+（覆盖 VS Code、VS Code Insiders、VS Code Server、VSCodium、Cursor、Windsurf 及其远程版本；
+存在多个版本时取最新的）。
 
 每次 `createSession()` 都会重新读取这些调用参数，所以修改后下一轮生效；settings.json 由 CLI 每次启动时读取。
 
 ## 运行方式
 
 每次发送启动一个 `claude -p --verbose --output-format stream-json --include-partial-messages`
-子进程；首轮用 `--session-id`，后续用 `--resume` 续接。只读模式会限制工具；
-read+parse 允许在会话目录内使用 Write 与白名单命令。扩展只把附件路径交给
-Claude Code，由它自行读取和解析。
+子进程；首轮用 `--session-id`，后续用 `--resume` 续接。扩展不传任何权限或工具
+参数，工具是否可用完全由 Claude Code 自己的 settings.json 决定。扩展只把附件
+路径交给 Claude Code，由它自行读取和解析。
 
 ## 测试
 
 `verify/agent-harness.ts` 用 `verify/fixtures/fake-claude.js` 模拟 CLI，覆盖参数、
-流式事件、续接、工具白名单与错误码。
+流式事件、续接与错误码。

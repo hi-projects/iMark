@@ -8,8 +8,6 @@
 
 import type {
   AgentEvent,
-  AgentMode,
-  AgentTaskMode,
   ArtifactInfo,
   DocMeta
 } from '../core/types'
@@ -21,11 +19,9 @@ import type {
   SessionMessage,
   SessionSummary,
   SessionView,
-  ToolCallView,
-  TurnTarget,
-  UiIntent
+  ToolCallView
 } from '../core/protocol'
-import { announceReady, errorText, onPush, readBootstrap, request } from './shared'
+import { announceReady, errorText, onPush, request } from './shared'
 
 interface Streaming {
   el: HTMLElement
@@ -38,23 +34,18 @@ interface Streaming {
   thinking: string
 }
 
-const bootstrap = readBootstrap()
 const NO_PROVIDER_MESSAGE = '未安装或未启用任何 Agent 后端扩展'
 
 const state = {
   providers: [] as ProviderView[],
   config: {
-    mode: 'read+parse' as AgentMode,
     attachmentMaxMB: 32
   } as SafeConfig,
   doc: null as DocMeta | null,
   sessions: [] as SessionSummary[],
   session: null as SessionView | null,
   activeTurnId: null as string | null,
-  taskMode: 'ask' as AgentTaskMode,
-  permissionMode: 'read+parse' as AgentMode,
   providerId: '',
-  model: '',
   uploads: new Map<string, { name: string; done: number; total: number }>()
 }
 
@@ -63,44 +54,52 @@ let streaming: Streaming | null = null
 document.body.innerHTML = `
 <div class="agent">
   <header class="agent-head">
-    <div class="agent-brand"><span class="agent-dot" id="status-dot"></span><b>Agent Core</b></div>
     <div class="agent-controls">
       <select id="provider" class="agent-select" title="Agent 后端"></select>
-      <select id="permission" class="agent-select" title="权限模式">
-        <option value="read+parse">read+parse</option>
-        <option value="read-only">read-only</option>
-      </select>
-      <input id="model" class="agent-model" placeholder="模型（默认）" spellcheck="false" />
-      <select id="session" class="agent-select agent-session" title="会话"></select>
-      <button id="new-session" class="agent-icon" title="新建会话">＋</button>
-      <button id="delete-session" class="agent-icon" title="删除会话">×</button>
+      <span id="model" class="agent-model-label"></span>
+      <div id="session-group" class="agent-session-group">
+        <button id="session" class="agent-session-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="切换会话">
+          <span id="session-label" class="agent-session-label"></span>
+          <span class="agent-session-caret" aria-hidden="true">▾</span>
+        </button>
+        <button id="new-session" class="agent-icon" title="新建会话">＋</button>
+        <div id="session-menu" class="agent-session-menu hidden" role="listbox" aria-label="会话列表"></div>
+      </div>
     </div>
   </header>
   <div id="banner" class="agent-banner hidden"><span id="banner-text"></span><button id="banner-close" class="agent-banner-close">×</button></div>
   <main id="messages" class="agent-messages"></main>
-  <section id="attachments" class="agent-attachments"></section>
   <footer class="agent-composer">
     <div class="agent-composer-top">
-      <select id="task-mode" class="agent-select" title="任务模式">
-        <option value="ask">问答</option>
-        <option value="generate">生成</option>
-        <option value="beautify">美化</option>
-      </select>
+      <button id="attach-doc" class="agent-attach agent-attach-doc" title="把当前打开的文档作为附件加入本轮">＋ 本文档</button>
+      <section id="attachments" class="agent-attachments"></section>
       <button id="attach" class="agent-attach">＋ 附件</button>
       <input id="file-input" type="file" multiple hidden />
-      <span id="doc-name" class="agent-doc"></span>
     </div>
     <textarea id="input" class="agent-input" rows="3" placeholder="问 Agent，或让它根据附件生成内容。附件只落盘，由 Agent 自己读取。"></textarea>
     <div class="agent-composer-bottom">
       <span id="hint" class="agent-hint"></span>
       <button id="stop" class="agent-stop hidden">停止</button>
+      <button id="prompt-peek" class="agent-icon agent-peek-button" type="button" aria-label="查看本轮完整提示词">ⓘ</button>
       <button id="send" class="agent-send">发送</button>
+    </div>
+    <div id="prompt-peek-panel" class="agent-peek hidden" role="tooltip">
+      <pre id="prompt-peek-text"></pre>
     </div>
   </footer>
   <div id="preview" class="agent-preview hidden">
     <div class="agent-preview-box">
       <div class="agent-preview-head"><b id="preview-title">产物预览</b><button id="preview-close" class="agent-icon">×</button></div>
       <div id="preview-body" class="agent-preview-body"></div>
+    </div>
+  </div>
+  <div id="confirm" class="agent-confirm hidden">
+    <div class="agent-confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="confirm-message">
+      <p id="confirm-message" class="agent-confirm-message"></p>
+      <div class="agent-confirm-actions">
+        <button id="confirm-cancel" class="agent-confirm-btn">取消</button>
+        <button id="confirm-ok" class="agent-confirm-btn is-danger">确定</button>
+      </div>
     </div>
   </div>
 </div>`
@@ -116,22 +115,29 @@ const attachmentsEl = byId<HTMLElement>('attachments')
 const bannerEl = byId<HTMLElement>('banner')
 const bannerText = byId<HTMLElement>('banner-text')
 const providerEl = byId<HTMLSelectElement>('provider')
-const permissionEl = byId<HTMLSelectElement>('permission')
-const modelEl = byId<HTMLInputElement>('model')
-const sessionEl = byId<HTMLSelectElement>('session')
-const taskModeEl = byId<HTMLSelectElement>('task-mode')
+const modelEl = byId<HTMLElement>('model')
+const sessionGroup = byId<HTMLElement>('session-group')
+const sessionTrigger = byId<HTMLButtonElement>('session')
+const sessionLabel = byId<HTMLElement>('session-label')
+const sessionMenu = byId<HTMLElement>('session-menu')
 const inputEl = byId<HTMLTextAreaElement>('input')
 const hintEl = byId<HTMLElement>('hint')
-const docNameEl = byId<HTMLElement>('doc-name')
 const sendEl = byId<HTMLButtonElement>('send')
 const stopEl = byId<HTMLButtonElement>('stop')
 const attachEl = byId<HTMLButtonElement>('attach')
+const attachDocEl = byId<HTMLButtonElement>('attach-doc')
 const newSessionEl = byId<HTMLButtonElement>('new-session')
-const statusDot = byId<HTMLElement>('status-dot')
+const peekBtn = byId<HTMLButtonElement>('prompt-peek')
+const peekEl = byId<HTMLElement>('prompt-peek-panel')
+const peekText = byId<HTMLElement>('prompt-peek-text')
 const fileInput = byId<HTMLInputElement>('file-input')
 const previewEl = byId<HTMLElement>('preview')
 const previewTitle = byId<HTMLElement>('preview-title')
 const previewBody = byId<HTMLElement>('preview-body')
+const confirmEl = byId<HTMLElement>('confirm')
+const confirmMessage = byId<HTMLElement>('confirm-message')
+const confirmOk = byId<HTMLButtonElement>('confirm-ok')
+const confirmCancel = byId<HTMLButtonElement>('confirm-cancel')
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -160,6 +166,37 @@ function hideBanner(): void {
   bannerEl.classList.add('hidden')
 }
 
+/**
+ * 面板内的确认框。
+ *
+ * webview 是 `sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"`
+ * 的跨源 iframe，没有 `allow-modals`——Chromium 会直接忽略 window.confirm()
+ * 并返回 false。所以确认只能自己画，返回值走 Promise。
+ */
+let confirmResolve: ((ok: boolean) => void) | null = null
+
+function askConfirm(message: string, confirmLabel = '确定'): Promise<boolean> {
+  closeConfirm(false)
+  confirmMessage.textContent = message
+  confirmOk.textContent = confirmLabel
+  confirmEl.classList.remove('hidden')
+  confirmOk.focus()
+  return new Promise(resolve => {
+    confirmResolve = resolve
+  })
+}
+
+function closeConfirm(ok: boolean): void {
+  confirmEl.classList.add('hidden')
+  const resolve = confirmResolve
+  confirmResolve = null
+  resolve?.(ok)
+}
+
+function isConfirmOpen(): boolean {
+  return confirmResolve !== null
+}
+
 function setHint(text: string): void {
   hintEl.textContent = text
 }
@@ -172,13 +209,13 @@ function syncProviderControls(): void {
   const ready = hasProvider()
   sendEl.disabled = Boolean(state.activeTurnId) || !ready
   attachEl.disabled = !ready
+  syncDocButton()
   newSessionEl.disabled = !ready
 }
 
 function setRunning(running: boolean): void {
   sendEl.disabled = running || !hasProvider()
   stopEl.classList.toggle('hidden', !running)
-  statusDot.classList.toggle('is-running', running)
   setHint(running ? 'Agent 正在运行…' : '')
 }
 
@@ -188,20 +225,30 @@ function scrollToBottom(force = false): void {
   if (force || nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight
 }
 
-function isTaskMode(value: string): value is AgentTaskMode {
-  return value === 'ask' || value === 'generate' || value === 'beautify'
+/**
+ * 定高滚动块(思考过程)自己的贴底跟随。
+ *
+ * 外层消息区贴底只保证「这一块」露在视口里,不代表块内的最新一行可见 ——
+ * 思考过程是 220px 的独立滚动区,不跟着推就永远停在开头,用户只能自己
+ * 把滚动条拖下来。规则:没主动上翻时追加内容后贴到底;上翻看历史时暂停,
+ * 翻回底部自动恢复。
+ */
+const stickScroll = new WeakMap<HTMLElement, boolean>()
+
+function trackStickScroll(box: HTMLElement): void {
+  if (stickScroll.has(box)) return
+  stickScroll.set(box, true)
+  box.addEventListener('scroll', () => {
+    stickScroll.set(box, box.scrollHeight - box.scrollTop - box.clientHeight < 40)
+  })
 }
 
-function isPermissionMode(value: string): value is AgentMode {
-  return value === 'read-only' || value === 'read+parse'
-}
-
-function sessionDocumentKey(): string {
-  return state.doc?.key ?? 'no-document'
-}
-
-function sessionDocumentName(): string {
-  return state.doc?.fileName ?? '未关联文档'
+function appendStreamingText(box: HTMLElement, text: string): void {
+  trackStickScroll(box)
+  const stick = stickScroll.get(box) !== false
+  box.textContent = text
+  // 折叠状态下没有布局,scrollTop 赋值会被丢掉;展开时由 toggle 补一次
+  if (stick) box.scrollTop = box.scrollHeight
 }
 
 // ---------- 渲染 ----------
@@ -216,6 +263,7 @@ function renderProviders(): void {
     providerEl.disabled = true
     providerEl.classList.remove('is-unavailable')
     syncProviderControls()
+    renderModelLabel()
     return
   }
   providerEl.disabled = false
@@ -228,33 +276,118 @@ function renderProviders(): void {
   const detection = state.providers.find(item => item.info.id === state.providerId)?.detection
   providerEl.classList.toggle('is-unavailable', detection ? !detection.available : false)
   syncProviderControls()
+  renderModelLabel()
+}
+
+/** 模型选择完全交给后端配置文件；这里只显示它读到的默认模型名 */
+function renderModelLabel(): void {
+  const provider = state.providers.find(item => item.info.id === state.providerId)
+  const model = provider?.detection?.defaultModel?.trim()
+  modelEl.textContent = `模型：${model || '默认'}`
+  modelEl.title = model
+    ? `默认模型：${model}（来自 ${provider?.info.label ?? '后端'} 的配置）`
+    : `${provider?.info.label ?? '后端'} 的配置文件没有指定默认模型，使用它自己的默认值`
 }
 
 function renderHeader(): void {
   renderProviders()
-  permissionEl.value = state.permissionMode
-  modelEl.value = state.model
-  taskModeEl.value = state.taskMode
-  docNameEl.textContent = state.doc ? state.doc.fileName : '未关联文档'
-  saveSessionSettingsSoon()
+  syncDocButton()
+}
+
+const TRASH_ICON =
+  '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+  '<path d="M3.5 4.5h9M5.6 4.5l.5 8.2h3.8l.5-8.2M6.3 4.5V3.1h3.4v1.4M6.7 6.8v3.9M9.3 6.8v3.9" ' +
+  'fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+function sessionTitle(summary: SessionSummary): string {
+  return summary.title || '新会话'
+}
+
+function isSessionMenuOpen(): boolean {
+  return !sessionMenu.classList.contains('hidden')
+}
+
+function setSessionMenuOpen(open: boolean): void {
+  if (open && sessionTrigger.disabled) return
+  sessionMenu.classList.toggle('hidden', !open)
+  sessionTrigger.setAttribute('aria-expanded', String(open))
+  if (!open) return
+  // 会话多的时候，让当前项落在可视范围内
+  sessionMenu.querySelector('.agent-session-item.is-current')?.scrollIntoView({ block: 'nearest' })
+}
+
+function closeSessionMenu(): void {
+  setSessionMenuOpen(false)
+}
+
+function chooseSession(id: string): void {
+  if (guardRunning()) return
+  closeSessionMenu()
+  if (state.session?.summary.id === id) return
+  void openSession(id)
+}
+
+async function deleteSession(summary: SessionSummary): Promise<void> {
+  if (guardRunning() || isConfirmOpen()) return
+  const ok = await askConfirm(`删除「${sessionTitle(summary)}」及其附件/产物？此操作不可撤销。`, '删除')
+  if (!ok) return
+  try {
+    await request('session.delete', { sessionId: summary.id })
+    // 主机已经推了 sessionDeleted/sessions；这里只是兜底，
+    // 如果推送已经切到别的会话（甚至是新建的），不要把它清掉。
+    if (state.session && state.session.summary.id !== summary.id) return
+    state.session = null
+    messagesEl.replaceChildren()
+    attachmentsEl.replaceChildren()
+    renderSessionList()
+  } catch (err) {
+    showBanner(errorText(err))
+  }
 }
 
 function renderSessionList(): void {
-  sessionEl.replaceChildren()
+  const currentId = state.session?.summary.id ?? ''
+  sessionTrigger.disabled = state.sessions.length === 0
+  sessionMenu.replaceChildren()
+
+  for (const summary of state.sessions) {
+    const current = summary.id === currentId
+    const row = el('div', 'agent-session-item')
+    row.dataset.id = summary.id
+    row.setAttribute('role', 'option')
+    row.setAttribute('aria-selected', String(current))
+    row.classList.toggle('is-current', current)
+
+    const name = el('button', 'agent-session-name', sessionTitle(summary))
+    name.type = 'button'
+    name.title = sessionTitle(summary)
+    name.addEventListener('click', () => chooseSession(summary.id))
+
+    const remove = el('button', 'agent-session-delete')
+    remove.type = 'button'
+    remove.title = `删除会话「${sessionTitle(summary)}」`
+    remove.setAttribute('aria-label', remove.title)
+    remove.innerHTML = TRASH_ICON
+    remove.addEventListener('click', event => {
+      event.stopPropagation()
+      void deleteSession(summary)
+    })
+
+    row.append(name, remove)
+    sessionMenu.append(row)
+  }
+
   if (state.sessions.length === 0) {
-    const option = el('option', undefined, '（无会话）')
-    option.value = ''
-    sessionEl.append(option)
-    sessionEl.disabled = true
+    sessionLabel.textContent = '（无会话）'
+    sessionLabel.title = ''
+    closeSessionMenu()
     return
   }
-  sessionEl.disabled = false
-  for (const summary of state.sessions) {
-    const option = el('option', undefined, summary.title || '新会话')
-    option.value = summary.id
-    sessionEl.append(option)
-  }
-  if (state.session) sessionEl.value = state.session.summary.id
+
+  const current = state.sessions.find(item => item.id === currentId)
+  sessionLabel.textContent = current ? sessionTitle(current) : '选择会话'
+  sessionLabel.title = current ? sessionTitle(current) : '未选择会话'
+  if (!current) closeSessionMenu()
 }
 
 function toolRow(tool: ToolCallView): HTMLElement {
@@ -294,11 +427,9 @@ function renderArtifacts(container: HTMLElement, artifacts: readonly ArtifactInf
     row.append(el('span', 'agent-artifact-size', formatBytes(artifact.size)))
     const preview = el('button', 'agent-small', '预览')
     preview.addEventListener('click', () => void previewArtifact(artifact))
-    const insert = el('button', 'agent-small', '插入')
-    insert.addEventListener('click', () => void applyArtifact(artifact, { kind: 'insert-at-cursor' }))
     const replace = el('button', 'agent-small', '替换')
-    replace.addEventListener('click', () => void applyArtifact(artifact, { kind: 'replace-all' }))
-    row.append(preview, insert, replace)
+    replace.addEventListener('click', () => void applyArtifact(artifact))
+    row.append(preview, replace)
     details.append(row)
   }
   container.append(details)
@@ -310,29 +441,58 @@ function renderToolCalls(container: HTMLElement, message: SessionMessage): void 
   renderTools(container, map)
 }
 
+/**
+ * 复制纯文本。
+ *
+ * webview 是自定义协议，`navigator.clipboard` 会因安全上下文/权限被拒；而且
+ * 它在某些情况下会「resolve 了但没写进系统剪贴板」。这里优先用不依赖权限的
+ * 临时 textarea + execCommand，失败再退回异步剪贴板 API。
+ */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.append(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    area.remove()
+    if (ok) return true
+  } catch {
+    /* 走异步 API */
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    /* 两条路都失败 */
+  }
+  return false
+}
+
 function messageActions(message: SessionMessage): HTMLElement | null {
   if (message.role !== 'assistant' || !message.text.trim()) return null
   const row = el('div', 'agent-actions')
-  const add = (label: string, target: TurnTarget): void => {
-    const button = el('button', 'agent-small', label)
-    button.addEventListener('click', () => void applyMessage(message, target))
-    row.append(button)
-  }
-  add('插入光标处', { kind: 'insert-at-cursor' })
-  add('插入下一行', {
-    kind: 'insert-below-line',
-    line: state.doc?.selection.line ?? 0
-  })
-  add('替换整篇', { kind: 'replace-all' })
   const copy = el('button', 'agent-small', '复制')
   copy.addEventListener('click', () => {
-    void navigator.clipboard?.writeText(message.text).then(
-      () => showBanner('已复制', 'info'),
-      () => showBanner('复制失败')
-    )
+    void copyText(message.text).then(ok => showBanner(ok ? '已复制' : '复制失败', ok ? 'info' : 'error'))
   })
   row.append(copy)
+  const replace = el('button', 'agent-small', '替换整篇')
+  replace.addEventListener('click', () => void applyMessage(message))
+  row.append(replace)
   return row
+}
+
+function thinkingBlock(text: string): { details: HTMLDetailsElement; text: HTMLElement } {
+  const details = el('details', 'agent-thinking') as HTMLDetailsElement
+  details.append(el('summary', undefined, '思考过程'))
+  const body = el('div', 'agent-thinking-text', text)
+  details.append(body)
+  return { details, text: body }
 }
 
 function renderMessage(message: SessionMessage): HTMLElement {
@@ -342,13 +502,39 @@ function renderMessage(message: SessionMessage): HTMLElement {
   const body = el('div', 'agent-body')
   root.append(body)
 
+  // 按实际出现顺序排：思考过程通常先于工具活动，历史里没有交错信息，
+  // 就固定成「思考过程 → 工具活动 → 回答」，与流式观感一致
+  if (message.role === 'assistant' && message.thinking?.trim()) {
+    body.append(thinkingBlock(message.thinking).details)
+  }
+
+  // 工具活动放在回答上方：先看 Agent 做了什么，再看它说了什么
+  if (message.toolCalls.length > 0) {
+    const tools = el('div', 'agent-tools-wrap')
+    renderToolCalls(tools, message)
+    body.append(tools)
+  }
+
   if (message.role === 'user') {
-    body.textContent = message.text
+    if (message.text) body.append(el('div', 'agent-user-text', message.text))
+    const sent = message.attachments ?? []
+    if (sent.length > 0) {
+      const wrap = el('div', 'agent-msg-attachments')
+      for (const item of sent) {
+        const chip = el('span', 'agent-msg-attachment', item.name)
+        chip.title = `${item.name}（${formatBytes(item.size)}）`
+        wrap.append(chip)
+      }
+      body.append(wrap)
+    }
   } else {
     const text = el('div', 'agent-text', message.text)
     body.append(text)
     if (message.status === 'ok' && message.text.trim()) {
-      void request<{ html: string }>('markdown.render', { text: message.text })
+      void request<{ html: string }>('markdown.render', {
+        text: message.text,
+        sessionId: state.session?.summary.id
+      })
         .then(result => {
           if (text.isConnected) text.innerHTML = result.html
         })
@@ -362,12 +548,6 @@ function renderMessage(message: SessionMessage): HTMLElement {
     error.append(document.createTextNode(message.error.message))
     if (message.error.detail) error.append(el('div', 'agent-error-detail', message.error.detail))
     body.append(error)
-  }
-
-  if (message.toolCalls.length > 0) {
-    const tools = el('div', 'agent-tools-wrap')
-    renderToolCalls(tools, message)
-    body.append(tools)
   }
 
   if (message.artifacts && message.artifacts.length > 0) {
@@ -401,13 +581,6 @@ function renderMessages(): void {
         '打开文档，添加附件，然后提问。扩展只把附件落盘并把路径交给 Agent，怎么读取由 Agent 自己决定。'
       )
     )
-    empty.append(
-      el(
-        'p',
-        'agent-empty-hint',
-        'PDF 的解析质量取决于 Agent 选择的工具：可以在设置里切换 read+parse / read-only，或让它优先使用本机已装的解析器。'
-      )
-    )
     messagesEl.append(empty)
     return
   }
@@ -426,20 +599,44 @@ function renderUploads(): void {
   }
 }
 
+/** 左侧文档按钮：没文档时是「＋ 本文档」，有文档时直接显示文档名 */
+function syncDocButton(): void {
+  const name = state.doc?.fileName ?? ''
+  const added = Boolean(
+    name &&
+      state.session?.attachments.some(
+        item => item.source === 'document' && item.name === name
+      )
+  )
+  attachDocEl.textContent = name || '＋ 本文档'
+  attachDocEl.classList.toggle('is-added', added)
+  attachDocEl.disabled = !hasProvider() || !name
+  attachDocEl.title = !name
+    ? '当前没有打开的文档'
+    : added
+      ? '当前文档已在附件中，点击移除'
+      : '把当前文档作为附件加入本轮'
+}
+
 function renderAttachments(): void {
   attachmentsEl.replaceChildren()
-  if (!state.session) return
-  for (const attachment of state.session.attachments) {
-    const chip = el('div', 'agent-attach-chip')
-    chip.append(el('span', 'agent-attach-name', attachment.name))
-    chip.append(el('span', 'agent-attach-size', formatBytes(attachment.size)))
-    const remove = el('button', 'agent-attach-remove', '×')
-    remove.title = '移除附件'
-    remove.addEventListener('click', () => void removeAttachment(attachment))
-    chip.append(remove)
-    attachmentsEl.append(chip)
+  const currentDoc = state.doc?.fileName
+  if (state.session) {
+    for (const attachment of state.session.attachments) {
+      // 当前文档的快照由左侧按钮承担，不在附件条里重复
+      if (attachment.source === 'document' && attachment.name === currentDoc) continue
+      const chip = el('div', 'agent-attach-chip')
+      chip.append(el('span', 'agent-attach-name', attachment.name))
+      chip.append(el('span', 'agent-attach-size', formatBytes(attachment.size)))
+      const remove = el('button', 'agent-attach-remove', '×')
+      remove.title = '移除附件'
+      remove.addEventListener('click', () => void removeAttachment(attachment))
+      chip.append(remove)
+      attachmentsEl.append(chip)
+    }
   }
   renderUploads()
+  syncDocButton()
 }
 
 // ---------- 请求 ----------
@@ -471,11 +668,7 @@ async function refreshDetection(): Promise<void> {
 
 async function createSession(): Promise<SessionView> {
   const result = await request<{ session: SessionView }>('session.create', {
-    documentKey: sessionDocumentKey(),
-    documentName: sessionDocumentName(),
-    provider: state.providerId,
-    model: state.model,
-    mode: state.permissionMode
+    provider: state.providerId
   })
   state.session = result.session
   state.sessions = [result.session.summary, ...state.sessions.filter(s => s.id !== result.session.summary.id)]
@@ -492,8 +685,6 @@ async function openSession(id: string): Promise<void> {
     const result = await request<{ session: SessionView }>('session.open', { sessionId: id })
     state.session = result.session
     state.providerId = result.session.summary.provider
-    state.permissionMode = result.session.summary.mode
-    state.model = result.session.summary.model ?? ''
     renderHeader()
     renderSessionList()
     renderMessages()
@@ -547,8 +738,6 @@ async function uploadFile(file: File, sessionId: string): Promise<void> {
     maxBytes: number
   }>('attach.begin', {
     sessionId,
-    documentKey: sessionDocumentKey(),
-    documentName: sessionDocumentName(),
     name: file.name,
     size: file.size,
     mime: file.type || 'application/octet-stream'
@@ -610,46 +799,25 @@ async function uploadFiles(files: FileList | File[]): Promise<void> {
 
 // ---------- 写回 ----------
 
-async function applyMessage(message: SessionMessage, target: TurnTarget): Promise<void> {
+async function applyMessage(message: SessionMessage): Promise<void> {
   if (!state.session) return
   try {
     await request('doc.apply', {
       sessionId: state.session.summary.id,
-      seq: message.seq,
-      target
+      seq: message.seq
     })
     showBanner('已写入文档', 'info')
   } catch (err) {
-    const candidate = err as Error & { code?: string }
-    if (candidate.code === 'stale-document' && target.kind === 'replace-all') {
-      if (window.confirm('文档在 Agent 运行期间发生了变化。仍要用 Agent 的结果覆盖整篇吗？')) {
-        try {
-          await request('doc.apply', {
-            sessionId: state.session.summary.id,
-            seq: message.seq,
-            target,
-            force: true
-          })
-          showBanner('已覆盖文档', 'info')
-          return
-        } catch (retryErr) {
-          showBanner(errorText(retryErr))
-          return
-        }
-      }
-      return
-    }
     showBanner(errorText(err))
   }
 }
 
-async function applyArtifact(artifact: ArtifactInfo, target: TurnTarget): Promise<void> {
+async function applyArtifact(artifact: ArtifactInfo): Promise<void> {
   if (!state.session) return
   try {
     await request('doc.applyArtifact', {
       sessionId: state.session.summary.id,
-      path: artifact.path,
-      target
+      path: artifact.path
     })
     showBanner('已写入产物', 'info')
   } catch (err) {
@@ -683,6 +851,49 @@ async function previewArtifact(artifact: ArtifactInfo): Promise<void> {
   }
 }
 
+// ---------- 提示词预览 ----------
+
+let peekSeq = 0
+let peekHideTimer = 0
+
+/**
+ * 悬停发送按钮左边的图标：显示本轮真正发给 Agent 的完整提示词。
+ *
+ * 内容由主进程用与 `turn.start` 相同的拼装逻辑生成（系统规则 + 附件路径 +
+ * 已有产物 + 命令探测），但不写会话状态。每次悬停都重新取，输入或附件变了
+ * 立刻反映出来。
+ */
+async function showPromptPeek(): Promise<void> {
+  window.clearTimeout(peekHideTimer)
+  peekEl.classList.remove('hidden')
+  peekText.textContent = '正在生成提示词…'
+  const seq = ++peekSeq
+  try {
+    const result = await request<{ prompt: string }>('prompt.preview', {
+      sessionId: state.session?.summary.id ?? '',
+      text: inputEl.value,
+      attachmentIds: (state.session?.attachments ?? []).map(item => item.id)
+    })
+    if (seq !== peekSeq) return
+    peekText.textContent = result.prompt
+  } catch (err) {
+    if (seq !== peekSeq) return
+    peekText.textContent = errorText(err)
+  }
+}
+
+function hidePromptPeek(): void {
+  peekSeq += 1
+  window.clearTimeout(peekHideTimer)
+  peekEl.classList.add('hidden')
+}
+
+/** 留一点时间把鼠标从图标移进面板（面板在上方，可滚动看全文） */
+function scheduleHidePromptPeek(): void {
+  window.clearTimeout(peekHideTimer)
+  peekHideTimer = window.setTimeout(hidePromptPeek, 260)
+}
+
 // ---------- 发送/流式 ----------
 
 async function sendTurn(): Promise<void> {
@@ -697,19 +908,22 @@ async function sendTurn(): Promise<void> {
   }
   const text = inputEl.value.trim()
   const attachments = state.session?.attachments ?? []
-  // 美化不需要输入框内容：当前文档快照就是输入
-  if (!text && attachments.length === 0 && state.taskMode !== 'beautify') return
+  if (!text && attachments.length === 0) return
   try {
     const sessionId = await ensureSession()
     const result = await request<{ turnId: string }>('turn.start', {
       sessionId,
       text,
-      mode: state.taskMode,
-      permissionMode: state.permissionMode,
       attachmentIds: attachments.map(item => item.id)
     })
     state.activeTurnId = result.turnId
     inputEl.value = ''
+    // 附件只属于刚发出的这条消息：清空待发区，历史里由消息自己带附件
+    if (state.session) {
+      state.session.attachments = []
+      state.session.summary.attachmentCount = 0
+      renderAttachments()
+    }
     setRunning(true)
   } catch (err) {
     showBanner(errorText(err))
@@ -722,8 +936,13 @@ function startStreaming(): void {
   root.append(el('div', 'agent-role', 'Agent'))
   const body = el('div', 'agent-body')
   const textEl = el('div', 'agent-text')
+  // 工具活动块不预先挂到 body：等第一次出现工具调用时才插入到回答前面，
+  // 这样它和思考过程块谁先到谁在前，不会凭空冒到已有的块上面
   const toolsEl = el('div', 'agent-tools-wrap')
-  body.append(textEl, toolsEl)
+  // 长任务/工具间歇期也要能看出「还在跑」：一直显示到本轮结束
+  const loading = el('div', 'agent-loading')
+  loading.append(el('span', 'agent-spinner'), el('span', undefined, '正在执行…'))
+  body.append(textEl, loading)
   root.append(body)
   messagesEl.append(root)
   streaming = {
@@ -744,11 +963,14 @@ function ensureThinking(): { container: HTMLElement; text: HTMLElement } {
   if (streaming.thinkingContainer && streaming.thinkingText) {
     return { container: streaming.thinkingContainer, text: streaming.thinkingText }
   }
-  const details = el('details', 'agent-thinking')
-  details.append(el('summary', undefined, '思考过程'))
-  const text = el('div', 'agent-thinking-text')
-  details.append(text)
-  streaming.el.querySelector('.agent-body')?.append(details)
+  const { details, text } = thinkingBlock('')
+  trackStickScroll(text)
+  // 流式途中才展开:折叠期间追加的内容没有布局,展开这一刻补到底部
+  details.addEventListener('toggle', () => {
+    if (details.open && stickScroll.get(text)) text.scrollTop = text.scrollHeight
+  })
+  // 插在回答前面，也就是排在所有先到的块（如工具活动）之后
+  streaming.textEl.before(details)
   streaming.thinkingContainer = details
   streaming.thinkingText = text
   return { container: details, text }
@@ -764,7 +986,7 @@ function handleStreamEvent(event: AgentEvent): void {
   } else if (event.type === 'thinking') {
     const target = ensureThinking()
     streaming.thinking += event.delta
-    target.text.textContent = streaming.thinking
+    appendStreamingText(target.text, streaming.thinking)
     scrollToBottom()
   } else if (event.type === 'tool' && event.phase === 'start') {
     streaming.tools.set(event.toolId, {
@@ -773,6 +995,8 @@ function handleStreamEvent(event: AgentEvent): void {
       kind: event.kind,
       inputSummary: event.inputSummary
     })
+    // 第一次出现工具调用时才占位：谁先出现谁在前
+    if (!streaming.toolsEl.isConnected) streaming.textEl.before(streaming.toolsEl)
     renderTools(streaming.toolsEl, streaming.tools)
     scrollToBottom()
   } else if (event.type === 'tool' && event.phase === 'result') {
@@ -785,6 +1009,7 @@ function handleStreamEvent(event: AgentEvent): void {
       ok: event.ok,
       summary: event.summary
     })
+    if (!streaming.toolsEl.isConnected) streaming.textEl.before(streaming.toolsEl)
     renderTools(streaming.toolsEl, streaming.tools)
   } else if (event.type === 'notice') {
     const notice = el('div', 'agent-notice', event.message)
@@ -806,25 +1031,6 @@ function finishStreaming(message: SessionMessage): void {
   scrollToBottom(true)
 }
 
-// ---------- 会话设置 ----------
-
-let saveTimer: number | null = null
-
-function saveSessionSettingsSoon(): void {
-  if (!state.session) return
-  if (saveTimer !== null) window.clearTimeout(saveTimer)
-  saveTimer = window.setTimeout(() => {
-    saveTimer = null
-    if (!state.session) return
-    void request('session.update', {
-      sessionId: state.session.summary.id,
-      patch: { model: state.model, mode: state.permissionMode }
-    })
-      .then(() => undefined)
-      .catch(err => showBanner(errorText(err)))
-  }, 400)
-}
-
 // ---------- 事件 ----------
 
 onPush(push => {
@@ -842,8 +1048,6 @@ onPush(push => {
     state.doc = init.doc
     state.sessions = init.sessions ?? []
     state.providerId = state.providers[0]?.info.id ?? ''
-    state.permissionMode = state.config.mode
-    state.model = ''
     renderHeader()
     renderSessionList()
     renderMessages()
@@ -854,23 +1058,17 @@ onPush(push => {
   }
   if (push.kind === 'config') {
     const config = (value as { config: SafeConfig }).config
-    if (config) {
-      state.config = config
-      if (!state.session) {
-        state.permissionMode = config.mode
-        renderHeader()
-      }
-    }
+    if (config) state.config = config
     return
   }
   if (push.kind === 'doc') {
     state.doc = (value as { doc: DocMeta | null }).doc
-    docNameEl.textContent = state.doc ? state.doc.fileName : '未关联文档'
+    renderAttachments()
+    syncProviderControls()
     return
   }
   if (push.kind === 'sessions') {
-    const data = value as { documentKey: string; sessions: SessionSummary[] }
-    if (data.documentKey !== sessionDocumentKey()) return
+    const data = value as { sessions: SessionSummary[] }
     state.sessions = data.sessions
     // 运行中不要因为列表刷新而清空/切换会话，否则流式消息会落到错误的会话里
     if (!state.activeTurnId) {
@@ -889,8 +1087,6 @@ onPush(push => {
     if (state.activeTurnId && state.session?.summary.id !== view.summary.id) return
     state.session = view
     state.providerId = view.summary.provider
-    state.permissionMode = view.summary.mode
-    state.model = view.summary.model ?? ''
     renderHeader()
     renderSessionList()
     renderMessages()
@@ -946,11 +1142,8 @@ onPush(push => {
     }
     return
   }
-  if (push.kind === 'uiIntent') {
-    const intent = value as unknown as UiIntent
-    state.taskMode = intent.mode
-    taskModeEl.value = intent.mode
-    if (intent.auto) window.setTimeout(() => void sendTurn(), 60)
+  if (push.kind === 'refresh') {
+    void refreshDetection()
     return
   }
   if (push.kind === 'error') {
@@ -980,27 +1173,15 @@ providerEl.addEventListener('change', () => {
   void createSession().catch(err => showBanner(errorText(err)))
 })
 
-permissionEl.addEventListener('change', () => {
-  if (!isPermissionMode(permissionEl.value)) return
-  state.permissionMode = permissionEl.value
-  saveSessionSettingsSoon()
+sessionTrigger.addEventListener('click', () => {
+  setSessionMenuOpen(!isSessionMenuOpen())
 })
 
-modelEl.addEventListener('input', () => {
-  state.model = modelEl.value.trim()
-  saveSessionSettingsSoon()
-})
-
-taskModeEl.addEventListener('change', () => {
-  if (isTaskMode(taskModeEl.value)) state.taskMode = taskModeEl.value
-})
-
-sessionEl.addEventListener('change', () => {
-  if (guardRunning()) {
-    sessionEl.value = state.session?.summary.id ?? ''
-    return
-  }
-  if (sessionEl.value) void openSession(sessionEl.value)
+// 点面板其它地方收起会话菜单；点菜单内部（选会话 / 删除）由各自处理器负责
+document.addEventListener('click', event => {
+  if (!isSessionMenuOpen()) return
+  if (event.target instanceof Node && sessionGroup.contains(event.target)) return
+  closeSessionMenu()
 })
 
 newSessionEl.addEventListener('click', () => {
@@ -1009,23 +1190,52 @@ newSessionEl.addEventListener('click', () => {
     showBanner(NO_PROVIDER_MESSAGE)
     return
   }
+  closeSessionMenu()
   void createSession().catch(err => showBanner(errorText(err)))
 })
 
-byId('delete-session').addEventListener('click', () => {
-  if (guardRunning()) return
-  if (!state.session) return
-  if (!window.confirm('删除这个会话及其附件/产物？')) return
-  const sessionId = state.session.summary.id
-  void request('session.delete', { sessionId })
-    .then(() => {
-      state.session = null
-      messagesEl.replaceChildren()
-      attachmentsEl.replaceChildren()
-    })
-    .catch(err => showBanner(errorText(err)))
-})
+/**
+ * 「添加本文档」：把当前打开的文档快照成一条普通附件。
+ *
+ * 会话不绑定文档，文档只在用户主动点击时才作为本轮参数传进去。
+ */
+async function attachCurrentDocument(): Promise<void> {
+  if (!state.doc) {
+    showBanner('请先打开一个文档')
+    return
+  }
+  const name = state.doc.fileName
+  const existing = state.session?.attachments.find(
+    item => item.source === 'document' && item.name === name
+  )
+  // 按钮本身代表当前文档：已加入时再点就是移除
+  if (existing) {
+    await removeAttachment(existing)
+    return
+  }
+  if (!hasProvider()) {
+    showBanner(NO_PROVIDER_MESSAGE)
+    return
+  }
+  if (state.uploads.size > 0) {
+    showBanner('附件还在上传，请稍等')
+    return
+  }
+  try {
+    const sessionId = await ensureSession()
+    const result = await request<{ attachment: AttachmentMeta }>('doc.attach', { sessionId })
+    if (!state.session) return
+    if (!state.session.attachments.some(item => item.id === result.attachment.id)) {
+      state.session.attachments.push(result.attachment)
+    }
+    state.session.summary.attachmentCount = state.session.attachments.length
+    renderAttachments()
+  } catch (err) {
+    showBanner(errorText(err))
+  }
+}
 
+attachDocEl.addEventListener('click', () => void attachCurrentDocument())
 attachEl.addEventListener('click', () => {
   if (!hasProvider()) {
     showBanner(NO_PROVIDER_MESSAGE)
@@ -1037,6 +1247,13 @@ fileInput.addEventListener('change', () => {
   if (fileInput.files) void uploadFiles(fileInput.files).catch(err => showBanner(errorText(err)))
   fileInput.value = ''
 })
+
+peekBtn.addEventListener('mouseenter', () => void showPromptPeek())
+peekBtn.addEventListener('mouseleave', scheduleHidePromptPeek)
+peekBtn.addEventListener('focus', () => void showPromptPeek())
+peekBtn.addEventListener('blur', scheduleHidePromptPeek)
+peekEl.addEventListener('mouseenter', () => window.clearTimeout(peekHideTimer))
+peekEl.addEventListener('mouseleave', hidePromptPeek)
 
 sendEl.addEventListener('click', () => void sendTurn())
 stopEl.addEventListener('click', () => {
@@ -1074,15 +1291,26 @@ previewEl.addEventListener('click', event => {
   if (event.target === previewEl) previewEl.classList.add('hidden')
 })
 
-window.addEventListener('keydown', event => {
-  if (event.key === 'Escape') previewEl.classList.add('hidden')
+confirmOk.addEventListener('click', () => closeConfirm(true))
+confirmCancel.addEventListener('click', () => closeConfirm(false))
+confirmEl.addEventListener('click', event => {
+  // 点遮罩等于取消；点对话框内部不关
+  if (event.target === confirmEl) closeConfirm(false)
 })
 
-if (bootstrap.config && typeof bootstrap.config === 'object') {
-  // 初始配置由 init push 覆盖；这里只用于首屏尽早显示正确的权限模式
-  const config = bootstrap.config as Partial<SafeConfig>
-  if (config.mode && isPermissionMode(config.mode)) state.permissionMode = config.mode
-}
+window.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return
+  if (isConfirmOpen()) {
+    closeConfirm(false)
+    return
+  }
+  if (isSessionMenuOpen()) {
+    closeSessionMenu()
+    return
+  }
+  previewEl.classList.add('hidden')
+  hidePromptPeek()
+})
 
 renderHeader()
 renderMessages()

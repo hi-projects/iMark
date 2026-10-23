@@ -46,7 +46,7 @@ export interface ExtensionInstallInfo {
   registryUrl?: string | null
 }
 
-/** 宿主分组视图(浏览市场 → 扩展宿主) */
+/** 宿主分组视图(设置 → 扩展分配) */
 export interface ExtensionHostGroupView {
   /** 组号;isolated 模式下每个扩展一个组 */
   hostId: number
@@ -269,7 +269,7 @@ export interface ExtensionHostSettings {
   affinity: Record<string, number>
 }
 
-/** 「扩展宿主」页提交的变更 */
+/** 「扩展分配」页提交的变更 */
 export interface ExtensionHostSettingsPatch {
   mode?: ExtensionHostMode
   affinity?: Record<string, number>

@@ -3,18 +3,15 @@
  *
  * 模型、端点、令牌等 CLI 配置不在这里：它们唯一的事实是 Claude Code 自己的
  * ~/.claude/settings.json，由设置页的外部字段直接读写。这里只负责扩展怎么启动
- * CLI（可执行文件、隔离、超时、轮数、额外参数）。
+ * CLI（可执行文件、超时、轮数、额外参数）。
  */
 
 import * as imark from 'imark'
 
-export const SECTION = 'imark.claude-code'
-
-export type ClaudeIsolation = 'safe' | 'restricted' | 'off'
+const SECTION = 'imark.claude-code'
 
 export interface ClaudeConfig {
   command: string
-  isolation: ClaudeIsolation
   timeoutSec: number
   maxTurns: number
   extraArgs: string[]
@@ -25,7 +22,7 @@ export interface ClaudeConfigRead {
   warnings: string[]
 }
 
-/** 会改变 CLI 协议、权限或会话归属的参数：不允许通过 extraArgs 注入 */
+/** 会改变 CLI 协议、配置或会话归属的参数：不允许通过 extraArgs 注入 */
 const DENIED_EXTRA_ARGS = [
   '-p',
   '--print',
@@ -36,18 +33,7 @@ const DENIED_EXTRA_ARGS = [
   '--continue',
   '-c',
   '--fork-session',
-  '--tools',
-  '--allowedTools',
-  '--allowed-tools',
-  '--disallowedTools',
-  '--disallowed-tools',
-  '--permission-mode',
-  '--permission-prompts',
-  '--dangerously',
-  '--add-dir',
   '--model',
-  '--restricted',
-  '--safe-mode',
   '--verbose',
   '--include-partial-messages',
   '--max-budget-usd',
@@ -78,20 +64,21 @@ function text(value: unknown, fallback = ''): string {
 }
 
 function deniedArg(arg: string): boolean {
-  if (/bypassPermissions/i.test(arg)) return true
   return DENIED_EXTRA_ARGS.some(prefix => {
     if (arg === prefix) return true
-    // --model=sonnet / --permission-mode=... 也一样拒绝
+    // --model=sonnet / --session-id=... 也一样拒绝
     return prefix.startsWith('--') && arg.startsWith(`${prefix}=`)
   })
 }
 
-export function parseExtraArgs(raw: unknown): { args: string[]; warnings: string[] } {
-  if (typeof raw !== 'string' || !raw.trim()) return { args: [], warnings: [] }
+function parseExtraArgs(raw: unknown): { args: string[]; warnings: string[] } {
+  const items = Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === 'string')
+    : []
   const args: string[] = []
   const warnings: string[] = []
-  for (const line of raw.split(/\r?\n/)) {
-    const arg = line.trim()
+  for (const item of items) {
+    const arg = item.trim()
     if (!arg) continue
     if (deniedArg(arg)) {
       warnings.push(`已忽略不允许的额外参数：${arg}`)
@@ -104,17 +91,17 @@ export function parseExtraArgs(raw: unknown): { args: string[]; warnings: string
 
 export function readConfig(): ClaudeConfigRead {
   const config = imark.workspace.getConfiguration(SECTION)
-  const rawIsolation = text(config.get<string>('isolation', 'safe'), 'safe')
-  const isolation: ClaudeIsolation =
-    rawIsolation === 'restricted' || rawIsolation === 'off' ? rawIsolation : 'safe'
-  const parsedExtra = parseExtraArgs(config.get<string>('extraArgs', ''))
+  const parsedExtra = parseExtraArgs(config.get<unknown>('extraArgs', []))
 
   return {
     config: {
-      command: text(config.get<string>('command', '')),
-      isolation,
-      timeoutSec: clampInt(config.get<number>('timeoutSec', 300), 10, 1800, 300),
-      maxTurns: clampInt(config.get<number>('maxTurns', 24), 1, 100, 24),
+      // 自动检测时忽略手动路径，交给 spawn.ts 依次探测 CLI 与编辑器扩展自带的 binary
+      command:
+        config.get<string>('commandMode', 'auto') === 'manual'
+          ? text(config.get<string>('command', ''))
+          : '',
+      timeoutSec: clampInt(config.get<number>('timeoutSec', 3600), 10, 7200, 3600),
+      maxTurns: clampInt(config.get<number>('maxTurns', 300), 1, 1000, 300),
       extraArgs: parsedExtra.args
     },
     warnings: parsedExtra.warnings

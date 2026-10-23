@@ -28,6 +28,62 @@
     "configuration": {
       "title": "Claude Code",
       "properties": {
+        "imark.claude-code.commandMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "manual"],
+          "enumDescriptions": ["自动检测", "手动指定"],
+          "title": "Claude Code 可执行文件",
+          "description": "自动检测：依次查找 PATH、~/.local/bin，以及 VS Code / Insiders / Server、VSCodium、Cursor、Windsurf 扩展自带的 claude。手动指定：填写可执行文件的完整路径。",
+          "imark": {
+            "kind": "select",
+            "section": "Claude Code"
+          }
+        },
+        "imark.claude-code.command": {
+          "type": "string",
+          "default": "",
+          "title": "可执行文件路径",
+          "description": "手动指定时使用。可以填 claude / claude.exe / claude.cmd 的完整路径；留空会回退到自动检测。",
+          "imark": {
+            "kind": "text",
+            "section": "Claude Code",
+            "showWhen": { "key": "commandMode", "value": "manual" },
+            "placeholder": "例如 /usr/local/bin/claude"
+          }
+        },
+        "imark.claude-code.effort": {
+          "type": "string",
+          "default": "",
+          "title": "推理强度",
+          "description": "写入 env.CLAUDE_CODE_EFFORT_LEVEL。留空表示不设置，由 CLI 自己决定。",
+          "imark": {
+            "kind": "external",
+            "section": "Claude Code（settings.json）",
+            "file": "~/.claude/settings.json",
+            "dirEnv": "CLAUDE_CONFIG_DIR",
+            "pointer": "/env/CLAUDE_CODE_EFFORT_LEVEL",
+            "options": [
+              { "value": "low", "label": "low" },
+              { "value": "medium", "label": "medium" },
+              { "value": "high", "label": "high" },
+              { "value": "xhigh", "label": "xhigh" },
+              { "value": "max", "label": "max" },
+              { "value": "auto", "label": "auto" }
+            ]
+          }
+        },
+        "imark.claude-code.extraArgs": {
+          "type": "array",
+          "default": [],
+          "title": "额外参数",
+          "description": "每项一个参数，按顺序追加到 claude 命令行。会拒绝改变协议、配置或会话归属的参数（如 -p、--output-format、--session-id）。",
+          "imark": {
+            "kind": "list",
+            "section": "Claude Code",
+            "placeholder": "输入一个参数，例如 --debug"
+          }
+        },
         "imark.claude-code.baseUrl": {
           "type": "string",
           "default": "",
@@ -76,7 +132,7 @@
           "type": "string",
           "default": "",
           "title": "默认模型",
-          "description": "写入 env.ANTHROPIC_MODEL，作为 CLI 的默认模型。对话面板里选择 Sonnet/Opus/Haiku 或具体模型时会覆盖它。",
+          "description": "写入 env.ANTHROPIC_MODEL，作为 CLI 的默认模型；对话面板只读显示这个值，不提供模型选择。",
           "imark": {
             "kind": "external",
             "section": "Claude Code（settings.json）",
@@ -90,7 +146,7 @@
           "type": "string",
           "default": "",
           "title": "Opus 别名模型",
-          "description": "写入 env.ANTHROPIC_DEFAULT_OPUS_MODEL。对话面板选择 Opus 时映射到的模型 ID。",
+          "description": "写入 env.ANTHROPIC_DEFAULT_OPUS_MODEL。Claude Code 使用 Opus 别名时映射到的模型 ID。",
           "imark": {
             "kind": "external",
             "section": "Claude Code（settings.json）",
@@ -104,7 +160,7 @@
           "type": "string",
           "default": "",
           "title": "Sonnet 别名模型",
-          "description": "写入 env.ANTHROPIC_DEFAULT_SONNET_MODEL。对话面板选择 Sonnet 时映射到的模型 ID。",
+          "description": "写入 env.ANTHROPIC_DEFAULT_SONNET_MODEL。Claude Code 使用 Sonnet 别名时映射到的模型 ID。",
           "imark": {
             "kind": "external",
             "section": "Claude Code（settings.json）",
@@ -118,7 +174,7 @@
           "type": "string",
           "default": "",
           "title": "Haiku 别名模型",
-          "description": "写入 env.ANTHROPIC_DEFAULT_HAIKU_MODEL。对话面板选择 Haiku 时映射到的模型 ID。",
+          "description": "写入 env.ANTHROPIC_DEFAULT_HAIKU_MODEL。Claude Code 使用 Haiku 别名时映射到的模型 ID。",
           "imark": {
             "kind": "external",
             "section": "Claude Code（settings.json）",
@@ -142,54 +198,11 @@
             "placeholder": "例如 deepseek-flash"
           }
         },
-        "imark.claude-code.effort": {
-          "type": "string",
-          "default": "",
-          "title": "推理强度",
-          "description": "写入 env.CLAUDE_CODE_EFFORT_LEVEL。留空表示不设置，由 CLI 自己决定。",
-          "imark": {
-            "kind": "external",
-            "section": "Claude Code（settings.json）",
-            "file": "~/.claude/settings.json",
-            "dirEnv": "CLAUDE_CONFIG_DIR",
-            "pointer": "/env/CLAUDE_CODE_EFFORT_LEVEL",
-            "options": [
-              { "value": "low", "label": "low" },
-              { "value": "medium", "label": "medium" },
-              { "value": "high", "label": "high" },
-              { "value": "xhigh", "label": "xhigh" },
-              { "value": "max", "label": "max" },
-              { "value": "auto", "label": "auto" }
-            ]
-          }
-        },
-        "imark.claude-code.command": {
-          "type": "string",
-          "default": "",
-          "title": "Claude Code 可执行文件",
-          "description": "留空自动探测 PATH、~/.local/bin 与 VS Code 扩展内的 native binary。也可以填 claude / claude.exe / claude.cmd 的完整路径。",
-          "imark": {
-            "kind": "text",
-            "section": "扩展调用",
-            "placeholder": "留空自动探测"
-          }
-        },
-        "imark.claude-code.isolation": {
-          "type": "string",
-          "default": "safe",
-          "enum": ["safe", "restricted", "off"],
-          "title": "隔离",
-          "description": "safe：禁用 CLAUDE.md/技能/hooks 等自定义，保留 settings.json 的认证与模型；restricted：忽略用户 settings.json（第三方端点与令牌会失效）；off：完全交给 Claude Code 自己的设置。",
-          "imark": {
-            "kind": "select",
-            "section": "扩展调用"
-          }
-        },
         "imark.claude-code.timeoutSec": {
           "type": "number",
-          "default": 300,
+          "default": 3600,
           "minimum": 10,
-          "maximum": 1800,
+          "maximum": 7200,
           "title": "单轮超时（秒）",
           "description": "超过这个时间会终止 Agent 子进程；文档和会话不会改动。",
           "imark": {
@@ -199,25 +212,14 @@
         },
         "imark.claude-code.maxTurns": {
           "type": "number",
-          "default": 24,
+          "default": 300,
           "minimum": 1,
-          "maximum": 100,
+          "maximum": 1000,
           "title": "单轮最大工具轮数",
           "description": "Agent 单次回答最多允许多少个 assistant 轮次；超过后宿主会终止子进程。",
           "imark": {
             "kind": "number",
             "section": "扩展调用"
-          }
-        },
-        "imark.claude-code.extraArgs": {
-          "type": "string",
-          "default": "",
-          "title": "额外参数",
-          "description": "每行一个参数，追加到 claude 命令行。会拒绝会改变协议/权限/会话的参数（如 -p、--output-format、--dangerously-*）。",
-          "imark": {
-            "kind": "textarea",
-            "section": "扩展调用",
-            "rows": 3
           }
         }
       }

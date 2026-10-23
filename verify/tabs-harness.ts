@@ -22,7 +22,7 @@
 
 import { app, BrowserWindow, dialog, protocol } from 'electron'
 import { APP_VERSION } from './appVersion'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { registerIpc } from '../src/main/ipc'
@@ -399,6 +399,31 @@ async function main(): Promise<void> {
     check('重启后读到的就是保存过的内容', await contentHas(third, 'Y'))
     check('恢复后不是脏状态', await waitFor(third, `!document.querySelector('.tab-active')?.classList.contains('tab-dirty')`))
     await closeWindow(third)
+
+    // ------------------------------------------------------------------
+    console.log('\n【12】删除文件 → 它的标签一起消失,不留未命名页')
+    const fourth = await openWindow()
+    check('恢复出两个标签', await waitCount(fourth, 2))
+    dialogQueue.push(0) // 删除确认:移到回收站
+    check(
+      '点甲这一行的删除按钮',
+      await evalJs<boolean>(
+        fourth,
+        `(() => {
+          const row = [...document.querySelectorAll('.explorer-file')]
+            .find(e => e.getAttribute('title') === ${JSON.stringify(noteA)})
+          const btn = row?.querySelector('.explorer-item-actions button[title="删除"]')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`
+      )
+    )
+    check('甲的标签被关掉', await waitCount(fourth, 1) && (await tabLabels(fourth)).join(',') === '乙', (await tabLabels(fourth)).join(','))
+    check('没有留下未命名标签', !(await tabLabels(fourth)).some(l => l.startsWith('未命名')))
+    check('文件确实不在磁盘上', await access(noteA).then(() => false, () => true))
+    check('会话记忆同步移除甲', await waitSettings(s => JSON.stringify(s.openFiles) === JSON.stringify([noteB]) && s.lastFile === noteB))
+    await closeWindow(fourth)
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)

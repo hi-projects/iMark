@@ -93,6 +93,7 @@ import type {
   ThemeDto,
   WebviewPanelCreateResult,
   WebviewPanelStateDto,
+  WebviewPanelStatusDto,
   WebviewPresentationDto
 } from '@shared/extensionProtocol'
 
@@ -886,6 +887,17 @@ class HostWebviewPanel implements WebviewPanel {
     },
     setPosition: (anchor: WebviewPanelStateDto['anchor']): void => {
       this.sendPresentation({ anchor })
+    },
+    setStatus: (status: WebviewPanelStatusDto): void => {
+      // 状态是瞬时信息，不进面板记录之外的任何地方；main 只负责转给 renderer
+      this.whenReady(() => {
+        this.runtime.send({
+          kind: 'webview.setStatus',
+          extensionId: this.ext.id,
+          panelId: this.panelId!,
+          status
+        })
+      })
     }
   }
 

@@ -58,6 +58,15 @@ body {
   height: 0;
 }
 
+/*
+ * number 输入框的原生加减按钮默认按浅色 UA 控件画,在深色主题里是一块白底方块。
+ * 让控件跟随主题着色即可去掉白底;不要给 spin button 设 background: transparent,
+ * 那会把箭头本身也一起画没(Chromium/Linux 实测)。
+ */
+:root[data-theme='dark'] input[type='number'] {
+  color-scheme: dark;
+}
+
 ::-webkit-scrollbar-corner {
   background: transparent;
 }

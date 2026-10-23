@@ -71,7 +71,7 @@ function clearSecret(targetId: string): void {
   emit('clear-secret', targetId)
 }
 
-/** Azure 的部署名在地址路径里，模型可以留空；判定与主进程的 detectProvider 对齐 */
+/** Azure 的部署名在地址路径里，模型可以留空 */
 function isAzureEndpoint(url: string): boolean {
   const text = url.trim()
   return (

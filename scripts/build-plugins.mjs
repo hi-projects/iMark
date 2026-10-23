@@ -96,6 +96,31 @@ function collectStatic(dir, base = dir, out = []) {
   return out
 }
 
+/**
+ * Agent Core 的对话面板要渲染 KaTeX 公式，但 webview 是独立文档，拿不到渲染层的
+ * 样式与字体。这里直接从依赖里取 katex.min.css 与 woff2 字体打进扩展包：
+ * 面板用 asWebviewUri 引用，CSP 的同源 style/font 规则就能放行。
+ *
+ * 只带 woff2（Chromium/Electron 都支持）；CSS 里 woff/ttf 的回退地址保留，
+ * 正常不会请求。
+ */
+function katexAssets() {
+  const dist = join(ROOT, 'node_modules', 'katex', 'dist')
+  if (!existsSync(join(dist, 'katex.min.css'))) return {}
+  const out = {}
+  const css = readFileSync(join(dist, 'katex.min.css'), 'utf8').replace(
+    /url\((['"]?)fonts\//g,
+    'url($1katex/fonts/'
+  )
+  out['webview/katex/katex.min.css'] = Buffer.from(css, 'utf8')
+  const fontsDir = join(dist, 'fonts')
+  for (const name of readdirSync(fontsDir)) {
+    if (!name.endsWith('.woff2')) continue
+    out[`webview/katex/fonts/${name}`] = readFileSync(join(fontsDir, name))
+  }
+  return out
+}
+
 function collectTopLevel(dir, suffix) {
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter(name => name.endsWith(suffix) && !name.startsWith('_'))
@@ -154,6 +179,37 @@ async function bundleWebviewEntry(source) {
   return buf
 }
 
+/**
+ * 把 core/prompt.ts 的 SYSTEM_PROMPT 注入清单里的系统提示词默认值。
+ *
+ * 走 esbuild + data: URL 而不是从打包产物里抠字符串：提示词里可能含反引号、
+ * `${}` 或转义,只有真正执行模块才拿得到准确的运行时值。
+ */
+async function injectAgentSystemPrompt(manifest) {
+  const result = await esbuild.build({
+    entryPoints: [join(SRC, 'agent/core/prompt.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    write: false,
+    logLevel: 'silent',
+    charset: 'utf8'
+  })
+  const code = result.outputFiles[0].text
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(code, 'utf8').toString('base64')}`)
+  const prompt = String(mod.SYSTEM_PROMPT ?? '').trim()
+  if (!prompt) throw new Error('imark.agent: core/prompt.ts 没有导出可用的 SYSTEM_PROMPT')
+
+  const configuration = manifest.contributes?.configuration
+  const sections = Array.isArray(configuration) ? configuration : configuration ? [configuration] : []
+  const property = sections
+    .map(section => section?.properties?.['imark.agent.systemPrompt'])
+    .find(Boolean)
+  if (!property) throw new Error('imark.agent: 清单缺少 imark.agent.systemPrompt 配置项')
+  property.default = prompt
+}
+
 async function buildOne(dirName, shared) {
   const dir = join(SRC, dirName)
   const raw = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
@@ -167,6 +223,11 @@ async function buildOne(dirName, shared) {
   const manifest = checked.value
   const id = shared.extensionIdOf(manifest)
   const entry = shared.entryFileOf(manifest)
+
+  // Agent Core 的系统提示词只有一个真身:core/prompt.ts 的 SYSTEM_PROMPT。
+  // 清单里这一项不写死文本,打包时把默认值注进去 —— 设置页展示的、以及「恢复默认」
+  // 写回的值,始终等于实际拼进每轮 prompt 的那段规则。
+  if (id === 'imark.agent') await injectAgentSystemPrompt(manifest)
 
   /** 包内路径 → 字节 */
   const contents = {}
@@ -186,6 +247,9 @@ async function buildOne(dirName, shared) {
   for (const rel of collectStatic(dir)) {
     contents[rel] = readFileSync(join(dir, rel))
   }
+
+  // 面板里的数学公式需要 KaTeX 的样式与字体（来源是应用依赖，不手抄）
+  if (id === 'imark.agent') Object.assign(contents, katexAssets())
 
   // 包内路径与体积
   const files = {}

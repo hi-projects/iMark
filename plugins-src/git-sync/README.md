@@ -31,14 +31,14 @@
 
 ## 网络代理
 
-git 用的 libcurl **不会读取 Windows 的「系统代理」**，所以会出现一个很迷惑的状态：
+git 用的 libcurl **不会读取操作系统的「系统代理」**，所以会出现一个很迷惑的状态：
 浏览器能打开 GitHub，这个扩展的「测试连接」却一直超时。
 
 扩展设置里的「网络代理」只决定**怎么找代理**，找到就用，找不到就直连：
 
 | 连接方式 | 行为 |
 |---|---|
-| 自动检测本机代理（默认） | 先看 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，再读 Windows 系统代理（Clash、FlClash 等客户端开启「系统代理」时写入的同一个设置） |
+| 自动检测本机代理（默认） | 先看 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，再读系统代理：Windows 读注册表的 Internet Settings，Linux 读 GNOME 的 gsettings（Clash、FlClash 等客户端开启「系统代理」时写的就是这两处） |
 | 手动指定代理 | 使用下面填写的地址，支持 `http://`、`https://`、`socks5://`；地址为空或无法识别时按直连处理 |
 
 直连是两种方式的默认兜底，不需要单独开关。
@@ -60,6 +60,6 @@ git 用的 libcurl **不会读取 Windows 的「系统代理」**，所以会出
 
 ## 关于权限
 
-这个扩展的 **main 层是 node 模式**，在 iMark 主进程里运行，需要 `git`、`secrets`、`vault:read`、`vault:write` 四项权限，
+这个扩展的 **main 层是 node 模式**，在 iMark 主进程里运行，需要 `filesystem: user`、`network`、`secrets`、`git`、`process` 五项能力，
 也就是说它具备与本应用相同的文件读写能力。它对密钥的使用方式是只读的，且只能读到自己的密钥，
 但 node main 本身拥有完整 Node 权限、**不是沙箱** —— 请只安装你信任来源的扩展。

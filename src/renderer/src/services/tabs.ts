@@ -503,22 +503,17 @@ export function renameTabPaths(from: string, to: string, isDir: boolean): void {
 }
 
 /**
- * 文件/目录被删除后,受影响的标签转为「未保存的未命名文档」(内容保留)。
- * 删除的是磁盘上的文件,不是用户正在看的文字。
+ * 文件/目录被删除后,直接关掉盯着它的标签。
+ *
+ * 以前这里把标签转成「未保存的未命名文档」保留内容,但用户删文件就是不想再
+ * 看到它 —— 留下一串带改动标记的「未命名 N」既占标签栏,又暗示还有东西待保存。
+ * 删除是用户已经确认过的动作,标签跟着一起消失才符合预期。
  */
-export function detachDeletedPath(path: string, isDir: boolean): void {
-  let changed = false
-  for (const tab of appStore.tabs) {
-    if (!tab.filePath) continue
-    if (!isInside(path, tab.filePath) || (!isDir && tab.filePath !== path)) continue
-    const text = stateOf(tab.id)?.doc.toString() ?? ''
-    tab.filePath = null
-    tab.fileName = '未命名'
-    tab.savedContent = ''
-    tab.dirty = text.length > 0
-    changed = true
-  }
-  if (changed) persistSession()
+export function closeDeletedPath(path: string, isDir: boolean): void {
+  const doomed = appStore.tabs.filter(
+    tab => tab.filePath !== null && isInside(path, tab.filePath) && (isDir || tab.filePath === path)
+  )
+  for (const tab of doomed) closeTabNow(tab.id)
 }
 
 // ---------- 会话持久化 ----------

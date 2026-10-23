@@ -1,10 +1,10 @@
 /**
  * 本机代理探测 —— 给 git 的网络操作找一条能出去的路。
  *
- * 为什么需要这一层:Windows 的「系统代理」是 WinINET 的设置,浏览器会读,
- * 而 git 用的 libcurl **不读它**。于是会出现一个很迷惑的状态:
- * 浏览器能打开 GitHub,扩展的「测试连接」却一律超时。
- * 这里把同一份设置查出来,通过 `-c http.proxy=…` 显式交给 git。
+ * 为什么需要这一层:操作系统里的「系统代理」浏览器会读,而 git 用的 libcurl
+ * **不读它**。于是会出现一个很迷惑的状态:浏览器能打开 GitHub,扩展的
+ * 「测试连接」却一律超时。这里把系统代理查出来(Windows 注册表 / Linux GNOME
+ * gsettings),通过 `-c http.proxy=…` 显式交给 git。
  *
  * 只依赖 Node 内置模块(扩展独立打包,除 Node 与注入的 imk 外什么都 require 不到)。
  */
@@ -27,6 +27,9 @@ export type ProxyMode = 'auto' | 'manual'
 
 const WINDOWS_INTERNET_SETTINGS =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
+
+/** GNOME 的系统代理 schema;gsettings 会把 http/https/socks 各存一份 */
+const GNOME_PROXY_SCHEMA = 'org.gnome.system.proxy'
 
 /** 给 `host:port` 补上协议;系统代理项里通常没有协议前缀 */
 function withScheme(hostPort: string, fallback: 'http' | 'socks5'): string {
@@ -255,9 +258,145 @@ export async function windowsSystemProxy(scheme: 'http' | 'https'): Promise<Dete
   return { url, source: 'Windows 系统代理', bypass }
 }
 
-/** 自动模式:先看显式环境变量,再读 Windows 系统代理 */
+// ---------- Linux(GNOME) ----------
+
+/** GNOME 系统代理设置,已从 gsettings 的输出里解析出来 */
+export interface GnomeProxySettings {
+  /** none / manual / auto;只有 manual 能直接得到地址(auto 是 PAC,这里不解析) */
+  mode: string
+  /** GNOME 的「所有协议使用同一个代理」 */
+  useSameProxy: boolean
+  /** ignore-hosts,语义与 NO_PROXY 接近 */
+  ignoreHosts: string[]
+  /** 各协议的代理地址(已归一成 http:// / socks5://),没配为 null */
+  http: string | null
+  https: string | null
+  socks: string | null
+}
+
+/** GVariant 的单引号字符串:`'127.0.0.1'`,里面可能有 `\'` 转义 */
+function gvariantString(raw: string): string {
+  const text = raw.trim()
+  if (text.startsWith("'") && text.endsWith("'")) {
+    return text.slice(1, -1).replace(/\\([\\'])/g, '$1')
+  }
+  return text
+}
+
+/** `['localhost', '127.0.0.0/8', '::1']` → 字符串数组 */
+function gvariantStringArray(raw: string): string[] {
+  const out: string[] = []
+  for (const m of String(raw).matchAll(/'((?:\\.|[^'\\])*)'/g)) {
+    out.push(m[1]!.replace(/\\([\\'])/g, '$1'))
+  }
+  return out
+}
+
+/** 把 GNOME 分开存的 host / port 拼成 URL;IPv6 裸地址要补方括号 */
+function gnomeAddress(host: string, port: string, protocol: 'http' | 'socks5'): string | null {
+  const h = gvariantString(host)
+  const p = Number(gvariantString(port))
+  if (!h || !Number.isInteger(p) || p <= 0 || p > 65535) return null
+  const bracketed = h.includes(':') && !h.startsWith('[') ? `[${h}]` : h
+  return `${protocol}://${bracketed}:${p}`
+}
+
+/**
+ * 解析 `gsettings list-recursively org.gnome.system.proxy`。
+ *
+ * 真实输出形如(每行 `schema key value`):
+ *   org.gnome.system.proxy mode 'manual'
+ *   org.gnome.system.proxy use-same-proxy false
+ *   org.gnome.system.proxy ignore-hosts ['localhost', '127.0.0.0/8', '::1']
+ *   org.gnome.system.proxy.http host '127.0.0.1'
+ *   org.gnome.system.proxy.http port 7890
+ *   ...
+ */
+export function parseGnomeProxy(output: string): GnomeProxySettings | null {
+  const values = new Map<string, string>()
+  for (const line of String(output).split(/\r?\n/)) {
+    const m = /^org\.gnome\.system\.proxy(?:\.(http|https|socks))?[ \t]+(\S+)[ \t]+(.*)$/.exec(
+      line.trimEnd()
+    )
+    if (!m?.[2]) continue
+    values.set(m[1] ? `${m[1]}.${m[2]}` : m[2], (m[3] ?? '').trim())
+  }
+  if (values.size === 0) return null
+
+  const addressOf = (group: 'http' | 'https' | 'socks'): string | null =>
+    gnomeAddress(
+      values.get(`${group}.host`) ?? '',
+      values.get(`${group}.port`) ?? '',
+      group === 'socks' ? 'socks5' : 'http'
+    )
+
+  return {
+    mode: gvariantString(values.get('mode') ?? '').toLowerCase(),
+    useSameProxy: gvariantString(values.get('use-same-proxy') ?? '') === 'true',
+    ignoreHosts: gvariantStringArray(values.get('ignore-hosts') ?? ''),
+    http: addressOf('http'),
+    https: addressOf('https'),
+    socks: addressOf('socks')
+  }
+}
+
+/**
+ * 从 GNOME 设置里挑出当前协议该用的代理。
+ *
+ * 顺序:开了「所有协议同一代理」时用 http 项;否则先看本协议,再退回 http
+ * (Clash / FlClash 的混合端口通常只写在 http / https 两项里),最后才用 socks。
+ */
+export function proxyFromGnome(
+  settings: GnomeProxySettings,
+  scheme: 'http' | 'https'
+): DetectedProxy | null {
+  if (settings.mode !== 'manual') return null
+  const candidates: (string | null)[] = settings.useSameProxy
+    ? [settings.http, settings[scheme], settings.socks]
+    : [settings[scheme], settings.http, settings.socks]
+  const url = candidates.find((item): item is string => Boolean(item))
+  if (!url) return null
+  const bypass = [
+    ...settings.ignoreHosts,
+    ...parseNoProxy(process.env.NO_PROXY ?? process.env.no_proxy)
+  ]
+  if (bypass.includes('*')) return null
+  return { url, source: 'Linux 系统代理（GNOME）', bypass }
+}
+
+function queryGnomeProxy(): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile(
+      'gsettings',
+      ['list-recursively', GNOME_PROXY_SCHEMA],
+      { timeout: 3000, maxBuffer: 1024 * 1024 },
+      (err, stdout) => resolve(err ? null : String(stdout ?? ''))
+    )
+  })
+}
+
+/**
+ * Linux 的系统代理。
+ *
+ * 桌面端 Clash / FlClash 开启「系统代理」时写的是 GNOME 的 gsettings
+ * (KDE 写 kioslaverc,这里不读)。读不到 gsettings 或模式不是 manual 时返回 null。
+ */
+export async function linuxSystemProxy(
+  scheme: 'http' | 'https'
+): Promise<DetectedProxy | null> {
+  if (process.platform !== 'linux') return null
+  const output = await queryGnomeProxy()
+  const settings = output ? parseGnomeProxy(output) : null
+  return settings ? proxyFromGnome(settings, scheme) : null
+}
+
+/** 自动模式:先看显式环境变量,再读 Windows / Linux 的系统代理 */
 export async function detectSystemProxy(scheme: 'http' | 'https'): Promise<DetectedProxy | null> {
-  return proxyFromEnvironment(scheme) ?? (await windowsSystemProxy(scheme))
+  return (
+    proxyFromEnvironment(scheme) ??
+    (await windowsSystemProxy(scheme)) ??
+    (await linuxSystemProxy(scheme))
+  )
 }
 
 /** 代理端口是否真的有人监听 —— 「检测本机代理」用它区分「配置了」和「能连上」 */

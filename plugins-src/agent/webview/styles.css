@@ -57,44 +57,6 @@ button {
   flex: none;
 }
 
-.agent-brand {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-  user-select: none;
-}
-
-.agent-brand b {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.agent-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success, #4caf50);
-  flex: none;
-}
-
-.agent-dot.is-running {
-  background: var(--accent, #4c8dff);
-  animation: agent-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes agent-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.8);
-  }
-}
-
 .agent-controls {
   display: flex;
   flex-wrap: wrap;
@@ -102,8 +64,7 @@ button {
   gap: 5px;
 }
 
-.agent-select,
-.agent-model {
+.agent-select {
   height: 26px;
   border: 1px solid var(--border, #3a3a3a);
   border-radius: 5px;
@@ -114,7 +75,6 @@ button {
 }
 
 .agent-select:focus,
-.agent-model:focus,
 .agent-input:focus {
   border-color: var(--accent, #4c8dff);
 }
@@ -127,21 +87,134 @@ button {
   max-width: 130px;
 }
 
-#permission {
-  max-width: 118px;
+/* 模型不是可选项：只显示后端配置文件里的默认模型名 */
+.agent-model-label {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text-secondary, #aaa);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-#task-mode {
-  max-width: 92px;
+/* 会话控件固定在头部行右端：后端/模型在左，会话与新建在右 */
+.agent-session-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-left: auto;
 }
 
-.agent-model {
-  width: 130px;
-}
-
-.agent-session {
-  flex: 1 1 120px;
+.agent-session-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  min-width: 96px;
   max-width: 220px;
+  padding: 0 6px 0 8px;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 5px;
+  background: var(--bg-editor, #252526);
+  color: var(--text-primary, #ddd);
+  font-size: 12px;
+  text-align: left;
+}
+
+.agent-session-trigger:hover {
+  background: var(--bg-hover, #2f2f2f);
+}
+
+.agent-session-trigger:disabled {
+  opacity: 0.55;
+}
+
+.agent-session-trigger:focus-visible {
+  border-color: var(--accent, #4c8dff);
+  outline: none;
+}
+
+.agent-session-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-caret {
+  flex: none;
+  color: var(--text-tertiary, #888);
+  font-size: 10px;
+}
+
+.agent-session-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 900;
+  width: min(260px, calc(100vw - 24px));
+  max-height: 280px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 6px;
+  background: var(--bg-panel, #1e1e1e);
+  box-shadow: var(--shadow, 0 10px 30px rgba(0, 0, 0, 0.45));
+}
+
+.agent-session-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+}
+
+.agent-session-item:hover {
+  background: var(--bg-hover, #2f2f2f);
+}
+
+.agent-session-item.is-current {
+  background: color-mix(in srgb, var(--accent, #4c8dff) 16%, transparent);
+}
+
+.agent-session-name {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary, #888);
+}
+
+.agent-session-delete:hover {
+  color: var(--danger, #e5534b);
+  background: color-mix(in srgb, var(--danger, #e5534b) 18%, transparent);
 }
 
 .agent-icon {
@@ -208,7 +281,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  scrollbar-width: thin;
 }
 
 .agent-msg {
@@ -232,8 +304,32 @@ button {
   border-radius: 9px;
   background: var(--bg-active, #2a3d5c);
   color: var(--text-primary, #ddd);
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-msg.user .agent-user-text {
+  white-space: pre-wrap;
+}
+
+/* 这条消息一起发出的附件；发完就从输入框下方的待发区消失 */
+.agent-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.agent-msg-attachment {
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--text-primary, #ddd);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .agent-msg.assistant .agent-body {
@@ -248,14 +344,167 @@ button {
   user-select: none;
 }
 
+/* 运行中的加载指示：思考/工具间歇期也能确认没有卡死 */
+.agent-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px 2px;
+  color: var(--text-tertiary, #888);
+  font-size: 12px;
+}
+
+.agent-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: var(--accent, #4c8dff);
+  border-radius: 50%;
+  animation: agent-spin 0.8s linear infinite;
+}
+
+@keyframes agent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .agent-text {
   white-space: pre-wrap;
   word-break: break-word;
   min-height: 1px;
 }
 
+/* 助手回复与用户输入一样有底框；元信息（工具/产物/操作）留在框外 */
 .agent-msg.assistant .agent-text {
   white-space: normal;
+  padding: 9px 11px;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 9px;
+  background: var(--bg-editor, #252526);
+  /* 与编辑器正文同一套字号/行高（变量由宿主注入） */
+  font-size: var(--editor-font-size, 13px);
+  line-height: 1.9;
+}
+
+/* 工具活动在回答框上方；空容器（流式刚开始、还没调工具）不占高度 */
+.agent-msg.assistant .agent-tools-wrap:not(:empty) {
+  margin: 7px 0 8px;
+}
+
+.agent-msg.assistant .agent-tools-wrap .agent-tools {
+  margin-top: 0;
+}
+
+/*
+ * Markdown 渲染结果的排版。
+ *
+ * 文档里的「所见即所得」是 CodeMirror 的装饰实现，不是 HTML，没法直接复用；
+ * 这里沿用 editor.css 的同一套度量与主题变量，让两处的标题、表格、代码块、
+ * 引用看起来一致。改 editor.css 里对应的数值时记得同步这里。
+ */
+.agent-text > :first-child {
+  margin-top: 0;
+}
+.agent-text > :last-child {
+  margin-bottom: 0;
+}
+.agent-text h1,
+.agent-text h2,
+.agent-text h3,
+.agent-text h4,
+.agent-text h5,
+.agent-text h6 {
+  margin: 1em 0 0.35em;
+  font-size: 1.125em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.agent-text h6 {
+  color: var(--text-secondary);
+}
+.agent-text p {
+  margin: 0 0 0.75em;
+}
+.agent-text ul,
+.agent-text ol {
+  margin: 0.4em 0 0.75em;
+  padding-left: 1.6em;
+}
+.agent-text li {
+  margin: 0.15em 0;
+}
+.agent-text blockquote {
+  margin: 0.7em 0;
+  padding: 0 0 0 1em;
+  border-left: 2px solid var(--quote-bar, var(--border, #3a3a3a));
+  color: var(--text-secondary);
+}
+.agent-text a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.agent-text hr {
+  margin: 1.1em 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.agent-text img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.agent-text code {
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: var(--bg-code, #2a2a2a);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+.agent-text pre {
+  margin: 0.8em 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-codeblock, #2a2a2a);
+  overflow-x: auto;
+}
+.agent-text pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.92em;
+}
+.agent-text table {
+  margin: 0.9em 0;
+  border-collapse: collapse;
+  font-family: var(--font-text);
+  font-size: 0.95em;
+  line-height: 1.45;
+}
+.agent-text th,
+.agent-text td {
+  min-width: 110px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+.agent-text th {
+  background: var(--bg-codeblock);
+  font-weight: 600;
+}
+.agent-text .mermaid-diagram {
+  margin: 0.9em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.agent-text .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.agent-text .katex-block {
+  margin: 1.2em 0;
+  overflow-x: auto;
 }
 
 .agent-msg.assistant .agent-text:empty {
@@ -465,10 +714,17 @@ button {
 
 .agent-attachments {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 5px;
-  padding: 0 12px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.agent-attachments::-webkit-scrollbar {
+  display: none;
 }
 
 .agent-attachments:empty {
@@ -479,6 +735,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex: none;
   max-width: 100%;
   padding: 3px 7px;
   border: 1px solid var(--border, #3a3a3a);
@@ -521,6 +778,7 @@ button {
 /* ---------- 输入区 ---------- */
 
 .agent-composer {
+  position: relative;
   flex: none;
   padding: 8px 12px 10px;
   border-top: 1px solid var(--border, #333);
@@ -536,10 +794,15 @@ button {
 }
 
 .agent-attach {
+  flex: none;
+  max-width: 100%;
   height: 24px;
   padding: 0 8px;
   border: 1px solid var(--border, #3a3a3a);
   border-radius: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: var(--bg-editor, #252526);
   color: var(--text-secondary, #aaa);
   font-size: 11px;
@@ -551,14 +814,14 @@ button {
   color: var(--text-primary, #ddd);
 }
 
-.agent-doc {
-  margin-left: auto;
-  max-width: 55%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-tertiary, #888);
-  font-size: 11px;
+/* 文档按钮直接显示当前文档名；已加入时高亮，再点即移除 */
+.agent-attach-doc {
+  max-width: 42%;
+}
+
+.agent-attach-doc.is-added {
+  border-color: var(--accent, #4c8dff);
+  color: var(--accent, #4c8dff);
 }
 
 .agent-input {
@@ -625,6 +888,39 @@ button {
   background: color-mix(in srgb, var(--danger, #e5534b) 22%, transparent);
   border: 1px solid color-mix(in srgb, var(--danger, #e5534b) 45%, transparent);
   color: var(--text-primary, #ddd);
+}
+
+/* ---------- 提示词预览（发送按钮左边的 ⓘ） ---------- */
+
+.agent-peek-button {
+  color: var(--text-secondary, #aaa);
+  font-size: 13px;
+  cursor: default;
+}
+
+.agent-peek {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 8px;
+  background: var(--bg-editor, #252526);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+.agent-peek pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, #aaa);
 }
 
 .agent-stop:hover {
@@ -803,26 +1099,106 @@ button {
   line-height: 1.55;
 }
 
+/* ---------- 面板内确认框 ---------- */
+
+.agent-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.agent-confirm-box {
+  width: min(340px, 100%);
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+  background: var(--bg-panel, #1e1e1e);
+  box-shadow: var(--shadow, 0 12px 40px rgba(0, 0, 0, 0.45));
+  padding: 14px 16px;
+}
+
+.agent-confirm-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary, #ddd);
+  word-break: break-word;
+}
+
+.agent-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.agent-confirm-btn {
+  height: 27px;
+  padding: 0 14px;
+  border: 1px solid var(--border, #3a3a3a);
+  border-radius: 5px;
+  background: var(--bg-editor, #252526);
+  color: var(--text-primary, #ddd);
+  font-size: 12px;
+}
+
+.agent-confirm-btn:hover {
+  background: var(--bg-hover, #2f2f2f);
+}
+
+.agent-confirm-btn.is-danger {
+  border-color: color-mix(in srgb, var(--danger, #e5534b) 45%, transparent);
+  background: color-mix(in srgb, var(--danger, #e5534b) 22%, transparent);
+}
+
+.agent-confirm-btn.is-danger:hover {
+  background: color-mix(in srgb, var(--danger, #e5534b) 32%, transparent);
+}
+
 /* ---------- 滚动条 ---------- */
 
-.agent-messages::-webkit-scrollbar,
-.agent-preview-body::-webkit-scrollbar,
-.agent-thinking-text::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/*
+ * 与主窗口 base.css 同一套外观：11px 轨道、透明底、3px 透明边框收窄出的
+ * 胶囊形拇指；颜色走主题变量（由宿主注入），不再用浏览器默认的白底箭头。
+ */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+  background: transparent;
 }
 
-.agent-messages::-webkit-scrollbar-thumb,
-.agent-preview-body::-webkit-scrollbar-thumb,
-.agent-thinking-text::-webkit-scrollbar-thumb {
-  border-radius: 4px;
-  background: var(--scrollbar-thumb-bg, #555);
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-.agent-messages::-webkit-scrollbar-thumb:hover,
-.agent-preview-body::-webkit-scrollbar-thumb:hover,
-.agent-thinking-text::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-hover-thumb-bg, #777);
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-bg, #363636);
+  border-radius: 20px;
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  min-height: 45px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-hover-thumb-bg, #454545);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-active-thumb-bg, #595959);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* ---------- 窄面板 ---------- */
@@ -836,12 +1212,12 @@ button {
     gap: 4px;
   }
 
-  .agent-model {
-    width: 96px;
+  .agent-model-label {
+    max-width: 110px;
   }
 
-  .agent-session {
-    max-width: 100%;
+  .agent-session-trigger {
+    max-width: 150px;
   }
 
   .agent-messages {

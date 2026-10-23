@@ -111,6 +111,32 @@
   display: none;
 }
 
+/* 状态点：idle 绿、busy 强调色脉冲。由扩展通过 panel.imark.setStatus() 控制 */
+.webview-status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.webview-status-dot.is-busy {
+  background: var(--accent);
+  animation: webview-status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes webview-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
 .webview-title {
   flex: 1;
   min-width: 0;

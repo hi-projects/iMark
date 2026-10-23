@@ -662,17 +662,6 @@
 
 /* ---------- 市场(联网部分) ---------- */
 
-.market-tab-badge {
-  margin-left: 5px;
-  padding: 0 5px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--text-inverse);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 15px;
-}
-
 .market-search {
   display: flex;
   align-items: center;
@@ -1143,7 +1132,7 @@
   background: var(--bg-app);
 }
 
-/* ---------- 扩展分配(市场页「扩展分配」页签) ---------- */
+/* ---------- 扩展分配(设置 · 扩展分配页) ---------- */
 
 .market-hosts {
   display: flex;

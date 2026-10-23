@@ -6,9 +6,19 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readdir, rename, rm } from 'node:fs/promises'
-import { join } from 'node:path'
-import type { StagedAttachment } from './types'
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+  writeFile
+} from 'node:fs/promises'
+import { join, resolve } from 'node:path'
+import type { DocumentSnapshot, StagedAttachment } from './types'
 import type { AttachmentMeta, UploadBeginResult } from './protocol'
 import {
   CHUNK_BYTES,
@@ -87,8 +97,12 @@ function decodeBase64(value: string): Buffer {
 
 export class AttachmentStager {
   private readonly uploads = new Map<string, UploadRecord>()
+  /** 内容寻址的共享存储：同一份字节只存一次，各会话用硬链接引用 */
+  private readonly blobsDir: string
 
-  constructor(private readonly sessions: SessionStore) {}
+  constructor(private readonly sessions: SessionStore) {
+    this.blobsDir = resolve(sessions.rootPath, '..', 'blobs')
+  }
 
   async begin(input: BeginInput): Promise<UploadBeginResult> {
     const meta = await this.sessions.getMeta(input.sessionId)
@@ -180,7 +194,7 @@ export class AttachmentStager {
     const ordinal = meta.attachments.length + 1
     const storedName = await this.uniqueStoredName(record.sessionId, ordinal, record.name)
     const finalPath = join(this.sessions.attachmentsDir(record.sessionId), storedName)
-    await rename(record.partPath, finalPath)
+    await this.materialize(record.partPath, sha256, finalPath)
     this.uploads.delete(uploadId)
 
     const attachment: StagedAttachment = {
@@ -197,6 +211,51 @@ export class AttachmentStager {
     return { sessionId: record.sessionId, attachment }
   }
 
+  /**
+   * 把当前打开的文档作为一条普通附件暂存。
+   *
+   * 会话本身不绑定文档；只有用户点「添加本文档」时才把内容快照写进
+   * attachments/，之后和其它附件一样随某一条消息发出去。
+   */
+  async attachDocument(sessionId: string, snapshot: DocumentSnapshot): Promise<StagedAttachment> {
+    const meta = await this.sessions.getMeta(sessionId)
+    if (!meta) throw new Error('会话不存在')
+    const name = sanitizeFileName(snapshot.fileName || 'document.md')
+    const body = Buffer.from(snapshot.text, 'utf8')
+    const sha256 = createHash('sha256').update(body).digest('hex')
+    const duplicate = meta.attachments.find(
+      item => item.sha256 === sha256 && item.name === name
+    )
+    if (duplicate) return duplicate
+    if (meta.attachments.length >= MAX_ATTACHMENTS_PER_SESSION) {
+      throw new Error(`每个会话最多 ${MAX_ATTACHMENTS_PER_SESSION} 个附件`)
+    }
+
+    const used = new Set(meta.attachments.map(item => item.id))
+    let ordinal = meta.attachments.length + 1
+    while (used.has(`a${ordinal}`)) ordinal += 1
+    const storedName = await this.uniqueStoredName(sessionId, ordinal, name)
+    const finalPath = join(this.sessions.attachmentsDir(sessionId), storedName)
+    const attachment: StagedAttachment = {
+      id: `a${ordinal}`,
+      name,
+      storedName,
+      size: body.byteLength,
+      mime: 'text/markdown',
+      sha256,
+      kind: kindOf(name, 'text/markdown'),
+      path: finalPath,
+      source: 'document'
+    }
+    // 先写到临时文件，再走和普通附件相同的共享存储流程
+    const tmp = join(this.sessions.incomingDir(sessionId), `${randomUUID()}.part`)
+    await mkdir(this.sessions.incomingDir(sessionId), { recursive: true })
+    await writeFile(tmp, body)
+    await this.materialize(tmp, sha256, finalPath)
+    await this.sessions.addAttachment(sessionId, attachment)
+    return attachment
+  }
+
   async cancel(uploadId: string): Promise<void> {
     const record = this.uploads.get(uploadId)
     if (!record) return
@@ -207,9 +266,52 @@ export class AttachmentStager {
 
   async remove(sessionId: string, attachmentId: string): Promise<AttachmentMeta[]> {
     const removed = await this.sessions.removeAttachment(sessionId, attachmentId)
-    if (removed) await rm(removed.path, { force: true }).catch(() => undefined)
+    if (removed) {
+      await rm(removed.path, { force: true }).catch(() => undefined)
+      await this.releaseBlob(removed.sha256)
+    }
     const meta = await this.sessions.getMeta(sessionId)
     return meta ? attachmentsOf(meta) : []
+  }
+
+  /** 会话删除后回收不再被任何硬链接引用的共享 blob */
+  async gcAll(): Promise<void> {
+    const names = await readdir(this.blobsDir).catch(() => [])
+    for (const name of names) await this.releaseBlob(name)
+  }
+
+  /**
+   * 把临时文件变成「blob + 会话内硬链接」。
+   *
+   * 同一份内容在多个会话里只占一份磁盘；不支持硬链接的文件系统
+   * （FAT、部分网络盘等）退回到直接落一份副本。
+   */
+  private async materialize(source: string, sha256: string, finalPath: string): Promise<void> {
+    await mkdir(this.blobsDir, { recursive: true })
+    const blob = join(this.blobsDir, sha256)
+    try {
+      await link(source, blob)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST') {
+        await rename(source, finalPath)
+        return
+      }
+    }
+    await rm(source, { force: true }).catch(() => undefined)
+    try {
+      await link(blob, finalPath)
+    } catch {
+      await copyFile(blob, finalPath)
+    }
+  }
+
+  private async releaseBlob(sha256: string): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(sha256)) return
+    const blob = join(this.blobsDir, sha256)
+    const info = await lstat(blob).catch(() => null)
+    if (!info?.isFile() || info.nlink > 1) return
+    await rm(blob, { force: true }).catch(() => undefined)
   }
 
   async disposeAll(): Promise<void> {

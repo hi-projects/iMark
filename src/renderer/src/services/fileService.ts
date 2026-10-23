@@ -131,18 +131,6 @@ export async function openFileViaDialog(): Promise<void> {
 }
 
 /**
- * 打开系统递过来的文件(双击 .md / 资源管理器「打开方式」;见 main/openFile.ts)。
- *
- * 两种到达方式共用这里:启动参数(渲染层初始化完主动来取)与运行中的第二个实例
- * (主进程推事件)。停在仓库选择界面时**不处理** —— 那时没有编辑器实例,
- * 而把一个文件硬塞进「还没选仓库」的界面只会让状态说不清;用户先开仓库,再双击文件即可。
- */
-export async function openFileFromSystem(path: string): Promise<void> {
-  if (!editorHolder.view) return
-  await openFileByPath(path)
-}
-
-/**
  * 恢复上次会话:先恢复所有文件标签,再激活上次那一页。
  *
  * 规则:

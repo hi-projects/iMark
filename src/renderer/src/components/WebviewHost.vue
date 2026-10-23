@@ -254,6 +254,11 @@ function onClose(panelId: string): void {
         :data-extension-id="panel.extensionId"
       >
         <header class="webview-titlebar">
+          <span
+            class="webview-status-dot"
+            :class="{ 'is-busy': panel.status === 'busy' }"
+            aria-hidden="true"
+          ></span>
           <span class="webview-title" :title="panel.title">{{ panel.title }}</span>
           <button class="webview-close" title="关闭" @click="onClose(panel.panelId)">
             ×

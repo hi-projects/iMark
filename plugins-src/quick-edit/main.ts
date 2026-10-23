@@ -52,11 +52,6 @@ function buildTable(rows: number, cols: number): { text: string; cursorOffset: n
   return { text: lines.join('\n'), cursorOffset: 2 }
 }
 
-/** 分隔线/Setext 下划线这种行后面需要空行 */
-function eatsLineAbove(text: string): boolean {
-  return /^[-=]+\s*$/.test(text.split('\n', 1)[0] ?? '')
-}
-
 /** 该行是否属于一张表;是则返回这张表最后一行的 0 基行号 */
 function tableEndLine(document: imark.TextDocument, lineNumber: number): number | null {
   const line = document.lineAt(lineNumber)
@@ -89,7 +84,7 @@ async function insertTable(args: LineMenuArgs | undefined): Promise<void> {
   const at = document.lineAt(tableEnd === null ? lineIndex : tableEnd)
   const atOffset = document.offsetAt(at.range.end)
 
-  const lead = tableEnd === null && !eatsLineAbove(text) ? '\n' : '\n\n'
+  const lead = tableEnd === null ? '\n' : '\n\n'
   // 下一行本来就是空行时不再补:补了表格与正文之间会多出一条空行
   const next = at.lineNumber + 1 < document.lineCount ? document.lineAt(at.lineNumber + 1) : null
   const tail = next && next.text === '' ? '' : '\n'

@@ -2,8 +2,8 @@
  * Claude Code provider。
  *
  * 每次 send 启动一个 `claude -p --output-format stream-json` 子进程；首轮传
- * `--session-id`，后续传 `--resume`。provider 自己读取命令路径、模型、超时、
- * 隔离、额外参数与 API 密钥；Agent Core 只传通用会话参数。
+ * `--session-id`，后续传 `--resume`。provider 自己读取命令路径、超时、轮数
+ * 与额外参数；Agent Core 只传通用会话参数。
  */
 
 import type {
@@ -14,6 +14,9 @@ import type {
   AgentSession,
   AgentSessionOptions
 } from '@shared/agentProvider'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import * as imark from 'imark'
 import { buildClaudeArgs } from './claudeArgs'
 import { ClaudeEventMapper, classifyClaudeFailure } from './claudeStream'
@@ -36,20 +39,34 @@ const INFO: AgentProviderInfo = {
   label: 'Claude Code',
   description: '使用本机安装并登录的 Claude Code CLI；附件路径由扩展提供，Agent 自行读取/解析。',
   capabilities: {
-    roles: ['agent'],
     inputs: { image: 'path', pdf: 'path', file: 'path' },
     tools: { read: true, bash: true, write: true },
     streaming: true,
     thinking: true,
     resume: true,
     systemPrompt: true
-  },
-  models: [
-    { id: '', label: 'CLI 默认' },
-    { id: 'sonnet', label: 'Sonnet' },
-    { id: 'opus', label: 'Opus' },
-    { id: 'haiku', label: 'Haiku' }
-  ]
+  }
+}
+
+/**
+ * Claude Code 自己的默认模型（settings.json 里的 env.ANTHROPIC_MODEL）。
+ *
+ * 只用于在对话面板里展示；真正用哪个模型由 CLI 每次启动时读配置文件决定，
+ * provider 不传 `--model`，Core 也不保存模型。
+ */
+async function readDefaultModel(): Promise<string | undefined> {
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim()
+  const file = dir ? join(dir, 'settings.json') : join(homedir(), '.claude', 'settings.json')
+  try {
+    const raw = JSON.parse(await readFile(file, 'utf8')) as unknown
+    if (!raw || typeof raw !== 'object') return undefined
+    const env = (raw as { env?: unknown }).env
+    if (!env || typeof env !== 'object') return undefined
+    const model = (env as Record<string, unknown>).ANTHROPIC_MODEL
+    return typeof model === 'string' && model.trim() ? model.trim() : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function unavailable(message: string): Error & { code: 'provider-unavailable' } {
@@ -127,14 +144,9 @@ class ClaudeSession implements AgentSession {
     const queue = new AsyncQueue<AgentEvent>()
     const mapper = new ClaudeEventMapper()
     const args = buildClaudeArgs({
-      mode: this.options.mode,
-      isolation: this.config.isolation,
-      cwd: this.options.cwd,
       sessionId: this.currentProviderSessionId ? undefined : this.options.hostSessionId,
       resumeId: this.currentProviderSessionId,
-      model: this.options.model,
-      extraArgs: this.config.extraArgs,
-      availableCommands: this.options.availableCommands
+      extraArgs: this.config.extraArgs
     })
 
     let terminal = false
@@ -333,7 +345,9 @@ class ClaudeCodeProvider implements AgentProvider {
   async detect(): Promise<AgentDetection> {
     const { config, warnings } = readConfig()
     this.reportWarnings(warnings)
-    const key = `${config.command}|${config.timeoutSec}`
+    // 默认模型也参与缓存键：改了 settings.json 后，下一次探测立即返回新模型名
+    const defaultModel = await readDefaultModel()
+    const key = `${config.command}|${config.timeoutSec}|${defaultModel ?? ''}`
     if (
       this.cachedDetection &&
       this.cachedDetection.key === key &&
@@ -341,12 +355,14 @@ class ClaudeCodeProvider implements AgentProvider {
     ) {
       return this.cachedDetection.result
     }
+    const modelInfo = defaultModel ? { defaultModel } : {}
     let command: ResolvedCommand
     try {
       command = await resolveClaudeCommand(config.command)
     } catch (err) {
       const result: AgentDetection = {
         available: false,
+        ...modelInfo,
         error: {
           code: 'provider-unavailable',
           message: err instanceof Error ? err.message : String(err)
@@ -357,10 +373,11 @@ class ClaudeCodeProvider implements AgentProvider {
     }
     const version = await runVersion(command, Math.min(config.timeoutSec * 1000, VERSION_TIMEOUT_MS))
     const result: AgentDetection = version.ok
-      ? { available: true, version: version.version, executable: command.command }
+      ? { available: true, version: version.version, executable: command.command, ...modelInfo }
       : {
           available: false,
           executable: command.command,
+          ...modelInfo,
           error: {
             code: 'provider-error',
             message: version.detail || 'Claude Code 版本探测失败'

@@ -37,10 +37,12 @@ import {
 } from '../src/main/extensions/service'
 import {
   normalizeProxyUrl,
+  parseGnomeProxy,
   parseProxyOverride,
   parseRegQuery,
   parseWindowsProxyServer,
-  proxyForUrl
+  proxyForUrl,
+  proxyFromGnome
 } from '../plugins-src/git-sync/proxy'
 
 const run = promisify(execFile)
@@ -237,6 +239,102 @@ async function main(): Promise<void> {
       source: 't',
       bypass: parseProxyOverride('10.*;172.2*')
     }) === null
+  )
+
+  // ---------- 零之二、Linux GNOME 系统代理 ----------
+
+  console.log('\n【0b】GNOME 系统代理（gsettings）解析')
+  const gnomeOutput = [
+    "org.gnome.system.proxy autoconfig-url 'http://wpad.example/proxy.pac'",
+    "org.gnome.system.proxy ignore-hosts ['localhost', '127.0.0.0/8', '::1']",
+    "org.gnome.system.proxy mode 'manual'",
+    'org.gnome.system.proxy use-same-proxy false',
+    "org.gnome.system.proxy.http host '127.0.0.1'",
+    'org.gnome.system.proxy.http port 7890',
+    "org.gnome.system.proxy.https host '127.0.0.1'",
+    'org.gnome.system.proxy.https port 7891',
+    "org.gnome.system.proxy.socks host ''",
+    'org.gnome.system.proxy.socks port 0'
+  ].join('\n')
+  const gnome = parseGnomeProxy(gnomeOutput)
+  check('解析出 manual 与忽略列表', gnome?.mode === 'manual' && gnome.ignoreHosts.join(',') === 'localhost,127.0.0.0/8,::1', JSON.stringify(gnome))
+  check(
+    'http / https 各自取到地址（FlClash 混合端口）',
+    gnome?.http === 'http://127.0.0.1:7890' && gnome?.https === 'http://127.0.0.1:7891',
+    JSON.stringify([gnome?.http, gnome?.https])
+  )
+  const gnomeDetected = gnome ? proxyFromGnome(gnome, 'https') : null
+  check(
+    'HTTPS 远端使用 https 项，来源标明 GNOME',
+    gnomeDetected?.url === 'http://127.0.0.1:7891' && gnomeDetected.source === 'Linux 系统代理（GNOME）',
+    JSON.stringify(gnomeDetected)
+  )
+  check(
+    '忽略列表交给 NO_PROXY 语义（本机与回环仍直连）',
+    proxyForUrl('http://127.0.0.1:9/x', gnomeDetected) === null,
+    String(proxyForUrl('http://127.0.0.1:9/x', gnomeDetected))
+  )
+  // https 项为空时退回 http 项(只设了 HTTP 代理的客户端)
+  const httpOnly = parseGnomeProxy(
+    [
+      "org.gnome.system.proxy mode 'manual'",
+      'org.gnome.system.proxy use-same-proxy false',
+      "org.gnome.system.proxy.http host '127.0.0.1'",
+      'org.gnome.system.proxy.http port 7890',
+      "org.gnome.system.proxy.https host ''",
+      'org.gnome.system.proxy.https port 0'
+    ].join('\n')
+  )
+  check(
+    'https 项为空时退回 http 项',
+    httpOnly && proxyFromGnome(httpOnly, 'https')?.url === 'http://127.0.0.1:7890',
+    JSON.stringify(httpOnly && proxyFromGnome(httpOnly, 'https'))
+  )
+  // 只有 socks 项时给 git 一个 socks5 地址
+  const socksOnly = parseGnomeProxy(
+    [
+      "org.gnome.system.proxy mode 'manual'",
+      'org.gnome.system.proxy use-same-proxy false',
+      "org.gnome.system.proxy.socks host '127.0.0.1'",
+      'org.gnome.system.proxy.socks port 7891'
+    ].join('\n')
+  )
+  check(
+    '只有 socks 项时归一成 socks5://',
+    socksOnly && proxyFromGnome(socksOnly, 'https')?.url === 'socks5://127.0.0.1:7891',
+    JSON.stringify(socksOnly && proxyFromGnome(socksOnly, 'https'))
+  )
+  const gnomeOff = parseGnomeProxy(
+    [
+      "org.gnome.system.proxy mode 'none'",
+      "org.gnome.system.proxy.http host '127.0.0.1'",
+      'org.gnome.system.proxy.http port 7890'
+    ].join('\n')
+  )
+  check('mode 不是 manual 时不算检测到代理', gnomeOff !== null && proxyFromGnome(gnomeOff, 'https') === null)
+  const gnomeAll = parseGnomeProxy(
+    [
+      "org.gnome.system.proxy mode 'manual'",
+      "org.gnome.system.proxy ignore-hosts ['*']",
+      "org.gnome.system.proxy.http host '127.0.0.1'",
+      'org.gnome.system.proxy.http port 7890'
+    ].join('\n')
+  )
+  check(
+    'ignore-hosts 为 * 时按全部直连处理',
+    gnomeAll !== null && proxyFromGnome(gnomeAll, 'https') === null
+  )
+  const gnomeV6 = parseGnomeProxy(
+    [
+      "org.gnome.system.proxy mode 'manual'",
+      "org.gnome.system.proxy.http host '::1'",
+      'org.gnome.system.proxy.http port 7890'
+    ].join('\n')
+  )
+  check(
+    'IPv6 主机补上方括号',
+    gnomeV6 && proxyFromGnome(gnomeV6, 'http')?.url === 'http://[::1]:7890',
+    JSON.stringify(gnomeV6 && proxyFromGnome(gnomeV6, 'http'))
   )
 
   await app.whenReady()

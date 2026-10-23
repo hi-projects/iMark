@@ -2,8 +2,8 @@ import { nextTick } from 'vue'
 import type { Settings, VaultNode } from '@shared/types'
 import { appStore, type SwitcherMode, type VaultFileRef } from '../stores/app'
 import { closeAllTabsForSwitch, openFileByPath, restoreSession } from './fileService'
-import { clearTabs, detachDeletedPath, renameTabPaths } from './tabs'
-import { joinPath, relativeTo, replaceName } from '../utils/paths'
+import { clearTabs, closeDeletedPath, renameTabPaths } from './tabs'
+import { isInside, joinPath, relativeTo, replaceName } from '../utils/paths'
 import { notifyError, pushNotice } from './notice'
 import { api } from './api'
 
@@ -194,6 +194,57 @@ export async function openVaultViaDialog(): Promise<boolean> {
   return openVaultFromPicker(dir)
 }
 
+/**
+ * 这个文件落在哪个已知仓库里。取最深的那个 —— 仓库可以嵌套,
+ * 选外层会让文件浏览器的根离文件很远。都不包含时返回 null。
+ */
+function containingVault(filePath: string): string | null {
+  const candidates = appStore.vaultPath
+    ? [appStore.vaultPath, ...appStore.vaults]
+    : appStore.vaults
+  let best: string | null = null
+  for (const vault of candidates) {
+    if (isInside(vault, filePath) && (!best || vault.length > best.length)) best = vault
+  }
+  return best
+}
+
+/**
+ * 清掉眼前的仓库上下文。
+ *
+ * 回到选择界面时旧仓库树还留在 store 里(判定要不要恢复会话时不看它),
+ * 这时候打开一个仓库外的文件,不清掉的话侧栏会挂着上一个仓库的目录,
+ * 状态栏也写着它的名字 —— 与编辑器里那份文件对不上。
+ */
+function clearVaultState(): void {
+  appStore.vaultPath = null
+  appStore.vaultName = null
+  appStore.vaultTree = null
+  appStore.vaultFiles = []
+  appStore.expandedDirs = new Set<string>()
+}
+
+/**
+ * 打开系统递过来的文件(双击 .md / 资源管理器「打开方式」;见 main/openFile.ts)。
+ *
+ * 两种到达方式共用这里:启动参数(渲染层初始化完主动来取)与运行中的第二个实例
+ * (主进程推事件)。
+ *
+ * 还停在仓库选择界面时**不再要求先选仓库**:文件属于某个最近用过的仓库,就静默
+ * 载入那个仓库再打开它(文件浏览器、快速切换器才有上下文);不属于任何已知仓库时
+ * 直接进编辑器打开这一份,不擅自把上级目录登记成新仓库 —— 那等于递归扫一遍任意
+ * 目录(桌面、主目录都可能是它)。
+ */
+export async function openFileFromSystem(path: string): Promise<void> {
+  if (appStore.view === 'picker') {
+    const vault = containingVault(path)
+    // 载入失败(仓库被删/不可读)也按「仓库外文件」处理,别把旧仓库留在侧栏
+    if (!vault || !(await loadVault(vault, { silent: true }))) clearVaultState()
+    await enterEditorAndWait()
+  }
+  await openFileByPath(path)
+}
+
 /** 新建仓库:在父目录下创建同名文件夹并打开 */
 export async function createVaultAt(parentDir: string, name: string): Promise<boolean> {
   if (!validName(name)) {
@@ -286,8 +337,8 @@ export async function deleteNode(node: VaultNode): Promise<boolean> {
     return false
   }
   await refreshVault()
-  // 删除的是磁盘文件,不是用户眼前的文字:受影响的标签转为未保存的未命名文档
-  detachDeletedPath(node.path, node.type === 'dir')
+  // 文件没了,盯着它的标签也一起关掉(不再留成未命名文档)
+  closeDeletedPath(node.path, node.type === 'dir')
   return true
 }
 

@@ -29,10 +29,7 @@ export const AGENT_PROVIDERS_CONTRIBUTION: string = formatData.agentProvidersCon
  */
 export const AGENT_PROVIDER_API_VERSION = 1 as const
 
-export type AgentRole = 'agent' | 'completion'
 export type AgentInputMode = 'native' | 'path' | 'none'
-/** 权限模式：是否允许 Agent 运行解析命令/写文件 */
-export type AgentMode = 'read-only' | 'read+parse'
 export type ToolKind = 'read' | 'search' | 'edit' | 'shell' | 'network' | 'other'
 
 export type AgentErrorCode =
@@ -47,9 +44,7 @@ export type AgentErrorCode =
   | 'config-invalid'
   | 'attachment-too-large'
   | 'attachment-missing'
-  | 'stale-document'
   | 'no-editor'
-  | 'invalid-target'
   | 'edit-rejected'
   | 'not-found'
 
@@ -88,7 +83,6 @@ export type AgentEvent =
   | { type: 'error'; error: AgentError }
 
 export interface AgentCapabilities {
-  roles: readonly AgentRole[]
   inputs: {
     image: AgentInputMode
     pdf: AgentInputMode
@@ -101,23 +95,24 @@ export interface AgentCapabilities {
   systemPrompt: boolean
 }
 
-export interface AgentModel {
-  id: string
-  label: string
-}
-
 export interface AgentProviderInfo {
   id: string
   label: string
   description?: string
   capabilities: AgentCapabilities
-  models: readonly AgentModel[]
 }
 
 export interface AgentDetection {
   available: boolean
   version?: string
   executable?: string
+  /**
+   * 后端配置文件里的默认模型名，只用于界面展示。
+   *
+   * 模型选择由后端自己的配置决定（例如 Claude Code 的 `~/.claude/settings.json`），
+   * Core 不传也不保存模型；没配置时留空，由后端使用自己的默认值。
+   */
+  defaultModel?: string
   error?: AgentError
 }
 
@@ -129,18 +124,14 @@ export interface AgentTurn {
 /**
  * Core → provider 的通用会话参数。
  *
- * 超时、隔离级别、额外参数、密钥、CLI 路径都不在这里：它们是 provider 自己的
- * 配置，由 provider 在 `createSession()` 里读取。Core 每轮（含重试）都会重新
- * 调用 `createSession()`，因此设置改动下一轮即生效。
+ * 超时、额外参数、密钥、CLI 路径都不在这里：它们是 provider 自己的配置，由
+ * provider 在 `createSession()` 里读取。Core 每轮（含重试）都会重新调用
+ * `createSession()`，因此设置改动下一轮即生效。
  */
 export interface AgentSessionOptions {
   hostSessionId: string
   providerSessionId?: string
   cwd: string
-  mode: AgentMode
-  model?: string
-  /** 本机探测到的命令名，用来生成后端自己的工具白名单（不用于解析） */
-  availableCommands?: readonly string[]
   signal: AbortSignal
 }
 

@@ -59,11 +59,6 @@ export class ExtensionStateStore {
     return file
   }
 
-  async snapshot(id: string): Promise<ExtensionStateSnapshot> {
-    const file = await this.load(id)
-    return { global: { ...file.global }, workspace: { ...file.workspace } }
-  }
-
   /** 同步读取（宿主 init 组装时用；缺失就是空状态） */
   snapshotSync(id: string): ExtensionStateSnapshot {
     const file = this.files.get(id)

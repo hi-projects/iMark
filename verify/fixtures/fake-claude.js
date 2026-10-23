@@ -139,7 +139,7 @@ function writeArtifacts() {
   fs.mkdirSync(path.join(prepared, 'figures'), { recursive: true })
   fs.writeFileSync(
     path.join(prepared, 'summary.md'),
-    '# 解析结果\n\n这是 fake Claude 写出的解析产物。\n',
+    '# 解析结果\n\n这是 fake Claude 写出的解析产物。\n\n![pixel](figures/pixel.png)\n',
     'utf8'
   )
   fs.writeFileSync(
@@ -229,6 +229,25 @@ async function main() {
     return
   }
 
+  if (scenario === 'think-stream') {
+    // 思考过程按增量流出，长到足以撑满 220px 的滚动框：
+    // webview 需要一边追加一边把块内滚动条贴到底部。
+    init()
+    for (let i = 1; i <= 60; i++) {
+      emit({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: `思考第 ${i} 行：正在检查上下文与约束。\n` }
+        }
+      })
+      await sleep(25)
+    }
+    result('思考完成。')
+    return
+  }
+
   if (scenario === 'slow' || scenario === 'timeout') {
     init()
     text('正在读取附件')
@@ -243,6 +262,15 @@ async function main() {
   }
 
   init()
+  await sleep(20)
+  emit({
+    type: 'assistant',
+    message: {
+      id: 'msg-think-ok',
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: '先看看附件里有什么，再决定怎么整理。' }]
+    }
+  })
   await sleep(20)
   text('正在读取附件。')
   await sleep(20)

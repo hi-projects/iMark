@@ -4,6 +4,7 @@ import { IPC } from '@shared/ipc-channels'
 import type { Settings, Theme } from '@shared/types'
 import { appIconPng } from './appIcon'
 import { getSettingsSync, onSettingsChanged } from './settings'
+import { hasPendingOpenFile } from './openFile'
 
 /**
  * 窗口图标(任务栏 / Alt+Tab / 窗口列表里那个)。
@@ -78,8 +79,9 @@ export function setMainWindowClosedHandler(fn: () => void): void {
 
 export function createMainWindow(settings: Settings): BrowserWindow {
   // 勾了「启动时直接打开上次仓库」就直接最大化开窗,免得先小后大地闪一下
-  // (渲染层的视图切换发生在建窗之后)
-  const startAtPicker = !(settings.skipVaultPicker && settings.vaultPath)
+  // (渲染层的视图切换发生在建窗之后)。带文件启动(双击 .md)同理:
+  // 渲染层会直接进编辑器打开这份文件,窗口没理由先以选择页的尺寸露一下。
+  const startAtPicker = !hasPendingOpenFile() && !(settings.skipVaultPicker && settings.vaultPath)
   currentView = startAtPicker ? 'picker' : 'editor'
   const chrome = WINDOW_CHROME[settings.theme] ?? WINDOW_CHROME.light
   mainWindow = new BrowserWindow({

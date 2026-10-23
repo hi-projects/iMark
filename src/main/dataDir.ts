@@ -232,9 +232,11 @@ export function describeDataPaths(): string {
           ? '命令行指定的数据目录'
           : '家目录(应用目录不可写)'
   const same = samePath(p.dataRoot, p.profileDir)
+  // 两个路径之间用中文标点并写全「profile 目录」,否则
+  // `…/.imark,profile …/.imark/profile` 看起来像一个被逗号拼起来的路径
   return same
-    ? `${where}:${p.dataRoot}(profile 与数据同处)`
-    : `${where}:${p.dataRoot},profile ${p.profileDir}`
+    ? `${where}：${p.dataRoot}（profile 与数据同处）`
+    : `${where}：${p.dataRoot}；profile 目录：${p.profileDir}`
 }
 
 /** 整套路径回落 —— 只切一半比不切更糟(见文件头纪律 2) */

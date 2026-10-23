@@ -87,25 +87,51 @@ async function findOnPath(name: string): Promise<string | null> {
   return null
 }
 
+/** 各编辑器（含远程）放扩展的目录，相对用户主目录 */
+const EDITOR_EXTENSION_DIRS = [
+  '.vscode/extensions',
+  '.vscode-insiders/extensions',
+  '.vscode-server/extensions',
+  '.vscode-server-insiders/extensions',
+  '.vscode-oss/extensions',
+  '.cursor/extensions',
+  '.cursor-server/extensions',
+  '.windsurf/extensions',
+  '.windsurf-server/extensions'
+]
+
+/** 扩展包内 native binary 的文件名；Windows 上是 claude.exe */
+function nativeBinaryNames(): string[] {
+  return process.platform === 'win32' ? ['claude.exe', 'claude'] : ['claude', 'claude.exe']
+}
+
 /**
- * 最后兜底：用户已经在 VS Code 里装了 Claude Code 时，扩展目录里自带一份
- * native binary。它不是官方 CLI 安装路径，但对“机器上只有 VS Code 扩展”的
- * 用户可以直接用；放在 PATH / ~/.local/bin 之后，不影响正常安装。
+ * 最后兜底：用户已经在 VS Code（或 Cursor / Windsurf / 远程 Server）里装了
+ * Claude Code 时，扩展目录里自带一份 native binary。它不是官方 CLI 安装路径，
+ * 但对“机器上只有编辑器扩展”的用户可以直接用；放在 PATH / ~/.local/bin 之后，
+ * 不影响正常安装。多个版本 / 多个编辑器时取版本号最大的。
  */
 async function newestVscodeBinary(): Promise<string | null> {
   const home = process.env.USERPROFILE ?? process.env.HOME
   if (!home) return null
-  const root = join(home, '.vscode', 'extensions')
-  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
-  const candidates = entries
-    .filter(entry => entry.isDirectory() && entry.name.startsWith('anthropic.claude-code-'))
-    .map(entry => entry.name)
-    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-  for (const name of candidates) {
-    const candidate = join(root, name, 'resources', 'native-binary', 'claude.exe')
-    if (existsSync(candidate)) return candidate
+  const found: Array<{ version: string; binary: string }> = []
+  for (const dir of EDITOR_EXTENSION_DIRS) {
+    const root = join(home, dir)
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith('anthropic.claude-code-')) continue
+      for (const name of nativeBinaryNames()) {
+        const candidate = join(root, entry.name, 'resources', 'native-binary', name)
+        if (existsSync(candidate)) {
+          found.push({ version: entry.name, binary: candidate })
+          break
+        }
+      }
+    }
   }
-  return null
+  if (found.length === 0) return null
+  found.sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))
+  return found[0]?.binary ?? null
 }
 
 export async function resolveClaudeCommand(configured: string): Promise<ResolvedCommand> {
@@ -130,14 +156,14 @@ export async function resolveClaudeCommand(configured: string): Promise<Resolved
   const vscode = await newestVscodeBinary()
   if (vscode) return { command: vscode, kind: 'exe' }
 
-  throw new Error('未找到 Claude Code。请在设置里填写 claude.exe 的完整路径，或先安装 Claude Code CLI。')
+  throw new Error('未找到 Claude Code。请在设置里选择「自动检测」，或手动指定 claude 的完整路径，或先安装 Claude Code CLI。')
 }
 
 /*
  * cmd.exe 参数转义。
  *
  * 直接包一层双引号不够：.cmd 里的 `%*` 会把引号原样带进子进程 argv，
- * `--allowedTools "Read,...,Bash(pdftotext:*)"` 会被 CLI 当成带引号的工具名。
+ * 带逗号或括号的参数会被 CLI 当成带引号的字面量。
  * 这里沿用 cross-spawn（MIT）的算法：命令与参数按 cmd 元字符做 ^ 转义，整条
  * 命令再用外层引号包住，并设置 windowsVerbatimArguments，让 Node 不再二次转义。
  */

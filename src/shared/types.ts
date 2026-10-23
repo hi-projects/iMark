@@ -10,16 +10,29 @@ export type Theme = 'light' | 'dark'
  * 刻意不是单个 boolean:Windows 8 起,应用**不能**把自己的关联静默设成默认
  * (UserChoice 有哈希保护,写不进去)。所以这里要分别回答三件事 ——
  * 这个平台能不能由应用代劳、现在默认的是谁、iMark 是不是它。
+ *
+ * Linux 是另一回事:`mimeapps.list` 没有哈希保护,应用可以一条 `xdg-mime`
+ * 直接改完(见 `direct`)。
  */
 export interface DefaultEditorStatus {
-  /** 当前平台是否支持由应用发起注册(目前只有 Windows 做了实现) */
+  /** 当前平台是否支持由应用发起注册(Windows 与 Linux 已实现) */
   supported: boolean
   /** iMark 是否已经是 .md 的默认打开程序 */
   isDefault: boolean
-  /** 当前 .md 的默认程序(ProgID 或 `Applications\xxx.exe`;查不到为 null) */
+  /** 当前 .md 的默认程序(Windows 是 ProgID、`Applications\xxx.exe`;Linux 是显示名或桌面条目 ID;查不到为 null) */
   current: string | null
   /** 注册 / 查询失败时的说明;成功时没有 */
   error?: string
+  /**
+   * 「设为默认」能否由应用一步做完。
+   * Windows 为 false/缺省(最后一下必须用户在系统设置里点);Linux 为 true。
+   */
+  direct?: boolean
+  /**
+   * 仅 Linux:找到的 iMark 桌面条目 ID(如 `iMark.desktop`);
+   * 没找到为 null —— 说明还没装成桌面应用,没有可关联的目标。其它平台没有这个字段。
+   */
+  desktopEntry?: string | null
 }
 
 /**

@@ -7,7 +7,7 @@
  * 界面不猜任何东西 —— 表单由 `contributes.configuration` 翻译出的 settingsFields
  * 驱动,动作由 `contributes['imark.actions']` 驱动。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { FileJson, FileText, RotateCw, Trash2 } from 'lucide-vue-next'
 // 类型名与组件名 PluginField 冲突,这里给类型起别名
 import {
@@ -29,7 +29,6 @@ import {
   setExtensionEnabled,
   uninstallExtension
 } from '../../services/extensionService'
-import { appStore } from '../../stores/app'
 import { settingsNav } from '../../services/settingsNav'
 import { notifyError } from '../../services/notice'
 import {
@@ -124,21 +123,6 @@ async function commit(field: PluginFieldSpec, value: unknown): Promise<void> {
   await saveExtensionField(extension.descriptor.id, fullKey(field), value)
 }
 
-/** 有按仓库保存的字段时才显示范围说明与分组标记 */
-const hasWorkspaceFields = computed(
-  () => selected.value?.descriptor.settingsFields.some(field => field.scope === 'workspace') ?? false
-)
-
-const currentVaultName = computed(() => {
-  const path = appStore.vaultPath
-  if (!path) return ''
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
-})
-
-function groupHasWorkspaceField(fields: PluginFieldSpec[]): boolean {
-  return fields.some(field => field.scope === 'workspace')
-}
-
 /** 这一组字段写在哪个外部配置文件里;没有外部字段返回 null */
 function externalFieldOf(fields: PluginFieldSpec[]): PluginFieldSpec | null {
   return fields.find(field => field.kind === 'external' && field.external?.file) ?? null
@@ -213,16 +197,32 @@ function targetActionsFor(field: PluginFieldSpec): { id: string; label: string }
  */
 const ACTION_PENDING_MIN_MS = 300
 
+/**
+ * 动作执行状态:扩展 id → 正在执行的命令。
+ *
+ * 设置页在切换扩展时复用同一个组件实例,所以不能只存一个全局的 pending ——
+ * 否则在「定时上传」点「立即上传」后切到别的扩展,那边也会显示「进行中」。
+ * 只有发起动作的那个扩展显示自己的执行状态;不同扩展的动作互不阻塞。
+ */
+const pendingByExtension = reactive<Record<string, string>>({})
+/** 当前选中扩展正在执行的动作;null = 没有 */
+const pendingCommand = computed<string | null>(() => {
+  const id = selected.value?.descriptor.id
+  return id ? (pendingByExtension[id] ?? null) : null
+})
+const actionPending = computed(() => pendingCommand.value !== null)
+
 async function runWithPending(command: string, run: () => Promise<void>): Promise<void> {
-  if (pendingCommand.value) return
-  pendingCommand.value = command
+  const id = selected.value?.descriptor.id
+  if (!id || pendingByExtension[id]) return
+  pendingByExtension[id] = command
   const startedAt = Date.now()
   try {
     await run()
   } finally {
     const rest = ACTION_PENDING_MIN_MS - (Date.now() - startedAt)
     if (rest > 0) await new Promise(resolve => setTimeout(resolve, rest))
-    pendingCommand.value = null
+    delete pendingByExtension[id]
   }
 }
 
@@ -252,10 +252,6 @@ const runtimeBad = computed(() => {
   const status = selected.value?.runtime.status
   return status === 'failed' || status === 'crashed' || status === 'crash-loop'
 })
-
-/** 正在执行的那条动作命令;null = 没有动作在跑 */
-const pendingCommand = ref<string | null>(null)
-const actionPending = computed(() => pendingCommand.value !== null)
 
 const statusState = computed(() => ({
   enabled: selected.value?.enabled ?? false,
@@ -342,14 +338,6 @@ const busy = computed(() => extensionStore.busy !== null)
 
     <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
 
-    <div v-if="hasWorkspaceFields" class="plugin-scope-hint">
-      <span class="plugin-scope-tag">按仓库</span>
-      <span>
-        带此标记的设置每个仓库各存一份{{ currentVaultName ? `（当前：${currentVaultName}）` : '' }}，
-        切换仓库后自动换用对应设置；其余设置全局共用。
-      </span>
-    </div>
-
     <div v-if="selected.loadError" class="plugin-status-card plugin-status-card-error">
       <div class="plugin-status-line">
         <b>加载失败</b>
@@ -386,7 +374,6 @@ const busy = computed(() => extensionStore.busy !== null)
       <section v-for="(group, gi) in fieldGroups" :key="gi" class="plugin-group">
         <h3 v-if="group.section" class="plugin-group-title">
           {{ group.section }}
-          <span v-if="groupHasWorkspaceField(group.fields)" class="plugin-scope-tag">按仓库</span>
           <button
             v-if="externalFieldOf(group.fields)"
             class="plugin-icon-btn"
@@ -450,7 +437,7 @@ const busy = computed(() => extensionStore.busy !== null)
         </div>
       </section>
 
-      <!-- 安装信息已集中到市场「已安装」;这里只留下卸载这个操作 -->
+      <!-- 安装信息已集中到「已安装」页;这里只留下卸载这个操作 -->
       <div
         v-if="selected.source !== 'bundled' && selected.installed"
         class="plugin-actions"
