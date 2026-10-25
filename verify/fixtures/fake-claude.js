@@ -25,38 +25,73 @@ try {
 }
 
 const versionOnly = args.includes('--version')
-if (dir) {
+
+// 真实 CLI 在 --input-format stream-json 下会一直读 stdin（权限决定也走这里），
+// 所以假 CLI 不能再用 readFileSync(0) 等 EOF：边读边记，并在收到控制响应时唤醒场景。
+let stdinText = ''
+const controlWaiters = new Map()
+const invocationPath =
+  dir && !versionOnly
+    ? path.join(dir, `invocation-${Date.now()}-${process.pid}.json`)
+    : ''
+
+function writeInvocation() {
+  if (!dir) return
   try {
     fs.mkdirSync(dir, { recursive: true })
-    let stdin = ''
-    if (!versionOnly) {
-      try {
-        stdin = fs.readFileSync(0, 'utf8')
-      } catch {
-        stdin = ''
-      }
+    const payload = {
+      at: Date.now(),
+      pid: process.pid,
+      argv: args,
+      cwd: process.cwd(),
+      stdin: stdinText,
+      versionOnly,
+      scenario: control.scenario || 'ok',
+      marker: control.marker || '',
+      hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY)
     }
     fs.writeFileSync(
-      path.join(dir, `invocation-${Date.now()}-${process.pid}.json`),
-      `${JSON.stringify(
-        {
-          at: Date.now(),
-          pid: process.pid,
-          argv: args,
-          cwd: process.cwd(),
-          stdin,
-          versionOnly,
-          scenario: control.scenario || 'ok',
-          hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY)
-        },
-        null,
-        2
-      )}\n`,
+      invocationPath || path.join(dir, `invocation-${Date.now()}-${process.pid}.json`),
+      `${JSON.stringify(payload, null, 2)}\n`,
       'utf8'
     )
   } catch {
     /* 日志失败不影响协议 */
   }
+}
+
+writeInvocation()
+
+if (!versionOnly) {
+  const readline = require('node:readline')
+  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
+  rl.on('line', line => {
+    stdinText += `${stdinText ? '\n' : ''}${line}`
+    writeInvocation()
+    let parsed
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (parsed && parsed.type === 'control_response') {
+      const id = parsed.response && parsed.response.request_id
+      const waiter = controlWaiters.get(id)
+      if (waiter) {
+        controlWaiters.delete(id)
+        waiter(parsed.response)
+      }
+    }
+  })
+}
+
+function waitControlResponse(id, ms = 20000) {
+  return new Promise(resolve => {
+    controlWaiters.set(id, resolve)
+    setTimeout(() => {
+      if (controlWaiters.delete(id)) resolve(null)
+    }, ms).unref?.()
+  })
 }
 
 if (versionOnly) {
@@ -159,6 +194,9 @@ async function main() {
   if (scenario === 'auth') {
     process.stderr.write('Error: invalid api key; please run /login\n')
     process.exitCode = 2
+    // provider 会一直开着 stdin（权限决定要走这里）；真实 CLI 认证失败会直接退出，
+    // 这里也要关掉 stdin，否则 readline 让进程一直挂着，宿主只能等超时。
+    process.stdin.destroy()
     return
   }
 
@@ -175,6 +213,34 @@ async function main() {
     result('工具被拒绝', true, {
       permission_denials: [{ tool_name: 'Bash' }]
     })
+    return
+  }
+
+  if (scenario === 'permission-request') {
+    // 复刻真实 CLI：先发起工具调用，再通过 control_request 询问宿主，
+    // 必须等到 control_response 才继续。
+    init()
+    toolUse('tu-perm', 'python -c "print(1)"')
+    const requestId = `perm-${marker || 'default'}`
+    emit({
+      type: 'control_request',
+      request_id: requestId,
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        tool_use_id: 'tu-perm',
+        input: { command: 'python -c "print(1)"' }
+      }
+    })
+    const response = await waitControlResponse(requestId)
+    const decision = response && response.response
+    const allowed = Boolean(decision && decision.behavior === 'allow')
+    toolResult(
+      'tu-perm',
+      allowed ? 'allowed output' : (decision && decision.message) || 'denied',
+      !allowed
+    )
+    result(`${allowed ? '执行完成' : '已拒绝'} ${marker}`)
     return
   }
 
@@ -245,6 +311,28 @@ async function main() {
       await sleep(25)
     }
     result('思考完成。')
+    return
+  }
+
+  if (scenario === 'large-line') {
+    // 单个工具结果（如整份 PDF 的 base64）会落在同一行。17 MiB 的字符串
+    // 会被宿主流式截断，回合必须继续，而不是报「单行输出过大」。
+    init()
+    toolUse('tu-large', 'cat big.txt')
+    emit({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu-large',
+            content: [{ type: 'text', text: 'A'.repeat(17 * 1024 * 1024) }]
+          }
+        ]
+      }
+    })
+    result(`大行通过 ${marker}`)
     return
   }
 

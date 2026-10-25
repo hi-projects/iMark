@@ -199,7 +199,7 @@ onMounted(async () => {
 
           <div class="market-card-main">
             <div class="market-card-name">
-              <b>{{ item.displayName || item.name }}</b>
+              <b>{{ item.displayName }}</b>
               <span class="market-badge market-mono">v{{ item.version }}</span>
               <!-- 层徽标:main 模式 / render / 无代码能力。未知形态明确标出来,
                    绝不退化成“不含代码” -->

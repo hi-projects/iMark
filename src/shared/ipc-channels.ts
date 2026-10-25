@@ -24,6 +24,11 @@ export const IPC = {
   OpenExternal: 'shell:open-external',
   SetTitle: 'window:set-title',
   SetView: 'window:set-view',
+  /**
+   * 渲染→主:界面实际应用的主题。窗口控件(WCO)的配色按它来,
+   * 而不是按 settings 里的值 —— 两者在启动异常时可能不一致。
+   */
+  SetTheme: 'window:set-theme',
   DocDirty: 'doc:dirty',
   /**
    * 渲染→主:当前打开文档的**绝对路径**(没有打开任何文件时传 null)。
@@ -54,11 +59,26 @@ export const IPC = {
    * 推过去只能靠延时赌时序;拉取发生在 App 初始化之后,天然没有竞态。
    */
   OpenFileTake: 'app:open-file-take',
+  /**
+   * 渲染→主:本次启动的意图(普通启动 / 任务栏中键「新开一个」)。
+   * 新窗口要停在仓库选择页,不能恢复上次仓库 —— 否则多开的窗口又会去抢同一个仓库。
+   */
+  LaunchIntent: 'app:launch-intent',
   /** 渲染→主:默认编辑器现在是谁(设置 → 系统) */
   SystemDefaultEditorStatus: 'system:default-editor-status',
   /** 渲染→主:把 iMark 注册进 .md 的「打开方式」,并打开系统的默认应用设置 */
   SystemSetDefaultEditor: 'system:set-default-editor',
   VaultSelectDialog: 'vault:select-dialog',
+  /**
+   * 渲染→主:认领一个要打开的仓库。
+   *
+   * 多实例下同一个仓库只保留一个窗口:别的实例已经开着它时,主进程会把那个窗口
+   * 叫到前面(带文件时把文件也递过去),返回 `forwarded`;联系不上主人返回 `busy`,
+   * 都不应继续在本窗口打开。
+   */
+  VaultClaim: 'vault:claim',
+  /** 渲染→主:打开失败/离开仓库时退掉认领(见 main/vaultHandoff.ts) */
+  VaultRelease: 'vault:release',
   VaultList: 'vault:list',
   VaultCreateFile: 'vault:create-file',
   VaultCreateDir: 'vault:create-dir',

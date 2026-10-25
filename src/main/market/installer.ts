@@ -40,7 +40,6 @@ export interface InstallOptions {
 
 export interface InstallOutcome {
   id: string
-  name: string
   version: string
   /** 是否是一次升级(装之前已存在同 id 的扩展) */
   upgraded: boolean
@@ -95,7 +94,6 @@ export async function installFromEnvelope(
   })
   return {
     id,
-    name: displayNameOf(manifest),
     version: manifest.version,
     upgraded: outcome.previousVersion !== null,
     downgraded: Boolean(
@@ -153,7 +151,6 @@ export function previewEnvelope(
     ok: true,
     value: {
       id: descriptor.id,
-      name: descriptor.displayName,
       displayName: descriptor.displayName,
       version: manifest.version,
       author: authorNameOf(manifest),

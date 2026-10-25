@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   check('预览成功', agent.ok, agent.ok ? '' : agent.errors.join(';'))
   if (agent.ok) {
     check('hasMain = true', agent.value.hasMain === true)
-    check('显示名为 Agent Core', agent.value.name === 'Agent Core', agent.value.name)
+    check('显示名为 Agent Core', agent.value.displayName === 'Agent Core', agent.value.displayName)
     check('能力声明含 process', agent.value.capabilities.process === true)
     check('贡献摘要非全零', agent.value.contributesSummary.commands > 0, JSON.stringify(agent.value.contributesSummary))
   }
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   check('预览成功', claude.ok, claude.ok ? '' : claude.errors.join(';'))
   if (claude.ok) {
     check('hasMain = true', claude.value.hasMain === true)
-    check('显示名为 Claude Code', claude.value.name === 'Claude Code', claude.value.name)
+    check('显示名为 Claude Code', claude.value.displayName === 'Claude Code', claude.value.displayName)
     check(
       '能力声明含 network/process/shell',
       claude.value.capabilities.network === true &&

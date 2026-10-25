@@ -168,6 +168,22 @@ body.pane-resizing * {
   color: var(--text-primary);
 }
 
+/* 拖拽移动:源行变淡;落点用内描边,不会把行撑高、整棵树跟着抖 */
+.explorer-item.explorer-dragging {
+  opacity: 0.5;
+}
+
+.explorer-item.explorer-drop-target {
+  background: var(--bg-toolbar-btn-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text-primary);
+}
+
+/* 列表空白处 = 仓库根 */
+.explorer-list.explorer-list-drop {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 .explorer-item .explorer-chevron {
   flex: 0 0 auto;
   color: var(--text-tertiary);

@@ -1,14 +1,13 @@
 /**
  * 主窗口渲染层与宿主之间的桥(唯一入口)。
  *
- * preload 不再直接暴露 `api` 对象,只暴露一个「只能取一次」的函数
- * (见 src/preload/index.ts 的说明)。应用在这里、在**任何扩展代码加载之前**
- * 取走它并保存为模块常量 —— 之后同一个 realm 里的扩展再调用
- * `window.__imarkTakeApi()` 只能拿到 null。
+ * preload 只暴露一个「只能取一次」的函数(见 src/preload/index.ts 的说明)。
+ * 应用在这里、在**任何扩展代码加载之前**取走它并保存为模块常量 —— 之后同一个
+ * realm 里的扩展再调用 `window.__imarkTakeApi()` 只能拿到 null。
  *
  * 两条纪律:
- * 1. 其他渲染层代码一律 `import { api } from '.../services/api'`,不要再读 `window.api`
- *    (那个全局已经不存在了;env.d.ts 也不再声明它,类型检查会逐处报出来)。
+ * 1. 其他渲染层代码一律 `import { api } from '.../services/api'`,不要直接读
+ *    `window.__imarkTakeApi`;env.d.ts 只声明这一个全局,类型检查会拦住绕行。
  * 2. **不要**把 `api` 挂回 window / globalThis / 任何扩展能读到的地方 ——
  *    那等于把整座桥重新交给页面脚本。
  */

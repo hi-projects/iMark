@@ -56,7 +56,6 @@ export interface PackageFileInfo {
  */
 export interface PackagePreview {
   id: string
-  name: string
   displayName: string
   version: string
   /** 清单里的作者署名。**不是**发布者用户名(那是市场账号,本地安装时没有) */
@@ -107,7 +106,7 @@ export interface MarketInstalledData {
 
 export interface MarketUpdate {
   id: string
-  name: string
+  displayName: string
   currentVersion: string
   latestVersion: string
   hasMain: boolean
@@ -226,7 +225,6 @@ export interface MarketAuthStatus {
 /** 发布前的预览:打包完成、还没上传时给用户看的东西 */
 export interface PublishPreview {
   id: string
-  name: string
   displayName: string
   version: string
   author: string | null

@@ -140,6 +140,10 @@ const THEME_COLORS = [
   '--bg-app',
   '--bg-editor',
   '--bg-toolbar',
+  // 扩展面板里的悬停行 / 选中行:没有它们,插件只能写死深色回退值(亮色下就是黑块)
+  '--bg-toolbar-btn-hover',
+  '--bg-active',
+  '--shadow',
   '--text-primary',
   '--text-secondary',
   '--text-tertiary',

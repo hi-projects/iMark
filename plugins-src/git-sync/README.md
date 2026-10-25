@@ -12,7 +12,7 @@
 3. 把同一个提交推送到**所有**配置好的远端。
 
 推送一律直接把仓库地址交给 `git push`，**不会改动你仓库的 remote 配置**，也不会把访问令牌
-写进 `.gitignore`、`.git/config` 或任何提交里 —— 凭据由每次现挂的一次性 credential helper 提供。
+写进 `.git/config`、命令行或任何提交里 —— 凭据由每次现挂的一次性 credential helper 提供。
 
 ## 远端怎么填
 
@@ -60,6 +60,6 @@ git 用的 libcurl **不会读取操作系统的「系统代理」**，所以会
 
 ## 关于权限
 
-这个扩展的 **main 层是 node 模式**，在 iMark 主进程里运行，需要 `filesystem: user`、`network`、`secrets`、`git`、`process` 五项能力，
-也就是说它具备与本应用相同的文件读写能力。它对密钥的使用方式是只读的，且只能读到自己的密钥，
-但 node main 本身拥有完整 Node 权限、**不是沙箱** —— 请只安装你信任来源的扩展。
+扩展代码跑在独立的 `utilityProcess` 扩展宿主里，以当前用户权限运行，**没有权限沙箱**。
+清单里的 `filesystem: user`、`network`、`secrets`、`git`、`process` 是安装时的披露，
+不是运行时门禁。它只读取自己的密钥，但宿主本身拥有完整的 Node 能力 —— 请只安装你信任来源的扩展。

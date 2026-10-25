@@ -175,10 +175,16 @@ function hideBanner(): void {
  */
 let confirmResolve: ((ok: boolean) => void) | null = null
 
-function askConfirm(message: string, confirmLabel = '确定'): Promise<boolean> {
+function askConfirm(
+  message: string,
+  confirmLabel = '确定',
+  opts: { danger?: boolean; cancelLabel?: string } = {}
+): Promise<boolean> {
   closeConfirm(false)
   confirmMessage.textContent = message
   confirmOk.textContent = confirmLabel
+  confirmCancel.textContent = opts.cancelLabel ?? '取消'
+  confirmOk.classList.toggle('is-danger', opts.danger !== false)
   confirmEl.classList.remove('hidden')
   confirmOk.focus()
   return new Promise(resolve => {
@@ -191,6 +197,60 @@ function closeConfirm(ok: boolean): void {
   const resolve = confirmResolve
   confirmResolve = null
   resolve?.(ok)
+}
+
+// ---------- 工具授权 ----------
+
+interface PermissionEvent {
+  requestId: string
+  toolId?: string
+  toolName: string
+  inputSummary: string
+}
+
+const permissionQueue: PermissionEvent[] = []
+let permissionRunning = false
+
+/** 后端可能连着发来多个授权请求；一个一个问，避免确认框互相覆盖 */
+function enqueuePermission(event: PermissionEvent): void {
+  permissionQueue.push(event)
+  void runPermissionQueue()
+}
+
+async function runPermissionQueue(): Promise<void> {
+  if (permissionRunning) return
+  permissionRunning = true
+  try {
+    while (permissionQueue.length > 0) {
+      const event = permissionQueue.shift()!
+      const turnId = state.activeTurnId
+      if (!turnId) continue
+      const allow = await askConfirm(
+        `Claude Code 请求执行「${event.toolName}」：\n${event.inputSummary}`,
+        '允许',
+        { danger: false, cancelLabel: '拒绝' }
+      )
+      // 等待期间可能切了仓库/会话，或这一轮已经结束
+      if (state.activeTurnId !== turnId) continue
+      try {
+        await request('permission.respond', {
+          turnId,
+          requestId: event.requestId,
+          allow
+        })
+      } catch (err) {
+        showBanner(errorText(err))
+      }
+    }
+  } finally {
+    permissionRunning = false
+  }
+}
+
+/** 回合结束/切仓库时作废还没回答的授权请求（关框等于拒绝，但不再回传） */
+function clearPermissions(): void {
+  permissionQueue.length = 0
+  closeConfirm(false)
 }
 
 function isConfirmOpen(): boolean {
@@ -392,6 +452,7 @@ function renderSessionList(): void {
 
 function toolRow(tool: ToolCallView): HTMLElement {
   const row = el('div', 'agent-tool')
+  row.dataset.toolId = tool.toolId
   const head = el('div', 'agent-tool-head')
   head.append(el('span', 'agent-tool-name', tool.name))
   head.append(el('span', 'agent-tool-input', tool.inputSummary || ''))
@@ -406,14 +467,41 @@ function toolRow(tool: ToolCallView): HTMLElement {
   return row
 }
 
+/**
+ * 就地更新工具活动块。
+ *
+ * 工具事件在流式途中很密集（每次 start/result 都要刷新，一轮可能几十次）。
+ * 整块重建 <details> 会把用户点开的展开状态弹回折叠，而且每次都会丢滚动位置；
+ * 所以保留同一个 <details>，只按 toolId 增改行。
+ */
 function renderTools(container: HTMLElement, tools: Map<string, ToolCallView>): void {
-  container.replaceChildren()
-  if (tools.size === 0) return
-  const details = el('details', 'agent-tools')
-  const summary = el('summary', undefined, `工具活动 · ${tools.size}`)
-  details.append(summary)
-  for (const tool of tools.values()) details.append(toolRow(tool))
-  container.append(details)
+  if (tools.size === 0) {
+    container.replaceChildren()
+    return
+  }
+  let details = container.querySelector<HTMLDetailsElement>('details.agent-tools')
+  if (!details) {
+    details = el('details', 'agent-tools')
+    details.append(el('summary'))
+    container.replaceChildren(details)
+  }
+  const summary = details.querySelector('summary')
+  if (summary) summary.textContent = `工具活动 · ${tools.size}`
+  const rows = new Map<string, HTMLElement>()
+  for (const row of details.querySelectorAll<HTMLElement>('.agent-tool')) {
+    if (row.dataset.toolId) rows.set(row.dataset.toolId, row)
+  }
+  for (const tool of tools.values()) {
+    const row = toolRow(tool)
+    const old = rows.get(tool.toolId)
+    if (old) {
+      old.replaceWith(row)
+      rows.delete(tool.toolId)
+    } else {
+      details.append(row)
+    }
+  }
+  for (const stale of rows.values()) stale.remove()
 }
 
 function renderArtifacts(container: HTMLElement, artifacts: readonly ArtifactInfo[]): void {
@@ -767,7 +855,8 @@ async function uploadFile(file: File, sessionId: string): Promise<void> {
       30_000
     )
     state.uploads.delete(begun.uploadId)
-    if (state.session) {
+    // 上传期间可能切了仓库/会话：附件属于发起上传的那个会话，不能挂到当前的上面
+    if (state.session?.summary.id === finished.sessionId) {
       if (!state.session.attachments.some(item => item.id === finished.attachment.id)) {
         state.session.attachments.push(finished.attachment)
       }
@@ -977,6 +1066,10 @@ function ensureThinking(): { container: HTMLElement; text: HTMLElement } {
 }
 
 function handleStreamEvent(event: AgentEvent): void {
+  if (event.type === 'permission') {
+    enqueuePermission(event)
+    return
+  }
   if (!streaming) startStreaming()
   if (!streaming) return
   if (event.type === 'text') {
@@ -1018,7 +1111,12 @@ function handleStreamEvent(event: AgentEvent): void {
 }
 
 function finishStreaming(message: SessionMessage): void {
+  // 轮末要换成正式消息节点；沿用流式期间用户已经展开的工具活动，
+  // 否则「看着看着自己收起来」会在这一下再出现一次
+  let toolsOpen = false
   if (streaming) {
+    toolsOpen =
+      streaming.toolsEl.querySelector<HTMLDetailsElement>('details.agent-tools')?.open ?? false
     streaming.el.remove()
     streaming = null
   }
@@ -1027,7 +1125,12 @@ function finishStreaming(message: SessionMessage): void {
     state.session.summary.messageCount = state.session.messages.length
     state.session.summary.status = message.status === 'ok' ? 'idle' : 'error'
   }
-  messagesEl.append(renderMessage(message))
+  const node = renderMessage(message)
+  if (toolsOpen) {
+    const details = node.querySelector<HTMLDetailsElement>('details.agent-tools')
+    if (details) details.open = true
+  }
+  messagesEl.append(node)
   scrollToBottom(true)
 }
 
@@ -1082,6 +1185,25 @@ onPush(push => {
     renderSessionList()
     return
   }
+  if (push.kind === 'workspace') {
+    const data = value as { sessions: SessionSummary[] }
+    state.sessions = data.sessions ?? []
+    state.session = null
+    state.activeTurnId = null
+    clearPermissions()
+    // 旧仓库的上传/流式内容不能跟着进入新仓库的界面
+    state.uploads.clear()
+    streaming = null
+    setRunning(false)
+    messagesEl.replaceChildren()
+    attachmentsEl.replaceChildren()
+    renderMessages()
+    renderSessionList()
+    syncProviderControls()
+    if (state.sessions[0]) void openSession(state.sessions[0].id)
+    else renderAttachments()
+    return
+  }
   if (push.kind === 'session') {
     const view = (value as { session: SessionView }).session
     if (state.activeTurnId && state.session?.summary.id !== view.summary.id) return
@@ -1134,6 +1256,7 @@ onPush(push => {
     const data = value as { status: string; sessionId: string; message: SessionMessage }
     if (state.session?.summary.id !== data.sessionId) return
     state.activeTurnId = null
+    clearPermissions()
     setRunning(false)
     finishStreaming(data.message)
     if (state.session) {

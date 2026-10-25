@@ -15,6 +15,7 @@ Agent Core 不认识任何具体后端。后端（provider）是独立扩展，�
 
 ## 附件与会话
 
+- 会话**按仓库隔离**：每个会话记录创建时的仓库根目录，切换仓库后面板只列出当前仓库的会话，正在运行的回合随之停止；
 - 会话**完全不绑定文档**：切换文档不影响会话；需要当前文档时，点输入框上方的「＋ 本文档」把它当作一条普通附件加进来；
 - 附件按 128 KiB 分块上传；内容按 sha256 存在共享的 `extensions-data/imark.agent/blobs/`，各会话的 `attachments/` 是指向它的硬链接，因此同一个文件放进多个会话只占一份磁盘（不支持硬链接的文件系统退回独立副本）；附件只属于发出的那一条消息，发送后从待发区移除，显示在对应的用户消息里；
 - 会话消息、附件和 `prepared/` 产物都在同一会话目录；
@@ -25,7 +26,7 @@ Agent Core 不认识任何具体后端。后端（provider）是独立扩展，�
 
 ## 权限与隐私
 
-- 扩展以当前用户权限运行，**Windows 上没有 OS 级沙箱**。
+- 扩展以当前用户权限运行，**没有 OS 级沙箱**。
 - Agent 只拿到会话目录和文件路径；当前文档只有在用户主动添加时才以只读附件形式进入会话，结果通过编辑器写回，不直接改 vault。
 - 附件会随对话发送给 Agent 背后的模型服务，请只添加你愿意发送的内容。
 
@@ -41,12 +42,13 @@ provider 扩展的清单必须声明：
 }
 ```
 
-`activate()` 返回 `{ apiVersion: 1, providers: [...] }`。每个 provider 实现
+`activate()` 返回 `{ apiVersion: 2, providers: [...] }`。每个 provider 实现
 `@shared/agentProvider` 里的 `AgentProvider`：`info`、`detect()`、`createSession()`。
 Core 通过 `imark.extensions.getExtension(id).exports` 读取同一个宿主里的导出对象。
 
 - `extensionDependencies` 既保证 Core 先激活，也保证两者在同一个宿主进程（导出对象不能跨宿主传输）。
 - provider 自己读取自己的配置和 secret；Core 只传通用会话参数（会话 ID、cwd、取消信号）。
+- provider 需要用户授权某个工具时发 `permission` 事件；Core 用面板收集选择后调用 `respondPermission(requestId, 'allow' | 'deny')` 交回。
 - `detect()` 由 provider 自己实现：CLI、网络、凭据怎么探测由它决定。Core 只在选择器里汇总结果，不提供「检查后端」动作。
 - Core 在自己的 `activate()` 里绝不等待 provider；注册表惰性求值，Core 启动完成后才打开。
 - 每次 `createSession()` 都重新读取 provider 配置，因此设置改动下一轮生效。

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { AutoSaveMode, Settings, Theme } from '@shared/types'
 import {
@@ -8,6 +8,7 @@ import {
   EDITOR_DEFAULTS
 } from '@shared/editorSettings'
 import { dataRoot } from './dataDir'
+import { writeFileAtomic } from './files'
 
 const AUTO_SAVE_MODES: readonly AutoSaveMode[] = ['off', 'afterDelay', 'onFocusChange', 'onWindowChange']
 
@@ -172,13 +173,23 @@ let writeChain: Promise<void> = Promise.resolve()
 
 export async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
   const prev = cache ?? (await loadSettings())
-  const next: Settings = { ...prev, ...partial }
+  // 多开时另一个实例可能刚改过别的字段。写前再读一次磁盘,只把本次的 partial
+  // 叠上去;否则本实例内存里的整份快照会把人家刚写的改动盖回旧值。
+  // 读失败(第一次保存/文件正在被替换)就按没有磁盘状态处理。
+  let onDisk: Partial<Settings> = {}
+  try {
+    onDisk = JSON.parse(await readFile(settingsPath(), 'utf8')) as Partial<Settings>
+  } catch {
+    /* 忽略,用内存里的 */
+  }
+  const next = normalize({ ...prev, ...onDisk, ...partial })
   cache = next
   const snapshot = JSON.stringify(next, null, 2)
   const write = writeChain.then(async () => {
     try {
       await mkdir(dirname(settingsPath()), { recursive: true })
-      await writeFile(settingsPath(), snapshot, 'utf8')
+      // 原子写:另一个实例随时可能在读,不能让它看到写了一半的 JSON
+      await writeFileAtomic(settingsPath(), snapshot)
     } catch {
       /* 落盘失败不影响本次会话 */
     }

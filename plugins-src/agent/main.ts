@@ -37,7 +37,7 @@ import { DocumentApplyError, DocumentBridge } from './core/document'
 import { Inventory } from './core/inventory'
 import { inlineImageSources } from './core/markdown'
 import { buildReplay, buildTurnPrompt } from './core/prompt'
-import { attachmentsOf, SessionStore, type SessionMeta } from './core/sessions'
+import { attachmentsOf, SessionStore, workspaceKey, type SessionMeta } from './core/sessions'
 import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
@@ -173,7 +173,8 @@ class AgentHost {
       }),
       imark.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration('imark.agent')) void this.onConfigChanged()
-      })
+      }),
+      imark.workspace.onDidChangeWorkspaceFolders(() => this.onWorkspaceChanged())
     )
 
     this.statusItem = imark.window.createStatusBarItem(imark.StatusBarAlignment.Right, 95)
@@ -209,6 +210,11 @@ class AgentHost {
     this.providers.markReady()
   }
 
+  /** 当前仓库根目录；会话按它隔离，面板只列出当前仓库的会话 */
+  private currentWorkspace(): string | null {
+    return workspaceKey(imark.workspace.workspaceFolders?.[0]?.uri.fsPath)
+  }
+
   private refreshConfig(): AgentConfig {
     this.config = readConfig().config
     return this.config
@@ -224,12 +230,27 @@ class AgentHost {
     })
   }
 
+  /**
+   * 切换仓库：运行中的回合属于旧仓库，面板里已经没有它的位置，先停掉；
+   * 然后让界面整体切换到新仓库的会话列表（没有会话时回到空状态）。
+   */
+  private async onWorkspaceChanged(): Promise<void> {
+    if (this.disposed) return
+    this.cancelAllTurns()
+    if (!this.panel) return
+    const workspace = this.currentWorkspace()
+    const sessions = await this.sessions.listAll(workspace)
+    // 连续切换仓库时，先发出的那次读盘可能后完成；只推当前仓库的结果
+    if (this.disposed || workspace !== this.currentWorkspace()) return
+    this.push({ type: 'push', kind: 'workspace', value: { sessions } })
+  }
+
   private currentDocMeta(): DocMeta | null {
     return this.documents.meta(this.documents.current())
   }
 
   private async listSessions(): Promise<SessionSummary[]> {
-    return this.sessions.listAll()
+    return this.sessions.listAll(this.currentWorkspace())
   }
 
   private async summaryOf(meta: SessionMeta, withArtifacts = false): Promise<SessionSummary> {
@@ -451,6 +472,8 @@ class AgentHost {
         return this.previewPrompt(asRecord(payload))
       case 'turn.cancel':
         return { cancelled: this.cancelTurn(str(asRecord(payload).turnId)) }
+      case 'permission.respond':
+        return this.respondPermission(asRecord(payload))
       case 'artifact.preview':
         return this.previewArtifact(asRecord(payload))
       case 'doc.attach':
@@ -505,8 +528,11 @@ class AgentHost {
     if (!providers.some(provider => provider.info.id === providerId)) {
       throw codedError('config-invalid', `未知 provider：${providerId}`)
     }
-    // 会话不绑定文档：文档只作为每一轮的可选上下文
-    const meta = await this.sessions.create({ provider: providerId })
+    // 会话绑定当前仓库但不绑定文档：文档只作为每一轮的可选上下文
+    const meta = await this.sessions.create({
+      provider: providerId,
+      workspace: this.currentWorkspace()
+    })
     // 不在这里 push sessions：webview 的 createSession 请求会拿到同一份 view；
     // 额外 push 会让列表处理器在 state.session 还没赋值时自动 open，造成重复打开
     // 和“附件刚 finish 就被旧 view 覆盖”的竞态。
@@ -550,7 +576,10 @@ class AgentHost {
       if (!provider) {
         throw codedError('provider-unavailable', '未安装或未启用任何 Agent 后端扩展')
       }
-      const created = await this.sessions.create({ provider: provider.info.id })
+      const created = await this.sessions.create({
+        provider: provider.info.id,
+        workspace: this.currentWorkspace()
+      })
       sessionId = created.id
       this.push({ type: 'push', kind: 'sessions', value: { sessions: await this.listSessions() } })
       this.push({ type: 'push', kind: 'session', value: { session: await this.viewOf(sessionId) } })
@@ -926,6 +955,22 @@ class AgentHost {
     if (outcome.error && outcome.error.code !== 'cancelled') {
       this.output.error(`${outcome.error.code}: ${outcome.error.message}`)
     }
+  }
+
+  /**
+   * 用户在面板里对「需要授权」的操作做出决定。
+   *
+   * 回合可能刚好结束（取消/超时）：这时静默返回，界面不用为此弹错误。
+   */
+  private respondPermission(input: Record<string, unknown>): { responded: boolean } {
+    const turn = this.activeTurns.get(str(input.turnId))
+    const requestId = str(input.requestId)
+    if (!turn?.providerSession || !requestId) return { responded: false }
+    turn.providerSession.respondPermission(
+      requestId,
+      input.allow === true ? 'allow' : 'deny'
+    )
+    return { responded: true }
   }
 
   private cancelTurn(turnId: string): boolean {

@@ -195,7 +195,7 @@ onMounted(() => {
 
         <div class="market-detail-title">
           <h1>
-            {{ detail.displayName || detail.name }}
+            {{ detail.displayName }}
             <span class="market-mono market-dim">v{{ detail.version }}</span>
             <span
               v-for="s in shapeLabels(shapeOf(detail))"

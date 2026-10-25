@@ -4,7 +4,7 @@ Agent Core 的 Claude Code 后端扩展。
 
 - 依赖 `imark.agent`（Agent Core）。扩展宿主会把两者放进同一个宿主进程，Core 先激活。
 - 通过 `contributes["imark.agentProviders"]: ["claude-code"]` 声明自己提供的 provider。
-- `activate()` 返回 `{ apiVersion: 1, providers: [...] }`；Core 从 `extensions.getExtension("imark.claude-code").exports` 读取。
+- `activate()` 返回 `{ apiVersion: 2, providers: [...] }`；Core 从 `extensions.getExtension("imark.claude-code").exports` 读取。
 - 设置页的「检查 Claude Code」调用本扩展自己的 `detect()`，结果写在本扩展的状态卡里；Core 不参与探测。
 - 平时由 Core 在需要 provider 时惰性激活；设置页动作声明了 `onCommand:imark.claude-code.check`，点按钮时会先激活本扩展。
 
@@ -52,10 +52,17 @@ CLI 的端点、令牌、模型等配置**唯一的事实是 Claude Code 自己�
 
 ## 运行方式
 
-每次发送启动一个 `claude -p --verbose --output-format stream-json --include-partial-messages`
-子进程；首轮用 `--session-id`，后续用 `--resume` 续接。扩展不传任何权限或工具
-参数，工具是否可用完全由 Claude Code 自己的 settings.json 决定。扩展只把附件
-路径交给 Claude Code，由它自行读取和解析。
+每次发送启动一个
+`claude -p --verbose --output-format stream-json --input-format stream-json --permission-prompt-tool=stdio --include-partial-messages`
+子进程；首轮用 `--session-id`，后续用 `--resume` 续接。扩展不传权限模式或工具
+白名单，哪些工具需要授权仍由 Claude Code 自己的 settings.json 决定；需要授权时
+CLI 通过 stdio 发来 `can_use_tool` 控制请求，面板弹出「允许 / 拒绝」，决定再写回
+同一个子进程。扩展只把附件路径交给 Claude Code，由它自行读取和解析。
+
+stream-json 的一行可能包含整份 PDF 的 base64 等超大内容。扩展按字符流读取，
+把超长字符串截成「前缀 + 省略标记」后再解析，因此不会再出现「单行输出过大」
+导致回合中断；工具摘要只使用前缀，真正的工具结果仍完整地交给 CLI 自己处理。
+如果授权请求的输入也被截断，允许时不回写 `updatedInput`，由 CLI 沿用原始输入。
 
 ## 测试
 

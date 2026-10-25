@@ -20,16 +20,17 @@
   - 快速切换文件(Ctrl+P):全仓库模糊搜索,↑↓ 选择、Enter 打开
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
+- **表格编辑**:渲染态表格支持单元格就地输入(回车 / Tab 换格,最后一格自动加行)、鼠标靠近行列边界时增删行列、整表选择 / 对齐 / 删除、拖动矩形选区后按 Backspace / Delete 清空;隐藏的源码行不可输入,方向键可越过整张表。表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 的要求),渲染态下折成零高度,间距由 `--md-table-gap-top` / `--md-table-gap-bottom`(或 `--md-table-gap`)控制。
 - **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认所有扩展共用一个宿主(`shared`),也可切换 `isolated` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「设置 → 扩展分配」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
-  - **定时上传(Git)**:市场里的官方扩展(应用内置同一份包作离线兜底)——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
-  - **高级表格(Advanced Table)**:同样是随应用预装、且**默认启用**的官方扩展。光标所在行的左侧有一个「+」,点开 →「表格」→ 填行数与列数 → 确定,表格就插在这一行下面,并直接停在渲染出的表格里:点击任意单元格即可就地输入(Markdown 源码留在文档里,不再为了编辑把整张表翻回源码);回车换行、Tab 换格,在最后一格按 Tab 会自动加一行。表格四周有增删控件,但只在生效范围内浮现:鼠标放在哪一格,只出现该行/该列的删除「×」;靠近行/列边界线才出现插入「+」;整表选择 ▦、整表对齐 ≡ 与删除整表垃圾桶则在**鼠标移到表格附近时**出现在表格右上角(纵向排成一列),移开即收起,点对齐按钮可选左对齐 / 居中 / 右对齐,同时作用于表头与正文。控件浮在表格周围且不占版式空间,表格本身不会因此移位;表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 都把紧贴表格的非空行读成表格行,这两条空行是 Markdown 的要求),但渲染态下折成零高度、不接受光标;表格与上下正文的视觉距离由 `--md-table-gap-top` / `--md-table-gap-bottom`(或统一的 `--md-table-gap`)控制。方向键会越过整张表直接落到另一侧的正文行。表格的隐藏源码行同样不可输入:光标会被挪到表格外的正文行,输入法组合也写不进隐藏源码。按住左键在表格里拖动会选出一块矩形单元格区域(横向拖就是一行里的几格,纵向拖就是一列里的几格,斜着拖就是一块矩形),按 Backspace / Delete 清空这些格的内容;要删整行/整列,点行左/列顶的 ×;选中整表后按 Backspace / Delete 则删除整张表(文档选区覆盖整张表——比如从表格上方拖到下方或 Ctrl+A——时,表格仍以渲染态显示并整表高亮,不会翻回源码);光标紧贴表格边上的第一行(上一行行尾 / 下一行行首)按 Delete/Backspace 时,第一次先选中整表,再按一次才删除,中间还隔着空行则只做普通的行合并、不碰表格;上一行行尾回车会在表格上方新增可编辑空行,光标不会跳进表格。它是「宿主代画 + 扩展只出文本」的样板:按钮、菜单、对话框与插入全部由宿主实现,扩展只声明 `lineMenu` 条目并返回要插入的文本(见 §四)。宿主画的是**共享槽位**,所有扩展的 `lineMenu` 会合进同一个「+」菜单
-  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方扩展。**Agent Core** 是通用 Agent 面板:对话、会话、附件与产物都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径与会话目录交给后端,怎么读取/解析由后端自己决定。具体后端由 provider 扩展提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,启动参数只包含流式协议与会话续接,工具权限完全由 Claude Code 自己的设置决定;支持流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档需要时可用「＋ 本文档」作为一条普通附件加入会话,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里选择「自动检测」或手动指定可执行文件,也可以先安装 CLI;模型、端点与令牌的唯一事实是 `~/.claude/settings.json`,设置页的对应字段直接读写它;「检查 Claude Code」会探测 CLI 并把结果显示在本扩展的状态卡里。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
+  - **定时上传(Git)**:随应用预置、默认关闭的官方扩展——按固定间隔把当前仓库 `git add -A` → commit → push 到 GitLab / Gitee / GitHub 等任意 Git 远端,可配置**多个远端**(一次提交推全部);另有「立即上传」「测试连接」动作,以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交
+  - **快速编辑(Quick Edit)**:随应用预置、默认启用的官方扩展。光标所在行左侧的「+」→「表格」→ 填行数与列数,表格插入到当前行下方并停在渲染态。按钮、菜单、对话框与插入位置全部由宿主实现,扩展只声明 `lineMenu` 条目并返回要插入的文本(见 §四);所有扩展的 `lineMenu` 合进同一个「+」菜单
+  - **Agent Core / Claude Code**:随应用预装、默认关闭的两个官方扩展。**Agent Core** 是通用 Agent 面板:对话、会话、附件与产物都由它管,本身**不解析任何附件**,只把文件字节落盘,把绝对路径与会话目录交给后端,怎么读取/解析由后端自己决定。具体后端由 provider 扩展提供;**Claude Code** 是内置的第一个 provider,通过本机 CLI 接入,启动参数包含流式协议、会话续接与授权询问通道,哪些工具需要授权仍由 Claude Code 自己的设置决定,需要时由面板弹出「允许 / 拒绝」;支持流式文本、工具时间线、`prepared/` 产物预览、结果插入/替换、`--resume` 会话恢复与取消;当前文档需要时可用「＋ 本文档」作为一条普通附件加入会话,写回走编辑器,不直接改 vault。Claude Code 依赖 Agent Core,两者都要启用;启用前在 Claude Code 的设置里选择「自动检测」或手动指定可执行文件,也可以先安装 CLI;模型、端点与令牌的唯一事实是 `~/.claude/settings.json`,设置页的对应字段直接读写它;「检查 Claude Code」会探测 CLI 并把结果显示在本扩展的状态卡里。详见 `plugins-src/agent/README.md` 与 `plugins-src/claude-code/README.md`
 - **扩展市场**:仓库内自带零依赖自托管服务端(`npm run market`),应用里填地址即可**浏览 / 搜索 / 安装 / 查更新 / 发布**;按「含代码 / 纯声明」筛选。安装前有安全基线确认框(形态、来源与发布者、体积、可跨渠道核对的整包 sha256、入口 sha256、激活事件、能力声明与贡献摘要);含代码扩展必须勾选「以我的用户权限运行」才能安装,并可**先查看源码**。详见下文「五、扩展市场」
 - 无菜单栏界面(仿 Obsidian):原生菜单只是隐藏(`setMenuBarVisibility(false)`),Ctrl+N/O/S、Ctrl+P、Ctrl+J、F12 等加速键照常生效,按 Alt 也不会弹出;切勿改成 `Menu.setApplicationMenu(null)`,那会让加速键一起失效
 - 主题:亮色 / 深色两档,状态栏一键切换(主题与设置按钮在状态栏最左边),或在 **设置面板**(状态栏左侧齿轮 / `Ctrl+,`)的「外观」中挑选;深色的底色与边框对齐 Obsidian 的 Minimal 主题深色档(`#262626` 编辑区 / `#212121` 侧栏),文字仍用 iMark 默认配色(`#dadada` 正文 / `#8a5cf5` 强调色)。偏好持久化到数据目录的 `settings.json`
 - **自定义样式**:把 `.css` 文件放进数据目录的 `css/`(默认 `<应用目录>/.imark/css/`)(首次启动自动创建,并附一份带注释的示例)就能改编辑器里的显示 —— 比如整张表格居中 `.cm-md-table { text-align: center }`。改完保存**即刻生效、不用重启**;设置面板「外观」里是**单选**:一份 .css,或一个**目录**(目录里所有 .css 一起生效),点一行选中、再点一次取消,可导入单个文件或整个文件夹、删除、一键打开样式目录。样式作用于整个界面,**只影响编辑器内显示,不影响导出的 HTML**;详见下文「三、样式模块」
 - 状态栏字数统计(中文按字、拉丁按词)、导出 HTML(markdown-it + highlight.js 内联样式)
-- **通知中心**:状态栏右下角的铃铛收集扩展通知(`imk.ui.notify`)、应用自身的提示,以及渲染进程里 `new Notification(...)` 的浏览器通知;未读时铃铛带角标,点开在右下角弹出历史小框(可一键清空)。右下角气泡仍然负责即时提醒,但不再需要"盯着它看"——错过了随时能从铃铛里翻回来
+- **通知中心**:状态栏右下角的铃铛收集扩展通知(扩展调用 `showInformationMessage` 等)、应用自身的提示,以及渲染进程里 `new Notification(...)` 的浏览器通知;未读时铃铛带角标,点开在右下角弹出历史小框(可一键清空)。右下角气泡仍然负责即时提醒,但不再需要"盯着它看"——错过了随时能从铃铛里翻回来
 
 ## 开发
 
@@ -43,6 +44,12 @@ npm run typecheck  # tsc(node 侧)+ vue-tsc(渲染层)
 npm run build      # 构建三端产物到 out/
 npm run dist       # 先重建内置扩展包,再构建 + electron-builder 打安装包(predist)
 ```
+
+设计文档：
+
+- [docs/architecture.md](docs/architecture.md) —— 项目整体架构、进程边界、启动流程与关键子系统；
+- [docs/plugin-system.md](docs/plugin-system.md) —— 插件（扩展）系统的包格式、宿主拓扑、协议与市场；
+- [docs/plugin-development.md](docs/plugin-development.md) —— 插件开发指南（清单、API、webview、发布）。
 
 ## 环境要求
 
@@ -70,7 +77,7 @@ npm run dist       # 先重建内置扩展包,再构建 + electron-builder 打�
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| 桌面容器 | **Electron 44** | 主进程 / 预加载 / 渲染进程三段式;`sandbox: true` + `contextIsolation`,渲染层只能通过 `contextBridge` 暴露的 `window.api` 访问系统能力 |
+| 桌面容器 | **Electron 44** | 主进程 / 预加载 / 渲染进程三段式;`sandbox: true` + `contextIsolation`,系统能力经 `contextBridge` 暴露的一次性取用函数交给渲染层 |
 | 构建 | **electron-vite 3 + Vite 6** | 三端统一构建;主进程/预加载外部化依赖,渲染层 HMR |
 | UI | **Vue 3.5**(`<script setup>`)+ **TypeScript 5.9** | 状态用普通 `reactive` 轻量 store,不引 Pinia |
 | 编辑器内核 | **CodeMirror 6**(`@codemirror/state` / `view` / `commands` / `language`) | 增量解析 + 装饰系统 |
@@ -83,9 +90,9 @@ npm run dist       # 先重建内置扩展包,再构建 + electron-builder 打�
 
 ```
 src/
-├── shared/     # 主/渲染共用:IPC 通道常量、类型、window.api 接口
+├── shared/     # 主/渲染共用:IPC 通道常量、类型、桥接口
 ├── main/       # 主进程:窗口、IPC、原生菜单、文件原子写、settings、imark:// 协议
-├── preload/    # contextBridge 暴露 window.api(sandbox 模式)
+├── preload/    # contextBridge 暴露一次性取用函数(sandbox 模式)
 └── renderer/
     └── src/
         ├── styles/           # ★ 样式模块:统一装配入口 + 扩展样式注册表(见下)
@@ -255,10 +262,10 @@ iMark 的扩展模型与 **VS Code 扩展**一致:扩展清单是一份普通的
 
 | 模式 | 行为 | 崩溃半径 |
 |---|---|---|
-| `isolated`(默认) | 每个扩展一个 `utilityProcess` 宿主 | 只影响该扩展;按 1s/2s/4s 退避重启,60 秒三次后停止 |
-| `shared` | 所有扩展共用一个宿主 | 同宿主内的**所有扩展**一起重启 |
+| `shared`(默认) | 所有扩展共用一个 `utilityProcess` 宿主 | 同宿主内的**所有扩展**一起重启 |
+| `isolated` | 每个扩展一个宿主 | 只影响该扩展;按 1s/2s/4s 退避重启,60 秒三次后停止 |
 
-`settings.extensionHost = { mode: 'isolated' | 'shared', affinity: Record<id, number> }`。`affinity` 里相同正整数(未列出或 0 = 按模式自动分组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。「设置 → 扩展分配」页可以切换模式、设置分组编号,并查看每个宿主的 PID/内存/状态。
+`settings.extensionHost = { mode: 'shared' | 'isolated', affinity: Record<id, number> }`。`affinity` 里相同正整数(未列出或 0 = 按模式自动分组)的扩展分到同一宿主;清单里的 `extensionAffinity` 也参与分组。「设置 → 扩展分配」页可以切换模式、设置分组编号,并查看每个宿主的 PID/内存/状态。
 
 启用态驱动全部界面:扩展被禁用后,它贡献的命令、快捷键、状态栏、行首菜单会立即消失;没有激活过的扩展不会 fork 宿主。
 
@@ -482,7 +489,7 @@ Agent Core 不带具体后端;后端是独立扩展,通过贡献点登记,由 Co
 // 类型对照 src/shared/agentProvider.ts;这里只写运行时结构
 export function activate() {
   return {
-    apiVersion: 1,
+    apiVersion: 2,
     providers: [
       {
         info: {
@@ -502,6 +509,7 @@ export function activate() {
         createSession: async options => ({
           providerSessionId: undefined,
           send: async function* () { /* yield AgentEvent */ },
+          respondPermission: (requestId, decision) => {},
           cancel: () => {},
           dispose: async () => {}
         })
@@ -583,7 +591,8 @@ panel.webview.postMessage({ type: 'hello' })
 ### 七、其他子系统
 
 - **仓库(Vault)工作流**:主进程 `vault.ts` 用 `fs.promises.readdir` 递归列目录(跳过隐藏目录与 `node_modules`/`.obsidian` 等),渲染层 `vaultService.ts` 负责状态与流程编排;删除走 `shell.trashItem`(系统回收站),新建/重命名走专用 IPC——渲染层不直接触碰文件系统。
-- **进程边界与安全**:系统能力全部经 `contextBridge` 暴露的 `window.api`(类型定义在 `shared/api.ts`);渲染层开启 `sandbox`、无 Node 集成;外链在打开前于主进程校验 `^https?://`,本地图片走自定义 `imark://` 特权协议(编码绝对路径,由主进程读取后返回,规避 `file://` 的编码与安全限制)。
+- **多开与仓库占用**:`main/vaultHandoff.ts` 用数据根下的占用文件(`instances/<仓库哈希>.json`,原子 `wx` 创建)+ 本机 IPC(Windows 命名管道 / 其他平台 Unix socket)协调:同一个仓库只保留一个窗口。打开前由渲染层经 `vault:claim` 认领;已有窗口时把请求转过去、聚焦那个窗口并递上文件。联系不上主人时返回 `busy`,宁可提示也不开第二个窗口写同一批文件。
+- **进程边界与安全**:系统能力经 `contextBridge` 暴露的**一次性取用函数**交给 `services/api.ts`(类型定义在 `shared/api.ts`),扩展脚本拿不到 IPC 桥;渲染层开启 `sandbox`、无 Node 集成;外链在打开前于主进程校验 `^https?://`,本地图片走自定义 `imark://` 特权协议(编码绝对路径,由主进程读取后返回,规避 `file://` 的编码与安全限制)。
 - **主题**:两档主题(亮/深色)全部由 CSS 变量驱动(变量定义在 `shared/theme/tokens.css`,见 §三),CodeMirror 侧通过 `EditorView.theme` 引用 `var(--…)`。注意:base theme 已定义过的 `.cm-*` 属性必须写在主题扩展里,外部 CSS 会因特异度不足被静默忽略。
 - **导出 HTML**:markdown-it(代码高亮用 highlight.js)+ 内联样式模板,输出单文件。
 
@@ -598,15 +607,19 @@ iMark 的所有数据都在**应用自己所在的目录**里:安装版是 `<安
 <应用目录>/.imark/
 ├── css/               自定义样式(§三)
 ├── plugins/           扩展包 + installed.json + .staging/ + <id>.old/
+├── instances/         多开协调:哪个实例正开着哪个仓库(临时文件,退出即清)
 ├── settings.json      仓库列表、上次打开的文件、界面偏好、扩展启用态与配置
 ├── secrets.json       扩展访问令牌、市场登录令牌(**safeStorage 加密**,不是明文)
-└── profile/           Chromium 自己的 profile:缓存、Cookie、webview 的分区存储……
-                       ↑ 解密密钥(Local State)也在里面,别单独删它
+├── profile/           Chromium 自己的 profile:缓存、Cookie、webview 的分区存储……
+│                      ↑ 解密密钥(Local State)也在里面,别单独删它
+└── profile-2/ …       第二个及以后的同时运行实例各用一份(见下方「多开」)
 ```
 
 - **备份**:拷 `<应用目录>/.imark` 即可。最少要含 `plugins/` + `secrets.json`(只拷配置不拷密钥,扩展会认为你没填过令牌);`profile/` 是缓存与登录态,可以不拷。
 - **升级/卸载前请先备份**:数据放在安装目录里,而安装器/卸载器可能会覆盖或删除安装目录中的文件。移动整个应用文件夹时,数据会跟着走(这正是这个布局的好处);但**用安装器升级/卸载**时建议先把 `.imark` 拷出来。
 - **彻底重置**:退出应用 → 删掉 `<应用目录>/.imark` → 重启。设置、扩展、令牌、缓存一起清空。
 - **换机器**:数据拷过去后 `settings.json` / `plugins/` 直接可用,但 `secrets.json` 里的令牌要重填 —— 加密密钥绑当前 Windows 用户(DPAPI),换用户或换机器都解不开,扩展那边表现为"还没填令牌"。
-- **`--imark-data-dir=<目录>`**(高级):把数据根指到别处(别的盘、U 盘、并行实例)。单独使用时 profile 在 `<目录>/profile`;再配 `--user-data-dir=<目录>` 时,数据根是前者、profile 是后者。验收里就是用它把数据跑在沙箱内的(`verify/data-dir-harness.ts`)。
-- **单实例锁绑在这个目录上**:安装版与开发版现在各用各的数据目录,可以同时运行;同一个数据目录同时只允许一个实例(两个 Chromium 同时写一份 profile 会互相破坏)。要并行开两个共用数据目录的实例,给其中一个加 `--imark-data-dir` 另指一处。
+- **`--imark-data-dir=<目录>`**(高级):把数据根指到别处(别的盘、U 盘)。单独使用时 profile 在 `<目录>/profile`;再配 `--user-data-dir=<目录>` 时,数据根是前者、profile 是后者。验收里就是用它把数据跑在沙箱内的(`verify/data-dir-harness.ts`)。
+- **多开**:现在可以同时运行多个实例。设置、扩展包、`secrets.json` 这些数据根里的东西共用;Chromium 的 profile 则是**一个实例一份** —— 第一个用 `profile/`,之后依次用 `profile-2/`、`profile-3/`……。这样两个窗口不会互抢缓存与 Local Storage(同一份 profile 被两个 Chromium 同时写,实测会丢 localStorage),而扩展令牌仍然各窗口通用(Windows 上把主 profile 的 safeStorage 密钥抄给新槽位)。用 `--user-data-dir` 显式指定 profile 时仍是一个目录一个实例(验收靠它保证环境干净)。
+- **同一个仓库只开一个窗口**:打开仓库时会在 `instances/` 里登记「这个仓库由哪个实例开着」;另一个实例再打开同一个仓库时,不会开新窗口,而是把已有窗口叫到前面。**双击 .md** 按目录归属决定:已有窗口的仓库目录包含这个文件 → 在那个窗口里打开并聚焦;否则新开窗口(文件属于某个最近仓库就载入那个仓库,不属于任何仓库则单独打开)。可用 `--imark-data-dir` 避开协调(两个数据根互不可见);切回仓库选择界面或退出时自动释放登记,崩溃留下的记录由下一个实例按 PID 回收。
+- **Windows 任务栏「新开一个」**:中键或 Shift+点击任务栏图标,会在新进程里打开一个停在仓库选择页的窗口(设置里勾了「直接打开上次仓库」也不恢复)。实现方式是给窗口登记 AppUserModelID 与 `RelaunchCommand`(`iMark.exe --new-window`,见 `main/window.ts`),因为 Windows 不会给应用发「中键」事件,只会按这条命令再启动一份。普通再启动仍遵守上面的仓库占用规则;新窗口里再选一个已开着的仓库,同样会聚焦到那个窗口。

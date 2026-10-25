@@ -45,7 +45,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-/** n 行 m 列的表格源码(与 Advanced Table 扩展生成的形状一致:行数含表头) */
+/** n 行 m 列的表格源码(与快速编辑扩展插入的形状一致:行数含表头) */
 function makeTable(rows: number, cols: number): string {
   const blank = `|${'     |'.repeat(cols)}`
   const sep = `|${' --- |'.repeat(cols)}`

@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
-import type { DefaultEditorStatus, SaveDialogOptions, Settings } from '@shared/types'
+import type {
+  DefaultEditorStatus,
+  LaunchIntent,
+  SaveDialogOptions,
+  Settings,
+  Theme,
+  VaultClaimResult
+} from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
 import type {
   ExtensionCommandInvocation,
@@ -61,6 +68,8 @@ const api = {
   setWindowTitle: (name: string | null, dirty: boolean, vaultName?: string | null): void =>
     ipcRenderer.send(IPC.SetTitle, { name, dirty, vaultName }),
   setWindowView: (view: 'picker' | 'editor'): void => ipcRenderer.send(IPC.SetView, view),
+  /** 报告界面实际用的主题:窗口右上角的系统按钮跟着它换色 */
+  setWindowTheme: (theme: Theme): void => ipcRenderer.send(IPC.SetTheme, theme),
   setDocDirty: (dirty: boolean, dirtyNames: string[] = []): void =>
     ipcRenderer.send(IPC.DocDirty, { dirty, names: dirtyNames }),
   /** 告诉主进程当前开着哪个文件 —— 它据此决定 imark:// 能读哪些图片 */
@@ -72,12 +81,16 @@ const api = {
   onSaveBeforeClose: (cb: () => void): (() => void) => subscribe<void>(IPC.SaveBeforeClose, cb),
   // ---------- 系统集成 ----------
   takePendingOpenFile: (): Promise<string | null> => request(IPC.OpenFileTake),
+  getLaunchIntent: (): Promise<LaunchIntent> => request(IPC.LaunchIntent),
   onOpenFile: (cb: (path: string) => void): (() => void) => subscribe<string>(IPC.OpenFileFromSystem, cb),
   defaultEditorStatus: (): Promise<DefaultEditorStatus> =>
     request(IPC.SystemDefaultEditorStatus),
   setDefaultEditor: (): Promise<DefaultEditorStatus> => request(IPC.SystemSetDefaultEditor),
   // ---------- 仓库 ----------
   selectVaultDialog: (): Promise<string | null> => request(IPC.VaultSelectDialog),
+  claimVault: (vaultPath: string, filePath?: string | null): Promise<VaultClaimResult> =>
+    request(IPC.VaultClaim, { vaultPath, filePath: filePath ?? null }),
+  releaseVault: (vaultPath: string): Promise<void> => request(IPC.VaultRelease, vaultPath),
   listVault: (path: string) => request(IPC.VaultList, path),
   createFile: (path: string, content = ''): Promise<void> =>
     request(IPC.VaultCreateFile, { path, content }),
@@ -198,12 +211,12 @@ const api = {
 }
 
 /**
- * 桥**只暴露一次取用函数**,不再直接暴露 `api` 对象。
+ * 桥**只暴露一次取用函数**,不直接暴露 `api` 对象。
  *
  * 原因:扩展页面与主界面跑在同一个 realm 里,contextBridge 暴露的属性
  * 既不可删除也不可改写(实测 configurable:false / writable:false)。
  * 只要 `window.api` 存在,扩展就能调用应用的全部 IPC —— 那「页面脚本没有
- * 系统能力」的承诺就不成立。改成一次性取用后:
+ * 系统能力」的承诺就不成立。一次性取用后:
  *   - 应用在入口(renderer/src/main.ts 的第一条 import)取走并保存在模块闭包里;
  *   - 之后任何页面脚本(包括扩展)再调用这个函数都只能拿到 null。
  * 注意:取用必须发生在**任何扩展代码加载之前** —— 由 main.ts 的 import 顺序保证。

@@ -23,9 +23,14 @@ export async function readFileContent(path: string): Promise<ReadResult> {
   return { content: raw.replace(/\r\n/g, '\n'), eol }
 }
 
-/** 原子写:先写临时文件再 rename,失败时清理临时文件(二进制内容直接传 Uint8Array) */
+/**
+ * 原子写:先写临时文件再 rename,失败时清理临时文件(二进制内容直接传 Uint8Array)。
+ *
+ * 临时名带 PID + 随机后缀:多个实例会同时写同一份 settings.json / installed.json,
+ * 共用一个固定名的话,一个实例的 rename 可能搬走另一个实例刚写的中间文件。
+ */
 export async function writeFileAtomic(path: string, content: string | Uint8Array): Promise<void> {
-  const tmp = `${path}.imark-tmp`
+  const tmp = `${path}.${process.pid}-${randomBytes(4).toString('hex')}.imark-tmp`
   try {
     await fsWrite(tmp, content, 'utf8')
     await rename(tmp, path)

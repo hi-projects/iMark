@@ -130,7 +130,7 @@ function dedupeAccelerators(
   return extensionDropped
 }
 
-/** 帮助之前的那一段固定菜单(不含扩展/扩展两栏) */
+/** 固定菜单(不含动态生成的扩展栏) */
 function baseMenuTemplate(): MenuItemConstructorOptions[] {
   return [
     {

@@ -12,7 +12,16 @@ import type {
   PublishPreview,
   PublishResult
 } from './market'
-import type { DefaultEditorStatus, ReadResult, SaveDialogOptions, Settings, VaultNode } from './types'
+import type {
+  DefaultEditorStatus,
+  LaunchIntent,
+  ReadResult,
+  SaveDialogOptions,
+  Settings,
+  Theme,
+  VaultClaimResult,
+  VaultNode
+} from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
 import type {
   ExtensionCommandInvocation,
@@ -50,6 +59,11 @@ export interface WindowApi {
   /** 让主进程跟着视图调窗口状态:选择页是启动尺寸,编辑器最大化 */
   setWindowView(view: 'picker' | 'editor'): void
   /**
+   * 告诉主进程界面**实际**用着哪档主题。窗口右上角的系统按钮由主进程画,
+   * 必须跟界面同色 —— 以渲染层为准,而不是以设置文件为准。
+   */
+  setWindowTheme(theme: Theme): void
+  /**
    * 编辑器里有没有未保存的改动。`dirtyNames` 是这些标签页的名字,
    * 窗口关闭提示要据此告诉用户到底有几份、分别是哪几份。
    */
@@ -67,13 +81,29 @@ export interface WindowApi {
    * 必须等渲染层初始化完再调 —— 这也是它设计成「拉」而不是「推」的原因。
    */
   takePendingOpenFile(): Promise<string | null>
-  /** 运行中系统又递来一个文件(第二个实例的 argv,见 second-instance) */
+  /**
+   * 本次启动的意图:任务栏中键 / Shift+点击「新开一个」时 `newWindow` 为 true,
+   * 渲染层不要自动恢复上次仓库,停在仓库选择页。
+   */
+  getLaunchIntent(): Promise<LaunchIntent>
+  /**
+   * 运行中主进程递来一个文件:另一个实例打开同一个仓库时会把文件转交过来,
+   * 验收工具也可以直接投放。
+   */
   onOpenFile(cb: (path: string) => void): () => void
   /** 设置 → 系统:现在 .md 的默认程序是谁、iMark 是不是它 */
   defaultEditorStatus(): Promise<DefaultEditorStatus>
   /** 设置 → 系统:注册进「打开方式」并打开系统默认应用设置(最后一步只能由用户点) */
   setDefaultEditor(): Promise<DefaultEditorStatus>
   selectVaultDialog(): Promise<string | null>
+  /**
+   * 认领仓库:同一个仓库已经开在另一个窗口时,会把那个窗口叫到前面并返回
+   * `forwarded`(filePath 给了就同时打开它);联系不上主人返回 `busy`。
+   * 只有 `ok` 才可以在本窗口继续打开。
+   */
+  claimVault(vaultPath: string, filePath?: string | null): Promise<VaultClaimResult>
+  /** 打开失败/离开仓库时退掉认领,别让其他窗口也打不开 */
+  releaseVault(vaultPath: string): Promise<void>
   listVault(path: string): Promise<VaultNode>
   createFile(path: string, content?: string): Promise<void>
   createDir(path: string): Promise<void>

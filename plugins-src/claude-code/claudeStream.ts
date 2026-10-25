@@ -6,6 +6,7 @@
  */
 
 import type { AgentError, AgentEvent, AgentUsage, ToolKind } from '@shared/agentProvider'
+import { originalLength } from './streamLines'
 
 interface RawRecord {
   type?: unknown
@@ -64,12 +65,12 @@ function inputOf(block: Record<string, unknown>): Record<string, unknown> {
   return isRecord(block.input) ? block.input : {}
 }
 
-function toolSummary(name: string, input: Record<string, unknown>): string {
+export function describeToolInput(name: string, input: Record<string, unknown>): string {
   const path = str(input.file_path) || str(input.path)
   if (name === 'Read') return clip(path || '读取文件', 200)
   if (name === 'Write') {
     const content = str(input.content)
-    return clip(`${path}${content ? ` (${content.length} 字符)` : ''}`, 200)
+    return clip(`${path}${content ? ` (${originalLength(content)} 字符)` : ''}`, 200)
   }
   if (name === 'Edit') return clip(path || '编辑文件', 200)
   if (name === 'Bash' || name === 'PowerShell') return clip(str(input.command) || '执行命令', 200)
@@ -216,7 +217,7 @@ export class ClaudeEventMapper {
           toolId: id,
           name,
           kind: toolKind(name),
-          inputSummary: toolSummary(name, inputOf(block))
+          inputSummary: describeToolInput(name, inputOf(block))
         })
       }
     }

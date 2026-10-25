@@ -9,6 +9,7 @@
 import type {
   AgentDetection,
   AgentEvent,
+  AgentPermissionDecision,
   AgentProvider,
   AgentProviderInfo,
   AgentSession,
@@ -17,9 +18,10 @@ import type {
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { Writable } from 'node:stream'
 import * as imark from 'imark'
 import { buildClaudeArgs } from './claudeArgs'
-import { ClaudeEventMapper, classifyClaudeFailure } from './claudeStream'
+import { ClaudeEventMapper, classifyClaudeFailure, describeToolInput } from './claudeStream'
 import { readConfig, type ClaudeConfig } from './config'
 import {
   claudeEnv,
@@ -31,8 +33,17 @@ import {
 } from './spawn'
 
 const MAX_STDERR = 16 * 1024
-const MAX_LINE = 16 * 1024 * 1024
 const VERSION_TIMEOUT_MS = 5000
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
 
 const INFO: AgentProviderInfo = {
   id: 'claude-code',
@@ -117,6 +128,12 @@ class ClaudeSession implements AgentSession {
   private currentProviderSessionId: string | undefined
   private activeTurn: TurnControl | null = null
   private disposed = false
+  /** stream-json 输入要保持打开，才能把权限决定写回去 */
+  private activeStdin: Writable | null = null
+  private readonly pendingPermissions = new Map<
+    string,
+    { input: Record<string, unknown>; complete: boolean }
+  >()
 
   constructor(
     private readonly options: AgentSessionOptions,
@@ -165,6 +182,14 @@ class ClaudeSession implements AgentSession {
         clearTimeout(timer)
         timer = null
       }
+      // input-format=stream-json 下 CLI 会一直等 stdin；结束这一轮就关掉它
+      try {
+        handle?.child.stdin?.end()
+      } catch {
+        /* 进程可能已经退出 */
+      }
+      this.activeStdin = null
+      this.pendingPermissions.clear()
       queue.push(event)
       queue.end()
     }
@@ -199,17 +224,39 @@ class ClaudeSession implements AgentSession {
         cwd: this.options.cwd,
         env: claudeEnv(),
         signal: this.options.signal,
-        onStdoutLine: line => {
+        onStdoutLine: (line, info) => {
           if (terminal) return
-          if (line.length > MAX_LINE) {
-            void handle?.killTree()
-            finish({ type: 'error', error: { code: 'protocol-error', message: 'Claude Code 单行输出过大' } })
-            return
-          }
           let parsed: unknown
           try {
             parsed = JSON.parse(line)
           } catch {
+            return
+          }
+          const record = asRecord(parsed)
+          if (record && textOf(record.type) === 'control_request') {
+            const request = asRecord(record.request)
+            const requestId = textOf(record.request_id)
+            if (request && requestId && textOf(request.subtype) === 'can_use_tool') {
+              const input = asRecord(request.input) ?? {}
+              const toolName = textOf(request.tool_name) || 'Tool'
+              // 输入被流式截断时不再回写 updatedInput：allow 的 updatedInput 是可选的，
+              // CLI 会沿用模型给的原始输入，不能拿半份内容去覆盖它。
+              this.pendingPermissions.set(requestId, { input, complete: !info.truncated })
+              queue.push({
+                type: 'permission',
+                requestId,
+                toolId: textOf(request.tool_use_id) || undefined,
+                toolName,
+                inputSummary: describeToolInput(toolName, input)
+              })
+            } else if (requestId) {
+              // hooks / MCP 等控制请求这层不支持；回错误让 CLI 继续，而不是一直等
+              this.writeControlResponse({
+                subtype: 'error',
+                request_id: requestId,
+                error: 'iMark 暂不支持该控制请求'
+              })
+            }
             return
           }
           let events: AgentEvent[]
@@ -269,9 +316,21 @@ class ClaudeSession implements AgentSession {
         if (typeof timer.unref === 'function') timer.unref()
       }
 
-      if (handle.child.stdin) {
+      if (!terminal && handle.child.stdin) {
+        this.activeStdin = handle.child.stdin
         handle.child.stdin.on('error', () => undefined)
-        handle.child.stdin.end(turn.prompt, 'utf8')
+        // --input-format stream-json：用户输入也是一行 JSON；stdin 保持打开，
+        // 以便在 CLI 发来 can_use_tool 时把决定写回去。
+        const message = {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: turn.prompt }]
+          },
+          parent_tool_use_id: null,
+          session_id: this.currentProviderSessionId ?? ''
+        }
+        handle.child.stdin.write(`${JSON.stringify(message)}\n`, 'utf8')
       }
 
       void handle.done.then(result => {
@@ -307,11 +366,35 @@ class ClaudeSession implements AgentSession {
     } finally {
       this.options.signal.removeEventListener('abort', onAbort)
       this.activeTurn = null
+      this.activeStdin = null
+      this.pendingPermissions.clear()
       if (!terminal) {
         void handle?.killTree()
         queue.end()
       }
     }
+  }
+
+  respondPermission(requestId: string, decision: AgentPermissionDecision): void {
+    const pending = this.pendingPermissions.get(requestId)
+    if (!pending) return
+    this.pendingPermissions.delete(requestId)
+    this.writeControlResponse({
+      subtype: 'success',
+      request_id: requestId,
+      response:
+        decision === 'allow'
+          ? pending.complete
+            ? { behavior: 'allow', updatedInput: pending.input }
+            : { behavior: 'allow' }
+          : { behavior: 'deny', message: '用户拒绝了此操作' }
+    })
+  }
+
+  private writeControlResponse(response: Record<string, unknown>): void {
+    const stdin = this.activeStdin
+    if (!stdin || stdin.destroyed || stdin.writableEnded) return
+    stdin.write(`${JSON.stringify({ type: 'control_response', response })}\n`)
   }
 
   cancel(reason: 'user' | 'timeout' | 'turn-limit' | 'dispose' = 'user'): void {

@@ -124,6 +124,8 @@ export type HostPush =
   | { type: 'push'; kind: 'config'; value: { config: SafeConfig } }
   | { type: 'push'; kind: 'doc'; value: { doc: DocMeta | null } }
   | { type: 'push'; kind: 'sessions'; value: { sessions: readonly SessionSummary[] } }
+  /** 切换仓库：旧仓库的会话与运行状态全部作废，界面切到新仓库的列表 */
+  | { type: 'push'; kind: 'workspace'; value: { sessions: readonly SessionSummary[] } }
   | { type: 'push'; kind: 'session'; value: { session: SessionView } }
   | { type: 'push'; kind: 'sessionSummary'; value: { summary: SessionSummary } }
   | { type: 'push'; kind: 'sessionDeleted'; value: { sessionId: string } }

@@ -231,7 +231,7 @@ export function registerMarketIpc(): void {
         id: o.id,
         phase: 'download',
         percent: 5,
-        message: `正在下载 ${info.displayName || info.name} ${version}…`
+        message: `正在下载 ${info.displayName} ${version}…`
       })
       const fetched = await fetchEnvelope(o.id, version, (received, total) => {
         reportProgress({
@@ -239,7 +239,7 @@ export function registerMarketIpc(): void {
           phase: 'download',
           // 下载占进度条的前 35%,后面的校验/安装由 installer 接着报
           percent: total ? Math.max(5, Math.min(35, Math.round((received / total) * 35))) : 20,
-          message: `正在下载 ${info.displayName || info.name} ${version}…`
+          message: `正在下载 ${info.displayName} ${version}…`
         })
       })
 

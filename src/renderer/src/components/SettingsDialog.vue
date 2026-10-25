@@ -26,7 +26,7 @@ import { openMarketSettings, settingsNav, type MarketNav } from '../services/set
 import { extensionStore, selectExtensionSettings } from '../services/extensionService'
 import { extensionTone } from '../services/extensionUi'
 import PluginIcon from './plugins/PluginIcon.vue'
-import PluginSettings from './plugins/PluginSettings.vue'
+import ExtensionSettings from './plugins/ExtensionSettings.vue'
 import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
 import MarketPage from './market/MarketPage.vue'
@@ -473,7 +473,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else-if="settingsNav.page === 'plugin'" class="settings-body">
-          <PluginSettings />
+          <ExtensionSettings />
         </div>
 
         <div v-else-if="settingsNav.page === 'system'" class="settings-body">

@@ -6,6 +6,7 @@ import {
   handleSaveDone,
   setCurrentDocPath,
   setDocDirty,
+  setWindowTheme,
   setWindowTitle,
   setWindowView
 } from './window'
@@ -35,6 +36,8 @@ import {
   renameVaultPath,
   trashVaultPath
 } from './vault'
+import { claimVault, releaseVault } from './vaultHandoff'
+import { launchedForNewWindow } from './launchArgs'
 import {
   ensureUserStylesDir,
   importUserStyle,
@@ -66,6 +69,9 @@ export function registerIpc(): void {
 
   // 启动参数里带的文件(双击 .md 启动时那条路);渲染层初始化完后主动来取
   ipcMain.handle(IPC.OpenFileTake, () => takePendingOpenFile())
+
+  // 任务栏中键 / Shift+点击「新开一个」:渲染层据此跳过自动恢复上次仓库
+  ipcMain.handle(IPC.LaunchIntent, () => ({ newWindow: launchedForNewWindow }))
 
   // ---------- 系统(设置 → 系统) ----------
   ipcMain.handle(IPC.SystemDefaultEditorStatus, () => defaultEditorStatus())
@@ -112,6 +118,12 @@ export function registerIpc(): void {
 
   ipcMain.on(IPC.SetView, (_e, view: 'picker' | 'editor') => {
     setWindowView(view)
+    // 回到选择界面 = 这个窗口不再开着仓库,把占用让出来给别的实例
+    if (view === 'picker') releaseVault()
+  })
+
+  ipcMain.on(IPC.SetTheme, (_e, theme: unknown) => {
+    setWindowTheme(theme === 'dark' ? 'dark' : 'light')
   })
 
   ipcMain.on(IPC.DocDirty, (_e, value: unknown) => {
@@ -138,6 +150,19 @@ export function registerIpc(): void {
     if (!win) return null
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  ipcMain.handle(IPC.VaultClaim, (_e, o: unknown) => {
+    const input = o as { vaultPath?: unknown; filePath?: unknown } | null
+    if (!input || typeof input.vaultPath !== 'string' || input.vaultPath.length === 0) return 'busy'
+    return claimVault(
+      input.vaultPath,
+      typeof input.filePath === 'string' && input.filePath.length > 0 ? input.filePath : null
+    )
+  })
+
+  ipcMain.handle(IPC.VaultRelease, (_e, vaultPath: unknown) => {
+    releaseVault(typeof vaultPath === 'string' && vaultPath.length > 0 ? vaultPath : undefined)
   })
 
   ipcMain.handle(IPC.VaultList, (_e, p: string) => listVault(p))

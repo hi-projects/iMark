@@ -505,9 +505,8 @@ export function renameTabPaths(from: string, to: string, isDir: boolean): void {
 /**
  * 文件/目录被删除后,直接关掉盯着它的标签。
  *
- * 以前这里把标签转成「未保存的未命名文档」保留内容,但用户删文件就是不想再
- * 看到它 —— 留下一串带改动标记的「未命名 N」既占标签栏,又暗示还有东西待保存。
- * 删除是用户已经确认过的动作,标签跟着一起消失才符合预期。
+ * 删除是用户已经确认过的动作:留下带改动标记的「未命名 N」既占标签栏,
+ * 又暗示还有东西待保存。
  */
 export function closeDeletedPath(path: string, isDir: boolean): void {
   const doomed = appStore.tabs.filter(

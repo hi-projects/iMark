@@ -47,7 +47,6 @@ export async function previewPublish(dir: string): Promise<PublishPreview> {
 
   return {
     id: value.id,
-    name: value.name,
     displayName: value.displayName,
     version: value.version,
     author: value.author,

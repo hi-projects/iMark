@@ -213,7 +213,7 @@ onMounted(async () => {
 
       <template v-if="preview">
         <p class="market-detail-desc">
-          {{ preview.displayName || preview.name }}
+          {{ preview.displayName }}
           <span class="market-mono market-dim">{{ preview.id }}@{{ preview.version }}</span>
           <span
             v-for="s in shapeLabels(shapeOf(preview))"

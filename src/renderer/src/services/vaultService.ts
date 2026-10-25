@@ -69,8 +69,43 @@ function rebuildVaultFiles(): void {
   appStore.vaultFiles = files
 }
 
-/** 打开仓库:列出文件树、记忆路径、自动展开第一层目录 */
-export async function loadVault(vaultPath: string, opts?: { silent?: boolean }): Promise<boolean> {
+/**
+ * 上一次 `loadVault` 是不是因为「仓库已被另一个窗口打开」而放弃的。
+ *
+ * 需要这个标记是因为 `loadVault` 的 false 有两种含义:仓库读不出来(调用方按
+ * 仓库外文件继续打开),以及已经交给另一个窗口/联系不上那个窗口(本窗口
+ * 什么都不该再做)。真正的原因只有这里有,调用方不该去猜。
+ */
+let vaultHandedOff = false
+
+/**
+ * 打开仓库:先认领(多实例下同一个仓库只保留一个窗口),再列出文件树、
+ * 记忆路径、自动展开第一层目录。
+ *
+ * `filePath` 只在「系统递来一个文件」时传入:如果仓库已经在另一个窗口开着,
+ * 主进程会把文件一起递过去,那个窗口直接打开它。
+ */
+export async function loadVault(
+  vaultPath: string,
+  opts?: { silent?: boolean; filePath?: string | null }
+): Promise<boolean> {
+  // 认领失败(IPC 出错)按 busy 处理:拿不到结论时宁可不开,也不冒险开第二个窗口
+  const claim = await api.claimVault(vaultPath, opts?.filePath ?? null).catch(() => 'busy' as const)
+  vaultHandedOff = claim !== 'ok'
+  if (claim === 'forwarded') {
+    // 这个窗口就是为打开它而存在的(或刚切走旧仓库),没有可保留的内容
+    pushNotice('该仓库已在另一个窗口打开,已切换到那个窗口', { title: '打开仓库' })
+    window.close()
+    return false
+  }
+  if (claim === 'busy') {
+    pushNotice('该仓库已在另一个窗口打开,但没能切换到那个窗口', {
+      title: '打开仓库',
+      level: 'warn'
+    })
+    return false
+  }
+
   try {
     const tree = await api.listVault(vaultPath)
     if (!tree) throw new Error('无法读取该文件夹')
@@ -86,6 +121,8 @@ export async function loadVault(vaultPath: string, opts?: { silent?: boolean }):
     await rememberVault(vaultPath)
     return true
   } catch (err) {
+    // 认领了但仓库打不开(被删/无权限):退掉,别让别的窗口也打不开
+    void api.releaseVault(vaultPath)
     if (!opts?.silent) fail(err, '打开仓库')
     return false
   }
@@ -100,13 +137,27 @@ export function initVaultList(vaults: string[]): void {
   appStore.vaults = [...vaults]
 }
 
-/** 打开仓库成功后置顶记忆 */
+/**
+ * 选择页可见期间被推迟的「最近仓库」新顺序。
+ *
+ * 置顶如果当场改 appStore.vaults,用户点中的那一项会在加载仓库的这段时间里
+ * 从原位跳到第一行 —— 虽然只有一瞬,但看得很清楚。顺序先记在这里,等离开
+ * 选择页时一次性应用;那时列表要么已经不在屏幕上,要么是整块重建的。
+ */
+let pendingVaultOrder: string[] | null = null
+
+function applyPendingVaultOrder(): void {
+  if (!pendingVaultOrder) return
+  appStore.vaults = pendingVaultOrder
+  pendingVaultOrder = null
+}
+
+/** 打开仓库成功后置顶记忆:顺序立即写盘,界面上的重排等离开选择页再说 */
 async function rememberVault(vaultPath: string): Promise<void> {
-  const next = [vaultPath, ...appStore.vaults.filter(v => v !== vaultPath)].slice(
-    0,
-    MAX_RECENT_VAULTS
-  )
-  appStore.vaults = next
+  const current = pendingVaultOrder ?? appStore.vaults
+  const next = [vaultPath, ...current.filter(v => v !== vaultPath)].slice(0, MAX_RECENT_VAULTS)
+  if (appStore.view === 'picker') pendingVaultOrder = next
+  else appStore.vaults = next
   await api.saveSettings({ vaults: next })
 }
 
@@ -145,6 +196,8 @@ export async function requestVaultSwitch(): Promise<boolean> {
 /** 进入编辑器视图(仓库已加载) */
 export function enterEditor(): void {
   appStore.view = 'editor'
+  // 选择页已经让位,这时再重排最近仓库列表
+  applyPendingVaultOrder()
 }
 
 /**
@@ -227,7 +280,7 @@ function clearVaultState(): void {
 /**
  * 打开系统递过来的文件(双击 .md / 资源管理器「打开方式」;见 main/openFile.ts)。
  *
- * 两种到达方式共用这里:启动参数(渲染层初始化完主动来取)与运行中的第二个实例
+ * 两种到达方式共用这里:启动参数(渲染层初始化完主动来取)与另一个实例转交的文件
  * (主进程推事件)。
  *
  * 还停在仓库选择界面时**不再要求先选仓库**:文件属于某个最近用过的仓库,就静默
@@ -238,8 +291,17 @@ function clearVaultState(): void {
 export async function openFileFromSystem(path: string): Promise<void> {
   if (appStore.view === 'picker') {
     const vault = containingVault(path)
-    // 载入失败(仓库被删/不可读)也按「仓库外文件」处理,别把旧仓库留在侧栏
-    if (!vault || !(await loadVault(vault, { silent: true }))) clearVaultState()
+    if (vault) {
+      // 仓库已在另一个窗口开着时,loadVault 会把文件一起递过去;本窗口不要再打开它
+      const loaded = await loadVault(vault, { silent: true, filePath: path })
+      if (!loaded) {
+        if (vaultHandedOff) return
+        // 载入失败(仓库被删/不可读)按「仓库外文件」处理,别把旧仓库留在侧栏
+        clearVaultState()
+      }
+    } else {
+      clearVaultState()
+    }
     await enterEditorAndWait()
   }
   await openFileByPath(path)
@@ -322,6 +384,43 @@ export async function renamePath(node: VaultNode, newName: string): Promise<bool
   }
   await refreshVault()
   // 改名可能同时命中多个标签(目录改名时,目录下打开的每一份都要跟着换路径)
+  renameTabPaths(node.path, to, node.type === 'dir')
+  return true
+}
+
+/**
+ * 把文件/目录移动到另一个目录下(只换位置,不改名)。
+ *
+ * 目标已存在时由主进程拒绝(见 main/vault.ts),所以拖到一个已有同名项的目录里
+ * 会提示失败而不是覆盖。移动的是目录时,它自己的展开状态与打开标签都要跟着换前缀。
+ */
+export async function moveNode(node: VaultNode, targetDir: string): Promise<boolean> {
+  const to = joinPath(targetDir, node.name)
+  if (to === node.path) return true
+  // 目录不能移进自己或自己的子孙:文件系统会报 EINVAL,先挡住给出说得清的原因
+  if (node.type === 'dir' && isInside(node.path, targetDir)) {
+    pushNotice('不能把文件夹移动到它自己里面', { title: '文件', level: 'warn' })
+    return false
+  }
+  try {
+    await api.renamePath(node.path, to)
+  } catch (err) {
+    fail(err, '移动')
+    return false
+  }
+  // 展开状态记的是绝对路径:目录挪窝后,它和它下面展开的子目录都要换前缀
+  const expanded = new Set<string>()
+  for (const p of appStore.expandedDirs) {
+    expanded.add(
+      node.type === 'dir' && isInside(node.path, p)
+        ? to + p.slice(node.path.length)
+        : p
+    )
+  }
+  // 落点目录展开,让用户直接看到移进去的东西
+  expanded.add(targetDir)
+  appStore.expandedDirs = expanded
+  await refreshVault()
   renameTabPaths(node.path, to, node.type === 'dir')
   return true
 }

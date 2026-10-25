@@ -18,11 +18,13 @@ import {
   createDir,
   createFile,
   deleteNode,
+  moveNode,
   openVaultFile,
   refreshVault,
   renamePath,
   requestVaultSwitch
 } from '../services/vaultService'
+import { isInside, joinPath } from '../utils/paths'
 
 interface Row {
   node: VaultNode
@@ -111,6 +113,98 @@ async function commitEdit(): Promise<void> {
 
 async function onDelete(node: VaultNode): Promise<void> {
   await deleteNode(node)
+}
+
+// ---------- 拖拽移动 ----------
+
+/**
+ * 正在拖的节点。dataTransfer 在 dragover 阶段读不到数据(浏览器只在 drop 时才
+ * 解除保护),所以拖动源只能自己记一份。
+ */
+const draggingNode = ref<VaultNode | null>(null)
+/** 高亮的落点行(文件行 = 移进它所在的目录);null 表示没有有效落点 */
+const dropPath = ref<string | null>(null)
+/** 是否落在列表空白处(= 移到仓库根) */
+const rootDrop = ref(false)
+
+/** 节点所在目录。根部下要保留分隔符:`C:\a.md` → `C:\`、`/a.md` → `/` */
+function dirOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  if (i < 0) return ''
+  if (i === 0 || p[i - 1] === ':') return p.slice(0, i + 1)
+  return p.slice(0, i)
+}
+
+/** 这个落点会移进哪个目录;不能拖时返回 null */
+function dropTargetDir(target: VaultNode | null): string | null {
+  const source = draggingNode.value
+  if (!source) return null
+  if (target && target.path === source.path) return null
+  const dir = target ? (target.type === 'dir' ? target.path : dirOf(target.path)) : appStore.vaultPath
+  if (!dir) return null
+  // 目录不能进自己或自己的子孙
+  if (source.type === 'dir' && isInside(source.path, dir)) return null
+  // 本来就在这个目录里,不算一次移动(也避免无意义的刷新与高亮)
+  if (joinPath(dir, source.name) === source.path) return null
+  return dir
+}
+
+function onDragStart(e: DragEvent, node: VaultNode): void {
+  draggingNode.value = node
+  closeMenu()
+  if (!e.dataTransfer) return
+  e.dataTransfer.effectAllowed = 'move'
+  // 必须写一份数据,否则 Chromium 不会真正开始拖拽;自定义类型避免被编辑器当成文本
+  e.dataTransfer.setData('application/x-imark-vault-node', node.path)
+}
+
+function onDragOver(e: DragEvent, node: VaultNode): void {
+  rootDrop.value = false
+  const dir = dropTargetDir(node)
+  if (!dir) {
+    dropPath.value = null
+    return
+  }
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  dropPath.value = node.path
+}
+
+async function onDrop(e: DragEvent, node: VaultNode): Promise<void> {
+  e.preventDefault()
+  const source = draggingNode.value
+  const dir = dropTargetDir(node)
+  resetDrag()
+  if (source && dir) await moveNode(source, dir)
+}
+
+function onRootDragOver(e: DragEvent): void {
+  const dir = dropTargetDir(null)
+  if (!dir) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  rootDrop.value = true
+}
+
+async function onRootDrop(e: DragEvent): Promise<void> {
+  e.preventDefault()
+  const source = draggingNode.value
+  const dir = dropTargetDir(null)
+  resetDrag()
+  if (source && dir) await moveNode(source, dir)
+}
+
+/** 从空白区移到行上时 dragleave 也会触发,只有真正离开整个列表才收起高亮 */
+function onRootDragLeave(e: DragEvent): void {
+  const list = e.currentTarget as HTMLElement
+  if (e.relatedTarget instanceof Node && list.contains(e.relatedTarget)) return
+  rootDrop.value = false
+}
+
+function resetDrag(): void {
+  draggingNode.value = null
+  dropPath.value = null
+  rootDrop.value = false
 }
 
 // ---------- 右键菜单 ----------
@@ -206,7 +300,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
       </span>
     </div>
 
-    <div class="explorer-list">
+    <div
+      class="explorer-list"
+      :class="{ 'explorer-list-drop': rootDrop }"
+      @dragover="onRootDragOver"
+      @dragleave="onRootDragLeave"
+      @drop="onRootDrop"
+    >
       <button
         v-if="!appStore.vaultTree"
         class="explorer-open-vault"
@@ -246,9 +346,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
         <div
           v-else-if="row.node.type === 'dir'"
           class="explorer-item"
+          :class="{
+            'explorer-dragging': draggingNode?.path === row.node.path,
+            'explorer-drop-target': dropPath === row.node.path
+          }"
           :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }"
+          draggable="true"
           @click="toggleDir(row.node)"
           @contextmenu.prevent="openMenu($event, row.node)"
+          @dragstart="onDragStart($event, row.node)"
+          @dragend="resetDrag"
+          @dragover.stop="onDragOver($event, row.node)"
+          @drop.stop="onDrop($event, row.node)"
         >
           <component
             :is="appStore.expandedDirs.has(row.node.path) ? ChevronDown : ChevronRight"
@@ -281,11 +390,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
         <div
           v-else
           class="explorer-item explorer-file"
-          :class="{ 'explorer-file-active': isOpenFile(row.node) }"
+          :class="{
+            'explorer-file-active': isOpenFile(row.node),
+            'explorer-dragging': draggingNode?.path === row.node.path,
+            'explorer-drop-target': dropPath === row.node.path
+          }"
           :style="{ paddingLeft: 8 + row.depth * 14 + 16 + 'px' }"
           :title="row.node.path"
+          draggable="true"
           @click="openVaultFile(row.node.path)"
           @contextmenu.prevent="openMenu($event, row.node)"
+          @dragstart="onDragStart($event, row.node)"
+          @dragend="resetDrag"
+          @dragover.stop="onDragOver($event, row.node)"
+          @drop.stop="onDrop($event, row.node)"
         >
           <FileText :size="14" class="explorer-icon" />
           <span class="explorer-name">{{ row.node.name }}</span>

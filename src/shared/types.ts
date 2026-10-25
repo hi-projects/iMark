@@ -96,7 +96,7 @@ export interface Settings {
    * 密钥不在这里,只以掩码形式出现在视图层;明文由主进程 safeStorage 保管。
    */
   extensions: Record<string, ExtensionPreference>
-  /** 宿主拓扑:isolated(默认,每扩展一进程)或 shared;affinity 按扩展 ID 分组 */
+  /** 宿主拓扑:shared(默认,所有扩展共用一个进程)或 isolated(每扩展一进程);affinity 按扩展 ID 分组 */
   extensionHost: ExtensionHostSettings
   /**
    * 扩展市场的服务地址。默认指向本机的自托管服务(仓库里的 server/)。
@@ -130,3 +130,20 @@ export interface VaultNode {
   type: 'dir' | 'file'
   children?: VaultNode[]
 }
+
+/** 本次启动的意图(见 main/launchArgs.ts) */
+export interface LaunchIntent {
+  /**
+   * true = 任务栏中键 / Shift+点击「新开一个」拉起的进程。
+   * 渲染层据此跳过「自动恢复上次仓库」,把窗口停在选择页。
+   */
+  newWindow: boolean
+}
+
+/**
+ * 多实例下认领仓库的结果(见 main/vaultHandoff.ts):
+ * - `ok`        本窗口可以打开;
+ * - `forwarded` 另一个窗口已经开着它,已把那个窗口叫到前面,本窗口不要再打开;
+ * - `busy`      记录在,但联系不上那个窗口(端口没起来/超时),暂时不要打开。
+ */
+export type VaultClaimResult = 'ok' | 'forwarded' | 'busy'

@@ -29,7 +29,8 @@ import { registerIpc } from '../src/main/ipc'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { registerExtensionWebviewProtocol } from '../src/main/extensions/webviewProtocol'
 import { buildAppMenu } from '../src/main/menu'
-import { loadSettings } from '../src/main/settings'
+import { loadSettings, saveSettings } from '../src/main/settings'
+import { startInstanceBroker, stopInstanceBroker } from '../src/main/vaultHandoff'
 import { createMainWindow } from '../src/main/window'
 import { installExtensionPackage } from '../src/main/extensions/installer'
 import {
@@ -38,6 +39,8 @@ import {
   type ExtensionService
 } from '../src/main/extensions/service'
 import { SYSTEM_PROMPT } from '../plugins-src/agent/core/prompt'
+import { workspaceKey } from '../plugins-src/agent/core/sessions'
+import { StreamingLineReader } from '../plugins-src/claude-code/streamLines'
 
 const REPO = join(__dirname, '..', '..')
 const CORE_ID = 'imark.agent'
@@ -68,7 +71,79 @@ interface Invocation {
   stdin: string
   versionOnly: boolean
   scenario: string
+  marker: string
   hasApiKey: boolean
+}
+
+function checkLineReader(): void {
+  console.log('\n【0】stream-json 行读取器')
+  interface Seen {
+    line: string
+    truncated: boolean
+  }
+  const read = (chunks: string[]): Seen[] => {
+    const seen: Seen[] = []
+    const reader = new StreamingLineReader({
+      perString: 64,
+      perLine: 512,
+      onLine: (line, info) => seen.push({ line, ...info })
+    })
+    for (const chunk of chunks) reader.push(chunk)
+    reader.end()
+    return seen
+  }
+
+  const smallLine = '{"type":"system","session_id":"s1"}'
+  const small = read([`${smallLine}\n`])
+  check(
+    '小行原样通过',
+    small.length === 1 && !small[0].truncated && small[0].line === smallLine,
+    JSON.stringify(small)
+  )
+
+  const bigLine = JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', content: 'x'.repeat(1000) }] }
+  })
+  const big = read([bigLine.slice(0, 17), bigLine.slice(17, 99), bigLine.slice(99), '\n'])
+  let bigParsed: { message?: { content?: Array<{ content?: string }> } } | null = null
+  try {
+    bigParsed = JSON.parse(big[0]?.line ?? '')
+  } catch {
+    bigParsed = null
+  }
+  check(
+    '超长字符串截断后仍是合法 JSON',
+    Boolean(bigParsed) && big[0]?.truncated === true,
+    JSON.stringify(big[0]).slice(0, 200)
+  )
+  const kept = bigParsed?.message?.content?.[0]?.content ?? ''
+  check('保留前缀并写明省略字符数', kept.startsWith('x'.repeat(64)) && /已省略 \d+ 字符/.test(kept))
+  check('截断后的内容明显小于原文', kept.length < 200, String(kept.length))
+
+  // 转义序列跨分块、且截断点落在字符串中间：结果仍必须是合法 JSON
+  const escapedLine = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: `${'"\\'.repeat(100)}tail` }] }
+  })
+  const escaped = read([
+    escapedLine.slice(0, 60),
+    escapedLine.slice(60, 61),
+    escapedLine.slice(61)
+  ])
+  let escapedParsed: unknown = null
+  try {
+    escapedParsed = JSON.parse(escaped[0]?.line ?? '')
+  } catch {
+    escapedParsed = null
+  }
+  check('跨分块的转义序列仍能解析', Boolean(escapedParsed))
+
+  const noNewline = read(['{"type":"result"}'])
+  check(
+    '最后一行没有换行也能交付',
+    noNewline.length === 1 && noNewline[0].line === '{"type":"result"}'
+  )
 }
 
 async function main(): Promise<void> {
@@ -77,6 +152,7 @@ async function main(): Promise<void> {
     app.exit(2)
     return
   }
+  checkLineReader()
 
   protocol.registerSchemesAsPrivileged([
     { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -93,6 +169,8 @@ async function main(): Promise<void> {
   ])
 
   await app.whenReady()
+  // 渲染层打开仓库前会走「多实例认领」；harness 不走 index.ts，要自己把 broker 起起来
+  await startInstanceBroker()
 
   ;(dialog as unknown as { showSaveDialog: unknown }).showSaveDialog = async () => ({
     canceled: true,
@@ -356,6 +434,27 @@ async function main(): Promise<void> {
         return true
       })()`
     )
+  }
+
+  /** fake CLI 的 stdin 现在是 stream-json，一行一条消息；取出本轮用户文本 */
+  function promptText(invocation: Invocation | null): string {
+    for (const line of (invocation?.stdin ?? '').split(/\r?\n/)) {
+      if (!line.trim()) continue
+      try {
+        const value = JSON.parse(line) as {
+          type?: string
+          message?: { content?: Array<{ type?: string; text?: string }> }
+        }
+        if (value.type !== 'user') continue
+        return (value.message?.content ?? [])
+          .filter(part => part.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text)
+          .join('\n')
+      } catch {
+        /* 权限响应等其它行 */
+      }
+    }
+    return ''
   }
 
   async function sendTurn(text: string): Promise<void> {
@@ -918,9 +1017,15 @@ async function main(): Promise<void> {
   check('fake CLI 收到 turn', Boolean(firstInvocation))
   const argv = firstInvocation?.argv ?? []
   check('使用 -p / stream-json', argv.includes('-p') && argv.includes('stream-json'))
+  check(
+    '输入与输出都走 stream-json',
+    argv.includes('--input-format') && argv.filter(item => item === 'stream-json').length >= 2,
+    argv.join(' ')
+  )
+  check('授权询问走 stdio', argv.includes('--permission-prompt-tool=stdio'), argv.join(' '))
   check('首轮使用 --session-id', argv.includes('--session-id') && !argv.includes('--resume'))
   check(
-    '不传任何权限/工具参数',
+    '不传权限模式或工具白名单参数',
     !argv.some(arg =>
       [
         '--restricted',
@@ -936,15 +1041,15 @@ async function main(): Promise<void> {
     argv.join(' ')
   )
   check('prompt 走 stdin（不是 --append-system-prompt）', !argv.includes('--append-system-prompt'))
-  check('prompt 含附件绝对路径', firstInvocation?.stdin.includes(attachmentPath) === true)
+  const firstPrompt = promptText(firstInvocation)
+  check('prompt 含附件绝对路径', firstPrompt.includes(attachmentPath), firstPrompt.slice(0, 300))
   check(
     'prompt 含手动添加的文档附件',
-    Boolean(docAttachmentPath) && firstInvocation?.stdin.includes(docAttachmentPath) === true
+    Boolean(docAttachmentPath) && firstPrompt.includes(docAttachmentPath)
   )
   check(
     'prompt 不含自动文档快照',
-    !firstInvocation?.stdin.includes('document.md') &&
-      !firstInvocation?.stdin.includes('当前文档快照')
+    !firstPrompt.includes('document.md') && !firstPrompt.includes('当前文档快照')
   )
   check(
     'prompt 不含 300KB 附件内容/base64',
@@ -1256,6 +1361,34 @@ async function main(): Promise<void> {
 
   console.log('\n【6】同一条 assistant 消息拆成多条记录时不重复计轮')
   await setScenario('split-turns', 'fake-session-1', 'T4')
+  // 工具事件很密（10 个工具、每个都有 start/result）。在页面里装一个观察器：
+  // 工具块第一次出现就点开，然后盯住它是否被后续事件整块重建（节点身份变了）
+  // 或重新关上。
+  await agentEval(`(() => {
+    const rec = { node: null, replaced: false, closed: false, max: 0 }
+    const tick = () => {
+      const live = document.querySelector('.agent-msg.is-streaming .agent-tools-wrap details.agent-tools')
+      if (!live) return
+      if (!rec.node) {
+        rec.node = live
+        live.open = true
+      } else if (live !== rec.node) {
+        rec.replaced = true
+      } else if (!live.open) {
+        rec.closed = true
+      }
+      const count = Number((live.querySelector('summary')?.textContent || '').match(/(\\d+)/)?.[1] || 0)
+      rec.max = Math.max(rec.max, count)
+    }
+    new MutationObserver(tick).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['open']
+    })
+    window.__toolPersist = rec
+    return true
+  })()`)
   await sendTurn('轮数统计回归')
   check(
     '思考过程先出现，工具活动不会插到它上面',
@@ -1275,6 +1408,21 @@ async function main(): Promise<void> {
   )
   check('split-turns 触发 turn-limit', await waitAnyText('.agent-error', 'turn-limit', 20_000))
   await sleep(300)
+  check(
+    '工具活动展开后不被后续工具事件收起',
+    await agentEval<boolean>(`(() => {
+      const rec = window.__toolPersist
+      return Boolean(rec && rec.node && !rec.replaced && !rec.closed && rec.max >= 2)
+    })()`)
+  )
+  check(
+    '轮末保留工具活动的展开状态',
+    await agentEval<boolean>(`(() => {
+      const msg = [...document.querySelectorAll('.agent-msg.assistant:not(.is-streaming)')].pop()
+      const d = msg?.querySelector('.agent-tools-wrap details.agent-tools')
+      return d?.open === true
+    })()`)
+  )
   const splitMessages = (await readFile(messagesPath, 'utf8'))
     .trim()
     .split(/\r?\n/)
@@ -1283,7 +1431,7 @@ async function main(): Promise<void> {
     | { toolCalls?: unknown[] }
     | undefined
   check(
-    'maxTurns=10 时第 11 条消息才终止（旧实现第 6 条就终止）',
+    'maxTurns=10 时第 11 条消息才终止',
     Array.isArray(splitLast?.toolCalls) && splitLast.toolCalls.length === 10,
     String(splitLast?.toolCalls?.length)
   )
@@ -1317,6 +1465,26 @@ async function main(): Promise<void> {
   // 上面是「流到一半」的断言，必须等这一轮真正结束再进下一节 ——
   // 运行中 send 是禁用的，否则下一节的 auth 用例会被静默吞掉。
   check('长思考流结束后回到空闲', await waitAnyText('.agent-msg.assistant', '思考完成。', 20_000))
+
+  // ---------- 6c. 大工具结果 ----------
+
+  console.log('\n【6c】超过 16 MiB 的单行输出')
+  await setScenario('large-line', 'fake-session-1', 'LARGE')
+  await sendTurn('读取一个很大的结果')
+  check('大行不再中断回合', await waitAnyText('.agent-msg.assistant', '大行通过 LARGE', 30_000))
+  check(
+    '大行里的工具结果被正常归一化',
+    await waitInFrame(
+      '.agent',
+      `[...document.querySelectorAll('.agent-tool-result')]
+        .some(el => !(el.textContent || '').includes('运行中'))`,
+      10_000
+    )
+  )
+  check(
+    '面板没有「单行输出过大」错误',
+    !(await agentText('.agent')).includes('单行输出过大')
+  )
 
   // ---------- 7. 错误分类 ----------
 
@@ -1373,6 +1541,51 @@ async function main(): Promise<void> {
     await waitHost(`!document.querySelector('.webview-status-dot')?.classList.contains('is-busy')`)
   )
 
+  // ---------- 8b. 工具授权 ----------
+
+  console.log('\n【8b】需要授权时由面板确认')
+  await setScenario('permission-request', 'fake-session-1', 'P-ALLOW')
+  await sendTurn('需要授权的操作')
+  check(
+    '授权确认框出现',
+    await waitInFrame(
+      '.agent',
+      `!document.querySelector('#confirm').classList.contains('hidden')`,
+      15_000
+    )
+  )
+  const permissionText = await agentText('#confirm-message')
+  check(
+    '确认框点名工具与命令',
+    permissionText.includes('Bash') && permissionText.includes('python -c'),
+    permissionText
+  )
+  check('点允许', await clickByText('#confirm-ok', '允许'))
+  check('允许后这一轮继续完成', await waitAnyText('.agent-msg.assistant', 'P-ALLOW', 20_000))
+  const allowInvocation = await waitInvocation(
+    item => item.marker === 'P-ALLOW' && item.stdin.includes('"behavior":"allow"'),
+    10_000
+  )
+  check('允许决定写回 CLI', Boolean(allowInvocation), allowInvocation?.stdin.slice(-300) ?? '')
+
+  await setScenario('permission-request', 'fake-session-1', 'P-DENY')
+  await sendTurn('拒绝这个操作')
+  check(
+    '第二次授权确认框出现',
+    await waitInFrame(
+      '.agent',
+      `!document.querySelector('#confirm').classList.contains('hidden')`,
+      15_000
+    )
+  )
+  check('点拒绝', await clickByText('#confirm-cancel', '拒绝'))
+  check('拒绝后回合正常收尾', await waitAnyText('.agent-msg.assistant', 'P-DENY', 20_000))
+  const denyInvocation = await waitInvocation(
+    item => item.marker === 'P-DENY' && item.stdin.includes('"behavior":"deny"'),
+    10_000
+  )
+  check('拒绝决定写回 CLI', Boolean(denyInvocation), denyInvocation?.stdin.slice(-300) ?? '')
+
   // ---------- 9. 依赖保护 ----------
 
   console.log('\n【9】依赖保护')
@@ -1399,6 +1612,95 @@ async function main(): Promise<void> {
     'Core 被已启用的 Claude Code 依赖时拒绝禁用',
     disableError.includes(CLAUDE_ID) && disableError.includes('无法禁用'),
     disableError
+  )
+
+  // ---------- 9b. 会话按仓库隔离 ----------
+
+  console.log('\n【9b】会话按仓库隔离')
+  const otherVault = join(ud, 'vault-b')
+  await mkdir(otherVault, { recursive: true })
+  await writeFile(join(otherVault, '另一仓库.md'), '# 另一仓库\n', 'utf8')
+
+  const menuIds = (): Promise<string[]> =>
+    agentEval<string[]>(
+      `[...document.querySelectorAll('#session-menu .agent-session-item')]
+        .map(row => row.dataset.id || '')`
+    )
+  const beforeIds = await menuIds()
+  check('切换仓库前有会话', beforeIds.length > 0, JSON.stringify(beforeIds))
+
+  await saveSettings({ vaultPath: otherVault })
+  check(
+    '切到另一个仓库：列表里只剩它自己的会话（这里为空）',
+    await waitInFrame(
+      '.agent',
+      `document.querySelectorAll('#session-menu .agent-session-item').length === 0`,
+      10_000
+    ),
+    JSON.stringify(await menuIds())
+  )
+  check(
+    '空仓库显示「无会话」',
+    await waitInFrame(
+      '.agent',
+      `document.querySelector('#session-label')?.textContent.includes('无会话') === true`,
+      5000
+    )
+  )
+
+  check(
+    '在新仓库里新建会话',
+    await agentEval<boolean>(`(() => {
+      const button = document.querySelector('#new-session')
+      if (!button || button.disabled) return false
+      button.click()
+      return true
+    })()`)
+  )
+  check(
+    '新仓库的列表里只有新建的这个会话',
+    await waitInFrame(
+      '.agent',
+      `(() => {
+        const rows = [...document.querySelectorAll('#session-menu .agent-session-item')]
+        return rows.length === 1 &&
+          (rows[0].querySelector('.agent-session-name')?.textContent || '').trim() === '新会话'
+      })()`,
+      10_000
+    ),
+    JSON.stringify(await menuIds())
+  )
+  const otherSessionId = (await menuIds())[0] ?? ''
+  const otherMeta = otherSessionId
+    ? JSON.parse(
+        await readFile(
+          join(ud, 'extensions-data', CORE_ID, 'sessions', otherSessionId, 'meta.json'),
+          'utf8'
+        )
+      )
+    : null
+  check(
+    '新会话记住了所属仓库',
+    otherMeta?.workspace === workspaceKey(otherVault),
+    JSON.stringify(otherMeta?.workspace)
+  )
+
+  await saveSettings({ vaultPath: vault })
+  check(
+    '切回原仓库：原来的会话都回来了',
+    await waitInFrame(
+      '.agent',
+      `${JSON.stringify(beforeIds)}.every(id =>
+        [...document.querySelectorAll('#session-menu .agent-session-item')]
+          .some(row => row.dataset.id === id))`,
+      10_000
+    ),
+    JSON.stringify(await menuIds())
+  )
+  check(
+    '另一个仓库的新会话不会串过来',
+    !(await menuIds()).includes(otherSessionId),
+    JSON.stringify(await menuIds())
   )
 
   // ---------- 10. 删除会话 ----------
@@ -1568,6 +1870,7 @@ async function main(): Promise<void> {
 
   // ---------- 收尾 ----------
 
+  stopInstanceBroker()
   await shutdownExtensions()
   if (!win.isDestroyed()) win.destroy()
   console.log(`\n[agent] ${pass} passed, ${fail} failed`)
@@ -1577,6 +1880,7 @@ async function main(): Promise<void> {
 void main().catch(async err => {
   console.error(err)
   try {
+    stopInstanceBroker()
     await shutdownExtensions()
   } catch {
     /* ignore */

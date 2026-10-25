@@ -99,7 +99,7 @@ async function copyIntegrity(): Promise<void> {
         <div class="market-confirm-title">
           <h1>{{ heading }}</h1>
           <p>
-            <b>{{ preview.displayName || preview.name }}</b>
+            <b>{{ preview.displayName }}</b>
             <span class="market-mono">v{{ preview.version }}</span>
             <template v-if="preview.installed">
               <span class="market-confirm-arrow">←</span>

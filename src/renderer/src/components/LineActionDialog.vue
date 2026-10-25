@@ -7,7 +7,7 @@
  * 用户确定后值交给扩展,扩展算出要插入的文本,再回宿主来插入。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-// 类型与下面的组件同名,按设置面板的惯例把类型改名(PluginSettings.vue 同样处理)
+// 类型与下面的组件同名,导入时给类型起别名
 import type { PluginField as PluginFieldSpec } from '@shared/plugins'
 import { cancelLineDialog, confirmLineDialog, lineMenuStore } from '../services/lineMenu'
 import PluginField from './plugins/PluginField.vue'

@@ -5,6 +5,8 @@ import type { Settings, Theme } from '@shared/types'
 import { appIconPng } from './appIcon'
 import { getSettingsSync, onSettingsChanged } from './settings'
 import { hasPendingOpenFile } from './openFile'
+import { APP_USER_MODEL_ID, NEW_WINDOW_FLAG } from './launchArgs'
+import { taskbarIconPath } from './system'
 
 /**
  * 窗口图标(任务栏 / Alt+Tab / 窗口列表里那个)。
@@ -56,6 +58,47 @@ function applyWindowChrome(w: BrowserWindow, theme: Theme, view: 'picker' | 'edi
 /** 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸 */
 const PICKER_SIZE = { width: 820, height: 550 }
 
+/**
+ * 登记任务栏的「再启动一份」命令(Windows 专用)。
+ *
+ * 中键 / Shift+点击任务栏图标时,Windows 不是给现有窗口发事件,而是按窗口上登记的
+ * `System.AppUserModel.RelaunchCommand` 再执行一次。给它加上 `--new-window`,
+ * 新进程才知道这是用户明确要的新窗口,不会去恢复上次仓库、也不会被仓库占用协调
+ * 挡回去(见 launchArgs.ts / vaultHandoff.ts)。
+ *
+ * 两个属性必须成对设置,而 `appId` 不设则整组都会被 Windows 忽略 —— 所以三者
+ * 一起给。打包版的 appId 与 electron-builder.yml 保持一致,任务栏分组才对得上;
+ * 开发版带 .dev 后缀(见 launchArgs.ts),否则会复用打包版 ID 上缓存的旧图标。
+ *
+ * **`appIconPath` 必须指一张真正的 `.ico`**。它写的是
+ * `System.AppUserModel.RelaunchIconResource`,Windows 11 拿它画任务栏按钮的图标:
+ *   - 指 `process.execPath`:开发版是 electron.exe(原子图标),打包版跳过 rcedit
+ *     时 exe 也还是 Electron 图标 —— 两种都会把 iMark 顶掉(2026-10-25 实测);
+ *   - 完全不传:也一样回落到 exe 的图标(同一天用纯绿图标验证过);
+ *   - 指 asar 里的路径:Windows 打不开。
+ * 所以用 `prepareTaskbarIcon()` 预先生成在数据根的那张(见 system.ts)。
+ */
+function applyTaskbarRelaunch(win: BrowserWindow): void {
+  if (process.platform !== 'win32') return
+  // 开发版 process.execPath 是 electron.exe,得把应用目录也带上;打包版就是 exe 自己
+  const relaunchCommand = app.isPackaged
+    ? `"${process.execPath}" ${NEW_WINDOW_FLAG}`
+    : `"${process.execPath}" "${app.getAppPath()}" ${NEW_WINDOW_FLAG}`
+  const iconPath = taskbarIconPath()
+  try {
+    win.setAppDetails({
+      appId: APP_USER_MODEL_ID,
+      relaunchCommand,
+      relaunchDisplayName: 'iMark',
+      ...(iconPath ? { appIconPath: iconPath, appIconIndex: 0 } : {})
+    })
+    if (!app.isPackaged) console.log(`[iMark] 任务栏「新开一个」命令:${relaunchCommand}`)
+  } catch (err) {
+    // 登记失败只影响任务栏中键新开窗口,不该拦住应用启动
+    console.warn('[iMark] 登记任务栏重启动命令失败:', err)
+  }
+}
+
 let mainWindow: BrowserWindow | null = null
 let dirty = false
 /** 有未保存改动的标签页名(窗口关闭提示里列出来,免得只提当前那一个) */
@@ -77,11 +120,17 @@ export function setMainWindowClosedHandler(fn: () => void): void {
   mainWindowClosedHandler = fn
 }
 
-export function createMainWindow(settings: Settings): BrowserWindow {
+export function createMainWindow(
+  settings: Settings,
+  options?: { startAtPicker?: boolean }
+): BrowserWindow {
   // 勾了「启动时直接打开上次仓库」就直接最大化开窗,免得先小后大地闪一下
   // (渲染层的视图切换发生在建窗之后)。带文件启动(双击 .md)同理:
   // 渲染层会直接进编辑器打开这份文件,窗口没理由先以选择页的尺寸露一下。
-  const startAtPicker = !hasPendingOpenFile() && !(settings.skipVaultPicker && settings.vaultPath)
+  // options.startAtPicker:任务栏「新开一个」明确要的是空窗口,别恢复上次仓库。
+  const startAtPicker =
+    options?.startAtPicker ??
+    (!hasPendingOpenFile() && !(settings.skipVaultPicker && settings.vaultPath))
   currentView = startAtPicker ? 'picker' : 'editor'
   const chrome = WINDOW_CHROME[settings.theme] ?? WINDOW_CHROME.light
   mainWindow = new BrowserWindow({
@@ -120,6 +169,9 @@ export function createMainWindow(settings: Settings): BrowserWindow {
       spellcheck: false
     }
   })
+
+  // 任务栏中键/Shift+点击新开窗口靠这条命令;必须在窗口建好后登记
+  applyTaskbarRelaunch(mainWindow)
 
   // 隐藏原生菜单栏:菜单对象仍挂在窗口上,所以菜单里的加速键(Ctrl+N/O/S/P…)照常生效,
   // 只是不占窗口高度;非 auto-hide 模式,按 Alt 也不会再把它唤回来。
@@ -189,8 +241,7 @@ export function createMainWindow(settings: Settings): BrowserWindow {
 
   mainWindow.on('closed', () => {
     mainWindow = null
-    // 退出决策交给 index.ts(它才知道还有没有别的窗口该活下来)。
-    // 见那边的说明:有了隐藏的扩展执行器页面之后,"所有窗口关闭"不再是"该退出了"。
+    // 退出决策交给 index.ts
     mainWindowClosedHandler?.()
   })
 
@@ -208,6 +259,19 @@ export function createMainWindow(settings: Settings): BrowserWindow {
 export function setDocDirty(value: boolean, names: string[] = []): void {
   dirty = value
   dirtyNames = names
+}
+
+/**
+ * 渲染层报告它**实际画出来**的主题。
+ *
+ * 窗口控件那块(WCO)由主进程画,但它必须和界面同色。只靠「设置变了」触发
+ * 不够:渲染层可能因为启动时的某一步失败而退回默认主题(见 App.vue 的启动
+ * 兜底),这时设置没变、主进程也不会收到变更通知,右上角就会留下一块深色
+ * 标题区。渲染层应用主题后主动报一次,颜色永远跟界面一致。
+ */
+export function setWindowTheme(theme: Theme): void {
+  if (!mainWindow) return
+  applyWindowChrome(mainWindow, theme, currentView)
 }
 
 /**

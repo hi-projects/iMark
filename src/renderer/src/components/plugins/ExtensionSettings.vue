@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 扩展设置页(文件名保留 PluginSettings,免得到处改 import)。
+ * 扩展设置页。
  *
  * 数据全部来自主进程下发的 `ExtensionView`:配置键带扩展 ID 前缀,密钥只有掩码,
  * 状态是扩展最近一次 `imark.reportStatus()` 的结论,宿主组成来自分组规划器。

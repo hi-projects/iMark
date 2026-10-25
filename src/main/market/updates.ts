@@ -48,7 +48,7 @@ export async function checkUpdates(force = false): Promise<MarketUpdate[]> {
 
         return {
           id,
-          name: remote.displayName || remote.name,
+          displayName: remote.displayName,
           currentVersion,
           latestVersion: remote.version,
           hasMain: remote.hasMain

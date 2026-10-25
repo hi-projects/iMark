@@ -7,7 +7,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { ArtifactInfo, StagedAttachment } from './types'
 import type {
   AttachmentMeta,
@@ -34,6 +34,8 @@ export interface SessionMeta {
   attachmentCount: number
   nextSeq: number
   attachments: StagedAttachment[]
+  /** 会话所属仓库根目录（`workspaceKey` 规范化后的值）；没有打开仓库时缺省 */
+  workspace?: string
 }
 
 export interface SessionOpen {
@@ -43,6 +45,19 @@ export interface SessionOpen {
 
 export interface CreateSessionInput {
   provider: string
+  workspace: string | null
+}
+
+/**
+ * 仓库身份：绝对路径的规范形式。
+ *
+ * Windows 上同一目录可能以不同大小写出现，比较前统一小写；Linux 保持原样
+ * （`/a` 与 `/A` 是两个仓库）。
+ */
+export function workspaceKey(root: string | null | undefined): string | null {
+  if (!root) return null
+  const absolute = resolve(root)
+  return process.platform === 'win32' ? absolute.toLowerCase() : absolute
 }
 
 interface IndexFile {
@@ -115,6 +130,7 @@ export class SessionStore {
       version: 1,
       id: randomUUID(),
       provider: input.provider,
+      workspace: input.workspace ?? undefined,
       status: 'idle',
       createdAt: now,
       updatedAt: now,
@@ -144,12 +160,13 @@ export class SessionStore {
     }
   }
 
-  /** 所有会话，按最近使用排序 */
-  async listAll(): Promise<SessionSummary[]> {
+  /** 属于当前仓库的会话，按最近使用排序 */
+  async listAll(workspace: string | null): Promise<SessionSummary[]> {
     const out: SessionSummary[] = []
     for (const id of this.index.sessions) {
       const meta = await this.getMeta(id)
       if (!meta) continue
+      if ((meta.workspace ?? null) !== workspace) continue
       out.push(this.summaryOf(meta))
     }
     out.sort((a, b) => b.updatedAt - a.updatedAt)

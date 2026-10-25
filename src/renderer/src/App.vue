@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
 import type { MenuCommandId } from '@shared/ipc-channels'
+import type { LaunchIntent, Settings } from '@shared/types'
 import FileExplorer from './components/FileExplorer.vue'
 import OutlineSidebar from './components/OutlineSidebar.vue'
 import QuickSwitcher from './components/QuickSwitcher.vue'
@@ -155,41 +156,60 @@ onMounted(async () => {
   window.addEventListener('drop', e => e.preventDefault())
   // Ctrl + 滚轮调正文字号:全窗口生效,不要求焦点在编辑器里
   offFontWheelZoom = installFontSizeWheelZoom()
+  // 启动意图与设置一起取:任务栏中键「新开一个」要停在选择页,不能恢复上次仓库
+  let settings: Settings | null = null
+  let launch: LaunchIntent = { newWindow: false }
   try {
-    const settings = await api.getSettings()
-    applyTheme(settings.theme)
-    initOutlineVisible(settings.outline)
-    initExplorerVisible(settings.explorer)
-    initSidebarWidths(settings.explorerWidth, settings.outlineWidth)
-    initVaultList(settings.vaults ?? [])
-    initSkipVaultPicker(settings.skipVaultPicker)
-    // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
-    initEditorSettings(settings)
-
-    // 启动参数里带的文件优先于「恢复上次会话」:用户双击的就是这一份,
-    // 不该先把上次那批标签恢复出来(它还可能属于另一个仓库)。
-    // openFileFromSystem 会自己决定要不要顺带载入文件所属的仓库。
-    const pending = await api.takePendingOpenFile()
-    // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复
-    const canResume =
-      settings.skipVaultPicker && !!settings.vaultPath && settings.vaultPath.length > 0
-    if (pending) {
-      await openFileFromSystem(pending)
-    } else if (canResume) {
-      const ok = await loadVault(settings.vaultPath!, { silent: true })
-      if (ok) {
-        // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
-        await enterEditorAndWait()
-        // 关闭前打开了页面就恢复它;没有就什么都不打开
-        await restoreLastDocument(settings.vaultPath!, settings)
-      }
-    }
-  } catch {
+    ;[settings, launch] = await Promise.all([
+      api.getSettings(),
+      api.getLaunchIntent().catch(() => ({ newWindow: false }))
+    ])
+  } catch (err) {
+    // 连设置都读不到:按默认亮色启动(主进程此时用的也是默认值)。
+    // 必须真的 applyTheme,而不是只依赖 CSS 默认值 —— applyTheme 顺带把
+    // 窗口控件配色同步给主进程,否则右上角会留在另一档颜色上。
+    console.error('[iMark] 读取启动设置失败,按默认亮色主题启动:', err)
     applyTheme('light')
+  }
+
+  if (settings) {
+    try {
+      applyTheme(settings.theme)
+      initOutlineVisible(settings.outline)
+      initExplorerVisible(settings.explorer)
+      initSidebarWidths(settings.explorerWidth, settings.outlineWidth)
+      initVaultList(settings.vaults ?? [])
+      initSkipVaultPicker(settings.skipVaultPicker)
+      // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
+      initEditorSettings(settings)
+
+      // 启动参数里带的文件优先于「恢复上次会话」:用户双击的就是这一份,
+      // 不该先把上次那批标签恢复出来(它还可能属于另一个仓库)。
+      // openFileFromSystem 会自己决定要不要顺带载入文件所属的仓库。
+      const pending = await api.takePendingOpenFile()
+      // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复。
+      // 任务栏中键/Shift+点击明确要的是新窗口,即使勾了也不恢复。
+      const canResume =
+        !launch.newWindow && settings.skipVaultPicker && !!settings.vaultPath && settings.vaultPath.length > 0
+      if (pending) {
+        await openFileFromSystem(pending)
+      } else if (canResume) {
+        const ok = await loadVault(settings.vaultPath!, { silent: true })
+        if (ok) {
+          // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
+          await enterEditorAndWait()
+          // 关闭前打开了页面就恢复它;没有就什么都不打开
+          await restoreLastDocument(settings.vaultPath!, settings)
+        }
+      }
+    } catch (err) {
+      // 恢复会话失败不影响主题:设置已经读到了,界面就该是设置里的那一档
+      console.error('[iMark] 启动恢复失败:', err)
+    }
   }
   offMenu = api.onMenuCommand(id => void handleMenuCommand(id))
   api.onSaveBeforeClose(() => void saveBeforeClose())
-  // 运行中系统又递来一个文件(第二个实例的 argv)
+  // 运行中主进程递来一个文件(另一个实例打开同一仓库时转交过来)
   offOpenFile = api.onOpenFile(path => void openFileFromSystem(path))
 })
 

@@ -310,7 +310,7 @@ async function main(): Promise<void> {
     }
   }
   const providerDir = await fixture(fixtures, 'provider', providerManifest, {
-    'main.js': 'exports.activate = () => ({ apiVersion: 1, providers: [] })\n'
+    'main.js': 'exports.activate = () => ({ apiVersion: 2, providers: [] })\n'
   })
   const providerPacked = await packDirectory(providerDir)
   check(

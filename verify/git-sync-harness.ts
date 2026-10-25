@@ -269,7 +269,7 @@ async function main(): Promise<void> {
   console.log('\n【2】onStartupFinished 激活、状态栏条目')
   check('启动后扩展已激活', service.isActivated(EXT_ID))
   const groups = service.hostGroupsView().filter(g => g.extensionIds.includes(EXT_ID))
-  check('扩展有独立宿主进程（默认 isolated）', groups.length === 1 && groups[0]!.pid !== null, JSON.stringify(groups))
+  check('扩展有独立宿主进程', groups.length === 1 && groups[0]!.pid !== null, JSON.stringify(groups))
   const item = await waitFor(statusItem, x => !!x)
   check('状态栏出现 Git 同步条目', item?.text === '$(git) Git 同步', JSON.stringify(item))
   check('点击执行立即同步', item?.command === 'imark.git-sync.syncNow')

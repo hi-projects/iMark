@@ -204,7 +204,7 @@ async function refreshAll(): Promise<void> {
     <ul v-if="updates.length > 0" class="market-updates">
       <li v-for="u in updates" :key="u.id" class="market-update">
         <div class="market-update-main">
-          <b>{{ u.name }}</b>
+          <b>{{ u.displayName }}</b>
           <span class="market-mono market-dim">{{ u.currentVersion }} → {{ u.latestVersion }}</span>
         </div>
         <div class="market-row-actions">

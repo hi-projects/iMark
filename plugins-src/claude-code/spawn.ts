@@ -9,7 +9,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { delimiter, extname, join } from 'node:path'
-import { createInterface } from 'node:readline'
+import { StreamingLineReader } from './streamLines'
 
 export type CommandKind = 'exe' | 'cmd' | 'bat' | 'ps1' | 'other'
 
@@ -224,7 +224,8 @@ export interface SpawnClaudeOptions {
   cwd: string
   env: NodeJS.ProcessEnv
   signal?: AbortSignal
-  onStdoutLine(line: string): void
+  /** `truncated` 表示这一行有超长字符串被流式截断（仍是合法 JSON） */
+  onStdoutLine(line: string, info: { truncated: boolean }): void
   onStderr(chunk: string): void
 }
 
@@ -260,8 +261,14 @@ export function spawnClaude(
   handle.killTree = killTree
 
   if (child.stdout) {
-    const reader = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    reader.on('line', line => options.onStdoutLine(line))
+    child.stdout.setEncoding('utf8')
+    // 不用 readline：它在拿不到换行前会把整行留在内存里，一行一整份 PDF 的
+    // base64 就会把内存顶起来。StreamingLineReader 边读边截断超长字符串。
+    const reader = new StreamingLineReader({
+      onLine: (line, info) => options.onStdoutLine(line, info)
+    })
+    child.stdout.on('data', chunk => reader.push(String(chunk)))
+    child.stdout.on('end', () => reader.end())
   }
   if (child.stderr) {
     child.stderr.setEncoding('utf8')

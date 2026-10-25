@@ -27,10 +27,11 @@ export const AGENT_PROVIDERS_CONTRIBUTION: string = formatData.agentProvidersCon
  * 直接按新字段读会得到 undefined；显式版本让这种不匹配变成一条诊断，而不是
  * 运行到一半才炸。
  */
-export const AGENT_PROVIDER_API_VERSION = 1 as const
+export const AGENT_PROVIDER_API_VERSION = 2 as const
 
 export type AgentInputMode = 'native' | 'path' | 'none'
 export type ToolKind = 'read' | 'search' | 'edit' | 'shell' | 'network' | 'other'
+export type AgentPermissionDecision = 'allow' | 'deny'
 
 export type AgentErrorCode =
   | 'provider-unavailable'
@@ -70,6 +71,14 @@ export type AgentEvent =
   | { type: 'tool'; phase: 'result'; toolId: string; name?: string; ok: boolean; summary: string }
   | { type: 'status'; message: string }
   | { type: 'notice'; level: 'info' | 'warn'; message: string }
+  /** 后端在执行工具前要求用户授权；宿主收集决定后调用 respondPermission */
+  | {
+      type: 'permission'
+      requestId: string
+      toolId?: string
+      toolName: string
+      inputSummary: string
+    }
   | {
       type: 'result'
       text: string
@@ -138,6 +147,8 @@ export interface AgentSessionOptions {
 export interface AgentSession {
   readonly providerSessionId: string | undefined
   send(turn: AgentTurn): AsyncIterable<AgentEvent>
+  /** 回应 `permission` 事件；回合已结束时应当静默忽略 */
+  respondPermission(requestId: string, decision: AgentPermissionDecision): void
   cancel(reason?: 'user' | 'timeout' | 'turn-limit' | 'dispose'): void
   dispose(): Promise<void>
 }

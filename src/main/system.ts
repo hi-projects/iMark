@@ -216,6 +216,29 @@ export async function ensureAssociationIcon(): Promise<string | null> {
   }
 }
 
+/** 本次启动生成的任务栏图标路径;undefined = 还没准备,null = 准备失败 */
+let taskbarIcon: string | null | undefined
+
+/**
+ * 建窗**之前**调一次:任务栏按钮的图标要靠它。
+ *
+ * `setAppDetails({ appIconPath })` 收的是给 Windows 直接打开的文件路径,所以
+ * 只能是数据根下这张 `.ico` —— asar 里的路径 Windows 读不到,`process.execPath`
+ * 又在开发版(以及跳过 rcedit 的打包版)上是 Electron 图标。实测 Windows 11
+ * 会拿这一项画任务栏按钮,不传则回落到 exe 的图标(见 window.ts)。
+ *
+ * 结果缓存:同一进程里注册文件关联时还会再要一次,不必重复生成。
+ */
+export async function prepareTaskbarIcon(): Promise<string | null> {
+  if (taskbarIcon === undefined) taskbarIcon = await ensureAssociationIcon()
+  return taskbarIcon
+}
+
+/** 上面准备的结果,供建窗时同步取用 */
+export function taskbarIconPath(): string | null {
+  return taskbarIcon ?? null
+}
+
 /** 用 reg.exe 读一个值;键不存在是**正常状态**(第一次用的人),返回 null */
 async function regGet(key: string, name: string | null): Promise<string | null> {
   const args = name === null ? ['query', key, '/ve'] : ['query', key, '/v', name]

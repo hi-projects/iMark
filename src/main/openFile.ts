@@ -3,11 +3,12 @@
  *
  * 系统不是通过什么协议把文件送进来的,而是**把它拼在命令行参数里**:打包后
  * `iMark.exe "C:\notes\a.md"`;开发模式下是 `electron.exe <应用目录> "a.md"`。
- * 另外,当 iMark 已经开着时,Windows 会再启动一个实例 —— 单实例锁把新实例挡掉,
- * 但 Electron 会把它的 argv 通过 `second-instance` 事件交给第一个实例
- * (见 index.ts)。所以「取文件」这件事只有两个来源:启动参数、第二个实例的参数。
  *
- * 启动那一个用**暂存 + 渲染层来取**的方式交接:窗口刚建好时渲染层的服务还没初始化,
+ * 应用允许同时开多个实例,所以「已经开着时双击 .md」也是**再起一个进程**,
+ * 文件就在这个新实例自己的 argv 里。若文件所属仓库已经开在另一个窗口,新实例
+ * 会把文件转交过去并退出(见 main/vaultHandoff.ts),而不是再开一个窗口。
+ *
+ * 交接用**暂存 + 渲染层来取**的方式:窗口刚建好时渲染层的服务还没初始化,
  * 推过去只能靠延时赌时序(而失败的样子是「双击了没反应」)。
  */
 
@@ -45,7 +46,7 @@ export function fileFromArgv(argv: readonly string[], packaged: boolean): string
 
 let pending: string | null = null
 
-/** 暂存一个待打开的文件(启动时或第二个实例到达时) */
+/** 暂存一个待打开的文件(启动参数,或另一个实例转交过来) */
 export function setPendingOpenFile(path: string | null): void {
   pending = path
 }
