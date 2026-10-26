@@ -64,17 +64,16 @@ installCellLists(md)
 const EXPORT_CSS = `
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #f6f8fa; font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; color: #24292f; line-height: 1.7; }
+  body { margin: 0; background: #f6f8fa; font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; color: #24292f; line-height: 1.7; font-size: 1.375em; }
   article { max-width: 860px; margin: 0 auto; padding: 48px 56px 96px; background: #ffffff; min-height: 100vh; }
   h1, h2 { border-bottom: 1px solid #d8dee4; padding-bottom: 0.3em; }
   h1, h2, h3, h4, h5, h6 { font-weight: 650; margin: 1.4em 0 0.6em; line-height: 1.35; }
-  /* 与编辑器同一套递减阶梯:h4 起每级 0.125em,别用浏览器默认(会越变越小) */
-  h1 { font-size: 2em; }
-  h2 { font-size: 1.75em; }
-  h3 { font-size: 1.5em; }
-  h4 { font-size: 1.375em; }
-  h5 { font-size: 1.25em; }
-  h6 { font-size: 1.125em; }
+  /* 与编辑器同一套:正文 = H4–H6 那一档(1.375 × 浏览器基准 16px);
+     H1–H3 按 1/1.375 重算 em,保持它们原来的像素大小(32 / 28 / 24px) */
+  h1 { font-size: 1.4545em; }
+  h2 { font-size: 1.2727em; }
+  h3 { font-size: 1.0909em; }
+  h4, h5, h6 { font-size: 1em; }
   a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
   code { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; background: rgba(175,184,193,0.25); border-radius: 4px; padding: 0.15em 0.4em; }

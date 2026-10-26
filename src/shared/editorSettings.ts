@@ -13,7 +13,10 @@
  */
 export const AUTO_SAVE_DELAY_MIN = 1
 
-/** 正文字号(px)。正文一动,标题/代码块按 em 跟着缩 */
+/**
+ * 字号基准(px)。设置值不再等于实际正文字号:正文与 H4–H6 同档,渲染为
+ * 基准 × 1.375(见 tokens.css 的 --editor-body-size);标题/代码块按 em 跟着缩。
+ */
 export const EDITOR_FONT_SIZE_MIN = 12
 export const EDITOR_FONT_SIZE_MAX = 24
 

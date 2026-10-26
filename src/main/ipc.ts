@@ -33,6 +33,7 @@ import {
   createVaultDir,
   createVaultFile,
   listVault,
+  missingVaults,
   renameVaultPath,
   trashVaultPath
 } from './vault'
@@ -166,6 +167,12 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.VaultList, (_e, p: string) => listVault(p))
+
+  ipcMain.handle(IPC.VaultMissing, (_e, paths: unknown) =>
+    missingVaults(
+      Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p.length > 0) : []
+    )
+  )
 
   ipcMain.handle(IPC.VaultCreateFile, async (_e, o: { path: string; content?: string }) => {
     await createVaultFile(o.path, o.content ?? '')

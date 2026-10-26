@@ -63,7 +63,8 @@
    行高是字号倍率,调字号时行距按比例跟着变。 */
 .cm-editor .cm-scroller.cm-scroller {
   font-family: var(--font-text);
-  font-size: var(--editor-font-size);
+  /* 正文与 H4/H5/H6 同档:1.375 × 设置里的基准字号(见 tokens.css) */
+  font-size: var(--editor-body-size);
   line-height: 1.9;
 }
 
@@ -123,9 +124,11 @@
 /* ---------- WYSIWYG 内容样式 ---------- */
 
 /*
- * 标题字号:不用 Obsidian title-for-plugins.css 的「h1–h6 统一 1.125em」,
- * 改成递减阶梯 —— h1 最大,前三级每级差 0.25em;h4 起每级再差 0.125em,
- * 让后三级也一眼分得出层级。字重仍统一 600,颜色保持 iMark 默认。
+ * 标题字号:正文与 H4/H5/H6 统一为同一档(即原来 H4 的 1.375em),
+ * 后三级只靠字重与颜色区分;H1–H3 保持原来的像素大小,但父级已经放大到
+ * 1.375 倍,所以 em 要按 1/1.375 重算:
+ *   2 / 1.375 = 1.4545   1.75 / 1.375 = 1.2727   1.5 / 1.375 = 1.0909
+ * H4–H6 不再写 font-size,直接继承 .cm-scroller 的正文大小。
  */
 .cm-md-h1,
 .cm-md-h2,
@@ -137,14 +140,11 @@
   line-height: 1.4;
 }
 
-.cm-md-h1 { font-size: 2em; }
-.cm-md-h2 { font-size: 1.75em; }
-.cm-md-h3 { font-size: 1.5em; }
-.cm-md-h4 { font-size: 1.375em; }
-.cm-md-h5 { font-size: 1.25em; }
+.cm-md-h1 { font-size: 1.4545em; }
+.cm-md-h2 { font-size: 1.2727em; }
+.cm-md-h3 { font-size: 1.0909em; }
 
 .cm-md-h6 {
-  font-size: 1.125em;
   color: var(--text-secondary);
 }
 
@@ -281,7 +281,7 @@
   /* 用 rem 是因为父元素 font-size 被压成 0,em 会跟着变 0;
      但要跟着正文字号缩放,所以直接算 —— 写死 1.2rem 的话调大字号后圆点会明显偏小。
      1.2 倍正文:圆点本身比正文小一圈,缩到 0.95 倍时几乎看不清 */
-  font-size: calc(var(--editor-font-size) * 1.2);
+  font-size: calc(var(--editor-body-size) * 1.2);
   line-height: 1;
   color: var(--list-marker-color);
   /* 源码里圆点后只有一个空格,视觉上离正文太挤:再补一段字距。
@@ -314,7 +314,7 @@
 }
 
 .cm-md-table-host .cm-md-table-frame {
-  font-size: var(--editor-font-size);
+  font-size: var(--editor-body-size);
   line-height: normal;
 }
 
@@ -627,7 +627,7 @@
   box-shadow: 0 8px 24px var(--shadow);
   color: var(--text-primary);
   font-family: var(--font-editor);
-  font-size: var(--editor-font-size);
+  font-size: var(--editor-body-size);
   line-height: 1.4;
   /* 超宽公式才轮到横向滚动,竖向永不滚动(KaTeX 的 strut 会带来几像素溢出) */
   max-width: min(640px, calc(100vw - 48px));

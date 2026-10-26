@@ -169,6 +169,39 @@ export async function forgetVault(vaultPath: string): Promise<void> {
 }
 
 /**
+ * 剔除已经不存在的仓库,并写回设置(否则下次启动它们又会回来)。
+ *
+ * 列表里记的是绝对路径,文件夹被删除、改名或所在磁盘/外接盘不在时就失效了;
+ * 选择页每次出现都查一遍。主进程只报告**确认没了**的项(见 missingVaults),
+ * 而且只删这次查过的那些 —— 查询期间用户可能刚打开一个新的仓库,它不在这批
+ * 结果里,不能跟着一起消失。
+ */
+export async function pruneMissingVaults(): Promise<void> {
+  // 复制成普通数组再走 IPC:store 里是 reactive 代理,结构化克隆不接受 Proxy
+  const paths = [...(pendingVaultOrder ?? appStore.vaults)]
+  if (paths.length === 0) return
+  const missing = await api.missingVaults(paths).catch(err => {
+    console.error('[iMark] 检查仓库路径失败', err)
+    return null
+  })
+  // 查询本身失败时保持原样:宁可多留一项,也不能凭一次失败把用户的仓库弄丢
+  if (!missing) return
+  const gone = new Set(missing)
+  if (gone.size === 0) return
+  const filter = (list: string[]): string[] => list.filter(v => !gone.has(v))
+  // 按查询结束时的顺序过滤:期间用户可能刚置顶了一个仓库,不能拿旧顺序盖回去。
+  // 存盘用**普通数组** —— store 里读到的是 reactive 代理,不能直接过 IPC
+  const next = filter(pendingVaultOrder ?? appStore.vaults)
+  appStore.vaults = filter(appStore.vaults)
+  if (pendingVaultOrder) pendingVaultOrder = filter(pendingVaultOrder)
+  try {
+    await api.saveSettings({ vaults: next })
+  } catch (err) {
+    console.error('[iMark] 清理失效仓库后保存设置失败', err)
+  }
+}
+
+/**
  * 回到仓库选择界面。
  *
  * 页面这时就不算打开了:把「上次打开的页面」一并清掉,持久化状态才与用户

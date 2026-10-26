@@ -50,6 +50,7 @@ import {
   openFileFromSystem,
   openSwitcher,
   openVaultViaDialog,
+  pruneMissingVaults,
   requestVaultSwitch,
   restoreLastDocument,
   toggleSwitcher
@@ -179,6 +180,8 @@ onMounted(async () => {
       initExplorerVisible(settings.explorer)
       initSidebarWidths(settings.explorerWidth, settings.outlineWidth)
       initVaultList(settings.vaults ?? [])
+      // 列表初始化后再清一遍:选择页的 onMounted 早于这里,那时还没有仓库可查
+      void pruneMissingVaults()
       initSkipVaultPicker(settings.skipVaultPicker)
       // 字号/换行要赶在第一个文档装载前定下来:新建 EditorState 时会读换行偏好
       initEditorSettings(settings)

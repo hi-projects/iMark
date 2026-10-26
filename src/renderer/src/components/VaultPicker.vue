@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { FolderOpen, FolderPlus, X } from 'lucide-vue-next'
 import { appStore } from '../stores/app'
 import { basename } from '../utils/text'
@@ -8,6 +8,7 @@ import {
   forgetVault,
   openVaultFromPicker,
   openVaultViaDialog,
+  pruneMissingVaults,
   setSkipVaultPicker
 } from '../services/vaultService'
 import { api } from '../services/api'
@@ -26,6 +27,9 @@ const skipPicker = computed({
 })
 
 const recentVaults = computed(() => appStore.vaults)
+
+// 选择页每次出现都清理一遍:文件夹可能在上次使用之后被删掉或移走了
+onMounted(() => void pruneMissingVaults())
 
 async function openVault(path: string): Promise<void> {
   await openVaultFromPicker(path)

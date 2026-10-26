@@ -14,6 +14,7 @@
  *   C 对照组:列表项回车 → 仍旧续出 `- `(别为了标题把列表改坏)
  *   D 对照组:列表 / 引用里的标题回车 → 只续外层的 `- ` / `> `,不续标题
  *   E Ctrl+4 → 才是 h4 的真正来源;顺手复现「标记被藏起来」的观感
+ *   F 引用要敲出 `> ` 里的空格才开始渲染:只有 `>` 时按普通文本显示
  *
  * 每个用例都重写盘上文件 + 重载窗口:光标必然落在文首(新建 state 的 selection 是 0),
  * 于是只靠「回车 / 打字 / 左移」就能把用例写在头几行上,不用去猜光标在第几行
@@ -340,6 +341,23 @@ async function main(): Promise<void> {
     const away = (await domLines())[0]
     check('光标移走后 `####` 被藏起来,只剩加粗大字', away.text === 'TARGETS', looks(away))
     check('藏起来不等于降级:class 还是 h4、字号字重照旧', /cm-md-h4/.test(away.cls) && isHeading(away), looks(away))
+  }
+
+  console.log('\n【F】引用要敲出 `> ` 里的空格才开始渲染')
+  await loadDoc(START)
+  await type('>')
+  {
+    const plain = (await domLines())[0]
+    check(
+      '只有 `>` 时按普通文本显示(无引用条、无引用行样式)',
+      plain.text === '>' && !/cm-md-quote/.test(plain.cls) && plain.bar === 'none',
+      looks(plain)
+    )
+  }
+  await type(' ')
+  {
+    const quoted = (await domLines())[0]
+    check('补上空格后按引用渲染', /cm-md-quote/.test(quoted.cls) && quoted.bar !== 'none', looks(quoted))
   }
 
   const shots = join(REPO, '.verify-ud', 'shots')

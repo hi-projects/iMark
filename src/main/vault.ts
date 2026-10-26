@@ -37,6 +37,28 @@ export async function listVault(root: string): Promise<VaultNode> {
   return walk(root, path.basename(root) || root)
 }
 
+/**
+ * 这些路径里**确认已经不是目录**的那些(保持传入顺序)。
+ *
+ * 最近仓库列表存的是绝对路径:文件夹被删除、改名,或所在磁盘/外接盘被拔掉之后
+ * 路径就失效了。用 stat 而不是只判断「存在」—— 原路径被同名文件占住时同样不该
+ * 留在列表里,选择器打开的是文件夹。
+ *
+ * 只有 ENOENT / ENOTDIR 算「没了」。EACCES、EBUSY、网络超时这类**无法判定**的
+ * 错误必须放过:一次临时故障就把用户记了很久的仓库从列表里删掉,比多留一项糟得多。
+ */
+export async function missingVaults(paths: string[]): Promise<string[]> {
+  const missing = await Promise.all(
+    paths.map(p =>
+      fs.promises.stat(p).then(
+        info => !info.isDirectory(),
+        (err: NodeJS.ErrnoException) => err.code === 'ENOENT' || err.code === 'ENOTDIR'
+      )
+    )
+  )
+  return paths.filter((_, i) => missing[i])
+}
+
 /** 新建空文件(wx:已存在时失败) */
 export async function createVaultFile(p: string, content = ''): Promise<void> {
   await fs.promises.writeFile(p, content, { flag: 'wx', encoding: 'utf8' })

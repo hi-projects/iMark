@@ -383,8 +383,9 @@ button {
   border: 1px solid var(--border, #3a3a3a);
   border-radius: 9px;
   background: var(--bg-editor, #252526);
-  /* 与编辑器正文同一套字号/行高（变量由宿主注入） */
-  font-size: var(--editor-font-size, 13px);
+  /* 与编辑器正文同一套字号/行高（变量由宿主注入）。正文 = H4 那一档，
+     基准字号 × 1.375，fallback 是默认基准 13px 下的结果 */
+  font-size: var(--editor-body-size, 17.875px);
   line-height: 1.9;
 }
 
@@ -417,10 +418,13 @@ button {
 .agent-text h5,
 .agent-text h6 {
   margin: 1em 0 0.35em;
-  font-size: 1.125em;
   font-weight: 600;
   line-height: 1.4;
 }
+/* 与 editor.css 同一套:正文与 H4–H6 同档,H1–H3 按 1/1.375 重算保持原像素大小 */
+.agent-text h1 { font-size: 1.4545em; }
+.agent-text h2 { font-size: 1.2727em; }
+.agent-text h3 { font-size: 1.0909em; }
 .agent-text h6 {
   color: var(--text-secondary);
 }

@@ -109,6 +109,12 @@ function onDelayChange(e: Event): void {
   void setAutoSaveDelay(raw === '' ? Number.NaN : Number(raw))
 }
 
+/** 实际正文字号:与 H4–H6 同档,是滑块的基准 × 1.375(与 tokens.css 一致) */
+const bodyFontLabel = computed(() => {
+  const px = appStore.editorFontSize * 1.375
+  return `${Number.isInteger(px) ? px : px.toFixed(1)} px`
+})
+
 /** 拖滑块时即时预览字号(只改画面),松手才写盘 */
 function onFontSizeInput(e: Event): void {
   previewFontSize(Number((e.target as HTMLInputElement).value))
@@ -567,7 +573,7 @@ onBeforeUnmount(() => {
               <div class="settings-row settings-row-stack">
                 <div class="settings-row-info">
                   <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">标题、代码块会按比例一起缩放，只影响编辑器，不影响导出。</div>
+                  <div class="settings-row-desc">滑块是字号基准；正文与 H4–H6 同为它的 1.375 倍，标题、代码块按比例缩放。只影响编辑器，不影响导出。</div>
                 </div>
                 <div class="settings-control">
                   <input
@@ -580,7 +586,7 @@ onBeforeUnmount(() => {
                     @input="onFontSizeInput"
                     @change="onFontSizeCommit"
                   />
-                  <span class="settings-readout">{{ appStore.editorFontSize }} px</span>
+                  <span class="settings-readout">{{ bodyFontLabel }}</span>
                 </div>
               </div>
             </div>

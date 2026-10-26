@@ -90,6 +90,49 @@ function lineUntouched(ctx: RuleContext, pos: number): boolean {
   return !touchesLines(ctx.sel, ctx.doc, line.from, line.to)
 }
 
+/**
+ * 引用是否已经敲完整。
+ *
+ * lezer(CommonMark)把裸 `>` 也解析成 Blockquote,但刚敲下 `>` 就立刻换成
+ * 引用版式(缩进 + 竖线)太突兀;和 Obsidian 一样,等补上 `> ` 里的空格,
+ * 才按引用渲染。
+ *
+ * 看整块而不只看第一行:回车会在 `>` 裸行后自动续出一个 `>`,用户在新行补上
+ * 空格时,这一块才真正敲完整;已有的多行引用(哪怕首行是空的 `>`)也不会
+ * 因为开关而整块失去样式。正常引用第一个标记就命中,遍历即刻返回。
+ */
+function quoteOpened(doc: Text, quote: SyntaxNode): boolean {
+  const visit = (node: SyntaxNode): boolean => {
+    // 只认这一层引用的标记;嵌套引用里带空格的 `>` 不能替外层作证
+    if (node.name === 'QuoteMark' && nearestBlockquote(node) === quote) {
+      const after = doc.sliceString(node.to, node.to + 1)
+      if (after === ' ' || after === '\t') return true
+    }
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (visit(child)) return true
+    }
+    return false
+  }
+  return visit(quote)
+}
+
+/** 标记所属的引用层(最近的一层) */
+function nearestBlockquote(node: SyntaxNode): SyntaxNode | null {
+  for (let cur: SyntaxNode | null = node.parent; cur; cur = cur.parent) {
+    if (cur.name === 'Blockquote') return cur
+  }
+  return null
+}
+
+/** 最外层引用节点(嵌套引用由它统一样式,见 Blockquote 规则) */
+function outerBlockquote(node: SyntaxNode): SyntaxNode | null {
+  let outer: SyntaxNode | null = null
+  for (let cur: SyntaxNode | null = node.parent; cur; cur = cur.parent) {
+    if (cur.name === 'Blockquote') outer = cur
+  }
+  return outer
+}
+
 /** 从 pos 起吞掉连续空格(隐藏 "# " 时必须连同后随空格,否则残留可见空隙) */
 function endOfTrailingSpaces(doc: Text, from: number): number {
   let end = from
@@ -457,10 +500,15 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'Blockquote': {
       // 嵌套引用由最外层一次性覆盖所有行
       if (node.node.parent?.name === 'Blockquote') return
+      // 裸 `>` 先按普通文本显示(见 quoteOpened)
+      if (!quoteOpened(ctx.doc, node.node)) return
       addLineRange(ctx, node.from, node.to, 'cm-md-quote')
       return
     }
     case 'QuoteMark': {
+      const quote = outerBlockquote(node.node)
+      // 所在的引用还没敲出 `> `:标记和正文一样,不隐藏也不变灰
+      if (!quote || !quoteOpened(ctx.doc, quote)) return
       if (lineUntouched(ctx, node.from)) {
         /*
          * 连标记后的空格一起藏掉。竖线到正文的间距由引用行的 1em 左内边距保证

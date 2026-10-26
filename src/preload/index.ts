@@ -92,6 +92,7 @@ const api = {
     request(IPC.VaultClaim, { vaultPath, filePath: filePath ?? null }),
   releaseVault: (vaultPath: string): Promise<void> => request(IPC.VaultRelease, vaultPath),
   listVault: (path: string) => request(IPC.VaultList, path),
+  missingVaults: (paths: string[]): Promise<string[]> => request(IPC.VaultMissing, paths),
   createFile: (path: string, content = ''): Promise<void> =>
     request(IPC.VaultCreateFile, { path, content }),
   createDir: (path: string): Promise<void> => request(IPC.VaultCreateDir, { path }),

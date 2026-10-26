@@ -625,8 +625,8 @@ async function main(): Promise<void> {
   check('左右内边距 16px', box.padX === 16, JSON.stringify(box))
   check('空表列宽至少 110px', box.w >= 110, JSON.stringify(box))
   check(
-    '行高约 35px(8px 内边距 + 行盒)',
-    box.h > 30 && box.h <= 40,
+    '行高约 42px(8px 内边距 + 行盒;正文与 H4–H6 同档后格内字号也变大)',
+    box.h > 38 && box.h <= 46,
     JSON.stringify(box)
   )
 

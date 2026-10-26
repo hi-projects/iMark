@@ -160,6 +160,7 @@ const THEME_COLORS = [
   '--font-mono',
   '--font-editor',
   '--editor-font-size',
+  '--editor-body-size',
   '--quote-bar',
   '--scrollbar-thumb-bg',
   '--scrollbar-hover-thumb-bg',

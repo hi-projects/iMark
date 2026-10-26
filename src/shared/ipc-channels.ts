@@ -80,6 +80,8 @@ export const IPC = {
   /** 渲染→主:打开失败/离开仓库时退掉认领(见 main/vaultHandoff.ts) */
   VaultRelease: 'vault:release',
   VaultList: 'vault:list',
+  /** 渲染→主:批量确认最近仓库里哪些路径已经不是目录(已删掉的从列表里剔除) */
+  VaultMissing: 'vault:missing',
   VaultCreateFile: 'vault:create-file',
   VaultCreateDir: 'vault:create-dir',
   VaultRename: 'vault:rename',

@@ -105,6 +105,11 @@ export interface WindowApi {
   /** 打开失败/离开仓库时退掉认领,别让其他窗口也打不开 */
   releaseVault(vaultPath: string): Promise<void>
   listVault(path: string): Promise<VaultNode>
+  /**
+   * 这些路径里**确认已经不是目录**的那些(保持传入顺序):路径不存在,或被同名
+   * 文件占住。暂时查不了的(权限、网络超时)不算 —— 不能凭一次失败就把仓库弄丢。
+   */
+  missingVaults(paths: string[]): Promise<string[]>
   createFile(path: string, content?: string): Promise<void>
   createDir(path: string): Promise<void>
   renamePath(from: string, to: string): Promise<void>
