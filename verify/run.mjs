@@ -51,6 +51,7 @@ if (!name) {
         'install-confirm',
         'bundled-upgrade',
         'table-render',
+        'table-cells',
         'code-block',
         'code-indent',
         'font-zoom',

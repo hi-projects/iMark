@@ -123,8 +123,9 @@
 /* ---------- WYSIWYG 内容样式 ---------- */
 
 /*
- * 标题字号/字重与 Obsidian(用户启用中的 title-for-plugins.css)一致:
- * h1–h6 统一 1.125em / 600。颜色不跟 Obsidian 走,保持 iMark 默认。
+ * 标题字号:不用 Obsidian title-for-plugins.css 的「h1–h6 统一 1.125em」,
+ * 改成递减阶梯 —— h1 最大,前三级每级差 0.25em;h4 起每级再差 0.125em,
+ * 让后三级也一眼分得出层级。字重仍统一 600,颜色保持 iMark 默认。
  */
 .cm-md-h1,
 .cm-md-h2,
@@ -132,12 +133,18 @@
 .cm-md-h4,
 .cm-md-h5,
 .cm-md-h6 {
-  font-size: 1.125em;
   font-weight: 600;
   line-height: 1.4;
 }
 
+.cm-md-h1 { font-size: 2em; }
+.cm-md-h2 { font-size: 1.75em; }
+.cm-md-h3 { font-size: 1.5em; }
+.cm-md-h4 { font-size: 1.375em; }
+.cm-md-h5 { font-size: 1.25em; }
+
 .cm-md-h6 {
+  font-size: 1.125em;
   color: var(--text-secondary);
 }
 
@@ -356,6 +363,17 @@
 /* 单元格里的链接不抢点击:点哪儿都该进编辑态,而不是跳转 */
 .cm-md-table-widget a {
   pointer-events: none;
+}
+
+/*
+ * 单元格里的单行列表(解析规则见 services/cellList.ts)。GFM 的格子里放不下
+ * 块级列表,这里把 `- 甲；- 乙` 折成真正的 <ul>/<ol>。缩进收紧,免得列表把
+ * 列撑宽;对齐跟随单元格 —— 表格设成居中时,列表内容也该是居中的。
+ */
+.cm-md-table-widget th .cm-md-cell-list,
+.cm-md-table-widget td .cm-md-cell-list {
+  margin: 0;
+  padding: 0 0 0 1.15em;
 }
 
 /*

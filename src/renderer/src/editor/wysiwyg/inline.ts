@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it'
 import { installMath } from '../../services/markdownMath'
+import { cellListHtml, splitCellList } from '../../services/cellList'
 
 /**
  * 行内片段渲染(目前只有表格单元格在用)。
@@ -12,6 +13,9 @@ import { installMath } from '../../services/markdownMath'
  * 是比"少支持一种语法"严重得多的问题:
  *   - html:false —— 原始 HTML 按字面显示(导出的 HTML 要能安全地发给别人,编辑器同理);
  *   - linkify:true —— 裸 URL 两边都认。
+ *
+ * 另外支持「单行列表」(见 services/cellList):单元格以 `- ` / `1. ` 开头时,
+ * 以分号或空白分隔的条目渲染成 <ul>/<ol>。导出插件用的是同一份判断。
  */
 const md = new MarkdownIt({ html: false, linkify: true })
 installMath(md)
@@ -22,5 +26,8 @@ installMath(md)
  * javascript: / vbscript: / file: 这类协议。
  */
 export function renderInline(text: string): string {
-  return md.renderInline(text.trim())
+  const trimmed = text.trim()
+  const list = splitCellList(trimmed)
+  if (list) return cellListHtml(list, item => md.renderInline(item))
+  return md.renderInline(trimmed)
 }

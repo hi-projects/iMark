@@ -2,6 +2,7 @@ import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
 import katexCssRaw from 'katex/dist/katex.min.css?raw'
 import { installMath } from './markdownMath'
+import { installCellLists } from './cellList'
 import { mermaidErrorMessage, renderMermaid } from './mermaid'
 
 /** KaTeX 的字体走 CDN(导出文件给浏览器打开,内联 CSS 只保留字体外链) */
@@ -57,6 +58,8 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 // ---------- LaTeX 公式(markdown-it 内置无数学支持,规则见 ./markdownMath) ----------
 
 installMath(md)
+// 单元格里的单行列表:与编辑器共用同一份解析(services/cellList)
+installCellLists(md)
 
 const EXPORT_CSS = `
   :root { color-scheme: light; }
@@ -65,6 +68,13 @@ const EXPORT_CSS = `
   article { max-width: 860px; margin: 0 auto; padding: 48px 56px 96px; background: #ffffff; min-height: 100vh; }
   h1, h2 { border-bottom: 1px solid #d8dee4; padding-bottom: 0.3em; }
   h1, h2, h3, h4, h5, h6 { font-weight: 650; margin: 1.4em 0 0.6em; line-height: 1.35; }
+  /* 与编辑器同一套递减阶梯:h4 起每级 0.125em,别用浏览器默认(会越变越小) */
+  h1 { font-size: 2em; }
+  h2 { font-size: 1.75em; }
+  h3 { font-size: 1.5em; }
+  h4 { font-size: 1.375em; }
+  h5 { font-size: 1.25em; }
+  h6 { font-size: 1.125em; }
   a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
   code { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; background: rgba(175,184,193,0.25); border-radius: 4px; padding: 0.15em 0.4em; }
@@ -73,9 +83,11 @@ const EXPORT_CSS = `
   blockquote { margin: 0; padding: 0 1em; border-left: 3px solid #d0d7de; color: #57606a; }
   table { border-collapse: collapse; margin: 1em 0; }
   th, td { border: 1px solid #d0d7de; padding: 6px 13px; }
+  th .cm-md-cell-list, td .cm-md-cell-list { margin: 0; padding: 0 0 0 1.15em; }
   /* 空格子没有行盒,会塌成一条 —— 用零宽空格把行盒立起来,和编辑器里一个道理 */
   th:empty::after, td:empty::after { content: '\\200b'; }
-  th { background: #f6f8fa; }
+  /* 没有对齐标记的列是左对齐(GFM);不写的话浏览器会把 <th> 默认居中 */
+  th { background: #f6f8fa; text-align: left; }
   img { max-width: 100%; }
   hr { border: none; border-top: 2px solid #d8dee4; margin: 2em 0; }
   .hljs { color: #24292f; }

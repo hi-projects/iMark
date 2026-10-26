@@ -366,9 +366,40 @@ function serializeDelimiter(align: TableAlign[]): string {
   return `| ${align.map(cell).join(' | ')} |`
 }
 
+/**
+ * 新增列该用什么对齐。
+ *
+ * 对齐是按列写在分隔行里的,新列没有"自己的"标记,不主动挑一个就会落到
+ * `---`(左对齐)。而 quick-edit 插出来的表整张都是 `:---:`,用户看到的是
+ * "默认居中",用「+」加一列却左对齐 —— 同一张表里两种对齐,很割裂。
+ * 规则:
+ *   - 全表对齐一致时跟着它(最常见的情况:整张表居中);
+ *   - 否则继承相邻列(优先左邻);
+ *   - 邻列没有标记(`---`)、但其余列的显式对齐一致时,按其余列补回 ——
+ *     旧版本插列会在居中表里留下一个 `---` 列,继续在它旁边加列时不能
+ *     一直继承这个空标记,否则新列永远左对齐;
+ *   - 全都没有标记(普通 `---` 表)时仍是 null,维持左对齐。
+ */
+function preferredColumnAlign(align: TableAlign[], before: number): TableAlign {
+  if (align.length === 0) return null
+  const first = align[0]
+  if (align.every(a => a === first)) return first
+  const left = before > 0 ? align[before - 1] : undefined
+  const neighbor = left ?? align[before]
+  if (neighbor != null) return neighbor
+  const explicit = align.filter((a): a is Exclude<TableAlign, null> => a !== null)
+  if (explicit.length > 0 && explicit.every(a => a === explicit[0])) return explicit[0]!
+  return null
+}
+
 function renderCell(el: HTMLElement, text: string, align: TableAlign): void {
   el.innerHTML = renderInline(text)
-  el.style.textAlign = align ?? ''
+  /*
+   * 没有对齐标记(`---`)时必须显式写 left。留空的话 <th> 会落到浏览器默认的
+   * text-align:center,同一行里表头居中、表身左对齐 —— 看起来像"只有新列
+   * 没对齐",其实是整张表都没对齐。GFM 对 `---` 的定义就是左对齐。
+   */
+  el.style.textAlign = align ?? 'left'
 }
 
 function caretOffsetAt(cell: HTMLElement, x: number, y: number): number | null {
@@ -456,6 +487,26 @@ function flushActive(state: TableDomState): boolean {
     changes: { from: row.from, to: row.to, insert: serializeRow(row.cells, state.model.columns) }
   })
   return true
+}
+
+/**
+ * 单格粘贴:只改这一格的内容,不动表格形状。
+ *
+ * 与 pasteGrid 的区别是这里**没有**"剪贴板有几行就铺几行"的语义:外部复制来的
+ * 多行列表/段落默认就该落进选中的那一个格子里。
+ */
+function writeCellText(state: TableDomState, rowIndex: number, colIndex: number, text: string): void {
+  const row = rowOf(state.model, rowIndex)
+  const cell = row?.cells[colIndex]
+  if (!row || !cell) return
+  const next = normalizeCellText(text)
+  if (next === cell.text) return
+  // 拖选之后文档可能已被整体换掉:位置对不上就绝不落笔
+  if (state.view.state.doc.sliceString(row.from, row.to) !== row.raw) return
+  cell.text = next
+  state.view.dispatch({
+    changes: { from: row.from, to: row.to, insert: serializeRow(row.cells, state.model.columns) }
+  })
 }
 
 function finishEdit(state: TableDomState, rerender: boolean): void {
@@ -1298,7 +1349,8 @@ function insertRowAfter(state: TableDomState, after: number): void {
 function insertColumnBefore(state: TableDomState, before: number): void {
   const model = state.model
   if (before < 0 || before > model.columns) return
-  const nextAlign = [...model.align.slice(0, before), null, ...model.align.slice(before)]
+  const align = preferredColumnAlign(model.align, before)
+  const nextAlign = [...model.align.slice(0, before), align, ...model.align.slice(before)]
   const changes: Array<{ from: number; to: number; insert: string }> = []
   for (const row of allRows(model)) {
     const cells: Array<{ text: string }> = []
@@ -1354,6 +1406,259 @@ function deleteSelection(state: TableDomState): void {
   if (!sel) return
   if (sel.kind === 'table') deleteTable(state)
   else clearRange(state, sel)
+}
+
+// ---------- 单元格区域:复制 / 粘贴 ----------
+
+/**
+ * 选区里的单元格文字(表格源码里的语义文本,Markdown 标记原样保留)。
+ *
+ * 复制的是 `cell.text` 而不是 DOM 的 textContent:渲染态下 `**粗体**` 已经变成
+ * `<strong>粗体</strong>`,按 DOM 取字会丢掉标记;而粘贴回表格时我们写的正是
+ * 源码,两边必须对称。整表选区按全部列展开(表头也包含在内)。
+ */
+function selectionGrid(state: TableDomState): string[][] | null {
+  const sel = state.selection
+  if (!sel) return null
+  const model = state.model
+  const rows = allRows(model)
+  if (rows.length === 0) return null
+  const cols = model.columns
+  const cellText = (r: number, c: number): string => rows[r]?.cells[c]?.text ?? ''
+  if (sel.kind === 'table') {
+    return rows.map((_, r) => Array.from({ length: cols }, (_, c) => cellText(r, c)))
+  }
+  const rowFrom = Math.max(0, Math.min(sel.rowFrom, rows.length - 1))
+  const rowTo = Math.max(rowFrom, Math.min(sel.rowTo, rows.length - 1))
+  const colFrom = Math.max(0, Math.min(sel.colFrom, cols - 1))
+  const colTo = Math.max(colFrom, Math.min(sel.colTo, cols - 1))
+  const grid: string[][] = []
+  for (let r = rowFrom; r <= rowTo; r++) {
+    const line: string[] = []
+    for (let c = colFrom; c <= colTo; c++) line.push(cellText(r, c))
+    grid.push(line)
+  }
+  return grid
+}
+
+function gridToTsv(grid: string[][]): string {
+  return grid.map(row => row.join('\t')).join('\n')
+}
+
+function escapeHtmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** 给表格外的应用(Excel / 文档)一份 HTML,纯文本仍是 TSV —— 两边都贴得进去 */
+function gridToHtml(grid: string[][]): string {
+  const rows = grid
+    .map(row => `<tr>${row.map(cell => `<td>${escapeHtmlText(cell)}</td>`).join('')}</tr>`)
+    .join('')
+  return `<table>${rows}</table>`
+}
+
+/**
+ * 把矩形选区写进这次 copy 事件。
+ *
+ * 不能等 keydown 里自己调 `execCommand('copy')`:实测 Chromium 处理 Ctrl+C 时
+ * 会**先**派发 copy 事件、再把它送到目标的 keydown 监听器,keydown 里再发一次
+ * 也不会产生新的 copy 事件。所以唯一可靠的时机是监听这个原生 copy 事件。
+ *
+ * 监听必须挂在 widget 上并用**捕获**阶段:CodeMirror 在 contentDOM 上也有 copy
+ * 处理器,文档里没有选中文本时它会 preventDefault 且不写任何数据,冒泡到
+ * document 时已经晚了。捕获阶段先于祖先/目标的冒泡处理器。
+ */
+function copySelectionTo(event: ClipboardEvent, state: TableDomState): boolean {
+  // 正在编辑某一格:按浏览器的常规行为复制格内选中的文字
+  if (state.active) return false
+  const grid = selectionGrid(state)
+  if (!grid) return false
+  const data = event.clipboardData
+  // 拿不到 clipboardData 时别拦:让浏览器的默认复制去处理,至少不会吞掉按键
+  if (!data) return false
+  data.setData('text/plain', gridToTsv(grid))
+  data.setData('text/html', gridToHtml(grid))
+  event.preventDefault()
+  /*
+   * 必须在捕获阶段截住整个事件:CodeMirror 在 contentDOM 上的 copy 处理器会
+   * `clearData()` 再按它自己的文档选区重写剪贴板。焦点在表格 frame 上时那个
+   * 选区是空的 —— 不 stopPropagation 的话,我们刚写进去的 TSV 会被它抹掉。
+   */
+  event.stopPropagation()
+  return true
+}
+
+/**
+ * 剪贴板文本 → 矩形网格。行用换行、列用制表符分隔(Excel / 表格软件的通用格式)。
+ *
+ * 末尾单个空行不算一行(Excel 复制时总是带一个),否则每次粘贴都会多出一行空行。
+ */
+function parseClipboardGrid(text: string): string[][] | null {
+  if (!text) return null
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  if (lines.length === 0) return null
+  return lines.map(line => line.split('\t'))
+}
+
+/** 剪贴板 HTML 里有没有真表格(iMark 自己复制表格、Excel 都会带) */
+function htmlHasTable(html: string): boolean {
+  return /<table[\s>]/i.test(html)
+}
+
+/** HTML 行内标签 → Markdown。只处理格子里用得上的几种,不认识的标签取文字 */
+function inlineMarkdown(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (!(node instanceof Element)) return ''
+  const children = (): string => Array.from(node.childNodes, inlineMarkdown).join('')
+  switch (node.tagName) {
+    case 'STRONG':
+    case 'B': {
+      const text = children().trim()
+      return text ? `**${text}**` : ''
+    }
+    case 'EM':
+    case 'I': {
+      const text = children().trim()
+      return text ? `*${text}*` : ''
+    }
+    case 'CODE': {
+      const code = node.textContent ?? ''
+      return code ? `\`${code}\`` : ''
+    }
+    case 'A': {
+      const text = children().trim()
+      const href = node.getAttribute('href') ?? ''
+      return href && text ? `[${text}](${href})` : text
+    }
+    case 'BR':
+      return ' '
+    case 'UL':
+    case 'OL':
+      // 嵌套列表不折进上一条
+      return ''
+    case 'P':
+    case 'DIV':
+    case 'LI':
+      return `${children()} `
+    default:
+      return children()
+  }
+}
+
+interface ClipboardList {
+  ordered: boolean
+  start: number
+  items: string[]
+}
+
+/** 浏览器复制渲染列表时,text/plain 里通常没有 `-`/序号,从 HTML 的 <li> 找回来 */
+function clipboardHtmlList(html: string): ClipboardList | null {
+  if (!html || !/<li[\s>]/i.test(html)) return null
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return null
+  }
+  const list = doc.querySelector('ul, ol')
+  if (!list) return null
+  const items = Array.from(list.querySelectorAll(':scope > li'))
+    .map(li => inlineMarkdown(li).replace(/\s+/g, ' ').trim())
+    .filter(item => item.length > 0)
+  if (items.length === 0) return null
+  const ordered = list.tagName === 'OL'
+  const start = Number.parseInt(list.getAttribute('start') ?? '1', 10)
+  return { ordered, start: Number.isFinite(start) && start > 0 ? start : 1, items }
+}
+
+/** 一行文字是不是已经带着列表标记(`- ` / `1. ` / `• `) */
+const CELL_LIST_LINE = /^\s*(?:[-+*•]|\d{1,9}[.)、])\s+/
+
+/**
+ * 多行剪贴板文本 → **一格**的源码。
+ *
+ * 表格格子的源码只能占一行,但换行/列表在剪贴板里都是结构信息:
+ *   1. 原文已经带列表标记 → 保留标记,用 `；` 隔开(单元格列表语法,见 cellList.ts);
+ *   2. 从渲染态列表复制(text/plain 没有标记)→ 从 HTML 的 <li> 把标记找回来,
+ *      粗体/斜体/代码/链接也顺手转回行内 Markdown;
+ *   3. 普通多行文本 → 折成一段,和旧行为一致。
+ */
+function clipboardTextForCell(raw: string, html: string): string {
+  const text = raw.replace(/\r\n?/g, '\n').trim()
+  if (!text) return ''
+  const lines = text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+  if (lines.length === 0) return ''
+  if (CELL_LIST_LINE.test(lines[0]!)) {
+    return lines.map(line => line.replace(/[;；]\s*$/, '')).join('；')
+  }
+  const list = clipboardHtmlList(html)
+  if (list && list.items.length === lines.length && list.items.length > 1) {
+    return list.items
+      .map((item, index) => (list.ordered ? `${list.start + index}. ${item}` : `- ${item}`))
+      .join('；')
+  }
+  return lines.join(' ')
+}
+
+/**
+ * 把一块网格从 `(anchorRow, anchorCol)` 起写进表格。
+ *
+ * 与逐格调用编辑不同,这里**一次性重写整张表的源码**:粘贴可能同时要加列
+ * (分隔行得跟着改)和加行,分成多笔事务既难排序也容易让中间态落进一次
+ * 装饰重建里。整表替换只有一个变更范围,行前缀(引用块 / 缩进)按原样补回。
+ *
+ * 超出表格右/下边界的部分会让表格长大;新增列的对齐沿用
+ * preferredColumnAlign,与「+」插列保持一致。
+ */
+function pasteGrid(state: TableDomState, anchorRow: number, anchorCol: number, grid: string[][]): void {
+  if (grid.length === 0) return
+  const model = state.model
+  const rows = allRows(model)
+  if (rows.length === 0) return
+  const anchorR = Math.max(0, anchorRow)
+  const anchorC = Math.max(0, anchorCol)
+  const gridWidth = Math.max(...grid.map(row => row.length), 1)
+  const columns = Math.max(model.columns, anchorC + gridWidth)
+  const rowCount = Math.max(rows.length, anchorR + grid.length)
+
+  const align = model.align.slice()
+  // 用**正在生长**的 align 判断:一次粘贴可能加好几列,后加的要跟上前一列
+  while (align.length < columns) align.push(preferredColumnAlign(align, align.length))
+
+  const matrix: string[][] = []
+  for (let r = 0; r < rowCount; r++) {
+    const line: string[] = []
+    for (let c = 0; c < columns; c++) line.push(rows[r]?.cells[c]?.text ?? '')
+    matrix.push(line)
+  }
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r]
+    for (let c = 0; c < row.length; c++) {
+      matrix[anchorR + r][anchorC + c] = normalizeCellText(row[c])
+    }
+  }
+
+  const doc = state.view.state.doc
+  const prefix = containerPrefix(doc, model)
+  const serialize = (cells: string[]): string =>
+    serializeRow(cells.map(text => ({ text })), columns)
+  const lines = [serialize(matrix[0])]
+  lines.push(serializeDelimiter(align))
+  for (let r = 1; r < matrix.length; r++) lines.push(`${prefix}${serialize(matrix[r])}`)
+
+  state.selection = null
+  state.view.dispatch({
+    changes: { from: model.from, to: model.to, insert: lines.join('\n') }
+  })
+  startEdit(state, anchorR, anchorC)
 }
 
 /**
@@ -1593,6 +1898,9 @@ function bindTableEvents(state: TableDomState): void {
     window.addEventListener('blur', cancel)
   })
 
+  // Ctrl+C:拖选出来的矩形写成 TSV / HTML(见 copySelectionTo)
+  wrap.addEventListener('copy', (e: ClipboardEvent) => copySelectionTo(e, state), true)
+
   wrap.addEventListener('keydown', (e: KeyboardEvent) => {
     const active = state.active
     if (active) {
@@ -1690,21 +1998,64 @@ function bindTableEvents(state: TableDomState): void {
   })
 
   wrap.addEventListener('paste', (e: ClipboardEvent) => {
+    const raw = e.clipboardData?.getData('text/plain') ?? ''
+    const html = e.clipboardData?.getData('text/html') ?? ''
+    /*
+     * 只有**真正的表格数据**才按矩形铺开:带 <table> 的 HTML(从 iMark 表格
+     * 或 Excel 复制)或带制表符的文本。外部复制来的多行散文/列表没有表格结构,
+     * 只该落进一个格子 —— 否则选一格粘贴两行,表格会莫名多出一行。
+     */
+    const structured = htmlHasTable(html) || raw.includes('\t')
     const active = state.active
-    if (!active) return
-    if (!(e.target instanceof Node) || !active.cell.contains(e.target)) return
+    if (active) {
+      if (!(e.target instanceof Node) || !active.cell.contains(e.target)) return
+      e.preventDefault()
+      const grid = parseClipboardGrid(raw)
+      if (structured && grid && (grid.length > 1 || grid[0].length > 1)) {
+        // 多格表格数据:先提交当前格,再以它左上角为锚点整块粘贴
+        const row = active.row
+        const col = active.col
+        finishEdit(state, true)
+        pasteGrid(state, row, col, grid)
+        return
+      }
+      // 单格内容(含多行列表)→ 折成该格的一行源码,插到光标处
+      const text = clipboardTextForCell(raw, html)
+      const sel = window.getSelection()
+      if (!sel || sel.rangeCount === 0 || !text) return
+      const range = sel.getRangeAt(0)
+      range.deleteContents()
+      const node = document.createTextNode(text)
+      range.insertNode(node)
+      range.setStartAfter(node)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return
+    }
+    /*
+     * 没有正在编辑的格子、但选中了一块矩形:粘贴从这块的左上角开始。
+     * 复制时 Ctrl+C 把焦点留在 frame 上,紧接着 Ctrl+V 就是这条路径。
+     */
+    const sel = state.selection
+    if (!sel) return
+    const grid = parseClipboardGrid(raw)
+    if (!grid) return
     e.preventDefault()
-    const text = (e.clipboardData?.getData('text/plain') ?? '').replace(/[\r\n]+/g, ' ')
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0 || !text) return
-    const range = sel.getRangeAt(0)
-    range.deleteContents()
-    const node = document.createTextNode(text)
-    range.insertNode(node)
-    range.setStartAfter(node)
-    range.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(range)
+    /*
+     * 只选中了**一个**格子:外部多行文本留在这一格里(列表会就地渲染);
+     * 真正的表格数据仍按矩形铺开。选中多格时维持原来的矩形粘贴语义。
+     */
+    const single =
+      sel.kind === 'range' &&
+      sel.rowFrom === sel.rowTo &&
+      sel.colFrom === sel.colTo
+    if (single && !structured) {
+      writeCellText(state, sel.rowFrom, sel.colFrom, clipboardTextForCell(raw, html))
+      return
+    }
+    if (sel.kind === 'table') pasteGrid(state, 0, 0, grid)
+    else pasteGrid(state, sel.rowFrom, sel.colFrom, grid)
   })
 }
 
