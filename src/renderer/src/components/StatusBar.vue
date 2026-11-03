@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import {
+  AlertTriangle,
   Bell,
   ChevronsUpDown,
   ListTree,
@@ -35,6 +36,7 @@ import { extensionById } from '../services/extensionService'
 import { ensureExtensionIcon, extensionIconOf } from '../services/extensionIcons'
 import PluginIcon from './plugins/PluginIcon.vue'
 import { noticeCenter, toggleNoticeCenter } from '../services/notice'
+import { jumpToNextConflict } from '../editor/conflict'
 
 function openVaultSwitcher(): void {
   void requestVaultSwitch()
@@ -123,6 +125,12 @@ function statusItemTitle(entry: ExtensionStatusItemView): string {
   const title = statusTitle(entry)
   return hasExtensionIcon(entry) ? `${entry.extensionName}\n${title}` : title
 }
+
+/** 跳到当前文档的下一处合并冲突(与 VSCode 的冲突计数一致:只统计正在编辑的文件) */
+function gotoNextConflict(): void {
+  const view = editorHolder.view
+  if (view) jumpToNextConflict(view)
+}
 </script>
 
 <template>
@@ -199,6 +207,16 @@ function statusItemTitle(entry: ExtensionStatusItemView): string {
     >
       <ChevronsUpDown :size="13" />
       <span class="status-vault-name">{{ appStore.vaultName }}</span>
+    </button>
+    <!-- 合并冲突:只在当前文档真的有冲突时出现,点一下跳到下一处 -->
+    <button
+      v-if="appStore.activeConflicts > 0"
+      class="status-conflicts"
+      :title="`当前文件有 ${appStore.activeConflicts} 处合并冲突，点击跳到下一处`"
+      @click="gotoNextConflict()"
+    >
+      <AlertTriangle :size="13" />
+      <span>{{ appStore.activeConflicts }} 处冲突</span>
     </button>
     <!-- 没有打开页面时,0 字 0 行不是「统计结果」,是空状态;不显示反而诚实 -->
     <template v-if="activeDoc">

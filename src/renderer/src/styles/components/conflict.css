@@ -1,0 +1,415 @@
+/* 「处理合并冲突」窗口 —— 与编辑器内联冲突操作栏同一套配色 */
+
+.conflict-dialog-mask {
+  /* 设置面板是 110,冲突窗口可能从设置页里打开,要盖在它上面 */
+  z-index: 120;
+}
+
+.conflict-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, calc(100vw - 64px));
+  max-height: min(84vh, 840px);
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 24px 64px var(--shadow);
+  overflow: hidden;
+}
+
+.conflict-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conflict-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.conflict-dialog-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.conflict-dialog-heading h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.conflict-dialog-heading p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.conflict-dialog-close {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.conflict-dialog-close:hover {
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-primary);
+}
+
+.conflict-dialog-loading {
+  padding: 40px 20px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+.conflict-dialog-main {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.conflict-dialog-files {
+  width: 220px;
+  flex: 0 0 auto;
+  padding: 8px;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  background: var(--bg-toolbar);
+}
+
+.conflict-dialog-files button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conflict-dialog-files button:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.conflict-dialog-files button.is-active {
+  background: var(--bg-active);
+  color: var(--active-text);
+}
+
+.conflict-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflict-file-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.conflict-file-count.is-resolved {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.conflict-dialog-body {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 18px 18px;
+}
+
+.conflict-dialog-filebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+
+.conflict-dialog-filename {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflict-dialog-pending {
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.conflict-dialog-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: var(--success);
+  font-size: 11.5px;
+}
+
+.conflict-dialog-spacer {
+  flex: 1;
+}
+
+.conflict-dialog-mini-btn,
+.conflict-dialog-btn,
+.conflict-dialog-cancel,
+.conflict-dialog-primary {
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  cursor: pointer;
+}
+
+.conflict-dialog-mini-btn {
+  padding: 1px 8px;
+  height: 22px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.conflict-dialog-mini-btn:hover:not(:disabled),
+.conflict-dialog-btn:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.conflict-dialog-mini-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.conflict-dialog-btn {
+  padding: 2px 9px;
+  height: 24px;
+  font-size: 11.5px;
+}
+
+.conflict-dialog-btn:hover {
+  border-color: color-mix(in srgb, var(--conflict-current) 45%, var(--border));
+  background: color-mix(in srgb, var(--conflict-current) 10%, var(--bg-editor));
+}
+
+.conflict-dialog-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 12px;
+  color: var(--success);
+  font-size: 13px;
+}
+
+.conflict-dialog-fileerror {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 7px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.conflict-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  background: var(--bg-editor);
+}
+
+.conflict-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--conflict-current) 6%, var(--bg-toolbar));
+}
+
+.conflict-card-index {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--conflict-current);
+}
+
+.conflict-card-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.conflict-side {
+  min-width: 0;
+  padding: 9px 12px 11px;
+}
+
+.conflict-side + .conflict-side {
+  border-left: 1px solid var(--border);
+}
+
+.conflict-side-current {
+  background: color-mix(in srgb, var(--conflict-current) 6%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--conflict-current) 45%, transparent);
+}
+
+.conflict-side-incoming {
+  background: color-mix(in srgb, var(--conflict-incoming) 6%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--conflict-incoming) 45%, transparent);
+}
+
+.conflict-side h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.conflict-side-current h3 {
+  color: var(--conflict-current);
+}
+
+.conflict-side-incoming h3 {
+  color: var(--conflict-incoming);
+}
+
+.conflict-side-ref {
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+}
+
+.conflict-side pre,
+.conflict-card-base pre {
+  margin: 0;
+  max-height: 190px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.conflict-card-base {
+  padding: 6px 12px 10px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-secondary);
+}
+
+.conflict-card-base summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.conflict-card-base pre {
+  margin-top: 8px;
+  max-height: 140px;
+  color: var(--text-secondary);
+}
+
+.conflict-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-toolbar);
+}
+
+.conflict-dialog-remaining {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.conflict-dialog-remaining.is-done {
+  color: var(--success);
+}
+
+.conflict-dialog-saveerror {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+
+.conflict-dialog-cancel,
+.conflict-dialog-primary {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.conflict-dialog-primary {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: #fff;
+  background: var(--accent);
+}
+
+.conflict-dialog-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, #000);
+}
+
+.conflict-dialog-primary:disabled,
+.conflict-dialog-cancel:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.conflict-dialog-cancel:hover:not(:disabled) {
+  background: var(--bg-toolbar-btn-hover);
+}

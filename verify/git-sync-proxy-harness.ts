@@ -501,7 +501,7 @@ async function main(): Promise<void> {
     message: string
   }
   check(
-    '「检测本机代理」报告环境变量来源与端口可连接',
+    '「检测代理」报告环境变量来源与端口可连接',
     detectAuto?.ok === true &&
       detectAuto.message.includes(proxy.url) &&
       detectAuto.message.includes('环境变量 HTTP_PROXY') &&
@@ -538,7 +538,7 @@ async function main(): Promise<void> {
     message: string
   }
   check(
-    '「检测本机代理」报告手动地址为空',
+    '「检测代理」报告手动地址为空',
     (detectEmpty?.message ?? '').includes('无法识别'),
     detectEmpty?.message
   )
@@ -546,7 +546,7 @@ async function main(): Promise<void> {
 
   // ---------- 四、推送路径也带代理 ----------
 
-  console.log('\n【4】立即上传：推送也要经过代理')
+  console.log('\n【4】立即同步：推送也要经过代理')
   await service.setExtensionConfig(EXT_ID, configOf(target, 'manual', proxy.url))
   await sleep(300)
   const beforePush = proxy.seen.length

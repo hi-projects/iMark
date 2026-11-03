@@ -478,6 +478,19 @@ export type HostRequestMessage =
       includeUntitled: boolean
     }
   | {
+      kind: 'workspace.reloadFromDisk'
+      requestId: string
+      extensionId: string
+    }
+  | {
+      kind: 'conflicts.show'
+      requestId: string
+      extensionId: string
+      /** 绝对路径 */
+      files: string[]
+      onlyUnopened: boolean
+    }
+  | {
       kind: 'markdown.render'
       requestId: string
       extensionId: string
@@ -753,6 +766,16 @@ export type EditorRequestDto =
   | {
       op: 'saveAll'
       includeUntitled: boolean
+    }
+  | {
+      /** 外部工具改过工作区后,让渲染层刷新文件树并重载未修改的文档 */
+      op: 'reloadFromDisk'
+    }
+  | {
+      /** 打开「处理合并冲突」窗口 */
+      op: 'showConflictResolver'
+      files: string[]
+      onlyUnopened: boolean
     }
   | {
       /** 保存一份文档;文档不在编辑器里时返回 false(与 VS Code 的 save 语义一致) */

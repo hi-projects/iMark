@@ -15,6 +15,11 @@
  *   D 对照组:列表 / 引用里的标题回车 → 只续外层的 `- ` / `> `,不续标题
  *   E Ctrl+4 → 才是 h4 的真正来源;顺手复现「标记被藏起来」的观感
  *   F 引用要敲出 `> ` 里的空格才开始渲染:只有 `>` 时按普通文本显示
+ *   G 空行敲 ``` 回车 → 自动补一行空行 + 闭合围栏;块后面的正文不再被吞成代码。
+ *     回车**之前**下文的渲染也要验:光标还在围栏行上时不能先按代码块染色
+ *   G2 带语言 / 引用 / 列表里的围栏,补出来的闭合围栏保持同样形态
+ *   G3 下方本来就有一条未闭合围栏时,新敲的围栏也不能和它配对吞掉中间正文
+ *   G4 已有代码块的开围栏行尾回车 → 不凭空补闭合围栏(只在刚敲出来的行上生效)
  *
  * 每个用例都重写盘上文件 + 重载窗口:光标必然落在文首(新建 state 的 selection 是 0),
  * 于是只靠「回车 / 打字 / 左移」就能把用例写在头几行上,不用去猜光标在第几行
@@ -367,6 +372,107 @@ async function main(): Promise<void> {
   {
     const quoted = (await domLines())[0]
     check('补上空格后按引用渲染', /cm-md-quote/.test(quoted.cls) && quoted.bar !== 'none', looks(quoted))
+  }
+
+  console.log('\n【G】空行敲 ``` 回车 —— 自动补空行 + 闭合围栏,后面的正文不变成代码')
+  await loadDoc(START)
+  await type('```')
+  {
+    const before = await domLines()
+    check(
+      '回车前下面的正文不按代码块渲染(不提前染色)',
+      before.every(l => !/cm-md-code/.test(l.cls)),
+      before.map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
+    )
+    check('围栏行本身仍是原文', before[0].text === '```', looks(before[0]))
+  }
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('开围栏下一行是空行(光标落点)', src[1] === '', JSON.stringify(src.slice(0, 3)))
+    check('空行下面是自动补的闭合围栏', src[2] === '```', JSON.stringify(src.slice(0, 3)))
+    check('后面的正文仍在代码块之外', src.slice(3).join('|') === TAIL.join('|'), JSON.stringify(src.slice(3)))
+
+    // 光标就在中间那行:直接打字应该写进代码块,不会跑到围栏外面
+    await type('const a = 1')
+    const typed = await readSource()
+    check('中间空行可以直接写代码', typed[1] === 'const a = 1', JSON.stringify(typed.slice(0, 3)))
+    check('闭合围栏没有被挤走', typed[2] === '```' && typed.slice(3).join('|') === TAIL.join('|'), JSON.stringify(typed.slice(2)))
+    const lines = await domLines()
+    check(
+      '三行都按代码块渲染',
+      lines.slice(0, 3).every(l => /cm-md-code/.test(l.cls)),
+      lines.slice(0, 3).map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
+    )
+    check(
+      '下面的标题恢复成标题渲染,没有留在代码块里',
+      /cm-md-h1/.test(lines[3].cls) && !/cm-md-code/.test(lines[3].cls),
+      looks(lines[3])
+    )
+  }
+
+  console.log('\n【G2】围栏带语言 / 在引用和列表里 —— 闭合围栏形态跟着开围栏走')
+  await loadDoc('\n正文\n')
+  await type('```js')
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('```js 回车补的是 ```', src.slice(0, 3).join('|') === '```js||```', JSON.stringify(src.slice(0, 3)))
+    check('正文仍在块外', src[3] === '正文', JSON.stringify(src.slice(3)))
+  }
+
+  await loadDoc('\n正文\n')
+  await type('> ```')
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('引用里的围栏:空行和闭合围栏都留在引用里', src.slice(0, 3).join('|') === '> ```|> |> ```', JSON.stringify(src.slice(0, 3)))
+    check('正文仍在块外', src[3] === '正文', JSON.stringify(src.slice(3)))
+  }
+
+  await loadDoc('\n正文\n')
+  await type('- ```')
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('列表里的围栏:空行和闭合围栏按内容列缩进', src.slice(0, 3).join('|') === '- ```|  |  ```', JSON.stringify(src.slice(0, 3)))
+    check('正文仍在块外', src[3] === '正文', JSON.stringify(src.slice(3)))
+  }
+
+  console.log('\n【G3】下方本来就有一条未闭合围栏 —— 新敲的围栏不能和它配成一对')
+  // 复现真实笔记:文末还留着一条没写完的围栏。在文首敲 ``` 时,新围栏会和
+  // 下面那条配成"已闭合"的代码块,整段正文被读成代码 —— 只看语法树会误判。
+  await loadDoc('\n正文\n\n```\n旧的未闭合代码\n')
+  await type('```')
+  {
+    const before = await domLines()
+    check(
+      '回车前整段仍不按代码块渲染',
+      before.every(l => !/cm-md-code/.test(l.cls)),
+      before.map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
+    )
+  }
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('新围栏先自己闭合', src.slice(0, 3).join('|') === '```||```', JSON.stringify(src.slice(0, 3)))
+    check(
+      '中间正文和下方旧围栏原样保留',
+      src.slice(3).join('|') === '正文||```|旧的未闭合代码',
+      JSON.stringify(src.slice(3))
+    )
+  }
+
+  console.log('\n【G4】已有代码块的开围栏行尾回车 —— 不凭空补闭合围栏')
+  // 光标在文首 = 开围栏行首;End 到行尾再回车。这一行不是"刚敲出来"的,
+  // 应当只是普通断行(行尾回车等价于在行尾加一个换行),不能把块提前闭合。
+  await loadDoc('```js\ncode\n```\n')
+  await key('End')
+  await key('Enter')
+  {
+    const src = await readSource()
+    check('只是在开围栏后断了一行', src.slice(0, 4).join('|') === '```js||code|```', JSON.stringify(src.slice(0, 4)))
+    check('围栏数量没变', src.filter(l => l === '```').length === 1, JSON.stringify(src))
   }
 
   const shots = join(REPO, '.verify-ud', 'shots')

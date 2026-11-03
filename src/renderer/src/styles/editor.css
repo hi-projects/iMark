@@ -325,6 +325,14 @@
 }
 
 /*
+ * 标题前紧挨着的空行:用户主动留出的空行要占一整行,不能按块间距压扁。
+ * 普通空行本来就是完整行高;表格的结构空行没有 cm-md-block-gap,仍保持折叠。
+ */
+.cm-editor .cm-line.cm-md-block-gap.cm-md-h-space-before {
+  line-height: inherit;
+}
+
+/*
  * 块紧贴正文(中间没有空行)时,间距做在相邻那一行正文的 padding 上。
  * 落在正文行上而不是块边界上,代码块的底色、留白和复制按钮都不受影响。
  *
@@ -922,4 +930,155 @@
 
 .cm-md-image.cm-md-image-error img {
   display: none;
+}
+
+/* ---------- 合并冲突(VSCode 风格) ---------- */
+
+/*
+ * 标记行(<<<<<<< / ======= / >>>>>>>)整行换成操作栏或分隔条。
+ * 行盒自身的字体留白清零,和表格宿主行一样 —— 否则操作栏上下会多出半行空白。
+ */
+.cm-md-conflict-host {
+  line-height: 0;
+  font-size: 0;
+}
+
+.cm-md-conflict-end {
+  min-height: 0;
+}
+
+/* 操作栏:标出当前分支,并给出三枚取舍按钮 */
+.cm-md-conflict-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-family: var(--font-editor);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--conflict-current) 9%, var(--bg-editor));
+  border: 1px solid color-mix(in srgb, var(--conflict-current) 32%, var(--border));
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  user-select: none;
+}
+
+.cm-md-conflict-count {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+}
+
+.cm-md-conflict-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--conflict-current);
+}
+
+.cm-md-conflict-ref {
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+}
+
+.cm-md-conflict-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.cm-md-conflict-btn {
+  padding: 0 8px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--conflict-current) 35%, var(--border));
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--text-primary);
+  background: var(--bg-editor);
+  cursor: pointer;
+}
+
+.cm-md-conflict-btn:hover {
+  background: color-mix(in srgb, var(--conflict-current) 14%, var(--bg-editor));
+}
+
+.cm-md-conflict-btn:active {
+  background: color-mix(in srgb, var(--conflict-current) 22%, var(--bg-editor));
+}
+
+/* 两段内容:左侧色条 + 淡底色;首尾行带圆角,拼成一块连续区域 */
+.cm-md-conflict-line {
+  background: color-mix(in srgb, var(--conflict-current) 7%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--conflict-current) 55%, transparent);
+}
+
+.cm-md-conflict-line.cm-md-conflict-incoming {
+  background: color-mix(in srgb, var(--conflict-incoming) 7%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--conflict-incoming) 55%, transparent);
+}
+
+.cm-md-conflict-line.cm-md-conflict-base {
+  background: color-mix(in srgb, var(--conflict-base) 7%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--conflict-base) 45%, transparent);
+  color: var(--text-secondary);
+}
+
+.cm-md-conflict-line.cm-md-conflict-first {
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+}
+
+.cm-md-conflict-line.cm-md-conflict-last {
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+/* 传入内容 / 基准段的标题条:一条横线,中间夹标签 */
+.cm-md-conflict-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  font-family: var(--font-editor);
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.cm-md-conflict-divider-line {
+  flex: 1 1 auto;
+  height: 1px;
+  background: color-mix(in srgb, var(--conflict-incoming) 35%, var(--border));
+}
+
+.cm-md-conflict-divider-base .cm-md-conflict-divider-line {
+  background: color-mix(in srgb, var(--conflict-base) 35%, var(--border));
+}
+
+.cm-md-conflict-divider-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--conflict-incoming);
+}
+
+.cm-md-conflict-divider-base .cm-md-conflict-divider-label {
+  color: var(--text-secondary);
 }

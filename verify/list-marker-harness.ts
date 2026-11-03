@@ -22,7 +22,11 @@
  *   D 回归:`--` 仍按 Setext 下划线渲染成二级标题(别把标题功能改坏)
  *   E `* ` / `+ ` 也在输入文字的瞬间显示圆点;单独的 `*` 还不算列表
  *   F `1. ` 立刻显示有序标记,补字后是真正的有序列表
- *   G 回归:空行之后的 `-` 本来就能立即渲染(普通列表不受影响)
+ *   G 空行之后的 `1.` 不渲染,补上空格才显示有序标记
+ *   H 回归:空行之后的 `-` 本来就能立即渲染(普通列表不受影响)
+ *   I 删除空的有序列表项后不留对齐空格,光标顶格
+ *   J 标题前主动留出的空行占完整行高(不被列表后的块间距压扁)
+ *   K 列表后第一行正文按上键:光标跳过块间距空行,空行不被撑开
  *
  * 跑法(先 `npm run build`,再在仓库根目录):
  *   xvfb-run -a node verify/run.mjs list-marker
@@ -64,6 +68,8 @@ type LineInfo = {
   mark: string
   /** 标记伪元素的 content(只有圆点标记才有) */
   bullet: string
+  /** 行盒高度(px):用来断言空行有没有被压成块间距 */
+  height: number
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -139,7 +145,8 @@ async function main(): Promise<void> {
           size: cs.fontSize,
           weight: cs.fontWeight,
           mark: m ? m.textContent : '',
-          bullet: b ? getComputedStyle(b, '::after').content : ''
+          bullet: b ? getComputedStyle(b, '::after').content : '',
+          height: Math.round(el.getBoundingClientRect().height * 10) / 10
         }
       })`)
 
@@ -332,7 +339,21 @@ async function main(): Promise<void> {
   }
 
   // ---------- G ----------
-  console.log('\n【G】回归:空行之后的 `-` 本来就能立即渲染')
+  console.log('\n【G】空行之后的 `1.` 不渲染,补上空格才渲染')
+  await loadDoc('')
+  await type('1.')
+  {
+    const line = (await domLines())[0]
+    check('单独的 `1.` 仍是普通文本', !!line && line.mark === '', line ? looks(line) : '缺行')
+  }
+  await type(' ')
+  {
+    const line = (await domLines())[0]
+    check('补上空格后立刻显示有序标记', !!line && line.mark === '1.', line ? looks(line) : '缺行')
+  }
+
+  // ---------- H ----------
+  console.log('\n【H】回归:空行之后的 `-` 本来就能立即渲染')
   await loadDoc('')
   await type('阿')
   await key('Enter')
@@ -342,6 +363,63 @@ async function main(): Promise<void> {
     const lines = await domLines()
     const marker = lines[2]
     check('空行后的 `-` 仍是圆点', !!marker && marker.bullet === '"•"', marker ? looks(marker) : '缺行')
+  }
+
+  // ---------- I ----------
+  console.log('\n【I】删除空的有序列表项后光标顶格')
+  await loadDoc('1. 张三\n2. 李四\n3. 王五')
+  await key('End', ['control'])
+  await key('Enter')
+  {
+    const lines = await domLines()
+    const last = lines[lines.length - 1]
+    check('回车续出下一个有序项', !!last && last.text.trim().startsWith('4.'), last ? looks(last) : '缺行')
+  }
+  await key('Backspace')
+  {
+    const lines = await domLines()
+    const last = lines[lines.length - 1]
+    check('空列表项删除后没有残留缩进', !!last && last.text === '', last ? looks(last) : '缺行')
+  }
+
+  // ---------- J ----------
+  console.log('\n【J】标题前主动留出的空行有完整行高')
+  await loadDoc('- 一\n- 二\n# 附录')
+  await key('End', ['control'])
+  await key('Home')
+  await key('Enter')
+  {
+    const lines = await domLines()
+    const blank = lines[2]
+    check('标题前多出一行', lines.length === 4, JSON.stringify(lines.map(l => l.text)))
+    check(
+      '空行是完整行高(不是一档块间距)',
+      !!blank && blank.height >= bodySizePx * 2 - 1,
+      blank ? JSON.stringify(blank) : '缺行'
+    )
+    check('标题仍在空行之后', !!lines[3] && lines[3].text.includes('附录'), lines[3] ? looks(lines[3]) : '缺行')
+  }
+
+  // ---------- K ----------
+  console.log('\n【K】列表后的正文按上键:跳过块间距空行')
+  await loadDoc('- 啊\n\n啊')
+  await key('End', ['control'])
+  await key('ArrowUp')
+  {
+    const selection = await evalJs<{ text: string } | null>(`
+      (() => {
+        const view = document.querySelector('.cm-content')?.cmTile?.root?.view
+        if (!view) return null
+        return { text: view.state.doc.lineAt(view.state.selection.main.head).text }
+      })()`)
+    const lines = await domLines()
+    const blank = lines[1]
+    check('光标落在列表项上,没有停在空行', selection?.text === '- 啊', JSON.stringify(selection))
+    check(
+      '空行仍保持收起(没有被光标撑开)',
+      !!blank && blank.cls.includes('cm-md-block-gap') && blank.height < bodySizePx * 2 - 1,
+      blank ? JSON.stringify(blank) : '缺行'
+    )
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

@@ -12,6 +12,7 @@ import { mathPreview } from './mathPreview'
 import { extensionDecorationsExtension } from './extensionDecorations'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
+import { pendingFenceField } from './pendingFence'
 import { imagePaste } from './imagePaste'
 import { outlineFollower, updateActiveOutline } from './outline'
 
@@ -102,9 +103,19 @@ export function buildExtensions(
     editorTheme,
     history(),
     // base 必须显式给 markdownLanguage:markdown() 默认 base 是 commonmarkLanguage,
-    // 那样任务列表 / 删除线 / 表格这些 GFM 节点根本不会出现在语法树里
-    markdown({ base: markdownLanguage, codeLanguages: languages, extensions: mathExtension }),
+    // 那样任务列表 / 删除线 / 表格这些 GFM 节点根本不会出现在语法树里。
+    // addKeymap:false:markdown() 默认会把 markdownKeymap 以 Prec.high 再装一遍,
+    // 那样本文件后面自己排的 Enter / Backspace 自定义键位永远轮不到(例如删空
+    // 列表项后清掉对齐空格、围栏回车补闭合围栏)。这里只保留下面统一排的那一份。
+    markdown({
+      base: markdownLanguage,
+      codeLanguages: languages,
+      extensions: mathExtension,
+      addKeymap: false
+    }),
     syntaxHighlighting(classHighlighter),
+    // 刚敲出来的开围栏:回车补全与渲染抑制都要读它(见 pendingFence.ts)
+    pendingFenceField,
     wysiwyg(),
     // 剪贴板图片:先于 CM 自带的 paste handler 拦下图片数据
     imagePaste(),

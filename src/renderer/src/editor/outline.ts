@@ -1,6 +1,7 @@
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language'
 import { EditorSelection, type EditorState } from '@codemirror/state'
 import { EditorView, ViewPlugin } from '@codemirror/view'
+import { findConflictBlocks } from './conflict'
 import { activeTab, appStore, type OutlineItem } from '../stores/app'
 
 /** 去掉行内标记,得到标题纯文本 */
@@ -36,10 +37,16 @@ export function extractOutline(state: EditorState): OutlineItem[] {
   }
 
   const items: OutlineItem[] = []
+  // 合并冲突里的 `=======` 会被解析成 Setext 标题下划线,`<<<<<<< HEAD` 随之
+  // 变成一条标题。冲突期间它不该出现在大纲里 —— 那是一条临时标记,不是章节。
+  const conflicts = findConflictBlocks(state.doc)
+  const inConflict = (pos: number): boolean =>
+    conflicts.some(block => pos >= block.from && pos <= block.to)
   tree.iterate({
     from: 0,
     to: len,
     enter: node => {
+      if (inConflict(node.from)) return
       let level: number | null = null
       if (node.name.startsWith('ATXHeading')) {
         level = Number(node.name.slice(-1))

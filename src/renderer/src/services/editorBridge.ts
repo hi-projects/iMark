@@ -40,6 +40,7 @@ import { renderMarkdownFragment } from './exportHtml'
 import {
   activateTab,
   applyTabChanges,
+  replaceTabDocument,
   setTabDocumentObserver,
   tabById,
   tabState,
@@ -54,6 +55,8 @@ import {
   saveAllFileTabsSilently,
   saveTab
 } from './fileService'
+import { refreshVault } from './vaultService'
+import { openConflictResolver } from './conflictResolver'
 import { api } from './api'
 
 // ---------- URI ----------
@@ -538,6 +541,27 @@ async function openDocument(
   return true
 }
 
+/**
+ * 外部工具(如 git 合并)改过工作区后重载界面。
+ *
+ * 只替换**没有未保存改动**的标签:有脏内容的文档保持原样,免得把用户刚敲的字
+ * 覆盖掉。返回是否真的重载了至少一个文档。
+ */
+async function reloadFromDisk(): Promise<boolean> {
+  let reloaded = false
+  for (const tab of [...appStore.tabs]) {
+    if (!tab.filePath || tab.dirty) continue
+    const read = await api.readFile(tab.filePath).catch(() => null)
+    if (!read) continue
+    const current = tabState(tab.id)?.doc.toString()
+    if (current === read.content) continue
+    replaceTabDocument(tab.id, read.content, read.eol)
+    reloaded = true
+  }
+  await refreshVault()
+  return reloaded
+}
+
 function setDecorations(
   request: Extract<EditorRequestDto, { op: 'setDecorations' }>
 ): boolean {
@@ -582,6 +606,16 @@ async function handleRequest(requestId: string, request: EditorRequestDto): Prom
         reply(requestId, true, tab ? await saveTab(tab.id) : false)
         return
       }
+      case 'reloadFromDisk':
+        reply(requestId, true, await reloadFromDisk())
+        return
+      case 'showConflictResolver':
+        reply(
+          requestId,
+          true,
+          openConflictResolver(request.files, { onlyUnopened: request.onlyUnopened })
+        )
+        return
       case 'setDecorations':
         reply(requestId, true, setDecorations(request))
         return

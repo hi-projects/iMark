@@ -2016,7 +2016,18 @@ export class ExtensionHostRuntime {
       registerWebviewPanelSerializer: (viewType: string, serializer: WebviewPanelSerializer) =>
         runtime.registerWebviewSerializer(ext, viewType, serializer),
       showTextDocument: (document: TextDocument, _column?: ViewColumn, _preserveFocus?: boolean) =>
-        runtime.showTextDocument(ext, document)
+        runtime.showTextDocument(ext, document),
+      showConflictResolver: (
+        files: readonly string[],
+        options?: { onlyUnopened?: boolean }
+      ) =>
+        runtime.request<boolean>(r => ({
+          kind: 'conflicts.show',
+          requestId: r,
+          extensionId: ext.id,
+          files: files.map(file => String(file)),
+          onlyUnopened: options?.onlyUnopened === true
+        }))
     }
 
     const workspaceApi = {
@@ -2047,6 +2058,12 @@ export class ExtensionHostRuntime {
           requestId: r,
           extensionId: ext.id,
           includeUntitled: includeUntitled ?? false
+        })),
+      reloadFromDisk: () =>
+        runtime.request<boolean>(r => ({
+          kind: 'workspace.reloadFromDisk',
+          requestId: r,
+          extensionId: ext.id
         })),
       fs: runtime.fileSystem(ext)
     }

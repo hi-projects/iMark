@@ -217,6 +217,7 @@ getCommands(filterInternal?: boolean): Thenable<string[]>
 | `createWebviewPanel(...)` | 见 §9 |
 | `registerWebviewPanelSerializer(viewType, serializer)` | 重启后恢复面板 |
 | `showTextDocument(document, column?, preserveFocus?)` | 在编辑器中打开文档 |
+| `showConflictResolver(files, { onlyUnopened? })` | 打开应用的「处理合并冲突」窗口；`files` 为绝对路径，`onlyUnopened` 跳过编辑器里已打开的文件 |
 | `activeTextEditor` / `visibleTextEditors` | 当前活跃 / 可见编辑器 |
 | `activeColorTheme` / `onDidChangeActiveColorTheme` | 主题 |
 
@@ -233,6 +234,7 @@ getCommands(filterInternal?: boolean): Thenable<string[]>
 | `onDidOpenTextDocument` / `onDidCloseTextDocument` / `onDidSaveTextDocument` / `onDidChangeTextDocument` | 文档事件 |
 | `openTextDocument(uri?)` | 打开文件或创建内存文档（`{ language, content }`） |
 | `saveAll(includeUntitled?)` | 保存所有脏文档 |
+| `reloadFromDisk()` | 外部工具改过工作区后刷新文件树，并重载**没有未保存改动**的已打开文档 |
 | `fs` | `file:` URI 的读写、stat、readDirectory、createDirectory、delete、rename |
 
 `workspace.fs.delete` 的 `useTrash` 参数当前不会移到回收站，始终直接删除；需要回收站语义请用
@@ -334,6 +336,7 @@ onDidChangeTheme: Event<ColorTheme>
 | `options` | select 的 `{ value, label }[]`；优先于 `enum` 的标签 |
 | `endpointModel` | `endpoints` 每行的模型输入说明 |
 | `targetSecret` | `targets` / `endpoints` 每行独立密钥的标签与占位 |
+| `single` | `targets` 只允许一行：隐藏「添加/删除」，空列表也显示一行可编辑的空表单 |
 | `scope` | `global`（默认）或 `workspace` |
 | `file` / `dirEnv` / `pointer` / `secret` | 仅 `kind: "external"`，见 §5.3 |
 

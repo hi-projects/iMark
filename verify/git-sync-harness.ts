@@ -9,10 +9,10 @@
  *   2 `onStartupFinished` 激活、状态栏条目与初始文案
  *   3 首次同步：远端建分支、文件与忽略项写入、提交信息模板生效
  *   4 无改动不造空提交；有改动 +1 提交
- *   5 `testAll` / `testTarget`（逐远端）与状态卡结果
- *   6 密钥缺失时在动 git 之前失败，说清是哪一行；且不写日志/状态卡
+ *   5 `testTarget` 与状态卡结果
+ *   6 密钥缺失时在动 git 之前失败，且不写日志/状态卡
  *     （配置问题只由设置页的黄色提示展示）
- *   7 多远端：一个成功一个失败 → partial，逐个远端结果可见
+ *   7 远端不可用：同步失败、状态卡标红、日志带原因
  *   8 配置变更 → 防抖后自动补跑一轮（onDidChangeConfiguration）
  *   9 停用释放宿主；重新启用后命令再激活；卸载清目录与贡献点
  *
@@ -235,7 +235,9 @@ async function main(): Promise<void> {
   const commands = v?.descriptor.contributes.commands ?? []
   for (const id of [
     'imark.git-sync.syncNow',
-    'imark.git-sync.testAll',
+    'imark.git-sync.uploadNow',
+    'imark.git-sync.downloadNow',
+    'imark.git-sync.resolveConflicts',
     'imark.git-sync.detectProxy',
     'imark.git-sync.testTarget'
   ]) {
@@ -245,13 +247,15 @@ async function main(): Promise<void> {
   const syncKey = keybindings.find(k => k.command === 'imark.git-sync.syncNow')
   check('声明了 ctrl+alt+s 快捷键且未被摘掉', syncKey?.key === 'ctrl+alt+s' && !syncKey.dropped, JSON.stringify(syncKey))
   const actions = service.getContributions().actions.filter(a => a.extensionId === EXT_ID)
-  check('声明了 4 个设置页动作', actions.length === 4, JSON.stringify(actions.map(a => a.command)))
+  check('声明了 5 个设置页动作', actions.length === 5, JSON.stringify(actions.map(a => a.command)))
   check(
     '「测试连接」是每远端动作',
     actions.some(a => a.command === 'imark.git-sync.testTarget' && a.scope === 'target')
   )
   const fields = v?.descriptor.settingsFields ?? []
-  check('配置翻译成 targets 字段', fields.some(f => f.key === 'targets' && f.kind === 'targets'))
+  const targetsField = fields.find(f => f.key === 'targets')
+  check('配置翻译成 targets 字段', targetsField?.kind === 'targets')
+  check('远端字段只允许一行', targetsField?.single === true, JSON.stringify(targetsField))
   check('代理模式是下拉选择', fields.some(f => f.key === 'proxyMode' && f.kind === 'select'))
   const proxyField = fields.find(f => f.key === 'proxyMode')
   check(
@@ -271,9 +275,9 @@ async function main(): Promise<void> {
   const groups = service.hostGroupsView().filter(g => g.extensionIds.includes(EXT_ID))
   check('扩展有独立宿主进程', groups.length === 1 && groups[0]!.pid !== null, JSON.stringify(groups))
   const item = await waitFor(statusItem, x => !!x)
-  check('状态栏出现 Git 同步条目', item?.text === '$(git) Git 同步', JSON.stringify(item))
+  check('状态栏出现远程同步条目', item?.text === '$(git) 远程同步', JSON.stringify(item))
   check('点击执行立即同步', item?.command === 'imark.git-sync.syncNow')
-  check('悬停说明指向同步动作', (item?.tooltip ?? '').includes('立即上传'), String(item?.tooltip))
+  check('悬停说明指向同步动作', (item?.tooltip ?? '').includes('同步'), String(item?.tooltip))
   check('初始状态是 idle', (await view())?.status.status === 'idle', String((await view())?.status.status))
 
   // ---------- 3. 首次同步 ----------
@@ -305,8 +309,8 @@ async function main(): Promise<void> {
   check('运行状态上报为 ok', afterFirst?.status.status === 'ok', JSON.stringify(afterFirst?.status))
   check('状态文本说明已推送', (afterFirst?.status.lastMessage ?? '').includes('推送'), afterFirst?.status.lastMessage)
   check('lastRunAt 有值', typeof afterFirst?.status.lastRunAt === 'number')
-  const okItem = await waitFor(statusItem, x => x?.text === '$(check) Git 同步')
-  check('状态栏切成成功图标', okItem?.text === '$(check) Git 同步', JSON.stringify(okItem?.text))
+  const okItem = await waitFor(statusItem, x => x?.text === '$(check) 远程同步')
+  check('状态栏切成成功图标', okItem?.text === '$(check) 远程同步', JSON.stringify(okItem?.text))
   check('远端结果上报为 ok', afterFirst?.status.targetResults?.t1 === 'ok')
 
   // ---------- 4. 空同步与有改动 ----------
@@ -331,14 +335,18 @@ async function main(): Promise<void> {
 
   // ---------- 5. 测试连接 ----------
 
-  console.log('\n【5】测试全部远端 / 单远端')
-  const testAll = (await service.executeCommand('imark.git-sync.testAll')) as {
+  console.log('\n【5】测试连接')
+  const testOne = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
     ok: boolean
     message: string
   }
-  check('testAll 成功', testAll?.ok === true, JSON.stringify(testAll))
-  check('提示里说明远端已有分支', (testAll?.message ?? '').includes('连接测试通过'), testAll?.message)
-  check('状态卡记录 t1 连接成功', (await waitStatus('ok'))?.status.targetResults?.t1 === 'ok', JSON.stringify((await view())?.status.targetResults))
+  check('testTarget 成功', testOne?.ok === true, JSON.stringify(testOne))
+  check('提示里说明远端已有分支', (testOne?.message ?? '').includes('连接测试通过'), testOne?.message)
+  check(
+    '状态卡记录连接成功',
+    (await waitStatus('ok'))?.status.targetResults?.t1 === 'ok',
+    JSON.stringify((await view())?.status.targetResults)
+  )
 
   await sleep(400)
   const testToasts = (await wc.executeJavaScript(
@@ -350,12 +358,6 @@ async function main(): Promise<void> {
     !testToasts.some(text => text.includes('连接测试通过') || text.includes('连接失败')),
     JSON.stringify(testToasts)
   )
-
-  const testOne = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
-    ok: boolean
-    message: string
-  }
-  check('testTarget 只测指定远端', testOne?.ok === true && (testOne.message ?? '').includes('第 1 个远端'), JSON.stringify(testOne))
 
   // ---------- 6. 密钥缺失 ----------
 
@@ -370,7 +372,7 @@ async function main(): Promise<void> {
     localBranch: 'main',
     remoteBranch: 'main'
   }
-  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote), tokenTarget]))
+  await service.setExtensionConfig(EXT_ID, baseConfig([tokenTarget]))
   const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
@@ -378,7 +380,7 @@ async function main(): Promise<void> {
   }
   check('命令返回失败', missing?.ok === false, JSON.stringify(missing))
   check('结果标记为 silent（交给设置页的黄色提示）', missing?.silent === true, JSON.stringify(missing))
-  check('错误指到第 2 个远端', (missing?.message ?? '').includes('第 2 个远端'), missing?.message)
+  check('错误指向唯一远端', (missing?.message ?? '').includes('远端'), missing?.message)
   check('错误说明缺的是访问令牌', (missing?.message ?? '').includes('访问令牌'), missing?.message)
   // 配置变更 3 秒后还会自动试跑一次;等它过去,确认状态卡仍未被这次校验覆盖
   await sleep(3500)
@@ -400,9 +402,9 @@ async function main(): Promise<void> {
     JSON.stringify(missingLogs.filter(entry => entry.level === 'operation').slice(-2))
   )
 
-  // ---------- 7. 多远端部分失败 ----------
+  // ---------- 7. 单个远端不可用 ----------
 
-  console.log('\n【7】多远端：一个成功、一个失败 → partial')
+  console.log('\n【7】远端不可用：同步失败，状态卡标红')
   const broken: TargetConfig = {
     id: 'bad',
     url: badRemote,
@@ -412,33 +414,30 @@ async function main(): Promise<void> {
     remoteBranch: 'main'
   }
   await writeFile(join(vault, '第三篇.md'), '# 第三篇\n', 'utf8')
-  const beforePartial = await count()
+  const beforeBroken = await count()
   // 配置变更会触发扩展内部的防抖补跑（3s），用它验证 onDidChangeConfiguration 链路
-  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote), broken]))
-  const partial = await waitStatus('partial', 25_000)
-  check('配置变更后自动跑了一轮并上报 partial', partial?.status.status === 'partial', JSON.stringify(partial?.status))
-  check('成功的远端记为 ok', partial?.status.targetResults?.t1 === 'ok', JSON.stringify(partial?.status.targetResults))
-  check('失败的远端记为 error', partial?.status.targetResults?.bad === 'error', JSON.stringify(partial?.status.targetResults))
-  check('状态文本列出两个远端的成败', (partial?.status.lastMessage ?? '').includes('推送失败'), partial?.status.lastMessage)
+  await service.setExtensionConfig(EXT_ID, baseConfig([broken]))
+  const failed = await waitStatus('error', 25_000)
+  check('配置变更后自动跑了一轮并上报 error', failed?.status.status === 'error', JSON.stringify(failed?.status))
+  check('远端记为 error', failed?.status.targetResults?.bad === 'error', JSON.stringify(failed?.status.targetResults))
+  check('状态文本说明失败', (failed?.status.lastMessage ?? '').includes('同步失败'), failed?.status.lastMessage)
   check(
     '失败的详情里带分类提示',
-    (partial?.status.lastDetail ?? '').includes('仓库') ||
-      (partial?.status.lastDetail ?? '').includes('连接') ||
-      (partial?.status.lastDetail ?? '').includes('remote'),
-    partial?.status.lastDetail
+    (failed?.status.lastDetail ?? '').includes('仓库') ||
+      (failed?.status.lastDetail ?? '').includes('连接') ||
+      (failed?.status.lastDetail ?? '').includes('remote'),
+    failed?.status.lastDetail
   )
-  const partialLogs = (await view())?.logs ?? []
+  const failLogs = (await view())?.logs ?? []
   check(
-    '推送失败原因同时写进扩展日志',
-    partialLogs.some(entry => entry.level === 'error' && entry.message.includes('推送失败')) &&
-      partialLogs.some(
-        entry => entry.level === 'error' && entry.message.includes('第 2 个远端')
-      ),
-    JSON.stringify(partialLogs.slice(-4))
+    '失败原因同时写进扩展日志',
+    failLogs.some(entry => entry.level === 'error' && entry.message.includes('失败')) &&
+      failLogs.some(entry => entry.level === 'error' && entry.message.includes('远端')),
+    JSON.stringify(failLogs.slice(-4))
   )
-  check(`成功的那个远端收到了新提交（${beforePartial} → ${await count()}）`, (await count()) === beforePartial + 1)
-  const partialItem = await waitFor(statusItem, x => x?.text === '$(alert) Git 同步')
-  check('状态栏切成告警图标', partialItem?.text === '$(alert) Git 同步', JSON.stringify(partialItem?.text))
+  check('失败的远端没有收到提交', (await count()) === beforeBroken)
+  const failItem = await waitFor(statusItem, x => x?.text === '$(alert) 远程同步')
+  check('状态栏切成告警图标', failItem?.text === '$(alert) 远程同步', JSON.stringify(failItem?.text))
 
   const testBad = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 'bad' }])) as {
     ok: boolean
@@ -447,14 +446,9 @@ async function main(): Promise<void> {
   check('单测失败的远端返回失败', testBad?.ok === false, JSON.stringify(testBad))
   check('失败结果也写进状态卡', (await waitStatus('error'))?.status.targetResults?.bad === 'error')
 
-  const testGoodAgain = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
-    ok: boolean
-  }
-  check('单测成功的远端返回成功', testGoodAgain?.ok === true, JSON.stringify(testGoodAgain))
-
   // ---------- 8. 检测代理（手动地址为空） ----------
 
-  console.log('\n【8】检测本机代理：手动地址为空时提示地址问题')
+  console.log('\n【8】检测代理：手动地址为空时提示地址问题')
   const proxy = (await service.executeCommand('imark.git-sync.detectProxy')) as {
     ok: boolean
     message: string
@@ -465,7 +459,7 @@ async function main(): Promise<void> {
   // ---------- 9. 停用 / 重新启用 / 卸载 ----------
 
   console.log('\n【9】停用释放宿主，重新启用后可再次激活；卸载清理干净')
-  // 先回到单远端配置：下一步的「重新启用后执行命令」不应再撞上故意填坏的那个远端。
+  // 回到可用远端：下一步的「重新启用后执行命令」不应再撞上故意填坏的那个远端。
   // 配置变更会触发 3 秒防抖补跑，等它跑完再停用，避免状态在断言之间跳变。
   await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote)]))
   await sleep(4500)

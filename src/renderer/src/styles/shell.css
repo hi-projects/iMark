@@ -519,6 +519,19 @@ body.pane-resizing * {
   background: var(--bg-toolbar-btn-hover);
 }
 
+/* 合并冲突计数:比图标按钮宽一点,文字用危险色,和普通状态文字区分开 */
+.status-bar button.status-conflicts {
+  width: auto;
+  gap: 4px;
+  padding: 0 7px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.status-bar button.status-conflicts:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
 /* 侧栏展开时按钮高亮 */
 .status-bar button.status-toggle-on {
   background: var(--bg-active);

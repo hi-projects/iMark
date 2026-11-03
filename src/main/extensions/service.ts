@@ -1939,6 +1939,23 @@ export class ExtensionService {
           host.respond(requestId, true, value === true)
           return
         }
+        case 'workspace.reloadFromDisk': {
+          const value = await this.requestRenderer({ op: 'reloadFromDisk' }, 15000)
+          host.respond(requestId, true, value === true)
+          return
+        }
+        case 'conflicts.show': {
+          const value = await this.requestRenderer(
+            {
+              op: 'showConflictResolver',
+              files: message.files,
+              onlyUnopened: message.onlyUnopened
+            },
+            15000
+          )
+          host.respond(requestId, true, value === true)
+          return
+        }
         case 'markdown.render': {
           let html: string
           if (this.options.renderMarkdown) {

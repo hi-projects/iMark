@@ -1,6 +1,8 @@
 import type { KeyBinding } from '@codemirror/view'
 import { insertCodeIndent } from './codeIndent'
 import {
+  completeFenceOnEnter,
+  deleteEmptyListMarkup,
   insertCodeBlock,
   insertHorizontalRule,
   insertImage,
@@ -22,6 +24,10 @@ import {
  * 这里主要作为菜单缺失场景的兜底;标点键同时绑定原始键与 shift 后的键名。
  */
 export const editorKeymap: KeyBinding[] = [
+  // 刚敲出开围栏时按回车:补一行空行 + 闭合围栏,别让后面的正文变成代码
+  { key: 'Enter', run: completeFenceOnEnter },
+  // 删除空列表项时别留下 CodeMirror 补的对齐空格(光标要顶格)
+  { key: 'Backspace', run: deleteEmptyListMarkup },
   // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
   { key: 'Tab', run: insertCodeIndent },
   // 代码块里 Ctrl+A 只选这一块(不扩到整篇;整篇全选在默认 keymap 里)

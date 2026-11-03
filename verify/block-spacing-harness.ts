@@ -835,7 +835,8 @@ async function main(): Promise<void> {
   check(
     '只有两段正文之间的空行被收紧(段落与标题之间仍是正常行距)',
     bodyDefault.bodyCount === 1 &&
-      bodyDefault.lines[3]?.cls === 'cm-line' &&
+      bodyDefault.lines[3]?.cls.split(/\s+/).includes('cm-line') &&
+      !bodyDefault.lines[3]?.cls.includes('cm-md-block-gap') &&
       bodyDefault.lines[3].h > DEFAULT_GAP + 8,
     JSON.stringify(bodyDefault.lines)
   )

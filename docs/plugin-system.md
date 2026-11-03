@@ -279,7 +279,7 @@ key =
 | 扩展 | 默认 | 说明 |
 |---|---|---|
 | `imark.quick-edit` | 启用 | 行首“+”菜单插入表格 |
-| `imark.git-sync` | 关闭 | 定时 commit + push 到多个 Git 远端 |
+| `imark.git-sync` | 关闭 | 与 Git 远端双向同步：拉取、合并、commit + push |
 | `imark.agent` | 关闭 | Agent Core：会话、附件、提示词、provider 注册表 |
 | `imark.claude-code` | 关闭 | Claude Code 后端，依赖 Agent Core |
 

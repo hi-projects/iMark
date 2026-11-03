@@ -45,6 +45,8 @@ if (!name) {
         'git-sync',
         'git-sync-auth',
         'git-sync-proxy',
+        'git-sync-sync',
+        'git-sync-conflict',
         'agent',
         'agent-prune',
         'market-package',

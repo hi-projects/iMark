@@ -50,6 +50,8 @@ interface AppState {
   outlineWidth: number
   /** 当前激活(视口顶部所在章节)标题的 from 值 */
   outlineActive: number | null
+  /** 当前文档里的 Git 合并冲突数量(WYSIWYG 插件重建装饰时写入) */
+  activeConflicts: number
   vaultPath: string | null
   vaultName: string | null
   vaultTree: VaultNode | null
@@ -119,6 +121,7 @@ export const appStore = reactive<AppState>({
   outlineVisible: true,
   outlineWidth: 240,
   outlineActive: null,
+  activeConflicts: 0,
   vaultPath: null,
   vaultName: null,
   vaultTree: null,

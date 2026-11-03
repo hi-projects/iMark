@@ -757,6 +757,18 @@ export interface WindowApi {
   createWebviewPanel(viewType: string, title: string, showOptions: ViewColumn | WebviewPanelShowOptions, options?: WebviewOptions): WebviewPanel
   registerWebviewPanelSerializer(viewType: string, serializer: WebviewPanelSerializer): Disposable
   showTextDocument(document: TextDocument, column?: ViewColumn, preserveFocus?: boolean): Thenable<TextEditor>
+  /**
+   * 打开应用的「处理合并冲突」窗口。
+   *
+   * `files` 是**绝对路径**的文本文件(`.gitignore` 这类不在文件树里的文件也可以)。
+   * `onlyUnopened` 为真时只处理没有在编辑器中打开的冲突文件 —— 已经在编辑器里
+   * 打开的文档有内联冲突操作栏,不需要再弹一个窗口。
+   * 返回窗口是否真的打开(没有可处理的文件、或渲染层未就绪时为 false)。
+   */
+  showConflictResolver(
+    files: readonly string[],
+    options?: { onlyUnopened?: boolean }
+  ): Thenable<boolean>
 }
 
 // ---------- 工作区 ----------
@@ -819,6 +831,13 @@ export interface WorkspaceApi {
   readonly onDidChangeTextDocument: Event<TextDocumentChangeEvent>
   openTextDocument(uri?: Uri | string | { language?: string; content?: string }): Thenable<TextDocument>
   saveAll(includeUntitled?: boolean): Thenable<boolean>
+  /**
+   * 让渲染层重新读取磁盘上的文件:刷新文件树,并把**未修改**的已打开文档
+   * 换成磁盘内容。用于外部工具(如 git 合并)改过工作区之后。
+   * 有未保存改动的文档不会被覆盖(返回的 Promise 仍会 resolve,FALSE 表示没有任何
+   * 文档被重载,不代表失败)。
+   */
+  reloadFromDisk(): Thenable<boolean>
   readonly fs: FileSystem
 }
 

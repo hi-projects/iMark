@@ -1,9 +1,11 @@
 import { selectAll } from '@codemirror/commands'
+import { deleteMarkupBackward } from '@codemirror/lang-markdown'
 import { syntaxTree } from '@codemirror/language'
-import { EditorSelection, type ChangeSpec, type EditorState } from '@codemirror/state'
+import { EditorSelection, type ChangeSpec, type EditorState, type Line } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import type { SyntaxNode } from '@lezer/common'
 import type { MenuCommandId } from '@shared/ipc-channels'
+import { getPendingFence } from './pendingFence'
 
 /**
  * 格式命令:工具栏 / 键位 / 原生菜单三端共用。
@@ -187,6 +189,39 @@ export function toggleBulletList(view: EditorView): boolean {
 export function toggleOrderedList(view: EditorView): boolean {
   return toggleLinePrefix(view, 'ordered')
 }
+
+/**
+ * 删除空的列表项时,把标记和 CodeMirror 补出来的对齐空格一起清掉。
+ *
+ * `deleteMarkupBackward` 对**非首个**列表项会把标记换成等宽空格,让转成正文的
+ * 内容保持缩进;但列表项已经空了时,这些空格只会让光标停在内容列,看起来像
+ * 没有顶格。先让它处理(有序列表的重新编号也归它),再把整行只剩空白的缩进清掉。
+ *
+ * 只处理顶格的空列表项:嵌套列表/引用里的标记仍交给 CodeMirror 逐级反缩进。
+ */
+export function deleteEmptyListMarkup(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection.main
+  if (!sel.empty) return false
+  const line = state.doc.lineAt(sel.head)
+  const before = line.text.slice(0, sel.head - line.from)
+  const after = line.text.slice(sel.head - line.from)
+  if (!/^(?:[-+*]|\d{1,9}[.)])[ \t]*$/.test(before) || /\S/.test(after)) return false
+  if (!deleteMarkupBackward(view)) return false
+
+  const next = view.state
+  const nextSel = next.selection.main
+  if (!nextSel.empty) return true
+  const nextLine = next.doc.lineAt(nextSel.head)
+  if (nextSel.head === nextLine.to && /^[ \t]+$/.test(nextLine.text)) {
+    view.dispatch({
+      changes: { from: nextLine.from, to: nextLine.to },
+      selection: { anchor: nextLine.from },
+      userEvent: 'delete'
+    })
+  }
+  return true
+}
 export function toggleTaskList(view: EditorView): boolean {
   return toggleLinePrefix(view, 'task')
 }
@@ -231,6 +266,76 @@ export function insertCodeBlock(view: EditorView): boolean {
     changes: { from: sel.from, to: sel.to, insert },
     selection: EditorSelection.cursor(sel.from + 4),
     scrollIntoView: true
+  })
+  return true
+}
+
+/**
+ * 围栏行尾回车:把「刚敲出来的半个代码块」一次性补完整。
+ *
+ * 在空行上敲 ``` 时,CommonMark 立刻把后面所有内容都读成代码 —— 光标还在
+ * 围栏行上,下面的正文却已经变成代码正文,再往下写什么都进了代码块。这里在
+ * 回车时补一条空行和闭合围栏,块里只留一行可写的空行,后面的内容仍是正文。
+ *
+ * 只对 pendingFence.ts 记下的「刚敲出来的围栏行」生效,而且光标必须还在
+ * 行尾:已有代码块的开围栏行、闭合围栏行、光标停在围栏行中间,回车都照常
+ * 断行——在已有围栏行上回车不该凭空多出一条闭合围栏。
+ *
+ * 这里刻意不要求语法树里围栏「未闭合」:笔记下方可能本来就有一条没写完的
+ * 围栏,新敲的这条会和它配成对,树看到的是已闭合的块。用户要的是在光标处
+ * 新建一个空代码块,不该和远处那条围栏扯上关系。
+ */
+function fenceAtLineStart(state: EditorState, line: Line): { fence: string; prefix: string } | null {
+  let found: { fence: string; prefix: string } | null = null
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter(ref) {
+      if (ref.name !== 'FencedCode') return undefined
+      const first = ref.node.firstChild
+      // 开围栏必须在这一行上;块从上一行开始时,这一行是代码正文
+      if (!first || first.name !== 'CodeMark' || first.from < line.from) return false
+      found = {
+        fence: state.sliceDoc(first.from, first.to),
+        prefix: state.sliceDoc(line.from, first.from)
+      }
+      return false
+    }
+  })
+  return found
+}
+
+/**
+ * 补出来的空行和闭合围栏要用的行首前缀。
+ *
+ * 顶栏围栏(只带缩进)一律顶格:闭合围栏允许 0–3 空格,空行更不该平白往代码
+ * 里塞两个空格。引用 / 列表里的围栏必须留在容器里:引用标记原样保留,列表标记
+ * 换成等宽空格(与内容列对齐),否则新行会掉出容器,围栏也闭合不到块里。
+ */
+function fencePrefix(prefix: string): string {
+  return /^\s*$/.test(prefix) ? '' : prefix.replace(/[^\s>]/g, ' ')
+}
+
+export function completeFenceOnEnter(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection
+  // 多光标 / 有选区:交给默认回车,别替用户决定在哪儿补围栏
+  if (sel.ranges.length > 1 || !sel.main.empty) return false
+  const pos = sel.main.head
+  const line = state.doc.lineAt(pos)
+  if (pos !== line.to) return false
+  // 只认刚敲出来、光标还停着的围栏行(见 pendingFence.ts)
+  if (getPendingFence(state) !== line.from) return false
+  const opener = fenceAtLineStart(state, line)
+  if (!opener) return false
+  const prefix = fencePrefix(opener.prefix)
+  const insert = `\n${prefix}\n${prefix}${opener.fence}`
+  view.dispatch({
+    changes: { from: pos, insert },
+    // 光标落在开围栏和闭合围栏中间的那条空行上
+    selection: EditorSelection.cursor(pos + 1 + prefix.length),
+    scrollIntoView: true,
+    userEvent: 'input'
   })
   return true
 }

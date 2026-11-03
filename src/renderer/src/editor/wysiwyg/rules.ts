@@ -32,6 +32,11 @@ export interface RuleContext {
   docDir: string | null
   visibleFrom: number
   visibleTo: number
+  /**
+   * 刚敲出来、还没回车补全的围栏行(行首位置,见 editor/pendingFence.ts);
+   * 没有则为 null。
+   */
+  pendingFence: number | null
   decos: Range<Decoration>[]
   atomic: Range<Decoration>[]
   links: LinkInfo[]
@@ -80,6 +85,22 @@ function isHeadingText(text: string): boolean {
  *
  * 中间留了空行的不算 —— 那是作者主动写下的分隔。
  */
+/**
+ * 标题前紧邻的空行保留完整行高。
+ *
+ * 列表 / 代码块 / 引用后面的空行会被 addGapAfter 收成一档间距;但用户
+ * 主动在标题前留出的空行应当是一整行,不能被当成块间距压扁。只给空行
+ * 打标记,CSS 仅在它同时带 cm-md-block-gap 时才放开行高 —— 普通空行本来
+ * 就是完整高度,表格的结构空行仍保持折叠。
+ */
+function markHeadingSpaceBefore(ctx: RuleContext, pos: number): void {
+  const line = ctx.doc.lineAt(pos)
+  if (line.number <= 1) return
+  const prev = ctx.doc.line(line.number - 1)
+  if (!isBlankLine(prev.text)) return
+  addLine(ctx, prev.from, 'cm-md-h-space-before')
+}
+
 function markHeadingEdges(ctx: RuleContext, firstPos: number, lastPos: number): void {
   const first = ctx.doc.lineAt(firstPos)
   const last = ctx.doc.lineAt(lastPos)
@@ -313,6 +334,19 @@ function lastListMark(list: SyntaxNode): SyntaxNode | null {
   }
   visit(list)
   return found
+}
+
+/**
+ * 有序列表标记是否已经敲完整(数字 + `.` / `)` 后面跟着空格或 Tab)。
+ *
+ * CommonMark 把行尾的 `1.` 也解析成空的有序列表项,所以只敲下 `1.` 时
+ * OrderedList/ListMark 节点就已经存在。列表标记要等空格敲出来才渲染,
+ * 和无序列表的 `- ` / `* ` 保持一致。
+ */
+function orderedMarkerComplete(ctx: RuleContext, mark: SyntaxNode | null): boolean {
+  if (!mark) return true
+  const next = ctx.doc.sliceString(mark.to, Math.min(mark.to + 1, ctx.doc.length))
+  return next === ' ' || next === '\t'
 }
 
 // ---------- 表格 ----------
@@ -561,6 +595,20 @@ function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
 }
 
 /**
+ * 这条围栏是不是用户刚敲出来、还没回车补全的那一条(见 editor/pendingFence.ts)。
+ *
+ * 命中时整块先按普通文本显示:一敲 ```,下面已有的正文不该立刻被染成代码。
+ * 回车补全、光标离开这行、或这行不再是围栏后记录清空,恢复正常代码块渲染。
+ */
+function isPendingFence(ctx: RuleContext, code: SyntaxNode): boolean {
+  if (ctx.pendingFence === null) return false
+  const first = code.firstChild
+  return (
+    !!first && first.name === 'CodeMark' && ctx.doc.lineAt(first.from).from === ctx.pendingFence
+  )
+}
+
+/**
  * 占位列表标记(还没被解析成列表)也带上列表前后的间距。
  *
  * `正文\n1. ` 在 CommonMark 里仍是同一段正文 —— 空的列表项不能打断段落,
@@ -643,11 +691,13 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'ATXHeading5':
     case 'ATXHeading6': {
       addLine(ctx, node.from, `cm-md-h${node.name.slice(-1)}`)
+      markHeadingSpaceBefore(ctx, node.from)
       markHeadingEdges(ctx, node.from, node.to)
       return // 下钻:HeaderMark 与行内内容
     }
     case 'SetextHeading1':
       addLine(ctx, node.from, 'cm-md-h1')
+      markHeadingSpaceBefore(ctx, node.from)
       markHeadingEdges(ctx, node.from, node.to)
       return
     case 'SetextHeading2': {
@@ -655,6 +705,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       // 上一行保持正文,这一行交给 HeaderMark 规则(敲了空格才画成圆点)。
       if (isLoneDashSetext(ctx, node.node)) return
       addLine(ctx, node.from, 'cm-md-h2')
+      markHeadingSpaceBefore(ctx, node.from)
       markHeadingEdges(ctx, node.from, node.to)
       return
     }
@@ -740,6 +791,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // ----- 代码块 -----
     case 'FencedCode': {
       const code = node.node
+      // 刚敲出来的围栏先别渲染成代码块,否则后面的正文会立刻被吞进去
+      if (isPendingFence(ctx, code)) return false
       if (fenceLanguage(ctx.doc, code) === 'mermaid') {
         const firstLine = ctx.doc.lineAt(node.from)
         const lastLine = ctx.doc.lineAt(node.to)
@@ -829,10 +882,18 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         }
       }
       if (!nested) {
+        const ordered = node.name === 'OrderedList'
+        const firstMark = ordered
+          ? node.node.getChild('ListItem')?.getChild('ListMark') ?? null
+          : null
+        // 只敲了 `1.`(还没空格):整行按普通正文显示,也不补列表间距
+        if (ordered && !orderedMarkerComplete(ctx, firstMark)) return
         const mark = lastListMark(node.node)
         if (mark) {
           addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
-          addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+          if (!ordered || orderedMarkerComplete(ctx, mark)) {
+            addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+          }
         }
       }
       return
@@ -844,6 +905,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       // (由 checkbox widget 代替),其余字符仍保留在文档中,只是视觉上换成 •。
       const text = ctx.doc.sliceString(node.from, node.to)
       const isBullet = text === '-' || text === '*' || text === '+'
+      // 有序标记必须敲出后面的空格才渲染;只敲了 `1.` 时保持普通正文
+      if (!isBullet && !orderedMarkerComplete(ctx, node.node)) return
       const after = ctx.doc.sliceString(node.to, Math.min(node.to + 4, ctx.doc.length))
       const isTask = /^\s?\[[ xX]\]/.test(after)
       ctx.decos.push({

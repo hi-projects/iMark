@@ -6,7 +6,7 @@
  * 这条真实用户最常走的路（HTTPS + 访问令牌）一次都没被跑过。
  *
  * 这里验三件事：
- *   1. 带令牌的目标能真跑一次「立即上传」，提交落到远端；
+ *   1. 带令牌的目标能真跑一次「立即同步」，提交落到远端；
  *   2. 仓库与全局都没有 user.name/user.email 时，`-c user.name=…` 兜底照样可用；
  *   3. 起一个要求 Basic 认证的 HTTP 端点，让 git 真去问 credential helper ——
  *      断言服务端收到的正是配置里那对用户名/口令。
@@ -254,9 +254,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // ---------- 一、带令牌的目标真跑一次「立即上传」 ----------
+  // ---------- 一、带令牌的目标真跑一次「立即同步」 ----------
 
-  console.log('\n【1】令牌认证 + 立即上传')
+  console.log('\n【1】令牌认证 + 立即同步')
   const first = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
@@ -286,10 +286,10 @@ async function main(): Promise<void> {
   httpTokenTarget.url = http.url
   httpPasswordTarget.url = http.url
 
-  await service.setExtensionConfig(EXT_ID, configOf([baseTarget, httpTokenTarget, httpPasswordTarget]))
-  await sleep(300)
-
   console.log('\n【2】访问令牌 + 测试连接（远端要求 Basic 认证）')
+  // 插件只支持一个远端：把唯一一行换成 HTTP 令牌目标再测
+  await service.setExtensionConfig(EXT_ID, configOf([httpTokenTarget]))
+  await sleep(300)
   http.seen.length = 0
   const probeToken = (await service.executeCommand('imark.git-sync.testTarget', [
     { targetId: 't2' }
@@ -303,17 +303,19 @@ async function main(): Promise<void> {
   )
   check('测试连接返回成功', probeToken?.ok === true, JSON.stringify(probeToken))
   check(
-    '状态行用「第 2 个远端」定位目标',
-    ((await view())?.status.lastMessage ?? '').startsWith('第 2 个远端：'),
+    '状态行用「远端」定位目标',
+    ((await view())?.status.lastMessage ?? '').startsWith('远端：'),
     (await view())?.status.lastMessage
   )
   check(
-    '单目标测试不抹掉其他远端已有的结果',
-    (await view())?.status.targetResults?.t1 === 'ok' && (await view())?.status.targetResults?.t2 === 'ok',
+    '测试结果写进状态卡',
+    (await view())?.status.targetResults?.t2 === 'ok',
     JSON.stringify((await view())?.status.targetResults)
   )
 
   console.log('\n【3】账号密码 + 测试连接')
+  await service.setExtensionConfig(EXT_ID, configOf([httpPasswordTarget]))
+  await sleep(300)
   http.seen.length = 0
   const probePassword = (await service.executeCommand('imark.git-sync.testTarget', [
     { targetId: 't3' }
@@ -326,35 +328,12 @@ async function main(): Promise<void> {
   )
   check('测试连接返回成功', probePassword?.ok === true, JSON.stringify(probePassword))
 
-  // ---------- 三、全部远端 ----------
-
-  console.log('\n【4】测试全部远端：三个都走同一条凭据路径')
-  const all = (await service.executeCommand('imark.git-sync.testAll')) as {
-    ok: boolean
-    message: string
-  }
-  check('testAll 成功', all?.ok === true, JSON.stringify(all))
-  await waitStatus('ok')
-  const allStatus = (await view())?.status
-  check(
-    '状态正文逐行列出三个远端',
-    (allStatus?.lastMessage ?? '').split('\n').length === 3 &&
-      (allStatus?.lastMessage ?? '').includes('第 3 个远端：'),
-    allStatus?.lastMessage
-  )
-  const results = allStatus?.targetResults
-  check(
-    '三个远端都记为 ok',
-    results?.t1 === 'ok' && results?.t2 === 'ok' && results?.t3 === 'ok',
-    JSON.stringify(results)
-  )
-
   // ---------- 四、密钥隔离 ----------
 
-  console.log('\n【5】密钥只留在主进程：界面只有掩码，日志不含明文')
+  console.log('\n【4】密钥只留在主进程：界面只有掩码，日志不含明文')
   const withSecrets = await service.getExtensionViewWithSecrets(EXT_ID)
   const hints = Object.entries(withSecrets?.secrets ?? {})
-  check('三个密钥槽位都有掩码', hints.length === 3, JSON.stringify(hints))
+  check('当前远端有一个密钥槽位掩码', hints.length === 1, JSON.stringify(hints))
   check(
     '掩码不是明文（也不包含明文片段）',
     hints.every(([, hint]) => hint.length > 0 && ![TOKEN_LOCAL, TOKEN_HTTP, PASS_HTTP].some(secret => hint.includes(secret))),

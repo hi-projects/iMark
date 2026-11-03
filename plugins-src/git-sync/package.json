@@ -2,8 +2,8 @@
   "name": "git-sync",
   "publisher": "imark",
   "version": "1.0.0",
-  "displayName": "定时上传（Git）",
-  "description": "按固定间隔，将当前仓库提交并推送到 Git 远端，支持多个远端",
+  "displayName": "远程同步",
+  "description": "按固定间隔在本地仓库与 Git 远端之间双向同步：拉取远端改动、提交本地改动并推送到远端",
   "author": "iMark",
   "engines": {
     "imark": "^1.0.0"
@@ -13,7 +13,9 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:imark.git-sync.syncNow",
-    "onCommand:imark.git-sync.testAll",
+    "onCommand:imark.git-sync.uploadNow",
+    "onCommand:imark.git-sync.downloadNow",
+    "onCommand:imark.git-sync.resolveConflicts",
     "onCommand:imark.git-sync.detectProxy",
     "onCommand:imark.git-sync.testTarget"
   ],
@@ -28,24 +30,37 @@
     "commands": [
       {
         "command": "imark.git-sync.syncNow",
-        "title": "立即上传到 Git 远端",
-        "category": "Git 同步",
-        "detail": "把当前仓库的改动提交并推送到所有远端"
+        "title": "立即同步",
+        "category": "远程同步",
+        "detail": "先拉取远端改动并合并，再提交本地改动并推送到远端"
       },
       {
-        "command": "imark.git-sync.testAll",
-        "title": "测试全部远端",
-        "category": "Git 同步"
+        "command": "imark.git-sync.uploadNow",
+        "title": "上传文件",
+        "category": "远程同步",
+        "detail": "只提交本地改动并推送到远端，不拉取远端改动"
+      },
+      {
+        "command": "imark.git-sync.downloadNow",
+        "title": "拉取文件",
+        "category": "远程同步",
+        "detail": "拉取远端改动并合并到当前分支；本地未提交改动会先暂存，拉取后自动恢复，冲突时进入冲突界面"
+      },
+      {
+        "command": "imark.git-sync.resolveConflicts",
+        "title": "处理合并冲突",
+        "category": "远程同步",
+        "detail": "打开冲突处理窗口，逐处选择接受当前、接受传入或保留两者"
       },
       {
         "command": "imark.git-sync.detectProxy",
-        "title": "检测本机代理",
-        "category": "Git 同步"
+        "title": "检测代理",
+        "category": "远程同步"
       },
       {
         "command": "imark.git-sync.testTarget",
         "title": "测试连接",
-        "category": "Git 同步"
+        "category": "远程同步"
       }
     ],
     "keybindings": [
@@ -61,9 +76,10 @@
           "type": "array",
           "default": [],
           "title": "远端仓库",
-          "description": "每个仓库分别保存自己的远端列表：切换仓库后自动换用该仓库的配置。每次同步把同一个提交推送到所有远端。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub、GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，扩展也不改动你仓库的 remote 设置。",
+          "description": "每个仓库保存一个远端：切换仓库后自动换用该仓库的配置。同步时先提交本地改动，再从远端拉取该分支的改动、快进或合并到本地，最后推送回远端；「上传文件」只推送，「拉取文件」只拉取（本地未提交改动会先暂存、拉取后自动恢复）。远程仓库、本地分支必填，远程分支留空则与本地分支同名。认证方式三选一：访问令牌（GitHub、GitLab 的 personal access token）、账号密码、SSH（用本机密钥，无需填写密钥；地址填 git@host:用户名/仓库.git 形式）。密钥经加密保存，不会写进仓库配置，扩展也不改动你仓库的 remote 设置。",
           "imark": {
             "kind": "targets",
+            "single": true,
             "section": "远程仓库",
             "scope": "workspace",
             "targetSecret": {
@@ -76,7 +92,7 @@
           "type": "number",
           "default": 10,
           "title": "自动同步间隔（分钟）",
-          "description": "0 表示关闭自动同步，只保留手动「立即上传」。",
+          "description": "0 表示关闭自动同步，只保留手动操作。每次自动同步都会先下载远端改动，再上传本地改动。",
           "minimum": 0,
           "maximum": 1440,
           "imark": {
@@ -88,7 +104,7 @@
           "type": "boolean",
           "default": true,
           "title": "启动后同步一次",
-          "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补上。",
+          "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补做一轮完整同步。",
           "imark": {
             "kind": "boolean",
             "section": "同步设置"
@@ -215,18 +231,23 @@
     "imark.actions": [
       {
         "command": "imark.git-sync.syncNow",
-        "label": "立即上传",
+        "label": "立即同步",
         "scope": "global",
         "primary": true
       },
       {
-        "command": "imark.git-sync.testAll",
-        "label": "测试全部远端",
+        "command": "imark.git-sync.uploadNow",
+        "label": "上传文件",
+        "scope": "global"
+      },
+      {
+        "command": "imark.git-sync.downloadNow",
+        "label": "拉取文件",
         "scope": "global"
       },
       {
         "command": "imark.git-sync.detectProxy",
-        "label": "检测本机代理",
+        "label": "检测代理",
         "scope": "global"
       },
       {

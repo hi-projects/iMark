@@ -16,6 +16,7 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import LineMenu from './components/LineMenu.vue'
 import LineActionDialog from './components/LineActionDialog.vue'
 import ExtensionDialogHost from './components/ExtensionDialogHost.vue'
+import ConflictResolverDialog from './components/ConflictResolverDialog.vue'
 import ToastHost from './components/ToastHost.vue'
 import {
   activeTab,
@@ -57,6 +58,7 @@ import {
 } from './services/vaultService'
 import { openMarketSettings } from './services/settingsNav'
 import { initEditorSettings, installFontSizeWheelZoom } from './services/editorSettings'
+import { conflictResolver } from './services/conflictResolver'
 import { api } from './services/api'
 
 let offMenu: (() => void) | null = null
@@ -270,6 +272,8 @@ onBeforeUnmount(() => {
     <!-- 扩展要的模态框（消息/输入/快速选择），与行首菜单的参数框共用一套外观 -->
     <ExtensionDialogHost />
     <SettingsDialog />
+    <!-- 合并冲突处理窗口:由扩展在冲突时打开,处理完可直接继续同步 -->
+    <ConflictResolverDialog v-if="conflictResolver.open" />
     <!-- 右下角通知:层级最高,扩展在用户翻设置时报的错也要看得见 -->
     <ToastHost />
   </div>

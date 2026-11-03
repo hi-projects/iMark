@@ -139,6 +139,8 @@ export interface ExtensionFieldMarkdown {
   placeholder?: string
   endpointModel?: { label: string; placeholder?: string }
   targetSecret?: { label: string; placeholder?: string }
+  /** targets 字段只允许一行 */
+  single?: boolean
   /** select 的显示名;标准 enum 只有值,标签需要单独给 */
   options?: { value: string; label: string }[]
   /** kind: 'external' 的文件与 JSON 指针 */
@@ -481,6 +483,9 @@ function validateConfigProperties(
       if (!isObject(meta.showWhen) || typeof meta.showWhen.key !== 'string') {
         errors.push(`${at}.imark.showWhen 必须是 { key, value }`)
       }
+    }
+    if (meta.single !== undefined && typeof meta.single !== 'boolean') {
+      errors.push(`${at}.imark.single 必须是布尔值`)
     }
     if (meta.options !== undefined) {
       if (!Array.isArray(meta.options)) errors.push(`${at}.imark.options 必须是数组`)
@@ -1325,6 +1330,7 @@ export function settingsFieldsOf(manifest: ExtensionManifest): PluginField[] {
     if (meta.placeholder !== undefined) field.placeholder = meta.placeholder
     if (meta.endpointModel !== undefined) field.endpointModel = meta.endpointModel
     if (meta.targetSecret !== undefined) field.targetSecret = meta.targetSecret
+    if (meta.single === true) field.single = true
     if (
       meta.kind === 'external' &&
       typeof meta.file === 'string' &&

@@ -64,6 +64,8 @@ export interface PluginField {
   options?: PluginFieldOption[]
   /** 目标列表里每一行各自的密钥槽位(如每个远端一个 token) */
   targetSecret?: { label: string; placeholder?: string }
+  /** targets 字段只允许一行:隐藏「添加远端 / 删除」,空的列表也渲染一行可编辑的空表单 */
+  single?: boolean
   /** kind: 'external' 的文件位置与 JSON 指针 */
   external?: {
     /** 展开 `~` 后的绝对路径;与 dirEnv 同时存在时,dirEnv 优先 */

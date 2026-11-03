@@ -1,9 +1,15 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
-import type { ChangeDesc, Line, Range } from '@codemirror/state'
+import type { ChangeDesc, Line, Range, Text } from '@codemirror/state'
+import { getPendingFence } from '../pendingFence'
 import { applyRule, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
-import { getDocDir } from '../../stores/app'
+import {
+  addConflictDecorations,
+  findConflictBlocks,
+  type ConflictBlock
+} from '../conflict'
+import { appStore, getDocDir } from '../../stores/app'
 import { api } from '../../services/api'
 
 const MAX_RETRY = 20
@@ -83,6 +89,10 @@ export class WysiwygPlugin {
   atomicSet: DecorationSet = Decoration.none
   links: LinkInfo[] = []
 
+  /** 冲突扫描结果按 Text 对象缓存:选区变化不重扫,文档一变才重扫 */
+  private conflictDoc: Text | null = null
+  private conflictBlocks: ConflictBlock[] = []
+
   private pendingRetry = false
   private retryScheduled = false
   private retryCount = 0
@@ -91,6 +101,8 @@ export class WysiwygPlugin {
   private guardFromHead: number | null = null
   /** 组合进行中(以 compositionstart/end 事件为准,比 view.composing 更早、更稳) */
   private composing = false
+  /** 这一轮微任务里是否要用键盘方向键跳过块间距行 */
+  private guardGapNav = false
   private themeObserver: MutationObserver | null = null
   /** 窗口失焦(切到别的应用):元素不会触发 blur,但组合一定已经结束 */
   private windowBlur = (): void => this.onEditorBlur()
@@ -160,7 +172,11 @@ export class WysiwygPlugin {
       this.rebuild()
       // 把"移动之前"的光标位置交给护栏:从表格上面往下走、从下面往上走
       // 都会落在隐藏源码/结构空行的边界上,护栏得知道该把光标送到表格的哪一侧。
-      this.scheduleCaretGuard(update.startState.selection.main.head)
+      // 块间距空行只对**键盘方向键**做跨越;回车/输入产生的空白行要留给用户继续输入。
+      const gapNav = update.transactions.some(
+        tr => tr.isUserEvent('select') && !tr.isUserEvent('select.pointer')
+      )
+      this.scheduleCaretGuard(update.startState.selection.main.head, gapNav)
     }
   }
 
@@ -203,22 +219,77 @@ export class WysiwygPlugin {
    * 必须排在 rebuild 之后 —— 新建表格的 autoFocus 也是微任务，先让它把焦点
    * 放进单元格；这里再检查时选区通常已经被挪到表格外，不会抢走插入后的焦点。
    */
-  private scheduleCaretGuard(fromHead?: number): void {
+  private scheduleCaretGuard(fromHead?: number, gapNav = false): void {
     // 一个微任务里可能连着跑好几轮 update;记住**最早**那个起点,
     // 它才是这次光标移动真正的来处
     if (fromHead !== undefined && this.guardFromHead === null) this.guardFromHead = fromHead
+    if (gapNav) this.guardGapNav = true
     if (this.guardScheduled) return
     this.guardScheduled = true
     queueMicrotask(() => {
       this.guardScheduled = false
       const from = this.guardFromHead ?? undefined
+      const gapNav = this.guardGapNav
       this.guardFromHead = null
+      this.guardGapNav = false
       try {
         keepCaretOutOfTables(this.view, from)
+        if (gapNav) this.keepCaretOutOfBlockGaps(from)
       } catch {
         /* 视图已销毁 */
       }
     })
+  }
+
+  /**
+   * 方向键落在块间距空行上时,沿移动方向跳过它。
+   *
+   * 这类空行是排版用的结构行(列表/代码/引用与正文之间),本身不该成为
+   * 编辑落点。鼠标点击已经由 gapLineClickAnchor 处理;键盘上下键落在上面时
+   * `caretOnGapLine` 会把空行撑成一整行,看起来像凭空多出一行。这里在选区
+   * 落定的微任务里把它跨过去,落点保持在来向那一侧的正文行。
+   */
+  private keepCaretOutOfBlockGaps(fromHead?: number): void {
+    const view = this.view
+    const state = view.state
+    if (!state.selection.main.empty) return
+    const head = state.selection.main.head
+    const doc = state.doc
+    const line = doc.lineAt(head)
+    if (!isBlankLine(line.text)) return
+    const classes = lineClasses(this, line)
+    const isGap =
+      classes.includes('cm-md-block-gap') ||
+      classes.some(cls => cls.startsWith('cm-md-gap-'))
+    if (!isGap) return
+    const hasSide = (side: 'before' | 'after'): boolean =>
+      classes.some(
+        cls =>
+          (cls.startsWith('cm-md-block-gap-') || cls.startsWith('cm-md-gap-')) &&
+          cls.endsWith(`-${side}`)
+      )
+    // 有明确移动方向就按方向跨;没有方向(鼠标/程序化选区)沿用点击规则:
+    // after 间隙属于上方块,往下落;其余情况往上落。
+    const dir: 1 | -1 =
+      fromHead !== undefined && head !== fromHead
+        ? head > fromHead
+          ? 1
+          : -1
+        : hasSide('after')
+          ? 1
+          : -1
+    let target: Line | null = null
+    for (let n = line.number + dir; n >= 1 && n <= doc.lines; n += dir) {
+      const candidate = doc.line(n)
+      if (isBlankLine(candidate.text) || lineReplaced(this, candidate)) continue
+      target = candidate
+      break
+    }
+    if (!target) return
+    const origin = fromHead !== undefined && fromHead !== head ? doc.lineAt(fromHead) : line
+    const column = Math.max(0, (fromHead ?? head) - origin.from)
+    const anchor = target.from + Math.min(column, target.length)
+    view.dispatch({ selection: { anchor } })
   }
 
   /** 组合期间的临时态:平移装饰范围,并丢掉因变更而跨行的 replace(CM 禁止扩展提供跨行 replace) */
@@ -254,6 +325,15 @@ export class WysiwygPlugin {
       .filter(l => l.from < l.to)
   }
 
+  /** 冲突块只在文档对象变化时重扫;选区/滚动变化直接复用上一次的结果 */
+  private conflictsFor(doc: Text): ConflictBlock[] {
+    if (this.conflictDoc !== doc) {
+      this.conflictDoc = doc
+      this.conflictBlocks = findConflictBlocks(doc)
+    }
+    return this.conflictBlocks
+  }
+
   /**
    * 全量重算可见区装饰。单一 ViewPlugin 方案:每次从事务后状态重建,
    * widget 位置天然正确,规避 undo/redo 与复杂 change 下的 RangeSet 映射问题。
@@ -265,7 +345,16 @@ export class WysiwygPlugin {
     const atomic: Range<Decoration>[] = []
     const links: LinkInfo[] = []
     const docDir = getDocDir()
+    const conflicts = this.conflictsFor(state.doc)
+    appStore.activeConflicts = conflicts.length
     let parsedAll = true
+
+    // 冲突块里的内容按原样显示(两段分别着色),不再套用 Markdown 规则:
+    // `=======` 很容易被当成 Setext 标题下划线,和冲突标记互相打架。
+    const inConflict = (from: number, to: number): boolean =>
+      conflicts.some(block => from <= block.to && to >= block.from)
+
+    if (conflicts.length > 0) addConflictDecorations(decos, atomic, state.doc, conflicts)
 
     for (const { from, to } of view.visibleRanges) {
       // 惰性行内解析:视口未解析完时先有界强解析,仍不可用则跳过并安排重试
@@ -283,11 +372,20 @@ export class WysiwygPlugin {
         docDir,
         visibleFrom: from,
         visibleTo: to,
+        pendingFence: getPendingFence(state),
         decos,
         atomic,
         links
       }
-      syntaxTree(state).iterate({ from, to, enter: node => applyRule(node, ctx) })
+      syntaxTree(state).iterate({
+        from,
+        to,
+        enter: node => {
+          // 根节点必须继续下钻;其余与冲突块相交的节点整棵跳过
+          if (node.name !== 'Document' && inConflict(node.from, node.to)) return false
+          return applyRule(node, ctx)
+        }
+      })
     }
 
     // sort=true:自动排序 + RangeSet 校验(重叠的 replace 会在此抛错,便于开发期暴露)

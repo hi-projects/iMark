@@ -213,7 +213,7 @@ async function main(): Promise<void> {
   check(
     'quick-edit 默认启用、git-sync 默认停用',
     rows.some(r => r.name.includes('快速编辑') && !r.status.includes('已停用')) &&
-      rows.some(r => r.name.includes('Git') && r.status.includes('已停用')),
+      rows.some(r => r.name.includes('远程同步') && r.status.includes('已停用')),
     JSON.stringify(rows)
   )
   check(
@@ -469,13 +469,13 @@ async function main(): Promise<void> {
   await sleep(500)
   const toGitSettings = await evalJs<boolean>(`(() => {
     const b = [...document.querySelectorAll('.settings-nav-item')]
-      .find(x => x.textContent.includes('定时上传'))
+      .find(x => x.textContent.includes('远程同步'))
     if (!b) return false
     b.click()
     return true
   })()`)
   check(
-    '左侧导航能切到 Git 同步',
+    '左侧导航能切到远程同步',
     toGitSettings && (await waitFor(`document.querySelector('.plugin-global-actions button')`))
   )
   const placement = await evalJs<{ inCard: number; inRow: number }>(`(() => ({
@@ -493,10 +493,10 @@ async function main(): Promise<void> {
   })()`)
   const xBefore = await actionX()
   check(
-    '点得到全局「立即上传」',
+    '点得到全局「上传文件」',
     await evalJs<boolean>(`(() => {
       const b = [...document.querySelectorAll('.plugin-global-actions button')]
-        .find(x => x.textContent.trim() === '立即上传')
+        .find(x => x.textContent.trim() === '上传文件')
       if (!b) return false
       b.click()
       return true
@@ -517,7 +517,7 @@ async function main(): Promise<void> {
   )
   const xAfter = await actionX()
   check(
-    '立即上传按钮位置不漂移',
+    '上传文件按钮位置不漂移',
     xBefore >= 0 && Math.abs(xAfter - xBefore) <= 1,
     `before=${xBefore}, after=${xAfter}`
   )
@@ -525,7 +525,7 @@ async function main(): Promise<void> {
   console.log('\n[D3] 密钥输入框的小眼睛')
   await evalJs(`(() => {
     const b = [...document.querySelectorAll('.settings-nav-item')]
-      .find(x => x.textContent.includes('定时上传'))
+      .find(x => x.textContent.includes('远程同步'))
     if (b) b.click()
   })()`)
   await evalJs(`(() => {
@@ -533,7 +533,7 @@ async function main(): Promise<void> {
       .find(x => x.textContent.trim() === '添加远端')
     if (b) b.click()
   })()`)
-  check('进入 Git 同步设置', await waitFor(`document.querySelector('.plugin-target-secret')`))
+  check('进入远程同步设置', await waitFor(`document.querySelector('.plugin-target-secret')`))
   check(
     '密钥输入框里能看到明文',
     await evalJs<boolean>(`(() => {
@@ -834,7 +834,7 @@ async function main(): Promise<void> {
     await waitFor(
       `(() => {
         const row = [...document.querySelectorAll('.market-host-row')]
-          .find(r => r.textContent.includes('定时上传'))
+          .find(r => r.textContent.includes('远程同步'))
         const dot = row?.querySelector('.plugin-status-dot')
         return !!dot && dot.classList.contains('plugin-status-ok')
       })()`,
@@ -888,7 +888,7 @@ async function main(): Promise<void> {
   )
   check('给快速编辑填编号 1', await setRowAffinity('快速编辑', '1'))
   await sleep(500)
-  check('给 Git 同步填编号 1', await setRowAffinity('定时上传', '1'))
+  check('给远程同步填编号 1', await setRowAffinity('远程同步', '1'))
   await sleep(500)
   check(
     '分组结果两种模式都解释不了 → 两个按钮都不选中',

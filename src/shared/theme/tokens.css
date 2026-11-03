@@ -41,6 +41,10 @@
   --success: #1a7f37;
   --warn: #9a6700;
   --danger: #cf222e;
+  /* 合并冲突:当前分支(绿)/ 传入分支(蓝)/ 基准段(灰),与 VSCode 的配色语义一致 */
+  --conflict-current: #1a7f37;
+  --conflict-incoming: #0969da;
+  --conflict-base: #8b949e;
   /*
    * UI 选中行(文件 / 大纲 / 设置导航)与编辑器选区是两回事,分开着色:
    * 亮色使用蓝色淡底与蓝色文字。
@@ -92,6 +96,9 @@
   --success: #44cf6e;
   --warn: #e9973f;
   --danger: #fb464c;
+  --conflict-current: #3fb950;
+  --conflict-incoming: #58a6ff;
+  --conflict-base: #8b949e;
   /*
    * 滚动条:与 Obsidian + Minimal 主题的深色滚动条同款色号 ——
    * ui1 #363636(常态)、ui2 #454545(悬停)、ui3 #595959(拖动)。

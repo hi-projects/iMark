@@ -30,6 +30,30 @@ const emit = defineEmits<{
   (e: 'run-action', targetId: string, actionId: string): void
 }>()
 
+/** 只支持一个远端时(`imark.single`),列表里永远只显示一行 */
+const isSingle = computed(() => props.field.single === true)
+
+/**
+ * single 模式下配置可能还是空数组(旧版本删掉过所有行):
+ * 合成一行稳定的默认目标,用户一编辑就会写回配置。id 固定为 default,
+ * 密钥槽位也就固定下来。
+ */
+const EMPTY_TARGET: PluginTarget = {
+  id: 'default',
+  url: '',
+  localBranch: 'main',
+  remoteBranch: '',
+  auth: 'token',
+  username: ''
+}
+
+const visibleTargets = computed<PluginTarget[]>(() => {
+  if (!isSingle.value) return props.targets
+  // 与插件 readConfig 的选择保持一致:旧配置里可能有空的占位行
+  const chosen = props.targets.find(target => target.url.trim().length > 0) ?? props.targets[0]
+  return [chosen ?? { ...EMPTY_TARGET }]
+})
+
 /** 已配置密钥时默认把输入框收起来,点「更换」才展开 */
 const replacing = ref<Record<string, boolean>>({})
 
@@ -37,6 +61,11 @@ const replacing = ref<Record<string, boolean>>({})
 const revealed = ref<Record<string, boolean>>({})
 
 function update(index: number, patch: Partial<PluginTarget>): void {
+  if (isSingle.value) {
+    const base = visibleTargets.value[0] ?? EMPTY_TARGET
+    emit('change', [{ ...base, ...patch }])
+    return
+  }
   const next = props.targets.map((t, i) => (i === index ? { ...t, ...patch } : t))
   emit('change', next)
 }
@@ -123,9 +152,10 @@ function missingFields(target: PluginTarget): string[] {
  * 全空的行也要列出来 —— 刚点「添加远端」正是最需要知道还缺哪些必填项的时候。
  */
 const problems = computed(() =>
-  props.targets.flatMap((target, i) => {
+  visibleTargets.value.flatMap((target, i) => {
     const missing = missingFields(target)
-    return missing.length > 0 ? [`第 ${i + 1} 个远端：未填${missing.join('、')}`] : []
+    if (missing.length === 0) return []
+    return [isSingle.value ? `未填${missing.join('、')}` : `第 ${i + 1} 个远端：未填${missing.join('、')}`]
   })
 )
 
@@ -136,14 +166,16 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
   <div class="plugin-targets">
     <!-- 输入校验只在这一处说:逐行列出还缺哪些必填项 -->
     <div v-if="problems.length > 0" class="plugin-target-problems">
-      <div class="plugin-target-problems-title">存在 {{ problems.length }} 个远端配置未完成/错误：</div>
+      <div class="plugin-target-problems-title">
+        {{ isSingle ? '远端配置尚未完成：' : `存在 ${problems.length} 个远端配置未完成/错误：` }}
+      </div>
       <ul>
         <li v-for="(problem, i) in problems" :key="i">{{ problem }}</li>
       </ul>
     </div>
 
     <div
-      v-for="(target, i) in targets"
+      v-for="(target, i) in visibleTargets"
       :key="target.id"
       class="plugin-target"
       :class="{
@@ -260,7 +292,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
       </div>
       <p v-else class="plugin-target-hint">SSH 认证：使用本机 SSH 密钥，无需填写密钥。</p>
 
-      <!-- 每个远端自己的动作(测试连接…)与删除。图标按钮不带文字,动作名走 title -->
+      <!-- 目标自己的动作(测试连接…)；删除按钮只在多行模式下显示。图标按钮不带文字,动作名走 title -->
       <div class="plugin-target-actions">
         <button
           v-for="a in targetActions"
@@ -273,6 +305,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
           <PlugZap :size="14" />
         </button>
         <button
+          v-if="!isSingle"
           class="plugin-icon-btn"
           title="从列表里移除该远端"
           aria-label="删除远端"
@@ -283,7 +316,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
       </div>
     </div>
 
-    <button class="plugin-btn plugin-btn-add" @click="add()">
+    <button v-if="!isSingle" class="plugin-btn plugin-btn-add" @click="add()">
       <Plus :size="14" />
       添加远端
     </button>
