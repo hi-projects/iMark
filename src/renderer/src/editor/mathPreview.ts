@@ -219,6 +219,16 @@ const mathPreviewPlugin = ViewPlugin.fromClass(
       y = clamp(y, pane.top + EDGE, Math.max(pane.top + EDGE, pane.bottom - EDGE - h))
       this.el.style.left = `${Math.round(x)}px`
       this.el.style.top = `${Math.round(y)}px`
+      /*
+       * 只有比卡片宽、确实要横向滚动时才让卡片接收指针事件 —— 否则滚动条
+       * 根本收不到鼠标(pointer-events:none),看得到却拖不动。拖滚动条本身
+       * 不会让编辑器失焦(实测),所以预览不会在拖动途中消失;窄公式则保持
+       * 穿透,不挡住背后编辑区的点击。
+       */
+      this.el.classList.toggle(
+        'cm-md-math-preview-scrollable',
+        this.el.scrollWidth - this.el.clientWidth > 1
+      )
       this.el.style.visibility = 'visible'
     }
   }

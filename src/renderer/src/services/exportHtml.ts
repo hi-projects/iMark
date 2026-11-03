@@ -1,13 +1,17 @@
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js/lib/common'
 import katexCssRaw from 'katex/dist/katex.min.css?raw'
+import katexOverrides from '../styles/katex-overrides.css?raw'
 import { installMath } from './markdownMath'
 import { installCellLists } from './cellList'
 import { mermaidErrorMessage, renderMermaid } from './mermaid'
 
 /** KaTeX 的字体走 CDN(导出文件给浏览器打开,内联 CSS 只保留字体外链) */
 const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/'
-const KATEX_CSS = katexCssRaw.replace(/url\((['"]?)fonts\//g, `url($1${KATEX_CDN}fonts/`)
+const KATEX_CSS =
+  katexCssRaw.replace(/url\((['"]?)fonts\//g, `url($1${KATEX_CDN}fonts/`) +
+  '\n' +
+  katexOverrides
 
 /** 块级公式的外层容器(KaTeX 自带 .katex-display 负责居中) */
 const MATH_BLOCK_CSS = '.katex-block { margin: 1.2em 0; overflow-x: auto; }'

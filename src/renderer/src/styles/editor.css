@@ -616,6 +616,8 @@
  * 光标在公式源码里时浮在旁边的实时预览(见 editor/mathPreview.ts)。
  * 位置由 JS 按源码包围盒算好(left/top),这里只管长相。
  * pointer-events: none —— 它只是「看」的,不能挡住打字和点击。
+ * 例外:公式宽到需要横向滚动时,JS 会挂上 .cm-md-math-preview-scrollable
+ * (见下),否则滚动条收不到鼠标、拖不动。
  */
 .cm-md-math-preview {
   position: fixed;
@@ -641,6 +643,30 @@
 /* 预览卡片里不需要 KaTeX 自带的 1em 上下留白 */
 .cm-md-math-preview .katex-display {
   margin: 0;
+}
+
+/*
+ * 公式比卡片宽时:滚动条要能拖、滚轮要能滚。pointer-events 只在这种时候打开 ——
+ * 拖滚动条本身不会让编辑器失焦(实测),预览不会在拖动途中消失;窄公式仍保持
+ * pointer-events:none,不挡住背后编辑区的点击。
+ */
+.cm-md-math-preview-scrollable {
+  pointer-events: auto;
+}
+
+/*
+ * 自动编号(align 的 (1)、(2)…)在预览里必须参与排版。
+ *
+ * 卡片是收缩到内容宽度的,而 KaTeX 的编号列默认绝对定位(right: 0)、不占宽度 ——
+ * 公式铺满卡片时编号就压在公式右端(叠加后两行编号全糊在 \prod 后面)。让编号
+ * 回到流内,卡片自然把它算进宽度;vertical-align: top 与绝对定位时的顶部对齐
+ * 逐像素一致(实测每一行编号的纵向位置不变)。
+ */
+.cm-md-math-preview .katex-display > .katex > .katex-html > .katex-tag {
+  position: static;
+  display: inline-block;
+  vertical-align: top;
+  margin-left: 8px;
 }
 
 .cm-md-math-preview-error {

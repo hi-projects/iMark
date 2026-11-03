@@ -1,0 +1,15 @@
+/*
+ * KaTeX 0.19 自动编号(align / gather 里的 (1)、(2)…)的排版补丁。
+ *
+ * 编号列 .katex-tag 是绝对定位(right: 0),里面的 vlist 表格带 -2px 右边距。
+ * 盒子按「内容宽 - 2px」收缩,而这 2px 是 vlist 的占位格(空白),于是编号列
+ * 比盒子宽出 2px、越过公式容器的右边界 —— 容器带 overflow-x: auto 时,一条
+ * 一眼看得完的公式也会凭空多出一条横向滚动条(编辑器、预览、导出页皆然)。
+ *
+ * 溢出的只是空白占位格,横向裁掉即可;纵向必须保持 visible,不能写成
+ * overflow: hidden —— vlist 的内容常比盒子高出零点几像素(与 editor.css 里
+ * 公式块的 overflow-y: hidden 是同一个来历)。
+ */
+.katex-tag {
+  overflow-x: clip;
+}

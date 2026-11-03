@@ -22,6 +22,7 @@
  */
 
 import 'katex/dist/katex.min.css'
+import './katex-overrides.css'
 
 // 令牌从 @shared 来:同一份文件还要被主进程(?raw 内联)与扩展 preload(insertCSS)消费,
 // 扩展窗口的配色必须与应用逐字一致,各存一份迟早会漂移

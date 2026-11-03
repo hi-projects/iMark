@@ -57,6 +57,7 @@ if (!name) {
         'code-indent',
         'font-zoom',
         'math-block',
+        'math-align-scroll',
         'mermaid',
         'editor-enter',
         'outline',
