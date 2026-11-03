@@ -68,6 +68,10 @@ export const IPC = {
   SystemDefaultEditorStatus: 'system:default-editor-status',
   /** 渲染→主:把 iMark 注册进 .md 的「打开方式」,并打开系统的默认应用设置 */
   SystemSetDefaultEditor: 'system:set-default-editor',
+  /** 渲染→主:通用文件夹选择器(扩展设置里的目录字段) */
+  PickDirectory: 'app:pick-directory',
+  /** 渲染→主:在系统文件管理器里打开一个目录(不存在时先创建) */
+  OpenDirectory: 'app:open-directory',
   VaultSelectDialog: 'vault:select-dialog',
   /**
    * 渲染→主:认领一个要打开的仓库。
@@ -188,6 +192,7 @@ export const IPC = {
 
 /** 原生菜单点击后转发给渲染层的命令 ID */
 export type MenuCommandId =
+  | 'edit:select-all'
   | 'file:new'
   | 'file:open'
   | 'file:open-vault'

@@ -164,7 +164,15 @@ function baseMenuTemplate(): MenuItemConstructorOptions[] {
         { label: '剪切', role: 'cut' },
         { label: '复制', role: 'copy' },
         { label: '粘贴', role: 'paste' },
-        { label: '全选', role: 'selectAll' }
+        /*
+         * 全选不挂 role / 加速键:role: 'selectAll' 自带 CmdOrCtrl+A,
+         * 而原生菜单加速键会在 keydown 到达渲染层之前就被拦掉 —— 编辑器就没机会
+         * 把「代码块里的全选」收窄到这一块。去掉加速键后 Ctrl+A 交回 Chromium:
+         * 焦点在编辑器时走 CM keymap(见 editor/keymap.ts 的 Mod-a),
+         * 焦点在输入框 / 扩展面板里时仍是原生全选。
+         * 菜单点击本身转发给渲染层,由它按光标是否在代码块里决定范围。
+         */
+        { label: '全选', click: () => send('edit:select-all') }
       ]
     },
     {

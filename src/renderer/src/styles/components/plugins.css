@@ -273,6 +273,42 @@
   width: auto;
 }
 
+/* 目录字段:按钮样式的路径输入区 + 「使用默认」 */
+.plugin-dir-control {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plugin-dir-control .plugin-dir-trigger {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-dir-control .plugin-dir-trigger:hover {
+  border-color: var(--accent);
+}
+
+.plugin-dir-control .plugin-dir-placeholder {
+  color: var(--text-tertiary);
+}
+
+.plugin-dir-control .plugin-btn {
+  flex: none;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
 /* 外部 JSON 设置:输入框 + 保存状态在同一行 */
 .plugin-external-control {
   display: flex;

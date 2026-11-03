@@ -46,6 +46,14 @@ export function extractOutline(state: EditorState): OutlineItem[] {
       } else if (node.name === 'SetextHeading1') {
         level = 1
       } else if (node.name === 'SetextHeading2') {
+        /*
+         * 单横线不是标题下划线,是「正文正下方敲下的列表符号」:`阿\n-` 在
+         * CommonMark 里解析成 SetextHeading2,但编辑区把它画成正文 + 圆点
+         * (见 wysiwyg/rules.ts 的 isLoneDashSetext)。大纲也得一致,否则
+         * 刚输入一个 `-` 就凭空多出一条二级标题。
+         */
+        const mark = node.node.getChild('HeaderMark')
+        if (mark && state.doc.sliceString(mark.from, mark.to) === '-') return
         level = 2
       }
       if (level == null) return

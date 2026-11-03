@@ -29,6 +29,19 @@
         "command": "imark.agent.stop",
         "title": "停止 Agent Core 运行",
         "category": "Agent Core"
+      },
+      {
+        "command": "imark.agent.cleanupSessions",
+        "title": "立即清理过期会话",
+        "category": "Agent Core"
+      }
+    ],
+    "imark.actions": [
+      {
+        "command": "imark.agent.cleanupSessions",
+        "label": "立即清理过期会话",
+        "scope": "global",
+        "primary": true
       }
     ],
     "configuration": {
@@ -53,11 +66,33 @@
           "default": 32,
           "minimum": 1,
           "maximum": 100,
-          "title": "单个附件上限（MB）",
+          "title": "单个附件大小上限（MB）",
           "description": "超过上限的文件会在上传阶段被拒绝；扩展不解析附件内容。",
           "imark": {
             "kind": "number",
-            "section": "附件"
+            "section": "会话"
+          }
+        },
+        "imark.agent.sessionRetentionDays": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 365,
+          "title": "会话保留天数",
+          "description": "按最后活动时间计算：超过 N×24 小时的会话会被自动清理，消息、附件与产物一并删除；设为 0 表示永久保留。",
+          "imark": {
+            "kind": "number",
+            "section": "会话"
+          }
+        },
+        "imark.agent.sessionDataDir": {
+          "type": "string",
+          "default": "",
+          "title": "会话数据目录",
+          "description": "会话、附件与产物的保存位置；留空使用扩展默认目录。点击可重新选择文件夹，目录下会自动创建 sessions/ 和 blobs/。切换后旧目录的数据不会迁移，也不会出现在列表里。",
+          "imark": {
+            "kind": "directory",
+            "section": "会话"
           }
         }
       }

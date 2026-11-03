@@ -60,8 +60,30 @@ interface AppState {
   autoSaveDelay: number
   lineWrapping: boolean
   editorFontSize: number
+  /** 行间距(档,× 正文字号;行高 = 1 + 这一档) */
+  lineSpace: number
   /** 代码块内 Tab 插入的空格数 */
   codeIndentSize: CodeIndentSize
+  /** 标题上方留白(档,× 正文字号) */
+  headingSpaceBefore: number
+  /** 标题下方留白(档) */
+  headingSpaceAfter: number
+  /** 两个紧挨着的标题之间的留白(档) */
+  headingSpaceBetween: number
+  /** 两段正文之间的留白(档,× 正文字号) */
+  bodySpaceBetween: number
+  /** 代码块上方留白(档,× 正文字号) */
+  codeSpaceBefore: number
+  /** 代码块下方留白(档) */
+  codeSpaceAfter: number
+  /** 列表上方留白(档) */
+  listSpaceBefore: number
+  /** 列表下方留白(档) */
+  listSpaceAfter: number
+  /** 引用上方留白(档) */
+  quoteSpaceBefore: number
+  /** 引用下方留白(档) */
+  quoteSpaceAfter: number
   /** 最近一次自动保存成功的时刻;null 表示不显示提示 */
   autoSavedAt: number | null
   /** 自动保存失败的说明(状态栏红字);成功后清掉 */
@@ -104,8 +126,19 @@ export const appStore = reactive<AppState>({
   autoSaveMode: 'off',
   autoSaveDelay: 1,
   lineWrapping: true,
-  editorFontSize: 13,
+  editorFontSize: 18,
+  lineSpace: 1,
   codeIndentSize: 4,
+  headingSpaceBefore: 1,
+  headingSpaceAfter: 1,
+  headingSpaceBetween: 1,
+  bodySpaceBetween: 1,
+  codeSpaceBefore: 1,
+  codeSpaceAfter: 1,
+  listSpaceBefore: 1,
+  listSpaceAfter: 1,
+  quoteSpaceBefore: 1,
+  quoteSpaceAfter: 1,
   autoSavedAt: null,
   autoSaveError: null,
   expandedDirs: new Set<string>(),

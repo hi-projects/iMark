@@ -5,7 +5,7 @@
  *   1. 按住 Ctrl 滚轮会改变 `--editor-font-size`,编辑器的计算字号跟着变;
  *   2. 不按 Ctrl 的滚轮完全放行,不动字号;
  *   3. 触控板式的小增量会先累计,攒够一格才走 1px;
- *   4. 调完的字号落盘,并且设置面板「编辑器 → 显示 → 正文字号」的滑块
+ *   4. 调完的字号落盘,并且设置面板「外观 → 样式 → 正文字号」的滑块
  *      实时显示同一个值 —— 两处走的是同一份设置。
  *
  * 用合成的 WheelEvent 而不是 sendInputEvent:滚轮在这种无头环境里没有可用的
@@ -95,6 +95,8 @@ async function main(): Promise<void> {
         lastFile: note,
         marketUrl: '',
         autoSave: false,
+        // 语义版本 2:字号就是实际 px(没有版本号会被当成旧「基准」再乘 1.375)
+        editorFontSizeVersion: 2,
         editorFontSize: 13
       },
       null,
@@ -139,12 +141,12 @@ async function main(): Promise<void> {
         return e.defaultPrevented
       })()`)
 
-  const openEditorSettings = async (): Promise<boolean> => {
+  const openAppearanceSettings = async (): Promise<boolean> => {
     await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
     if (!(await waitFor(`document.querySelector('.settings-nav-item')`))) return false
     await evalJs(`
       [...document.querySelectorAll('.settings-nav-item')]
-        .find(b => b.textContent.trim() === '编辑器')
+        .find(b => b.textContent.trim() === '外观')
         ?.click()`)
     return waitFor(`document.querySelector('.settings-range[type="range"]')`)
   }
@@ -190,8 +192,8 @@ async function main(): Promise<void> {
   check('放大到上限 24px 后不再增加', atMax.cssVar === '24px' && atMax.computed === 24, JSON.stringify(atMax))
 
   // 5) 设置面板显示的是同一个值(两处共用一份设置)
-  const opened = await openEditorSettings()
-  check('设置面板打开到「编辑器」页', opened)
+  const opened = await openAppearanceSettings()
+  check('设置面板打开到「外观」页', opened)
   if (opened) {
     await sleep(200)
     const inPanel = await state()

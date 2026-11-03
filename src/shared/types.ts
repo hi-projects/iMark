@@ -76,10 +76,46 @@ export interface Settings {
   autoSaveDelay: number
   /** 编辑器软换行(长行折行显示) */
   lineWrapping: boolean
-  /** 编辑器正文字号(px) */
+  /** 编辑器正文字号(px):就是实际渲染大小,标题/代码块按 em 跟着缩放 */
   editorFontSize: number
+  /**
+   * 行间距(档,1 档 = 正文字号):同一段里行与行之间额外留出的空白(含折行)。
+   * 实际行高 = 1 个字号 + 这一档。设置面板「外观 → 样式」里可调;
+   * 标题有自己的行高,不受它影响。
+   */
+  lineSpace: number
+  /**
+   * 字号设置的语义版本。
+   *
+   * 旧版 settings.json 没有这个字段,那时的值是「基准」,实际正文 = 基准 × 1.375;
+   * 读到没有版本的旧文件会换算一次并写回(见 main/settings.ts)。
+   */
+  editorFontSizeVersion: number
   /** 代码块内按 Tab 插入的空格数(2 或 4) */
   codeIndentSize: CodeIndentSize
+  /**
+   * 标题上方留白(档,1 档 = 正文字号)。设置面板「外观 → 标题间距」。
+   * 标题前面是正文时生效。
+   */
+  headingSpaceBefore: number
+  /** 标题下方留白(档):标题后面是正文时生效 */
+  headingSpaceAfter: number
+  /** 两个紧挨着的标题之间的留白(档):作用于下面那个标题的上方 */
+  headingSpaceBetween: number
+  /** 段间距:两段正文之间(空一行)的留白(档,1 档 = 正文字号)。设置面板「外观 → 样式」 */
+  bodySpaceBetween: number
+  /** 代码块上方留白(档,1 档 = 正文字号)。设置面板「外观 → 块间距」 */
+  codeSpaceBefore: number
+  /** 代码块下方留白(档):代码块后面是正文时生效 */
+  codeSpaceAfter: number
+  /** 列表上方留白(档):列表前面是正文时生效 */
+  listSpaceBefore: number
+  /** 列表下方留白(档):列表后面是正文时生效 */
+  listSpaceAfter: number
+  /** 引用上方留白(档):引用前面是正文时生效 */
+  quoteSpaceBefore: number
+  /** 引用下方留白(档):引用后面是正文时生效 */
+  quoteSpaceAfter: number
   /** 最近打开的仓库列表(最新的在前) */
   vaults: string[]
   /** 启动时跳过仓库选择界面,直接打开上次仓库 */

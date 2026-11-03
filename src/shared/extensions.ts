@@ -110,6 +110,8 @@ export interface ExtensionView {
   installed?: ExtensionInstallInfo
   runtime: ExtensionRuntimeInfo
   status: ExtensionStatusSnapshot
+  /** 扩展默认数据目录(`extensions-data/<id>`);目录选择类字段用它显示「留空」时的落点 */
+  storagePath: string
   /** 非密配置,key 为**完整配置键**(`<extensionId>.<property>`) */
   config: Record<string, unknown>
   /** 密钥掩码,key 为 `<extensionId>:<property>` / `<extensionId>:<property>:<targetId>` */

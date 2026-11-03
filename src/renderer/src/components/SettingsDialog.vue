@@ -6,19 +6,37 @@ import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
 import {
   AUTO_SAVE_DELAY_MIN,
+  BLOCK_SPACE_MAX,
+  BLOCK_SPACE_MIN,
+  BLOCK_SPACE_STEP,
   CODE_INDENT_OPTIONS,
   delayLabel,
   EDITOR_FONT_SIZE_MAX,
-  EDITOR_FONT_SIZE_MIN
+  EDITOR_FONT_SIZE_MIN,
+  HEADING_SPACE_MAX,
+  HEADING_SPACE_MIN,
+  HEADING_SPACE_STEP,
+  LINE_SPACE_MAX,
+  LINE_SPACE_MIN,
+  LINE_SPACE_STEP,
+  type BlockSpaceSide,
+  type HeadingSpaceSide
 } from '@shared/editorSettings'
 import { appStore, closeSettings, setTheme, THEME_LABELS, THEME_ORDER } from '../stores/app'
 import {
+  previewBlockSpace,
   previewFontSize,
+  previewHeadingSpace,
+  previewLineSpace,
   resetEditorSettings,
+  resetSpacingSettings,
   setAutoSaveDelay,
   setAutoSaveMode,
+  setBlockSpace,
   setCodeIndentSize,
   setEditorFontSize,
+  setHeadingSpace,
+  setLineSpace,
   setLineWrapping
 } from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
@@ -109,11 +127,8 @@ function onDelayChange(e: Event): void {
   void setAutoSaveDelay(raw === '' ? Number.NaN : Number(raw))
 }
 
-/** 实际正文字号:与 H4–H6 同档,是滑块的基准 × 1.375(与 tokens.css 一致) */
-const bodyFontLabel = computed(() => {
-  const px = appStore.editorFontSize * 1.375
-  return `${Number.isInteger(px) ? px : px.toFixed(1)} px`
-})
+/** 读数就是滑块值本身:正文字号所见即所得(与 tokens.css 一致) */
+const bodyFontLabel = computed(() => `${appStore.editorFontSize} px`)
 
 /** 拖滑块时即时预览字号(只改画面),松手才写盘 */
 function onFontSizeInput(e: Event): void {
@@ -122,6 +137,102 @@ function onFontSizeInput(e: Event): void {
 
 function onFontSizeCommit(e: Event): void {
   void setEditorFontSize(Number((e.target as HTMLInputElement).value))
+}
+
+/**
+ * 「外观 → 标题间距」的三行控件。
+ *
+ * field 直接指向 appStore 上的设置项,模板里读写同一份状态;side 是 services
+ * 里的档位名(保存时据此挑 settings.json 的字段)。
+ */
+const HEADING_SPACE_ROWS: {
+  side: HeadingSpaceSide
+  field: 'headingSpaceBefore' | 'headingSpaceAfter' | 'headingSpaceBetween'
+  label: string
+  desc: string
+}[] = [
+  { side: 'before', field: 'headingSpaceBefore', label: '标题上方', desc: '标题前面是正文时的留白。' },
+  { side: 'after', field: 'headingSpaceAfter', label: '标题下方', desc: '标题后面是正文时的留白。' },
+  {
+    side: 'between',
+    field: 'headingSpaceBetween',
+    label: '标题之间',
+    desc: '两个标题紧挨着（中间没有空行）时的留白。'
+  }
+]
+
+/** 读数:档数 + 当前字号下的实际 px,改字号后自动跟着变 */
+function headingSpaceLabel(row: (typeof HEADING_SPACE_ROWS)[number]): string {
+  const value = appStore[row.field]
+  return `${value.toFixed(1)} 档 · ${Math.round(value * appStore.editorFontSize)} px`
+}
+
+function onHeadingSpaceInput(side: HeadingSpaceSide, e: Event): void {
+  previewHeadingSpace(side, Number((e.target as HTMLInputElement).value))
+}
+
+function onHeadingSpaceCommit(side: HeadingSpaceSide, e: Event): void {
+  void setHeadingSpace(side, Number((e.target as HTMLInputElement).value))
+}
+
+/**
+ * 行间距(档):同一段里行与行之间额外留出的空白(含折行),1 档 = 1 个正文字号。
+ * 与「段间距」分开:一段内的换行看这里,两段之间(空一行)看下面那组。
+ */
+function lineSpaceLabel(): string {
+  return `${appStore.lineSpace.toFixed(1)} 档 · ${Math.round(appStore.lineSpace * appStore.editorFontSize)} px`
+}
+
+function onLineSpaceInput(e: Event): void {
+  previewLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onLineSpaceCommit(e: Event): void {
+  void setLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+/**
+ * 「外观 → 块间距」的控件:段间距,以及代码块 / 列表 / 引用各自与前后正文的距离。
+ * side 与 CSS 变量名一致(--md-code-space-before 等)。
+ */
+const BLOCK_SPACE_ROWS: {
+  side: BlockSpaceSide
+  field:
+    | 'bodySpaceBetween'
+    | 'codeSpaceBefore'
+    | 'codeSpaceAfter'
+    | 'listSpaceBefore'
+    | 'listSpaceAfter'
+    | 'quoteSpaceBefore'
+    | 'quoteSpaceAfter'
+  label: string
+  desc: string
+}[] = [
+  {
+    side: 'bodyBetween',
+    field: 'bodySpaceBetween',
+    label: '段间距',
+    desc: '两段正文之间（空一行）的留白。没有空行时两行属于同一段，行与行的距离由上面的「行间距」决定。'
+  },
+  { side: 'codeBefore', field: 'codeSpaceBefore', label: '代码块上方', desc: '代码块前面是正文时的留白。' },
+  { side: 'codeAfter', field: 'codeSpaceAfter', label: '代码块下方', desc: '代码块后面是正文时的留白。' },
+  { side: 'listBefore', field: 'listSpaceBefore', label: '列表上方', desc: '列表前面是正文时的留白。' },
+  { side: 'listAfter', field: 'listSpaceAfter', label: '列表下方', desc: '列表后面是正文时的留白。' },
+  { side: 'quoteBefore', field: 'quoteSpaceBefore', label: '引用上方', desc: '引用前面是正文时的留白。' },
+  { side: 'quoteAfter', field: 'quoteSpaceAfter', label: '引用下方', desc: '引用后面是正文时的留白。' }
+]
+
+function blockSpaceLabel(row: (typeof BLOCK_SPACE_ROWS)[number]): string {
+  const value = appStore[row.field]
+  return `${value.toFixed(1)} 档 · ${Math.round(value * appStore.editorFontSize)} px`
+}
+
+function onBlockSpaceInput(side: BlockSpaceSide, e: Event): void {
+  previewBlockSpace(side, Number((e.target as HTMLInputElement).value))
+}
+
+function onBlockSpaceCommit(side: BlockSpaceSide, e: Event): void {
+  void setBlockSpace(side, Number((e.target as HTMLInputElement).value))
 }
 
 /** 市场入口在左栏「扩展」分组里排第一项(与 Obsidian 的心智一致) */
@@ -140,6 +251,32 @@ function onKeydown(e: KeyboardEvent): void {
 
 onMounted(() => window.addEventListener('keydown', onKeydown, true))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, true))
+
+/**
+ * 点遮罩关闭面板 —— 但只认「遮罩已经出现之后才按下的」那一下。
+ *
+ * 主线程卡顿时,点设置图标的 click 和用户随手点的下一处会一起堆在输入队列里:
+ * 前者先派发,click 把面板打开、Vue 立刻把遮罩挂进 DOM;后者的 mousedown
+ * 紧接着落到刚出现的遮罩上,面板当场被关掉。用户看到的就是「点设置没反应,
+ * 再点别处才弹出来,还秒退」。
+ *
+ * 输入事件的 timeStamp 是**按下那一刻**(与 performance.now() 同一时钟),
+ * 而 maskShownAt 是遮罩真正挂载的时刻。卡在队列里的那一下总是早于挂载,忽略它;
+ * 人看着面板点外面时按下的一定晚于挂载,照常关闭。
+ */
+let maskShownAt = 0
+watch(
+  () => appStore.settingsOpen,
+  open => {
+    if (open) maskShownAt = performance.now()
+  },
+  { flush: 'post' }
+)
+
+function onMaskDown(e: MouseEvent): void {
+  if (e.timeStamp < maskShownAt) return
+  closeSettings()
+}
 
 // ---------- 拖动面板 ----------
 //
@@ -356,7 +493,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="appStore.settingsOpen" class="settings-mask" @mousedown.self="closeSettings()">
+  <div v-if="appStore.settingsOpen" class="settings-mask" @mousedown.self="onMaskDown">
     <!--
       外框只负责尺寸、位移与边缘热区;真正的面板(.settings-dialog)铺满外框。
       四条边/四个角的热区放在面板**外侧**:面板右缘就是内容滚动条,热区若压在
@@ -569,26 +706,6 @@ onBeforeUnmount(() => {
                   <span class="settings-switch-track" />
                 </label>
               </div>
-
-              <div class="settings-row settings-row-stack">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">滑块是字号基准；正文与 H4–H6 同为它的 1.375 倍，标题、代码块按比例缩放。只影响编辑器，不影响导出。</div>
-                </div>
-                <div class="settings-control">
-                  <input
-                    class="settings-range"
-                    type="range"
-                    :min="EDITOR_FONT_SIZE_MIN"
-                    :max="EDITOR_FONT_SIZE_MAX"
-                    step="1"
-                    :value="appStore.editorFontSize"
-                    @input="onFontSizeInput"
-                    @change="onFontSizeCommit"
-                  />
-                  <span class="settings-readout">{{ bodyFontLabel }}</span>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -653,6 +770,106 @@ onBeforeUnmount(() => {
                 <span class="settings-theme-label">{{ THEME_LABELS[t] }}</span>
               </button>
             </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">样式</div>
+              <div class="settings-section-desc">
+                正文的行间距、段与段之间的留白，以及标题 / 代码块 / 列表 / 引用与正文的距离。全部按正文字号计档，1 档 = 1 个正文字号；改正文字号时同比例缩放，拖动后立即生效。
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">正文字号</div>
+                  <div class="settings-row-desc">滑块就是正文字号；标题、代码块按比例缩放。只影响编辑器，不影响导出。</div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    :min="EDITOR_FONT_SIZE_MIN"
+                    :max="EDITOR_FONT_SIZE_MAX"
+                    step="1"
+                    :value="appStore.editorFontSize"
+                    @input="onFontSizeInput"
+                    @change="onFontSizeCommit"
+                  />
+                  <span class="settings-readout">{{ bodyFontLabel }}</span>
+                </div>
+              </div>
+              <div v-for="row in HEADING_SPACE_ROWS" :key="row.side" class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">{{ row.label }}</div>
+                  <div class="settings-row-desc">{{ row.desc }}</div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    :data-heading-space="row.side"
+                    :min="HEADING_SPACE_MIN"
+                    :max="HEADING_SPACE_MAX"
+                    :step="HEADING_SPACE_STEP"
+                    :value="appStore[row.field]"
+                    @input="onHeadingSpaceInput(row.side, $event)"
+                    @change="onHeadingSpaceCommit(row.side, $event)"
+                  />
+                  <span class="settings-readout">{{ headingSpaceLabel(row) }}</span>
+                </div>
+              </div>
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">行间距</div>
+                  <div class="settings-row-desc">
+                    同一段正文里行与行之间额外留出的空白（折行也按它算）。段与段之间空一行的留白用下面的「段间距」。
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    data-line-space="lineSpace"
+                    :min="LINE_SPACE_MIN"
+                    :max="LINE_SPACE_MAX"
+                    :step="LINE_SPACE_STEP"
+                    :value="appStore.lineSpace"
+                    @input="onLineSpaceInput"
+                    @change="onLineSpaceCommit"
+                  />
+                  <span class="settings-readout">{{ lineSpaceLabel() }}</span>
+                </div>
+              </div>
+              <div v-for="row in BLOCK_SPACE_ROWS" :key="row.side" class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">{{ row.label }}</div>
+                  <div class="settings-row-desc">{{ row.desc }}</div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    :data-block-space="row.side"
+                    :min="BLOCK_SPACE_MIN"
+                    :max="BLOCK_SPACE_MAX"
+                    :step="BLOCK_SPACE_STEP"
+                    :value="appStore[row.field]"
+                    @input="onBlockSpaceInput(row.side, $event)"
+                    @change="onBlockSpaceCommit(row.side, $event)"
+                  />
+                  <span class="settings-readout">{{ blockSpaceLabel(row) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <button class="settings-reset" @click="resetSpacingSettings()">
+              <RotateCcw :size="13" />
+              <span>恢复默认设置</span>
+            </button>
           </div>
 
           <UserStyleSettings />

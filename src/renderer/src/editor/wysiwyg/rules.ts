@@ -1,5 +1,5 @@
 import { Decoration, type WidgetType } from '@codemirror/view'
-import type { EditorSelection, Range, Text } from '@codemirror/state'
+import type { EditorSelection, Line, Range, Text } from '@codemirror/state'
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common'
 import {
   CheckboxWidget,
@@ -57,6 +57,64 @@ function addMark(ctx: RuleContext, from: number, to: number, cls: string): void 
 function addLine(ctx: RuleContext, pos: number, cls: string): void {
   const line = ctx.doc.lineAt(pos)
   ctx.decos.push({ from: line.from, to: line.from, value: Decoration.line({ class: cls }) })
+}
+
+/**
+ * 源码行是不是一个 ATX 标题。
+ *
+ * 只看行首 `#` + 空白,不做语法树查询:能走到这里的相邻行一定在文档流里
+ * (标题节点本身不可能落在 fenced code 内),不会有"代码里的 # 被误判"。
+ */
+function isHeadingText(text: string): boolean {
+  return /^#{1,6}(?:\s|$)/.test(text)
+}
+
+/**
+ * 标题紧挨着另一个标题(中间没有空行)时,给两侧打上"紧贴"类。
+ *
+ * 标题上下各有一档留白(见 editor.css 的 --md-heading-pad):上留白把它和
+ * 上面的内容分开,下留白把它和下面的正文分开。下面直接就是下一个标题时,
+ * 下留白多余 —— 下一个标题自己的上留白已经把它们隔开了;而那个上留白改用
+ * 「标题之间」这一档(设置里可调),不再叠加两份。效果是标题之间比标题接
+ * 正文略窄,但不会散成两段、也不会贴死。
+ *
+ * 中间留了空行的不算 —— 那是作者主动写下的分隔。
+ */
+function markHeadingEdges(ctx: RuleContext, firstPos: number, lastPos: number): void {
+  const first = ctx.doc.lineAt(firstPos)
+  const last = ctx.doc.lineAt(lastPos)
+  if (first.number > 1 && isHeadingText(ctx.doc.line(first.number - 1).text)) {
+    addLine(ctx, first.from, 'cm-md-h-tight-top')
+  }
+  if (last.number < ctx.doc.lines && isHeadingText(ctx.doc.line(last.number + 1).text)) {
+    addLine(ctx, last.from, 'cm-md-h-tight-bottom')
+  }
+}
+
+/**
+ * 单横线下划线是不是被当成 Setext 标题了。
+ *
+ * CommonMark 里「正文下一行写 `-`」和「输入无序列表的第一个字符」是同一段
+ * 文本:`阿\n-` 会被解析成 SetextHeading2。于是用户在正文正下方敲列表符号
+ * 时,上面那行先被撑成二级标题(字号突变),而 `- ` 这一行本身又不是列表
+ * (要等敲出内容才变回 BulletList)。
+ *
+ * `--` 及以上仍按标题下划线处理 —— 正常写 Setext 标题不会只写一个横线。
+ */
+function isLoneDashSetext(ctx: RuleContext, heading: SyntaxNode): boolean {
+  const mark = heading.getChild('HeaderMark')
+  return !!mark && ctx.doc.sliceString(mark.from, mark.to) === '-'
+}
+
+/**
+ * 单横线后面是不是已经敲了空格。
+ *
+ * 和别处一致:标记 + 空格才算列表符号。只敲下 `-` 时它还是半截标记,按普通
+ * 文本显示 —— 不能提前画成圆点,否则用户还没决定要列表就看到一个点。
+ */
+function isListDash(ctx: RuleContext, mark: SyntaxNode): boolean {
+  const line = ctx.doc.lineAt(mark.from)
+  return /^[ \t]+$/.test(ctx.doc.sliceString(mark.to, line.to))
 }
 
 /**
@@ -133,6 +191,36 @@ function outerBlockquote(node: SyntaxNode): SyntaxNode | null {
   return outer
 }
 
+/**
+ * 引用块只给**真正带 `>` 的行**上引用样式,返回最后一个这样的行。
+ *
+ * CommonMark 的 lazy continuation 会把紧跟在引用后面、没写 `>` 的正文也算进
+ * Blockquote:`> 引用` 下一行直接写正文,那一行在语法树里属于引用。用户只是
+ * 把引用和正文之间的空行删掉,正文不该因此被套上竖线 —— 想留在引用里,每行
+ * 补上 `>` 即可(在引用里回车本来就会自动续 `> `)。
+ *
+ * 返回的行同时是「引用下方间距」的落点:紧跟着的懒续行(现在按正文渲染)
+ * 才是间距该出现的地方。
+ */
+function styleQuotedLines(ctx: RuleContext, quote: SyntaxNode): Line | null {
+  const lines = new Map<number, Line>()
+  const visit = (node: SyntaxNode): void => {
+    if (node.name === 'QuoteMark' && nearestBlockquote(node) === quote) {
+      const line = ctx.doc.lineAt(node.from)
+      lines.set(line.number, line)
+      return
+    }
+    for (let child = node.firstChild; child; child = child.nextSibling) visit(child)
+  }
+  visit(quote)
+  let last: Line | null = null
+  for (const line of [...lines.values()].sort((a, b) => a.number - b.number)) {
+    addLine(ctx, line.from, 'cm-md-quote')
+    last = line
+  }
+  return last
+}
+
 /** 从 pos 起吞掉连续空格(隐藏 "# " 时必须连同后随空格,否则残留可见空隙) */
 function endOfTrailingSpaces(doc: Text, from: number): number {
   let end = from
@@ -151,6 +239,80 @@ function addLineRange(ctx: RuleContext, from: number, to: number, cls: string): 
     if (line.to >= ctx.doc.length || line.to >= to) break
     pos = line.to + 1
   }
+}
+
+/**
+ * 块与正文之间的间距。两种写法都要照顾:
+ *
+ *   · 中间留了空行(常见于标准 Markdown):把那条空行加高(见 CSS 的
+ *     .cm-md-block-gap),其它行不动;
+ *   · 中间没有空行(本仓库的笔记就是这么写的):空行不存在,只能把间距做在
+ *     **相邻正文行**的 padding 上(padClass,见 CSS 的 .cm-md-gap-*),
+ *     不动块本身,也不动其它行的行距。
+ *
+ * 两个类名都按「块类型 + 方向」区分(见 CSS 的 --md-code-gap-* /
+ * --md-list-gap-*):同一条空行可能同时夹在代码块和列表之间,各算各的。
+ */
+function addGapBefore(ctx: RuleContext, pos: number, padClass: string, blankClass: string): void {
+  const line = ctx.doc.lineAt(pos)
+  if (line.number <= 1) return
+  const prev = ctx.doc.line(line.number - 1)
+  if (!isBlankLine(prev.text) || caretOnGapLine(ctx, prev.from, prev.to)) addLine(ctx, prev.from, padClass)
+  else addLine(ctx, prev.from, `cm-md-block-gap ${blankClass}`)
+}
+
+function addGapAfter(ctx: RuleContext, pos: number, padClass: string, blankClass: string): void {
+  const line = ctx.doc.lineAt(pos)
+  if (line.number >= ctx.doc.lines) return
+  const next = ctx.doc.line(line.number + 1)
+  if (!isBlankLine(next.text) || caretOnGapLine(ctx, next.from, next.to)) addLine(ctx, next.from, padClass)
+  else addLine(ctx, next.from, `cm-md-block-gap ${blankClass}`)
+}
+
+/**
+ * 光标是不是就停在这一条结构空行上(只看空选区,拖选时不动版式)。
+ *
+ * 空行收紧后只有不到一行的行高,而光标矩形是围着行盒算的 —— 光标会贴在
+ * 上一块的下沿;等真开始输入,这一行变成正文行、间距改走 padding,字才落到
+ * 预期位置,于是出现"光标不在打字处,输入后跳一下"。
+ *
+ * 光标一落上空行,就按正文行的排法渲染它(padding 由调用方照常打上):光标
+ * 和随后输入的第一个字从一开始就在同一处,继续输入也不会再移动。
+ */
+function caretOnGapLine(ctx: RuleContext, from: number, to: number): boolean {
+  return ctx.sel.ranges.some(r => r.empty && r.head >= from && r.head <= to)
+}
+
+/**
+ * 两段正文之间那条结构空行的留白。
+ *
+ * CommonMark 里段落之间必须隔一个空行;这条空行本来按正文行高排,间距固定。
+ * 现在收进「段间距」这一档(设置「外观 → 样式」可调),和块间距同一套
+ * 排法:空行只留一档高,光标落上去时再按正文行撑开(见 addGapBefore)。
+ * 没有空行的两行在 CommonMark 里是同一段,距离归「行间距」管 —— 不归这里。
+ *
+ * 只处理两个普通段落之间的空行:段落挨着标题 / 代码块 / 列表 / 引用时,
+ * 那是那些块的间距在管,不要叠一份。
+ */
+function styleBodyGap(ctx: RuleContext, para: SyntaxNode): void {
+  if (para.parent?.name !== 'Document') return
+  if (para.prevSibling?.name !== 'Paragraph') return
+  const line = ctx.doc.lineAt(para.from)
+  if (line.number <= 1 || !isBlankLine(ctx.doc.line(line.number - 1).text)) return
+  addGapBefore(ctx, para.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+}
+
+/** 列表子树里最后一个列表标记:列表在视觉上的结尾(续行、嵌套列表都排在它后面) */
+function lastListMark(list: SyntaxNode): SyntaxNode | null {
+  let found: SyntaxNode | null = null
+  const visit = (n: SyntaxNode): void => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.name === 'ListMark') found = c
+      visit(c)
+    }
+  }
+  visit(list)
+  return found
 }
 
 // ---------- 表格 ----------
@@ -358,10 +520,33 @@ function addCodeCopy(ctx: RuleContext, code: SyntaxNode): void {
   })
 }
 
+/**
+ * 选区是不是从代码块**上方**起(全篇全选、从段落一路拖进来)。
+ *
+ * 见 editor.css 的 .cm-md-code::before:那块盖在选区图层之上的实色底,本来
+ * 是为了把「起点在块内时,除首行外每行多染出来的那截左侧留白」盖回去。
+ * 但选区起点在块之前时,drawSelection 对**所有**代码行都按整行画,留白再盖
+ * 回去就成了代码块左边被挖掉一条 —— 全篇全选时最显眼。
+ *
+ * 空选区不算:光标恰好停在块上方时没有染色,不需要放开。
+ */
+function selectionStartsBefore(ctx: RuleContext, blockStart: number): boolean {
+  return ctx.sel.ranges.some(r => !r.empty && r.from < blockStart)
+}
+
+/** 代码行要挂的类:起点在块之前时多挂一个「留白跟着染色」的类 */
+function codeLineClass(ctx: RuleContext, blockStart: number): string {
+  return selectionStartsBefore(ctx, blockStart)
+    ? 'cm-md-code cm-md-code-sel-bleed'
+    : 'cm-md-code'
+}
+
 /** 源码态:整块等宽 + 隐藏围栏标记(渲染态与源码态共用同一套外观) */
 function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
-  addLineRange(ctx, code.from, code.to, 'cm-md-code')
+  addLineRange(ctx, code.from, code.to, codeLineClass(ctx, code.from))
   addCodeCopy(ctx, code)
+  addGapBefore(ctx, code.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+  addGapAfter(ctx, code.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
   const first = code.firstChild
   const last = code.lastChild
   if (first?.name === 'CodeMark' && lineUntouched(ctx, first.from)) {
@@ -373,6 +558,72 @@ function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
   if (last?.name === 'CodeMark' && last.from !== first?.from && lineUntouched(ctx, last.from)) {
     hide(ctx, last.from, endOfTrailingSpaces(ctx.doc, last.to))
   }
+}
+
+/**
+ * 占位列表标记(还没被解析成列表)也带上列表前后的间距。
+ *
+ * `正文\n1. ` 在 CommonMark 里仍是同一段正文 —— 空的列表项不能打断段落,
+ * 没有 OrderedList 节点,也就没有上面那段「最外层列表补间距」。标记已经
+ * 提前画出来了,间距若还等「补上第一个字、解析成列表」才出现,列表会在
+ * 输入瞬间上下跳一下。这里按真正列表的同一套规则提前打上:落点相同
+ * (撑开结构空行,或做成相邻正文行的 padding),补字后不会再有位移。
+ *
+ * 多行占位(连着敲了几条空项)算一个列表:只在第一条前、最后一条后留白,
+ * 项与项之间不额外隔开。
+ */
+function stylePendingListGaps(ctx: RuleContext, first: Line, last: Line = first): void {
+  addGapBefore(ctx, first.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
+  addGapAfter(ctx, last.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+}
+
+/**
+ * 段落续行上只敲了列表符号、还没敲内容时,CommonMark 不把它当列表:
+ * 空的列表项不能打断段落,`* ` / `+ ` / `1. ` 会整段并进前面的 Paragraph。
+ * 于是符号原样显示,补上一个字才突然变成列表 —— 和 `- `(走 Setext 那条路,
+ * 见 isLoneDashSetext)的观感对不上。
+ *
+ * 这里提前把这类「占位行」的标记画成列表符号。要求标记后**至少一个空格**:
+ * 刚敲下 `*` / `1.` 时还可能是正文(斜体、序号),不急着换样子。
+ *
+ * 占位行不一定在段落末尾:在已有正文中间回车、敲一条 `1. `,后面那行仍是
+ * 同一段正文,补字后它俩会变成「列表 + 懒续行」。只认最后一行的话,这一行
+ * 直到补字前都不像列表、也没有间距,正是「输入后间距才正常」的来源。
+ */
+function stylePendingListMarker(ctx: RuleContext, para: SyntaxNode): void {
+  const firstLine = ctx.doc.lineAt(para.from)
+  const lastLine = ctx.doc.lineAt(para.to)
+  // 段落首行不会是占位标记(会直接解析成列表),只认续行
+  if (firstLine.number === lastLine.number) return
+
+  // 连续的占位行是一个列表;碰到普通正文就结算上一段
+  let runFirst: Line | null = null
+  let runLast: Line | null = null
+  const flush = (): void => {
+    if (runFirst && runLast) stylePendingListGaps(ctx, runFirst, runLast)
+    runFirst = null
+    runLast = null
+  }
+
+  for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
+    const line = ctx.doc.line(n)
+    const m = /^([ \t]*)([*+]|\d{1,9}[.)])([ \t]+)$/.exec(line.text)
+    if (!m) {
+      flush()
+      continue
+    }
+    const from = line.from + m[1].length
+    const marker = m[2]
+    const bullet = marker === '*' || marker === '+'
+    ctx.decos.push({
+      from,
+      to: from + marker.length,
+      value: markDeco(bullet ? 'cm-md-listmark cm-md-listmark-bullet' : 'cm-md-listmark')
+    })
+    if (!runFirst) runFirst = line
+    runLast = line
+  }
+  flush()
 }
 
 // ---------- 节点 → 装饰规则分发表(唯一落点) ----------
@@ -392,14 +643,21 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'ATXHeading5':
     case 'ATXHeading6': {
       addLine(ctx, node.from, `cm-md-h${node.name.slice(-1)}`)
+      markHeadingEdges(ctx, node.from, node.to)
       return // 下钻:HeaderMark 与行内内容
     }
     case 'SetextHeading1':
       addLine(ctx, node.from, 'cm-md-h1')
+      markHeadingEdges(ctx, node.from, node.to)
       return
-    case 'SetextHeading2':
+    case 'SetextHeading2': {
+      // 单横线是「列表符号」的歧义态,不是标题下划线(见 isLoneDashSetext):
+      // 上一行保持正文,这一行交给 HeaderMark 规则(敲了空格才画成圆点)。
+      if (isLoneDashSetext(ctx, node.node)) return
       addLine(ctx, node.from, 'cm-md-h2')
+      markHeadingEdges(ctx, node.from, node.to)
       return
+    }
     case 'HeaderMark': {
       const parent = node.node.parent
       if (!parent) return
@@ -407,6 +665,17 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         if (lineUntouched(ctx, node.from)) {
           hide(ctx, node.from, endOfTrailingSpaces(ctx.doc, node.to))
         }
+      } else if (parent.name === 'SetextHeading2' && ctx.doc.sliceString(node.from, node.to) === '-') {
+        // 只敲了 `-`:还不算列表,按普通正文显示,补上空格才换圆点
+        if (!isListDash(ctx, node.node)) return
+        // 列表符号(不是 Setext 下划线):和真正的 ListMark 一样渲染成圆点
+        ctx.decos.push({
+          from: node.from,
+          to: node.to,
+          value: markDeco('cm-md-listmark cm-md-listmark-bullet')
+        })
+        // 这里同样还是「占位」状态(补字后才变 BulletList),列表间距提前打上
+        stylePendingListGaps(ctx, ctx.doc.lineAt(node.from))
       } else {
         // Setext 下划线:降级为变暗,不隐藏
         ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-headermark') })
@@ -445,10 +714,17 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
 
     // ----- 行内代码 -----
     case 'InlineCode': {
+      /*
+       * 样式**不随选区收起**:行内代码用的是等宽字体 + 0.9em + 内边距,
+       * 行盒比普通正文高约 1px。以前光标/选区碰进来就摘掉这个类,整行
+       * 立刻矮 1px —— 选中一条含行内代码的列表项时,后面所有项跟着上移,
+       * 看起来像"列表间距变小了"。反引号该露还是露(见 CodeMark),只让
+       * 字体度量保持不变。
+       */
       const n = node.node
       const first = n.firstChild
       const last = n.lastChild
-      if (!touches(ctx.sel, node.from, node.to) && first && last && last.from > first.to) {
+      if (first && last && last.from > first.to) {
         addMark(ctx, first.to, last.from, 'cm-md-inlinecode')
       }
       return // CodeMark 子节点单独处理
@@ -491,8 +767,10 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       return false
     }
     case 'CodeBlock': {
-      addLineRange(ctx, node.from, node.to, 'cm-md-code')
+      addLineRange(ctx, node.from, node.to, codeLineClass(ctx, node.from))
       addCodeCopy(ctx, node.node)
+      addGapBefore(ctx, node.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+      addGapAfter(ctx, node.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
       return false
     }
 
@@ -502,7 +780,10 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       if (node.node.parent?.name === 'Blockquote') return
       // 裸 `>` 先按普通文本显示(见 quoteOpened)
       if (!quoteOpened(ctx.doc, node.node)) return
-      addLineRange(ctx, node.from, node.to, 'cm-md-quote')
+      const lastQuoted = styleQuotedLines(ctx, node.node)
+      if (!lastQuoted) return
+      addGapBefore(ctx, node.from, 'cm-md-gap-quote-before', 'cm-md-block-gap-quote-before')
+      addGapAfter(ctx, lastQuoted.from, 'cm-md-gap-quote-after', 'cm-md-block-gap-quote-after')
       return
     }
     case 'QuoteMark': {
@@ -519,6 +800,40 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       } else {
         // 光标在这行时标记显形(源码态);弱化成灰色,和 Obsidian 一样不抢正文
         ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-quotemark') })
+      }
+      return
+    }
+
+    // ----- 段落(续行上的占位列表符号 / 两段正文之间的空行) -----
+    case 'Paragraph':
+      stylePendingListMarker(ctx, node.node)
+      styleBodyGap(ctx, node.node)
+      return // 下钻:行内强调 / 链接
+
+    // ----- 列表 -----
+    case 'BulletList':
+    case 'OrderedList': {
+      /*
+       * 只在最外层列表上补间距,嵌套列表由外层节点一次带过。
+       *
+       * 间距落在**最后一个列表标记**后面,而不是列表节点的 to 后面:笔记里
+       * 常见的写法是列表标记之后直接写正文(没有空行),lezer 会把这几行
+       * 当成最后一项的懒续行、算进列表范围里。按 to 去找,中间那段正文就
+       * 被当成列表的一部分,间距会落到更靠后的位置。
+       */
+      let nested = false
+      for (let cur = node.node.parent; cur; cur = cur.parent) {
+        if (cur.name === 'ListItem') {
+          nested = true
+          break
+        }
+      }
+      if (!nested) {
+        const mark = lastListMark(node.node)
+        if (mark) {
+          addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
+          addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+        }
       }
       return
     }

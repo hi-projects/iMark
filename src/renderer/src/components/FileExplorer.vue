@@ -39,7 +39,6 @@ interface Editing {
 }
 
 const editing = reactive<Editing>({ mode: null, parentPath: '', target: null, value: '' })
-const inputEl = ref<HTMLInputElement | null>(null)
 
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
@@ -68,13 +67,38 @@ function isOpenFile(node: VaultNode): boolean {
   return activeTab()?.filePath === node.path
 }
 
+/**
+ * 新建输入行插在哪一行之后(rows 的下标):
+ *   null = 当前不是新建态;-1 = 列表最前(建在仓库根)。
+ * 建在某个目录里时插在该目录行之后 —— 它的子项正好从下一行开始,
+ * 输入行也就落在父目录展开后的第一个子项位置。
+ */
+const newEditAfter = computed<number | null>(() => {
+  if (editing.mode !== 'new-file' && editing.mode !== 'new-dir') return null
+  const parent = editing.parentPath
+  if (!parent || parent === appStore.vaultPath) return -1
+  return rows.value.findIndex(r => r.node.type === 'dir' && r.node.path === parent)
+})
+
+/** 新建输入行的缩进:和目标目录的子项对齐(根级 = 第一层) */
+const newEditDepth = computed<number>(() => {
+  const i = newEditAfter.value
+  if (i === null || i < 0) return 1
+  return (rows.value[i]?.depth ?? 0) + 1
+})
+
 function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, target: VaultNode | null, initial = ''): void {
   editing.mode = mode
   editing.parentPath = parentPath
   editing.target = target
   editing.value = initial
   if (mode !== 'rename' && parentPath) appStore.expandedDirs.add(parentPath)
-  void nextTick(() => inputEl.value?.focus())
+  // 输入行可能在 v-for 里(v-for 的模板 ref 会被 Vue 收成数组),按类名取更稳
+  void nextTick(() => {
+    const el = document.querySelector<HTMLInputElement>('.explorer-editing input')
+    el?.focus()
+    el?.select()
+  })
 }
 
 function cancelEdit(): void {
@@ -315,13 +339,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
         打开仓库...
       </button>
 
-      <!-- 新建输入行(根级) -->
+      <!-- 新建输入行:建在仓库根时出现在最前 -->
       <div
-        v-if="editing.mode === 'new-file' || editing.mode === 'new-dir'"
+        v-if="newEditAfter === -1"
         class="explorer-item explorer-editing"
+        :style="{ paddingLeft: 8 + newEditDepth * 14 + 'px' }"
       >
         <input
-          ref="inputEl"
           v-model="editing.value"
           :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
           @keydown.enter="onEnter"
@@ -330,11 +354,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
         />
       </div>
 
-      <template v-for="row in rows" :key="row.node.path">
+      <template v-for="(row, i) in rows" :key="row.node.path">
         <!-- 重命名输入行 -->
         <div v-if="editing.mode === 'rename' && editing.target?.path === row.node.path" class="explorer-item explorer-editing" :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }">
           <input
-            ref="inputEl"
             v-model="editing.value"
             @keydown.enter="onEnter"
             @keydown.esc.prevent="cancelEdit"
@@ -415,6 +438,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
               <Trash2 :size="13" />
             </button>
           </span>
+        </div>
+
+        <!-- 新建输入行:落在对应父目录展开后的第一个子项位置 -->
+        <div
+          v-if="newEditAfter === i"
+          class="explorer-item explorer-editing"
+          :style="{ paddingLeft: 8 + newEditDepth * 14 + 'px' }"
+        >
+          <input
+            v-model="editing.value"
+            :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
+            @keydown.enter="onEnter"
+            @keydown.esc.prevent="cancelEdit"
+            @blur="cancelEdit"
+          />
         </div>
       </template>
     </div>

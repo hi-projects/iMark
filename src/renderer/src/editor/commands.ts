@@ -1,5 +1,8 @@
+import { selectAll } from '@codemirror/commands'
+import { syntaxTree } from '@codemirror/language'
 import { EditorSelection, type ChangeSpec, type EditorState } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
+import type { SyntaxNode } from '@lezer/common'
 import type { MenuCommandId } from '@shared/ipc-channels'
 
 /**
@@ -335,4 +338,85 @@ export function runFormatCommand(view: EditorView, id: MenuCommandId): void {
     default:
       break
   }
+}
+
+// ---------- 全选 ----------
+
+/**
+ * 覆盖这一行的代码块节点(FencedCode / 缩进 CodeBlock)。
+ *
+ * 按行遍历而不是只看光标位置:缩进代码块的节点从第 5 列才开始,
+ * 光标停在行首那 4 个空格里时 resolveInner 找不到它(和 codeIndent 同一个原因)。
+ */
+function codeBlockCovering(state: EditorState, pos: number): SyntaxNode | null {
+  const line = state.doc.lineAt(pos)
+  let found: SyntaxNode | null = null
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter(ref) {
+      if (ref.name === 'FencedCode' || ref.name === 'CodeBlock') {
+        found = ref.node
+        return false
+      }
+      return undefined
+    }
+  })
+  return found
+}
+
+/**
+ * 代码块正文的范围。
+ *
+ * 围栏块:只取 CodeText 子节点 —— 围栏行本身,以及引用 / 列表的容器前缀
+ * (`> ` / `- `)都不算正文,和右上角复制按钮取的是同一段源码
+ * (见 wysiwyg/rules.ts 的 readCodeSource)。
+ * 缩进块:选整行(含行首的 4 个空格),复制出去仍是合法的缩进代码块。
+ */
+function codeContentRange(state: EditorState, block: SyntaxNode): { from: number; to: number } | null {
+  if (block.name === 'CodeBlock') {
+    return { from: state.doc.lineAt(block.from).from, to: state.doc.lineAt(block.to).to }
+  }
+  let from = -1
+  let to = -1
+  for (let child = block.firstChild; child; child = child.nextSibling) {
+    if (child.name !== 'CodeText') continue
+    if (from < 0) from = child.from
+    to = child.to
+  }
+  return from < 0 ? null : { from, to }
+}
+
+/**
+ * Ctrl+A:光标 / 选区在代码块里时,永远只选这一块代码(重复按也不扩大)。
+ * 要选整篇得先把光标移出代码块。
+ *
+ * 不在代码块里返回 false,全选行为完全交给默认 keymap。
+ */
+export function selectAllInCodeBlock(view: EditorView): boolean {
+  const state = view.state
+  // 多光标:按常规全选处理,别只改主选区
+  if (state.selection.ranges.length > 1) return false
+  const sel = state.selection.main
+  const block = codeBlockCovering(state, sel.from)
+  if (!block) return false
+  // 选区另一头已经跨出这个代码块(例如上一次已是整篇):交给整篇全选
+  const tail = codeBlockCovering(state, sel.to)
+  if (!tail || tail.from !== block.from || tail.to !== block.to) return false
+  const content = codeContentRange(state, block)
+  if (!content) return false
+  // 已经正好选中这块:不重复派发事务,直接吃掉这次按键
+  if (sel.from === content.from && sel.to === content.to) return true
+  view.dispatch({
+    selection: { anchor: content.from, head: content.to },
+    scrollIntoView: true,
+    userEvent: 'select'
+  })
+  return true
+}
+
+/** 菜单「全选」:编辑器拿着焦点时先按代码块选,其余情况用 CM 的整篇全选 */
+export function selectAllSmart(view: EditorView): void {
+  if (selectAllInCodeBlock(view)) return
+  selectAll(view)
 }

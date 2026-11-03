@@ -145,10 +145,19 @@ async function main(): Promise<void> {
         }
       })`)
 
-  /** 正文 / 标题的分界:标题一定更大更粗(h4 起 1.2em/650,正文 16px/400) */
-  const isBody = (l: LineInfo): boolean => parseFloat(l.size) <= 16 && parseFloat(l.weight) < 600
-  // 标题样式是 1.125em / 600(正文 13px → 14.625px);阈值按实际 CSS 取,不要写死 16
-  const isHeading = (l: LineInfo): boolean => parseFloat(l.size) >= 14 && parseFloat(l.weight) >= 600
+  /*
+   * 正文 / 标题的分界:标题一定更大更粗(标题 600 字重,正文 400)。
+   * 正文字号别写死 —— 它就是设置里的值(见 tokens.css 的 --editor-body-size);
+   * 从实际渲染里读,断言才不会跟着一起过期。
+   */
+  const bodySizePx = await evalJs<number>(
+    `parseFloat(getComputedStyle(document.querySelector('.cm-scroller')).fontSize)`
+  )
+  const isBody = (l: LineInfo): boolean =>
+    parseFloat(l.size) <= bodySizePx + 0.5 && parseFloat(l.weight) < 600
+  /** 标题:600 字重,且不比正文小(H4–H6 与正文同档,靠字重区分) */
+  const isHeading = (l: LineInfo): boolean =>
+    parseFloat(l.size) >= bodySizePx - 0.5 && parseFloat(l.weight) >= 600
   const looks = (l: LineInfo): string => `${JSON.stringify(l.text)} [${l.cls}] ${l.size}/${l.weight}`
 
   /**

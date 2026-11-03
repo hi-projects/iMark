@@ -322,7 +322,7 @@ onDidChangeTheme: Event<ColorTheme>
 
 | 字段 | 说明 |
 |---|---|
-| `kind` | 字段形态：`text` / `textarea` / `password` / `number` / `boolean` / `select` / `list` / `targets` / `endpoints` / `external` |
+| `kind` | 字段形态：`text` / `textarea` / `password` / `number` / `boolean` / `select` / `list` / `directory` / `targets` / `endpoints` / `external`；`directory` 点击弹出系统文件夹选择器，留空时显示扩展默认数据目录 |
 | `label` | 字段标题；缺省用 `title` 或短键名 |
 | `description` | 字段说明 |
 | `section` | 分组标题；相邻同名字段归到一组 |

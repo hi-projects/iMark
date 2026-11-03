@@ -86,6 +86,11 @@ const api = {
   defaultEditorStatus: (): Promise<DefaultEditorStatus> =>
     request(IPC.SystemDefaultEditorStatus),
   setDefaultEditor: (): Promise<DefaultEditorStatus> => request(IPC.SystemSetDefaultEditor),
+  // ---------- 通用 ----------
+  pickDirectory: (defaultPath?: string | null): Promise<string | null> =>
+    request(IPC.PickDirectory, defaultPath ?? null),
+  openDirectory: (path: string): Promise<string | null> =>
+    request(IPC.OpenDirectory, path),
   // ---------- 仓库 ----------
   selectVaultDialog: (): Promise<string | null> => request(IPC.VaultSelectDialog),
   claimVault: (vaultPath: string, filePath?: string | null): Promise<VaultClaimResult> =>

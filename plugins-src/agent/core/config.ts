@@ -16,6 +16,10 @@ export const SECTION = 'imark.agent'
 
 export interface AgentConfig {
   attachmentMaxMB: number
+  /** 会话保留天数；0 表示永不自动清理 */
+  sessionRetentionDays: number
+  /** 会话数据目录；空字符串表示使用扩展默认目录 */
+  sessionDataDir: string
   /** 生效的系统提示词：设置里的自定义值，为空时回落到内置 SYSTEM_PROMPT */
   systemPrompt: string
 }
@@ -35,6 +39,8 @@ export function readConfig(): ConfigReadResult {
   return {
     config: {
       attachmentMaxMB: clampInt(config.get<number>('attachmentMaxMB', 32), 1, 100, 32),
+      sessionRetentionDays: clampInt(config.get<number>('sessionRetentionDays', 1), 0, 365, 1),
+      sessionDataDir: String(config.get<string>('sessionDataDir', '') ?? '').trim(),
       // 清单里这一项的默认值由打包脚本从 SYSTEM_PROMPT 注入；这里再兜一次，
       // 保证设置被清空时也永远有可用的系统提示词。
       systemPrompt: String(config.get<string>('systemPrompt', '') ?? '').trim() || SYSTEM_PROMPT

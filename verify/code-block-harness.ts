@@ -102,6 +102,12 @@ async function main(): Promise<void> {
   await ensureBundledProvisioned(service)
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
+  /*
+   * 默认窗口只有 820×550,DOC 加上代码块前后的结构空行后总高度会超过编辑区。
+   * 下面第 4 / 8 节按坐标点击、按视口坐标取像素,内容滚出可视区就会失效 ——
+   * 把窗口加高就行;宽度保持不变,横向的断言(行宽 / 按钮右边距)不受影响。
+   */
+  win.setContentSize(820, 900)
   const wc = win.webContents
   wc.on('console-message', (_event, ...args: unknown[]) => {
     const first = args[0]
@@ -466,6 +472,147 @@ async function main(): Promise<void> {
     )
     await evalJs(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
     await sleep(200)
+  } catch (err) {
+    console.log('  (截图跳过:', err instanceof Error ? err.message : String(err), ')')
+  }
+
+  // ---------- 9. 块与正文的间距 ----------
+
+  console.log('\n【9】代码块前后、列表结尾的结构空行更高(正文行不受影响)')
+  await loadDoc(
+    ['# 间距', '', '上文', '', '```ts', 'const a = 1', '```', '', '下文', '', '- 甲', '- 乙', '', '列表后正文', ''].join(
+      '\n'
+    )
+  )
+  const gaps = await evalJs<{
+    body: number
+    marked: number[]
+    markedTexts: string[]
+    paragraph: number
+    bodyFont: number
+    plainBlanks: number[]
+    pads: number
+  }>(`
+    (() => {
+      const h = (el) => parseFloat(getComputedStyle(el).lineHeight)
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+      const marked = lines.filter(l => l.classList.contains('cm-md-block-gap'))
+      const paragraph = lines.find(l => l.textContent.trim() === '下文')
+      // 第 2 行也是空行,但它夹在标题与正文之间,不该被加高
+      const plainBlanks = [lines[1]].map(h)
+      return {
+        body: h(lines.find(l => l.textContent.trim() === '上文')),
+        marked: marked.map(h),
+        markedTexts: marked.map(l => JSON.stringify(l.textContent)),
+        paragraph: h(paragraph),
+        bodyFont: parseFloat(getComputedStyle(paragraph).fontSize),
+        plainBlanks,
+        pads: document.querySelectorAll(
+          '.cm-line.cm-md-gap-code-before, .cm-line.cm-md-gap-code-after,' +
+            '.cm-line.cm-md-gap-list-before, .cm-line.cm-md-gap-list-after'
+        ).length
+      }
+    })()`)
+  console.log(`    [实测] ${JSON.stringify(gaps)}`)
+  check('恰好 4 条结构空行被加高(代码块前 / 后、列表前 / 后)', gaps.marked.length === 4, JSON.stringify(gaps.markedTexts))
+  check(
+    '被加高的都是空行',
+    gaps.markedTexts.every(t => t === '""'),
+    JSON.stringify(gaps.markedTexts)
+  )
+  check(
+    '结构空行按 1 × 正文尺寸收紧',
+    gaps.marked.every(v => Math.abs(v - gaps.bodyFont * 1) < 0.5),
+    `${JSON.stringify(gaps.marked)} vs ${gaps.bodyFont} × 1`
+  )
+  check(
+    '不挨着代码块 / 列表的空行保持正文行高',
+    gaps.plainBlanks.every(v => Math.abs(v - gaps.body) < 0.5),
+    JSON.stringify(gaps.plainBlanks)
+  )
+  check(
+    '正文行的行高没有被改动',
+    Math.abs(gaps.paragraph - gaps.body) < 0.5,
+    `${gaps.paragraph} vs ${gaps.body}`
+  )
+  check('有空行时不再叠加 padding 间距', gaps.pads === 0, String(gaps.pads))
+
+  // ---------- 10. 块直接贴着正文(没有空行) ----------
+
+  console.log('\n【10】块与正文之间没有空行时,间距落在相邻正文行的 padding 上')
+  await loadDoc(
+    ['# 贴紧', '上文', '```ts', 'const a = 1', '```', '下文', '', '- 甲', '- 乙', '列表后正文', ''].join('\n')
+  )
+  const tight = await evalJs<{
+    aboveText: string
+    abovePad: number
+    belowText: string
+    belowPad: number
+    listText: string
+    listPad: number
+    font: number
+    codePads: number
+  }>(`
+    (() => {
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+      const pad = els => els.map(el => parseFloat(getComputedStyle(el).paddingTop) + parseFloat(getComputedStyle(el).paddingBottom))
+      const above = document.querySelector('.cm-line.cm-md-gap-code-before')
+      const below = document.querySelector('.cm-line.cm-md-gap-code-after')
+      const listLine = lines.find(l => l.textContent.trim() === '列表后正文')
+      return {
+        aboveText: above.textContent.trim(),
+        abovePad: parseFloat(getComputedStyle(above).paddingBottom),
+        belowText: below.textContent.trim(),
+        belowPad: parseFloat(getComputedStyle(below).paddingTop),
+        listText: listLine.textContent.trim(),
+        listPad: parseFloat(getComputedStyle(listLine).paddingTop),
+        font: parseFloat(getComputedStyle(below).fontSize),
+        codePads: pad([...document.querySelectorAll('.cm-line.cm-md-code')]).reduce((a, b) => a + b, 0)
+      }
+    })()`)
+  console.log(`    [实测] ${JSON.stringify(tight)}`)
+  const pad = tight.font * 1
+  check(
+    '代码块上方那行正文有底部 padding',
+    tight.aboveText === '上文' && Math.abs(tight.abovePad - pad) < 0.6,
+    JSON.stringify(tight)
+  )
+  check(
+    '代码块下方那行正文有顶部 padding',
+    tight.belowText === '下文' && Math.abs(tight.belowPad - pad) < 0.6,
+    JSON.stringify(tight)
+  )
+  check('列表最后一行紧跟的正文行有顶部 padding', Math.abs(tight.listPad - pad) < 0.6, JSON.stringify(tight))
+  check('间距没有加到代码块自身(底色 / 复制按钮不受影响)', tight.codePads === 0, String(tight.codePads))
+
+  /*
+   * 行首「+」是按行盒顶边定位的。结构间距做成了 padding 后,按钮会被顶到
+   * 空白里、离正文老远(看起来像挂在一条点不到的空行上)。把光标放到带间距
+   * 的那行,按钮应当仍然贴着正文。
+   */
+  await focusEditor()
+  await key('Home', ['control'])
+  for (let i = 0; i < 5; i++) await key('ArrowDown') // 第 6 行 = 「下文」
+  await sleep(150)
+  const plusGeo = await evalJs<{ pad: number; plusOffset: number } | null>(`
+    (() => {
+      const line = document.querySelector('.cm-line.cm-md-gap-code-after')
+      const plus = document.querySelector('.line-plus')
+      if (!line || !plus) return null
+      return {
+        pad: parseFloat(getComputedStyle(line).paddingTop),
+        plusOffset: plus.getBoundingClientRect().top - line.getBoundingClientRect().top
+      }
+    })()`)
+  check(
+    '「+」跟着正文下移,没有停在结构间距里',
+    plusGeo !== null && plusGeo.plusOffset >= plusGeo.pad - 1 && plusGeo.plusOffset <= plusGeo.pad + 8,
+    JSON.stringify(plusGeo)
+  )
+  try {
+    const tightShots = join(REPO, '.verify-ud', 'shots')
+    await mkdir(tightShots, { recursive: true })
+    await writeFile(join(tightShots, 'code-block-tight.png'), (await captureShot()).toPNG())
   } catch (err) {
     console.log('  (截图跳过:', err instanceof Error ? err.message : String(err), ')')
   }

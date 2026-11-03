@@ -60,12 +60,13 @@
  */
 
 /* 字号走 CSS 变量(设置面板「编辑器」页里可调):标题、代码块按 em 跟着缩。
-   行高是字号倍率,调字号时行距按比例跟着变。 */
+   行高 = 1 个字号(文字自身的高度) + 「行间距」档位;没设过时按默认 1 档(= 2em)。
+   标题有自己的 1.4 倍行高,不受它影响。 */
 .cm-editor .cm-scroller.cm-scroller {
   font-family: var(--font-text);
-  /* 正文与 H4/H5/H6 同档:1.375 × 设置里的基准字号(见 tokens.css) */
+  /* 正文字号就是设置里的值,所见即所得(见 tokens.css) */
   font-size: var(--editor-body-size);
-  line-height: 1.9;
+  line-height: calc(1 + var(--editor-line-space, 1));
 }
 
 /*
@@ -124,11 +125,10 @@
 /* ---------- WYSIWYG 内容样式 ---------- */
 
 /*
- * 标题字号:正文与 H4/H5/H6 统一为同一档(即原来 H4 的 1.375em),
- * 后三级只靠字重与颜色区分;H1–H3 保持原来的像素大小,但父级已经放大到
- * 1.375 倍,所以 em 要按 1/1.375 重算:
- *   2 / 1.375 = 1.4545   1.75 / 1.375 = 1.2727   1.5 / 1.375 = 1.0909
- * H4–H6 不再写 font-size,直接继承 .cm-scroller 的正文大小。
+ * 标题字号:正文与 H4/H5/H6 同为正文档,H4–H6 只靠字重与颜色区分;
+ * H1–H3 是正文的 1.4545 / 1.2727 / 1.0909 倍(即 H1 : H4 = 2 : 1.375,
+ * 保持标题梯度的原比例)。
+ * H4–H6 不写 font-size,直接继承 .cm-scroller 的正文大小。
  */
 .cm-md-h1,
 .cm-md-h2,
@@ -208,6 +208,18 @@
   z-index: 1;
 }
 
+/*
+ * 选区从代码块上方起(全篇全选、从段落拖进来)时,放开这截留白。
+ *
+ * 此时 drawSelection 对所有代码行都按整行画(起点不在块内,不存在"首行与
+ * 其余行不齐"的问题),留白再盖回去就成了代码块左边缺一条高亮 —— 全篇全选
+ * 时像被挖掉一块。只有起点落在块内(例如代码块里 Ctrl+A)才需要遮。
+ * 类由 rules.ts 的 selectionStartsBefore 按选区动态挂上。
+ */
+.cm-md-code.cm-md-code-sel-bleed::before {
+  background: transparent;
+}
+
 .cm-md-codeinfo {
   color: var(--text-tertiary);
   font-style: italic;
@@ -243,6 +255,152 @@
   opacity: 1;
   background: var(--bg-toolbar-btn-hover);
   color: var(--text-secondary);
+}
+
+/*
+ * 段落之间、代码块 / 列表 / 引用与正文之间的结构间距,按「块类型 × 方向」
+ * 各留一个旋钮(设置「外观 → 样式」;--md-*-space-* 是根元素上的档数)。
+ *
+ * 两种排法共用同一个值:有空行时把那条空行加高,没空行时做在相邻正文行的
+ * padding 上(见 rules.ts 的 addGapBefore/After),两种写法看起来是同一个间距。
+ * 乘 --editor-body-size 按正文尺寸缩放;默认 1 档(一个正文字号)。
+ */
+.cm-editor {
+  --md-body-gap-between: calc(var(--editor-body-size) * var(--md-body-space-between, 1));
+  --md-code-gap-before: calc(var(--editor-body-size) * var(--md-code-space-before, 1));
+  --md-code-gap-after: calc(var(--editor-body-size) * var(--md-code-space-after, 1));
+  --md-list-gap-before: calc(var(--editor-body-size) * var(--md-list-space-before, 1));
+  --md-list-gap-after: calc(var(--editor-body-size) * var(--md-list-space-after, 1));
+  --md-quote-gap-before: calc(var(--editor-body-size) * var(--md-quote-space-before, 1));
+  --md-quote-gap-after: calc(var(--editor-body-size) * var(--md-quote-space-after, 1));
+}
+
+/*
+ * 块与正文之间的结构空行(代码块 / 列表 / 引用前后)。
+ *
+ * 这些空行在 Markdown 源码里本来就留着,渲染态下把它们的行高按上面的间距
+ * 收紧,块和正文之间就不会糊在一起。只加在空行上,正文行自己的行距不受影响。
+ *
+ * 一条空行可能同时贴着两种块(代码块后面紧接列表),每个类只登记自己那一侧
+ * 的间距,行高取其中较大的一个 —— 不靠 CSS 先后顺序互相覆盖。
+ */
+.cm-editor .cm-line.cm-md-block-gap {
+  line-height: max(
+    var(--md-block-gap-body, 0px),
+    var(--md-block-gap-code-before, 0px),
+    var(--md-block-gap-code-after, 0px),
+    var(--md-block-gap-list-before, 0px),
+    var(--md-block-gap-list-after, 0px),
+    var(--md-block-gap-quote-before, 0px),
+    var(--md-block-gap-quote-after, 0px)
+  );
+}
+
+.cm-editor .cm-line.cm-md-block-gap-body {
+  --md-block-gap-body: var(--md-body-gap-between);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-code-before {
+  --md-block-gap-code-before: var(--md-code-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-code-after {
+  --md-block-gap-code-after: var(--md-code-gap-after);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-list-before {
+  --md-block-gap-list-before: var(--md-list-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-list-after {
+  --md-block-gap-list-after: var(--md-list-gap-after);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-quote-before {
+  --md-block-gap-quote-before: var(--md-quote-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-quote-after {
+  --md-block-gap-quote-after: var(--md-quote-gap-after);
+}
+
+/*
+ * 块紧贴正文(中间没有空行)时,间距做在相邻那一行正文的 padding 上。
+ * 落在正文行上而不是块边界上,代码块的底色、留白和复制按钮都不受影响。
+ *
+ * 行盒的 padding 在别处被 `.cm-editor .cm-line.cm-line { padding: 0 }`(0-3-0)
+ * 清零了,这里必须抬到同等特异度才盖得住。
+ */
+.cm-editor .cm-line.cm-md-gap-body {
+  padding-bottom: var(--md-body-gap-between);
+}
+
+.cm-editor .cm-line.cm-md-gap-code-before {
+  padding-bottom: var(--md-code-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-gap-code-after {
+  padding-top: var(--md-code-gap-after);
+}
+
+.cm-editor .cm-line.cm-md-gap-list-before {
+  padding-bottom: var(--md-list-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-gap-list-after {
+  padding-top: var(--md-list-gap-after);
+}
+
+.cm-editor .cm-line.cm-md-gap-quote-before {
+  padding-bottom: var(--md-quote-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-gap-quote-after {
+  padding-top: var(--md-quote-gap-after);
+}
+
+/*
+ * 标题上下的留白(按 Obsidian 默认主题的 live preview 起手,再补齐下方)。
+ *
+ * Obsidian 给每个标题行 `padding-top: var(--p-spacing)`(一档正文字号),
+ * 标题下方不额外加 —— 下方那条空行本身就是间距。iMark 里那条空行只有
+ * 2 × 正文行高(默认行间距 1 档,约 32px),看起来比标题上方窄一截,所以下方也补一档
+ * 正文尺寸,让标题与上下正文的距离大致相当。文档里本来有空行时,空行照常
+ * 保留,两者叠加起来就是最终观感。
+ *
+ * 档数来自设置「外观 → 标题间距」(--md-heading-space-*,根元素上的倍数),
+ * 乘正文字号得到实际留白;没设过时按 1 档兜底。设置里改档位立即生效。
+ *
+ * 落在标题行自己的 padding 上:margin 不参与 CodeMirror 的行高测量,而标题行
+ * 没有底色 / 边框,加 padding 是安全的(代码块就不行,见 .cm-md-code)。
+ * 放在块间距规则之后:标题紧贴代码块时,以标题这一档为准。
+ */
+.cm-editor .cm-line.cm-md-h1,
+.cm-editor .cm-line.cm-md-h2,
+.cm-editor .cm-line.cm-md-h3,
+.cm-editor .cm-line.cm-md-h4,
+.cm-editor .cm-line.cm-md-h5,
+.cm-editor .cm-line.cm-md-h6 {
+  /* 「+」按钮也用这个变量定位,必须跟着实际的上留白走 */
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-heading-space-before, 1));
+  padding-top: var(--md-heading-pad);
+  padding-bottom: calc(var(--editor-body-size) * var(--md-heading-space-after, 1));
+}
+
+/*
+ * 两个标题紧挨着(中间没有空行)时:
+ *   · 上面那个的下留白多余 —— 下面那个的上留白已经把两者隔开;
+ *   · 下面那个的上留白改用「标题之间」那一档,而不是普通的「标题上方」。
+ * 类由 rules.ts 的 markHeadingEdges 打在行上。改 --md-heading-pad 就够了,
+ * padding-top 引用的就是这个变量,行首「+」也跟着走。
+ * 只处理"紧挨着"这一种;作者主动写了空行的地方仍按普通标题间距。
+ */
+.cm-editor .cm-line.cm-md-h-tight-bottom {
+  padding-bottom: 0;
+}
+
+.cm-editor .cm-line.cm-md-h-tight-top {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-heading-space-between, 1));
 }
 
 .cm-md-link {

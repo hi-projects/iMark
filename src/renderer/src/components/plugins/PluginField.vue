@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Plus, RotateCcw, X } from 'lucide-vue-next'
+import { FolderOpen, Plus, RotateCcw, X } from 'lucide-vue-next'
 import HelpTip from '../HelpTip.vue'
 import type { PluginEndpoint, PluginField, PluginTarget, PluginTargetResult } from '@shared/plugins'
+import { api } from '../../services/api'
+import { notifyError } from '../../services/notice'
 import EndpointsField from './EndpointsField.vue'
 import ExternalField from './ExternalField.vue'
 import TargetsField from './TargetsField.vue'
@@ -21,8 +23,10 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** targets 字段:每个目标的最近一次操作结果(id → ok/error;没有条目 = 还没操作过) */
     targetResults?: Record<string, PluginTargetResult>
+    /** directory 字段:留空时实际使用的目录(作为占位文字与选择器的起始位置) */
+    defaultDirectory?: string
   }>(),
-  { targetResults: () => ({}), extensionId: '' }
+  { targetResults: () => ({}), extensionId: '', defaultDirectory: '' }
 )
 
 const emit = defineEmits<{
@@ -89,6 +93,26 @@ function numberValue(e: Event): number {
 
 function bool(e: Event): boolean {
   return (e.target as HTMLInputElement).checked
+}
+
+/**
+ * 目录字段:点输入区弹系统文件夹选择器。
+ *
+ * 选中的正是默认目录时写回空串 —— 保持「跟随默认」,以后默认位置变了也能跟着走。
+ */
+async function pickDirectory(): Promise<void> {
+  const current = String(props.value ?? '')
+  const picked = await api.pickDirectory(current || props.defaultDirectory || null)
+  if (!picked) return
+  emit('change', picked === props.defaultDirectory ? '' : picked)
+}
+
+/** 目录字段:在系统文件管理器里打开当前生效的目录(留空时是默认目录) */
+async function openDirectory(): Promise<void> {
+  const dir = String(props.value ?? '') || props.defaultDirectory
+  if (!dir) return
+  const error = await api.openDirectory(dir)
+  if (error) notifyError(`打开${props.field.label}`, new Error(error))
 }
 
 function onSecretInput(e: Event): void {
@@ -275,6 +299,39 @@ function removeListItem(index: number): void {
       <input type="checkbox" :checked="Boolean(value)" @change="emit('change', bool($event))" />
       <span class="plugin-switch-track" />
     </label>
+
+    <div v-else-if="field.kind === 'directory'" class="plugin-dir-control">
+      <button
+        type="button"
+        class="plugin-input plugin-dir-trigger"
+        :class="{ 'plugin-dir-placeholder': !String(value ?? '') }"
+        :title="
+          String(value ?? '') ||
+          (defaultDirectory ? `默认目录：${defaultDirectory}` : '点击选择文件夹')
+        "
+        @click="pickDirectory"
+      >
+        {{ String(value ?? '') || defaultDirectory || '点击选择文件夹…' }}
+      </button>
+      <button
+        v-if="String(value ?? '') || defaultDirectory"
+        type="button"
+        class="plugin-icon-btn"
+        :title="`打开${field.label}`"
+        :aria-label="`打开${field.label}`"
+        @click="openDirectory"
+      >
+        <FolderOpen :size="14" />
+      </button>
+      <button
+        v-if="String(value ?? '')"
+        type="button"
+        class="plugin-btn"
+        @click="emit('change', '')"
+      >
+        使用默认
+      </button>
+    </div>
 
     <input
       v-else-if="field.kind === 'text'"

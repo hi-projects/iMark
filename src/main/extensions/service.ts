@@ -90,7 +90,7 @@ import {
   type InstallExtensionOptions,
   type InstallExtensionOutcome
 } from './installer'
-import { extensionDir, extensionLogPath } from './paths'
+import { extensionDir, extensionLogPath, extensionStorageDir } from './paths'
 import { ExtensionLogStore } from './logStore'
 import { ExtensionStateStore } from './stateStore'
 import { WebviewRegistry, type WebviewRecord } from './webviews'
@@ -2526,6 +2526,7 @@ export class ExtensionService {
       source: entry.source,
       runtime: this.runtimeInfoFor(id),
       status: this.statusSnapshotFor(id),
+      storagePath: extensionStorageDir(id),
       config,
       secrets: {},
       logs: this.logStore.list(id),

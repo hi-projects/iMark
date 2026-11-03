@@ -1,3 +1,6 @@
+import { mkdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
 import type { SaveDialogOptions, Settings } from '@shared/types'
@@ -142,6 +145,36 @@ export function registerIpc(): void {
 
   ipcMain.on(IPC.SaveDone, (_e, o: { ok: boolean }) => {
     handleSaveDone(o.ok)
+  })
+
+  // ---------- 通用 ----------
+
+  ipcMain.handle(IPC.PickDirectory, async (_e, defaultPath: unknown) => {
+    const win = getMainWindow()
+    if (!win) return null
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择文件夹',
+      ...(typeof defaultPath === 'string' && defaultPath ? { defaultPath } : {}),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  ipcMain.handle(IPC.OpenDirectory, async (_e, dir: unknown): Promise<string | null> => {
+    if (typeof dir !== 'string' || !dir.trim()) return '目录为空'
+    let path = dir.trim()
+    if (path === '~') path = homedir()
+    else if (path.startsWith('~/') || path.startsWith('~\\')) {
+      path = join(homedir(), path.slice(2))
+    }
+    if (!isAbsolute(path)) return '目录必须是绝对路径'
+    try {
+      await mkdir(path, { recursive: true })
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+    const error = await shell.openPath(path)
+    return error || null
   })
 
   // ---------- 仓库 ----------

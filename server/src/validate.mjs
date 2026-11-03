@@ -69,7 +69,7 @@ const LINE_MENU_ID_RE = /^[a-z0-9-]{1,40}$/
 const KEYBINDING_RE = /^(?:(?:ctrl|cmd|alt|shift|super|meta)\+)+[a-z0-9][a-z0-9+-]{0,20}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 const ENGINE_RE = /^(>=|>|\^)?\s*v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'targets', 'endpoints', 'external']
+const FIELD_KINDS = ['text', 'textarea', 'password', 'number', 'boolean', 'select', 'list', 'directory', 'targets', 'endpoints', 'external']
 /** 对话框里允许出现的字段 kind —— 密钥与目标列表是一次性对话框装不下的东西 */
 const DIALOG_FIELD_KINDS = ['text', 'number', 'boolean', 'select']
 

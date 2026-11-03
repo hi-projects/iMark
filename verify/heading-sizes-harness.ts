@@ -1,12 +1,12 @@
 /**
- * 验收:正文与 H4/H5/H6 字号统一(H1–H3 保持原像素大小)。
+ * 验收:正文与 H4/H5/H6 字号统一(H1–H3 保持标题梯度)。
  *
- * 规则(以字号基准 S 计):
- *   - 正文 = H4 = H5 = H6 = 1.375 × S;
- *   - H1 / H2 / H3 仍是 2S / 1.75S / 1.5S(父级放大后 em 已按 1/1.375 重算);
- *   - 设置面板「正文字号」显示实际正文 px(17.9),不是滑块基准值。
+ * 规则(以正文字号 S 计):
+ *   - 正文 = H4 = H5 = H6 = S(设置值就是实际 px);
+ *   - H1 / H2 / H3 = 1.4545S / 1.2727S / 1.0909S(H1 : H4 = 2 : 1.375);
+ *   - 设置面板「正文字号」显示的读数就是滑块值 S。
  *
- * 两个场景:默认基准 13px、改到 20px —— 验证比例关系而不是某一档硬编码。
+ * 两个场景:正文字号 13px、改到 20px —— 验证比例关系而不是某一档硬编码。
  * 窗口全程不可见(show 替换 + run.mjs 的 IMARK_VERIFY_HIDDEN)。
  *
  * 跑法(仓库根目录,先 npm run build,改了 CSS/渲染层时必须重新 build):
@@ -165,13 +165,18 @@ async function main(): Promise<void> {
     return win
   }
 
-  console.log('\n【A】字号基准 13px:正文 = H4–H6 = 17.875px,H1–H3 保持原大小')
+  console.log('\n【A】正文字号 13px:正文 = H4–H6 = 13px,H1–H3 按标题梯度放大')
   {
     const win = await openWindow()
     const s = await measure(win)
     console.log(`     [实测] ${JSON.stringify(s)}`)
-    check('H1 / H2 / H3 = 26 / 22.75 / 19.5 px', near(s.h1, 26) && near(s.h2, 22.75) && near(s.h3, 19.5), JSON.stringify(s))
-    check('H4/H5/H6 与正文同为 17.875 px', near(s.h4, 17.875) && near(s.h5, 17.875) && near(s.h6, 17.875) && near(s.body, 17.875), JSON.stringify(s))
+    const S = 13
+    check(
+      'H1 / H2 / H3 = 1.4545S / 1.2727S / 1.0909S',
+      near(s.h1, S * 1.4545) && near(s.h2, S * 1.2727) && near(s.h3, S * 1.0909),
+      JSON.stringify(s)
+    )
+    check('H4/H5/H6 与正文同为 13 px', near(s.h4, S) && near(s.h5, S) && near(s.h6, S) && near(s.body, S), JSON.stringify(s))
 
     win.webContents.send(IPC.MenuCommand, 'view:settings')
     await waitFor(win, `document.querySelector('.settings-nav-item')`)
@@ -180,7 +185,7 @@ async function main(): Promise<void> {
       win,
       `(() => {
         const nav = [...document.querySelectorAll('.settings-nav-item')]
-          .find(el => el.textContent.trim() === '编辑器')
+          .find(el => el.textContent.trim() === '外观')
         if (!nav) return false
         nav.click()
         return true
@@ -200,19 +205,24 @@ async function main(): Promise<void> {
           })()`
         )
       : null
-    check('设置面板显示实际正文字号 17.9 px', readout === '17.9 px', String(readout))
+    check('设置面板读数就是正文字号 13 px', readout === '13 px', String(readout))
     win.destroy()
     await sleep(250)
   }
 
-  console.log('\n【B】把基准改到 20px:比例关系跟着走,H4–H6 仍与正文同大')
+  console.log('\n【B】把正文字号改到 20px:比例关系跟着走,H4–H6 仍与正文同大')
   {
     await saveSettings({ editorFontSize: 20 })
     const win = await openWindow()
     const s = await measure(win)
     console.log(`     [实测] ${JSON.stringify(s)}`)
-    check('H1 / H2 / H3 = 40 / 35 / 30 px', near(s.h1, 40) && near(s.h2, 35) && near(s.h3, 30), JSON.stringify(s))
-    check('H4/H5/H6 与正文同为 27.5 px', near(s.h4, 27.5) && near(s.h5, 27.5) && near(s.h6, 27.5) && near(s.body, 27.5), JSON.stringify(s))
+    const S = 20
+    check(
+      'H1 / H2 / H3 = 1.4545S / 1.2727S / 1.0909S',
+      near(s.h1, S * 1.4545) && near(s.h2, S * 1.2727) && near(s.h3, S * 1.0909),
+      JSON.stringify(s)
+    )
+    check('H4/H5/H6 与正文同为 20 px', near(s.h4, S) && near(s.h5, S) && near(s.h6, S) && near(s.body, S), JSON.stringify(s))
     win.destroy()
   }
 

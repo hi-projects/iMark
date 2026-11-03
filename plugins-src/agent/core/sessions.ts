@@ -7,7 +7,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join, parse, resolve } from 'node:path'
 import type { ArtifactInfo, StagedAttachment } from './types'
 import type {
   AttachmentMeta,
@@ -54,6 +55,35 @@ export interface CreateSessionInput {
  * Windows 上同一目录可能以不同大小写出现，比较前统一小写；Linux 保持原样
  * （`/a` 与 `/A` 是两个仓库）。
  */
+/**
+ * 会话数据根目录：空设置回落到扩展默认目录，支持 `~`，拒绝相对路径与磁盘根目录。
+ *
+ * 返回值里的 `error` 只用于提示；出错时 `root` 已经回落到 `fallback`，
+ * 调用方可以直接用，不必再判空。
+ */
+export function resolveStorageRoot(
+  configured: string | null | undefined,
+  fallback: string,
+  home: string = homedir()
+): { root: string; error: string | null } {
+  const raw = (configured ?? '').trim()
+  const fallbackRoot = resolve(fallback)
+  if (!raw) return { root: fallbackRoot, error: null }
+  let expanded = raw
+  if (expanded === '~') expanded = home
+  else if (expanded.startsWith('~/') || expanded.startsWith('~\\')) {
+    expanded = join(home, expanded.slice(2))
+  }
+  if (!isAbsolute(expanded)) {
+    return { root: fallbackRoot, error: `会话数据目录必须是绝对路径：${raw}` }
+  }
+  const root = resolve(expanded)
+  if (root === parse(root).root) {
+    return { root: fallbackRoot, error: '会话数据目录不能是磁盘根目录' }
+  }
+  return { root, error: null }
+}
+
 export function workspaceKey(root: string | null | undefined): string | null {
   if (!root) return null
   const absolute = resolve(root)
@@ -225,6 +255,33 @@ export class SessionStore {
         await this.delete(meta.id)
       }
     }
+  }
+
+  /**
+   * 删除最后活动时间早于保留期的会话，返回被删掉的会话 ID。
+   *
+   * 运行中的会话永远跳过；`retentionMs <= 0` 表示不清理。删除整个会话目录
+   * （消息、附件、产物），共享 blob 由调用方在之后回收。
+   */
+  async pruneExpired(retentionMs: number): Promise<string[]> {
+    if (!Number.isFinite(retentionMs) || retentionMs <= 0) return []
+    const cutoff = Date.now() - retentionMs
+    const entries = await readdir(this.root, { withFileTypes: true }).catch(() => [])
+    const removed: string[] = []
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const id = entry.name
+      // 与 turn 的读-改-写串行：确认状态和删除之间不能让新回合挤进来
+      const deleted = await this.serialize(async () => {
+        const meta = await this.getMeta(id)
+        if (!meta) return false
+        if (meta.status === 'running' || meta.updatedAt >= cutoff) return false
+        await this.deleteUnlocked(id)
+        return true
+      })
+      if (deleted) removed.push(id)
+    }
+    return removed
   }
 
   async appendMessage(id: string, message: Omit<SessionMessage, 'seq' | 'createdAt'>): Promise<SessionMessage> {

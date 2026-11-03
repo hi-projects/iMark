@@ -1152,6 +1152,48 @@ async function main(): Promise<void> {
     agentStatusLabel
   )
 
+  check(
+    'Agent Core 设置页把附件、清理与存储合并为「会话」分组',
+    await evalJs<boolean>(`[...document.querySelectorAll('.plugin-group')].some(g => {
+      const title = g.querySelector('.plugin-group-title')?.textContent?.trim()
+      const labels = [...g.querySelectorAll('.plugin-field-label')].map(el => el.textContent ?? '')
+      return title === '会话' &&
+        labels.some(text => text.includes('单个附件大小上限')) &&
+        labels.some(text => text.includes('会话保留天数')) &&
+        labels.some(text => text.includes('会话数据目录'))
+    })`)
+  )
+  check(
+    'Agent Core 设置页显示「会话保留天数」',
+    await evalJs<boolean>(
+      `[...document.querySelectorAll('.plugin-field-label')].some(el => el.textContent.includes('会话保留天数'))`
+    )
+  )
+  check(
+    'Agent Core 设置页显示「立即清理过期会话」按钮',
+    await evalJs<boolean>(
+      `[...document.querySelectorAll('.plugin-global-actions button')].some(b => b.textContent.trim() === '立即清理过期会话')`
+    )
+  )
+  check(
+    'Agent Core 设置页显示「会话数据目录」',
+    await evalJs<boolean>(
+      `[...document.querySelectorAll('.plugin-field-label')].some(el => el.textContent.includes('会话数据目录'))`
+    )
+  )
+  check(
+    '会话数据目录留空时显示默认目录',
+    await evalJs<boolean>(
+      `document.querySelector('.plugin-dir-trigger')?.textContent?.includes('extensions-data') === true`
+    )
+  )
+  check(
+    '会话数据目录后有打开目录图标',
+    await evalJs<boolean>(
+      `[...document.querySelectorAll('.plugin-dir-control .plugin-icon-btn')].some(b => (b.getAttribute('title') ?? '').includes('打开'))`
+    )
+  )
+
   const backToClaude = await evalJs<boolean>(`(() => {
     const nav = [...document.querySelectorAll('.settings-nav-item')]
       .find(x => x.textContent.includes('Claude Code'))

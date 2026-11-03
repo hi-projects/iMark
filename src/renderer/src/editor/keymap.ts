@@ -5,6 +5,7 @@ import {
   insertHorizontalRule,
   insertImage,
   insertLink,
+  selectAllInCodeBlock,
   setHeading,
   toggleBlockQuote,
   toggleBold,
@@ -23,6 +24,8 @@ import {
 export const editorKeymap: KeyBinding[] = [
   // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
   { key: 'Tab', run: insertCodeIndent },
+  // 代码块里 Ctrl+A 只选这一块(不扩到整篇;整篇全选在默认 keymap 里)
+  { key: 'Mod-a', run: selectAllInCodeBlock },
   { key: 'Mod-b', run: toggleBold },
   { key: 'Mod-i', run: toggleItalic },
   { key: 'Mod-e', run: toggleInlineCode },

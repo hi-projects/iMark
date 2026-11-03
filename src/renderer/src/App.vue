@@ -32,7 +32,7 @@ import {
   toggleOutlineVisible,
   toggleTheme
 } from './stores/app'
-import { runFormatCommand } from './editor/commands'
+import { runFormatCommand, selectAllSmart } from './editor/commands'
 import {
   closeTab,
   exportHtmlFile,
@@ -66,6 +66,10 @@ let offFontWheelZoom: (() => void) | null = null
 async function handleMenuCommand(id: MenuCommandId): Promise<void> {
   // 仓库选择界面下没有编辑器实例,文件/格式类命令忽略(与 Obsidian 无仓库时一致)
   if (appStore.view === 'picker') {
+    if (id === 'edit:select-all') {
+      document.execCommand('selectAll')
+      return
+    }
     if (id === 'view:toggle-theme') {
       await toggleTheme()
       return
@@ -135,6 +139,14 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
     case 'view:command-palette':
       openSwitcher('command')
       return
+    case 'edit:select-all': {
+      // 焦点在编辑器:代码块里先选这一块;焦点在输入框 / 扩展面板(iframe)里:
+      // 不能用编辑器打全选 —— 交回浏览器原生的「全选当前焦点」
+      const view = editorHolder.view
+      if (view && view.hasFocus) selectAllSmart(view)
+      else document.execCommand('selectAll')
+      return
+    }
     default: {
       const view = editorHolder.view
       if (view) runFormatCommand(view, id)

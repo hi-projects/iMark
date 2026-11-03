@@ -395,6 +395,9 @@
   background: transparent;
   color: var(--accent);
   font-size: 12px;
+  /* 必须跟说明文字同一行高:按钮默认 line-height:normal,行盒比周围文字矮一截,
+     出现/消失时会把 .settings-row-desc 撑高 1px,整张设置卡片跟着抖一下 */
+  line-height: inherit;
   font-family: var(--font-editor);
   cursor: pointer;
 }
@@ -534,6 +537,28 @@
   color: var(--text-secondary);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 行内(不上下堆叠)的间距控件:滑块与读数都定宽。
+ *
+ * 滑块若留在 flex:1,读数从「1.0 档 · 16 px」变成「0.1 档 · 2 px」时整组会跟着伸缩,
+ * 滑杆看起来忽长忽短。定宽后拖到任何一档都不动;正文字号与标题 / 行 / 段 / 块间距
+ * 因此等宽。上下堆叠的控件(保存方式等)不受影响,仍按自身内容宽度铺开。
+ */
+.settings-row:not(.settings-row-stack) .settings-control {
+  flex: none;
+}
+
+.settings-row:not(.settings-row-stack) .settings-range {
+  flex: none;
+  width: 128px;
+}
+
+.settings-row:not(.settings-row-stack) .settings-readout {
+  flex: none;
+  width: 92px;
+  white-space: nowrap;
 }
 
 /* 恢复默认 */

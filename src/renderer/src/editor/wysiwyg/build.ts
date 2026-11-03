@@ -1,12 +1,82 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
-import type { ChangeDesc, Range } from '@codemirror/state'
+import type { ChangeDesc, Line, Range } from '@codemirror/state'
 import { applyRule, type LinkInfo, type RuleContext } from './rules'
-import { caretOutsideRenderedTable, keepCaretOutOfTables } from './widgets'
+import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import { getDocDir } from '../../stores/app'
 import { api } from '../../services/api'
 
 const MAX_RETRY = 20
+
+/** 这一批变更是否全部由输入法组合产生(CM 给组合派发的输入打的标记是 input.type.compose) */
+function isCompositionChange(update: ViewUpdate): boolean {
+  if (update.transactions.length === 0) return false
+  return update.transactions.every(tr => !tr.docChanged || tr.isUserEvent('input.type.compose'))
+}
+
+/** 这一行是不是被整行替换掉了(代码围栏、表格宿主行、公式、独占一行的图片等) */
+function lineReplaced(plugin: WysiwygPlugin, line: Line): boolean {
+  const iter = plugin.atomicSet.iter()
+  for (; iter.value; iter.next()) {
+    if (iter.from <= line.from && iter.to >= line.to) return true
+  }
+  return false
+}
+
+/** 这一行挂着的行装饰类 */
+function lineClasses(plugin: WysiwygPlugin, line: Line): string[] {
+  const out: string[] = []
+  const iter = plugin.decorations.iter()
+  for (; iter.value; iter.next()) {
+    if (iter.from !== line.from || iter.to !== line.from) continue
+    const cls = (iter.value.spec as { class?: string }).class
+    if (cls) out.push(...cls.split(/\s+/))
+  }
+  return out
+}
+
+/**
+ * 点击落在收紧的结构空行上时,光标该停到哪。
+ *
+ * 这类空行平时只占"一档间距"的高度(见 rules 的 addGapBefore / addGapAfter),
+ * 看上去就是两块之间的留白。可光标一停上去,它会按正文行撑开(为了接着输入时
+ * 字不跳),于是点一下空白,眼前凭空多出一整行,下面内容整体下移 —— 像是被
+ * 点出来的新行。这里干脆不让光标停在空行上:点和识别出的留白时,把光标挪到
+ * 空行另一侧最近的正文行(空行属于下面那块就往上找,属于上面那块就往下找),
+ * 和点击渲染表格空白处的处理一致。想给两块之间补内容,在上一行末尾回车即可。
+ *
+ * 只改鼠标点击:方向键把光标挪上空行时仍按原样撑开,保证落点和输入位置一致。
+ */
+function gapLineClickAnchor(view: EditorView, plugin: WysiwygPlugin, pos: number): number | null {
+  const doc = view.state.doc
+  const line = doc.lineAt(pos)
+  if (!isBlankLine(line.text)) return null
+  const classes = lineClasses(plugin, line)
+  if (!classes.includes('cm-md-block-gap')) return null
+  const isSide = (side: 'before' | 'after'): boolean =>
+    classes.some(c => c.startsWith('cm-md-block-gap-') && c.endsWith(`-${side}`))
+  const above = (): number | null => {
+    for (let n = line.number - 1; n >= 1; n--) {
+      const l = doc.line(n)
+      if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
+      return l.to
+    }
+    return null
+  }
+  const below = (): number | null => {
+    for (let n = line.number + 1; n <= doc.lines; n++) {
+      const l = doc.line(n)
+      if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
+      return l.from
+    }
+    return null
+  }
+  // 空行挂的是 "-before"(间距属于下一块)或正文之间:往上找;
+  // 否则("-after")往下找。两个方向都没有可停的正文行时再从另一侧兜一次底。
+  if (classes.includes('cm-md-block-gap-body') || isSide('before')) return above() ?? below()
+  if (isSide('after')) return below() ?? above()
+  return null
+}
 
 export class WysiwygPlugin {
   decorations: DecorationSet = Decoration.none
@@ -22,6 +92,8 @@ export class WysiwygPlugin {
   /** 组合进行中(以 compositionstart/end 事件为准,比 view.composing 更早、更稳) */
   private composing = false
   private themeObserver: MutationObserver | null = null
+  /** 窗口失焦(切到别的应用):元素不会触发 blur,但组合一定已经结束 */
+  private windowBlur = (): void => this.onEditorBlur()
 
   constructor(readonly view: EditorView) {
     this.rebuild()
@@ -44,11 +116,13 @@ export class WysiwygPlugin {
       attributes: true,
       attributeFilter: ['data-theme']
     })
+    window.addEventListener('blur', this.windowBlur)
   }
 
   destroy(): void {
     this.themeObserver?.disconnect()
     this.themeObserver = null
+    window.removeEventListener('blur', this.windowBlur)
   }
 
   update(update: ViewUpdate): void {
@@ -63,8 +137,23 @@ export class WysiwygPlugin {
     // 第一笔预编辑文字合进文档之间,CM 的 composing 还是 0(见 observers.compositionstart),
     // 这段时间里任何一次选区 update 都不该重建 —— 重建会打断正在进行的组合。
     if (this.composing || this.view.composing) {
-      if (update.docChanged) this.remap(update.changes)
-      return
+      /*
+       * 组合中收到一笔**不是输入法产生**的文档变更(Agent / 扩展整篇替换、
+       * 后台标签同步):这类变更会把 contenteditable 里的内容整体换掉,
+       * 浏览器往往就此不再补发 compositionend。继续按"组合中"处理的话,
+       * composing 永远为真,之后每次都只 remap、不重建,装饰便永久冻在
+       * 替换前那一刻 —— 表现就是新内容全是 Markdown 源码,只有替换前
+       * 渲染过的那部分还带着样式。
+       *
+       * 输入法自己派发的变更带 .compose 标记(见 CM 的 applyDefaultInsert),
+       * 用它区分;其余变更说明组合其实已经结束,先把状态收尾再照常重建。
+       */
+      if (update.docChanged && !isCompositionChange(update)) {
+        this.endComposition()
+      } else {
+        if (update.docChanged) this.remap(update.changes)
+        return
+      }
     }
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
@@ -81,6 +170,32 @@ export class WysiwygPlugin {
 
   onCompositionEnd(): void {
     this.composing = false
+  }
+
+  /** 编辑器失焦:组合不可能还活着,把可能丢失的 compositionend 补上 */
+  onEditorBlur(): void {
+    if (!this.composing && !this.view.composing) return
+    this.endComposition()
+    // 失焦本身不产生事务,不主动补一次重建就得等下一次输入才恢复样式
+    this.pendingRetry = true
+    try {
+      this.view.dispatch({})
+    } catch {
+      /* 视图已销毁 */
+    }
+  }
+
+  /**
+   * 结束组合态。除了自己的标记,还要把 CM 的 inputState.composing 复位:
+   * compositionend 丢失时它会一直停在 >= 0,`view.composing` 也就永远为真,
+   * 光清自己的标记挡不住守卫。这个字段在 CM 的类型声明里是 @internal,
+   * 但它就是"组合是否结束"的唯一来源;调用时机都限定在组合必然已经结束的时候
+   * (失焦、或收到非输入法产生的变更),与 math.ts 用 Line.depth 的取舍相同。
+   */
+  private endComposition(): void {
+    this.composing = false
+    const input = (this.view as unknown as { inputState?: { composing?: number } }).inputState
+    if (input && typeof input.composing === 'number') input.composing = -1
   }
 
   /**
@@ -217,6 +332,11 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       view.plugin(wysiwygViewPlugin)?.onCompositionEnd()
       return false
     },
+    blur(_event, view) {
+      // 组合进行中失焦(切窗口 / 点到侧栏):浏览器可能不补发 compositionend
+      view.plugin(wysiwygViewPlugin)?.onEditorBlur()
+      return false
+    },
     mousedown(event, view) {
       if (event.button !== 0) return false
       const target = event.target instanceof Element ? event.target : null
@@ -237,6 +357,15 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
             } else {
               view.dispatch({ selection: { anchor: hit.anchor } })
             }
+            view.focus()
+            return true
+          }
+          // 收紧的结构空行:点它不把空行撑出来,光标挪到最近的正文行(见 gapLineClickAnchor)
+          const plugin = view.plugin(wysiwygViewPlugin)
+          const anchor = plugin ? gapLineClickAnchor(view, plugin, pos) : null
+          if (anchor != null) {
+            event.preventDefault()
+            view.dispatch({ selection: { anchor } })
             view.focus()
             return true
           }

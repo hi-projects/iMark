@@ -4,8 +4,12 @@ import type { AutoSaveMode, Settings, Theme } from '@shared/types'
 import {
   clampAutoSaveDelay,
   clampCodeIndentSize,
+  clampBlockSpace,
   clampFontSize,
-  EDITOR_DEFAULTS
+  clampHeadingSpace,
+  clampLineSpace,
+  EDITOR_DEFAULTS,
+  EDITOR_FONT_SIZE_VERSION
 } from '@shared/editorSettings'
 import { dataRoot } from './dataDir'
 import { writeFileAtomic } from './files'
@@ -60,6 +64,22 @@ function isAutoSaveMode(v: unknown): v is AutoSaveMode {
   return typeof v === 'string' && (AUTO_SAVE_MODES as readonly string[]).includes(v)
 }
 
+/**
+ * 字号迁移:旧版 settings.json 里没有版本号,那个值是「基准」,
+ * 实际正文是它的 1.375 倍。新版直接存实际 px —— 读到旧文件时换算一次,
+ * 升级后字号不会突然变小。
+ */
+const LEGACY_EDITOR_FONT_SCALE = 1.375
+
+function normalizeEditorFontSize(raw: Partial<Settings>): number {
+  const legacy = raw.editorFontSizeVersion !== EDITOR_FONT_SIZE_VERSION
+  const px =
+    legacy && typeof raw.editorFontSize === 'number' && Number.isFinite(raw.editorFontSize)
+      ? raw.editorFontSize * LEGACY_EDITOR_FONT_SCALE
+      : raw.editorFontSize
+  return clampFontSize(px)
+}
+
 /** 自动保存:两个字段都只做校验与夹取 */
 function normalizeAutoSave(
   raw: Partial<Settings>
@@ -108,8 +128,38 @@ function normalize(raw: Partial<Settings>): Settings {
   // 定时器变成疯狂写盘,改成字符串则会让它一直空转。放在这里比在各处读时判要可靠
   Object.assign(merged, normalizeAutoSave(raw))
   merged.theme = normalizeTheme(merged.theme)
-  merged.editorFontSize = clampFontSize(merged.editorFontSize)
+  merged.editorFontSize = normalizeEditorFontSize(raw)
+  merged.editorFontSizeVersion = EDITOR_FONT_SIZE_VERSION
+  merged.lineSpace = clampLineSpace(merged.lineSpace, EDITOR_DEFAULTS.lineSpace)
+  // 旧版「行间距」存的是行高倍数(1.9 = 1.9 × 字号),现在改成档位(行高 = 1 + 档)。
+  // 该字段只在本轮开发里出现过、没有发布,读到就丢掉,由 lineSpace 的默认 1 档接手。
+  delete (merged as Record<string, unknown>).lineHeight
   merged.codeIndentSize = clampCodeIndentSize(merged.codeIndentSize)
+  merged.headingSpaceBefore = clampHeadingSpace(
+    merged.headingSpaceBefore,
+    EDITOR_DEFAULTS.headingSpaceBefore
+  )
+  merged.headingSpaceAfter = clampHeadingSpace(
+    merged.headingSpaceAfter,
+    EDITOR_DEFAULTS.headingSpaceAfter
+  )
+  merged.headingSpaceBetween = clampHeadingSpace(
+    merged.headingSpaceBetween,
+    EDITOR_DEFAULTS.headingSpaceBetween
+  )
+  merged.bodySpaceBetween = clampBlockSpace(
+    merged.bodySpaceBetween,
+    EDITOR_DEFAULTS.bodySpaceBetween
+  )
+  merged.codeSpaceBefore = clampBlockSpace(merged.codeSpaceBefore, EDITOR_DEFAULTS.codeSpaceBefore)
+  merged.codeSpaceAfter = clampBlockSpace(merged.codeSpaceAfter, EDITOR_DEFAULTS.codeSpaceAfter)
+  merged.listSpaceBefore = clampBlockSpace(merged.listSpaceBefore, EDITOR_DEFAULTS.listSpaceBefore)
+  merged.listSpaceAfter = clampBlockSpace(merged.listSpaceAfter, EDITOR_DEFAULTS.listSpaceAfter)
+  merged.quoteSpaceBefore = clampBlockSpace(
+    merged.quoteSpaceBefore,
+    EDITOR_DEFAULTS.quoteSpaceBefore
+  )
+  merged.quoteSpaceAfter = clampBlockSpace(merged.quoteSpaceAfter, EDITOR_DEFAULTS.quoteSpaceAfter)
   merged.lineWrapping = merged.lineWrapping !== false
   merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
   merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)
@@ -162,40 +212,41 @@ export function onSettingsChanged(fn: SettingsListener): () => void {
 }
 
 /**
- * 写盘串行队列。
+ * 保存队列:**整个「读盘 → 合并 → 写盘」都要串行**,不只是写。
  *
- * 渲染层可能连着发两条 saveSettings(切标签、关标签这类操作会连续改状态)。
- * IPC 消息按顺序到达,但两个 writeFile 会并发完成 —— 谁最后写完谁留在磁盘上,
- * 完全可能旧快照后完成,把新状态覆盖掉。cache 本身是对的,错的是磁盘,
- * 而磁盘决定了下次启动读到什么。串起来之后「调用顺序 = 落盘顺序」。
+ * 渲染层可能连着发几条 saveSettings —— 切标签、关标签这类操作会连续改状态,
+ * 设置页里连着拖几根滑块也一样。原来只把 writeFile 串起来,读盘还在队列外面:
+ * 后一条的「读盘」可能读到前一条落盘前的旧快照,合并时又把旧值盖回 cache,
+ * 于是「改了三项、磁盘只留下两项」。串行之后每条 saveSettings 都能看到前一条
+ * 刚写下的结果,「调用顺序 = 落盘顺序」。
+ *
+ * 每条仍会在队列里重读磁盘:多开时另一个实例可能刚改过别的字段,写入时要
+ * 保留人家那份。
  */
-let writeChain: Promise<void> = Promise.resolve()
+let saveChain: Promise<unknown> = Promise.resolve()
 
-export async function saveSettings(partial: Partial<Settings>): Promise<Settings> {
+async function commitSettings(partial: Partial<Settings>): Promise<Settings> {
   const prev = cache ?? (await loadSettings())
   // 多开时另一个实例可能刚改过别的字段。写前再读一次磁盘,只把本次的 partial
   // 叠上去;否则本实例内存里的整份快照会把人家刚写的改动盖回旧值。
   // 读失败(第一次保存/文件正在被替换)就按没有磁盘状态处理。
   let onDisk: Partial<Settings> = {}
   try {
-    onDisk = JSON.parse(await readFile(settingsPath(), 'utf8')) as Partial<Settings>
+    // 先按与加载相同的规则归一化:旧文件的字号要在这里也换算一次。
+    // 否则「内存里已迁移、磁盘还是旧值」时,这次写入会把旧值原样盖回来。
+    onDisk = normalize(JSON.parse(await readFile(settingsPath(), 'utf8')) as Partial<Settings>)
   } catch {
     /* 忽略,用内存里的 */
   }
   const next = normalize({ ...prev, ...onDisk, ...partial })
   cache = next
-  const snapshot = JSON.stringify(next, null, 2)
-  const write = writeChain.then(async () => {
-    try {
-      await mkdir(dirname(settingsPath()), { recursive: true })
-      // 原子写:另一个实例随时可能在读,不能让它看到写了一半的 JSON
-      await writeFileAtomic(settingsPath(), snapshot)
-    } catch {
-      /* 落盘失败不影响本次会话 */
-    }
-  })
-  writeChain = write
-  await write
+  try {
+    await mkdir(dirname(settingsPath()), { recursive: true })
+    // 原子写:另一个实例随时可能在读,不能让它看到写了一半的 JSON
+    await writeFileAtomic(settingsPath(), JSON.stringify(next, null, 2))
+  } catch {
+    /* 落盘失败不影响本次会话 */
+  }
   // 订阅者的异常不能反过来把保存搞失败 —— 保存是用户按下的动作,必须成功
   for (const fn of listeners) {
     try {
@@ -205,4 +256,11 @@ export async function saveSettings(partial: Partial<Settings>): Promise<Settings
     }
   }
   return next
+}
+
+export function saveSettings(partial: Partial<Settings>): Promise<Settings> {
+  const run = saveChain.then(() => commitSettings(partial))
+  // 队列本身不传播失败:一次保存出错不该把后续保存全部卡住
+  saveChain = run.catch(() => undefined)
+  return run
 }

@@ -7,12 +7,11 @@
   --font-mono: 'Cascadia Code', Consolas, 'JetBrains Mono', 'Courier New', monospace;
   /* 编辑器正文字号:设置面板「编辑器」页写这个变量,标题/代码块按 em 跟着缩。
      它不属于任何一档主题 —— 换主题不该把字号也换掉。
-     默认 13px 与用户 Obsidian(baseFontSize / Minimal 的 textNormal)一致 */
-  --editor-font-size: 13px;
-  /* 实际正文字号:正文与 H4/H5/H6 是同一档(1.375 × 基准,即原先 H4 的大小)。
-     设置滑块仍控制整篇比例;H1–H3 的 em 已按这个倍数重算,像素大小保持不变。
-     凡是「必须和正文一样大/按正文比例算」的绝对尺寸都用这个变量。 */
-  --editor-body-size: calc(var(--editor-font-size) * 1.375);
+     默认 18px,与旧版「基准 13px × 1.375」的默认视觉一致 */
+  --editor-font-size: 18px;
+  /* 实际正文字号 = 设置值本身(所见即所得)。保留这个别名是因为插件 webview、
+     表格、公式预览等按「正文大小」引用它,不关心它从哪来。 */
+  --editor-body-size: var(--editor-font-size);
   /* 正文栏最大宽度(含两侧 gutter):占编辑区的 96%,左右各留 2% 空白。
      想固定成像素值(如 700px)或改宽窄,在自定义样式里覆盖这个变量即可。 */
   --editor-line-width: 96%;

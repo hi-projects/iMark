@@ -426,7 +426,9 @@ npm run typecheck:plugins
 
 `icon` 是包内相对路径,支持 PNG / SVG(≤128 KiB);设置左栏、扩展设置页头与「已安装」页会显示它,未声明时这些位置不占位。
 
-`configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/targets/endpoints/external)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
+`configuration.properties` 的键**必须以扩展 ID 开头**(`your-name.my-extension.xxx`),卸载时宿主按这个前缀清理配置;每个属性必须有 `default`(设置页需要它作为初始值)。`imark` 元数据支持 `kind`(text/textarea/password/number/boolean/select/list/directory/targets/endpoints/external)、`label`、`description`、`section`、`showWhen`、`rows`、`resettable`、`required`、`placeholder`、`endpointModel`、`targetSecret`、`options`。
+
+`kind: "directory"` 的字段点击后弹出系统文件夹选择器,选中的绝对路径写回配置;留空表示使用扩展默认数据目录(界面会把这个默认路径作为占位文字显示出来)。
 
 `kind: "external"` 的字段直接读写扩展包外的 JSON 配置文件,值的唯一事实是那个文件(例如 Claude Code 的 `~/.claude/settings.json`)。元数据用 `file`(支持 `~`)、`dirEnv`(用该环境变量替换父目录)、`pointer`(JSON 指针,如 `/env/ANTHROPIC_BASE_URL`)与 `secret`(按密码框显示)声明位置;渲染层只提交扩展 ID 与字段键,路径解析和目标校验都在主进程完成,其它字段原样保留。
 

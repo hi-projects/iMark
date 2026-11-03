@@ -15,6 +15,8 @@ export type PluginFieldKind =
   | 'select'
   /** 字符串列表:一行一个值,设置页用「+」逐条添加 */
   | 'list'
+  /** 目录路径:点击弹出系统文件夹选择器,留空表示使用默认目录 */
+  | 'directory'
   | 'targets'
   | 'endpoints'
   /** 读写扩展包外的 JSON 配置文件(值是字符串);文件与键由清单的 imark 元数据声明 */

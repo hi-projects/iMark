@@ -97,6 +97,16 @@ export interface WindowApi {
   setDefaultEditor(): Promise<DefaultEditorStatus>
   selectVaultDialog(): Promise<string | null>
   /**
+   * 通用文件夹选择器;`defaultPath` 是对话框打开时的起始位置。
+   * 取消返回 null。
+   */
+  pickDirectory(defaultPath?: string | null): Promise<string | null>
+  /**
+   * 在系统文件管理器里打开目录(不存在时先创建;支持 `~`)。
+   * 成功返回 null,失败返回错误说明。
+   */
+  openDirectory(path: string): Promise<string | null>
+  /**
    * 认领仓库:同一个仓库已经开在另一个窗口时,会把那个窗口叫到前面并返回
    * `forwarded`(filePath 给了就同时打开它);联系不上主人返回 `busy`。
    * 只有 `ok` 才可以在本窗口继续打开。

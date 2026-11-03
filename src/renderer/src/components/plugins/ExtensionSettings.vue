@@ -393,6 +393,7 @@ const busy = computed(() => extensionStore.busy !== null)
           :target-secrets="targetSecrets(selected.descriptor.id, field)"
           :target-actions="targetActionsFor(field)"
           :target-results="selected.status.targetResults ?? {}"
+          :default-directory="selected.storagePath"
           @change="v => commit(field, v)"
           @run-action="runTargetAction"
           @save-secret="v => saveSecret(field, null, v)"

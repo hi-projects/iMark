@@ -14,11 +14,94 @@
 export const AUTO_SAVE_DELAY_MIN = 1
 
 /**
- * 字号基准(px)。设置值不再等于实际正文字号:正文与 H4–H6 同档,渲染为
- * 基准 × 1.375(见 tokens.css 的 --editor-body-size);标题/代码块按 em 跟着缩。
+ * 正文字号(px):滑块值就是实际渲染大小,所见即所得。
+ * 标题/代码块用 em,跟着它按比例缩放。
  */
 export const EDITOR_FONT_SIZE_MIN = 12
 export const EDITOR_FONT_SIZE_MAX = 24
+
+/**
+ * 字号设置的语义版本。
+ *
+ * 1(字段缺失)= 旧版的「基准」,实际正文 = 基准 × 1.375;
+ * 2 = 设置值本身就是实际正文字号。
+ * 旧 settings.json 没有这个字段,读盘时按 1 处理并换算一次(见 main/settings.ts)。
+ */
+export const EDITOR_FONT_SIZE_VERSION = 2
+
+/**
+ * 行间距(档):同一段里行与行之间**额外**留出的空白(折行也按它算)。
+ *
+ * 和标题 / 段 / 块间距用同一把尺子:1 档 = 1 个正文字号,默认 1 档。
+ * 实际行高 = 1 个字号(文字自身的高度) + 这档空白,所以默认是 2em;
+ * 0 档时行贴在一起(行高 = 字号),不会重叠。档位跟着正文字号缩放,
+ * 调字号时行距同比例变化。标题有自己的 1.4 倍行高(见 editor.css),
+ * 不受这根滑块影响。
+ */
+export const LINE_SPACE_MIN = 0
+export const LINE_SPACE_MAX = 3
+export const LINE_SPACE_STEP = 0.1
+export const LINE_SPACE_DEFAULT = 1
+
+/** 夹到 [0, 3],按 0.1 取整;非数字(输入被清空、settings.json 被手改)落回默认值 */
+export function clampLineSpace(value: unknown, fallback: number = LINE_SPACE_DEFAULT): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  const clamped = Math.min(LINE_SPACE_MAX, Math.max(LINE_SPACE_MIN, value))
+  return Math.round(clamped * 10) / 10
+}
+
+/**
+ * 标题上下的留白(设置面板「外观」页),单位是「档」:1 档 = 正文字号。
+ *
+ *   · before  —— 标题前面是正文时,标题上方留的空白;
+ *   · after   —— 标题后面是正文时,标题下方留的空白;
+ *   · between —— 两个标题紧挨着(中间没有空行)时,两者之间的空白。
+ *
+ * 用倍数而不是 px:改正文字号时整组间距同比例缩放,和标题字号一样。
+ * 默认各 1 档,与 Obsidian 的 --p-spacing 一致。
+ */
+export const HEADING_SPACE_MIN = 0
+export const HEADING_SPACE_MAX = 3
+export const HEADING_SPACE_STEP = 0.1
+export const HEADING_SPACE_DEFAULTS = { before: 1, after: 1, between: 1 } as const
+export type HeadingSpaceSide = keyof typeof HEADING_SPACE_DEFAULTS
+
+/** 夹到 [0, 3],按 0.1 档取整;非数字(输入被清空、settings.json 被手改)落回默认值 */
+export function clampHeadingSpace(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  const clamped = Math.min(HEADING_SPACE_MAX, Math.max(HEADING_SPACE_MIN, value))
+  return Math.round(clamped * 10) / 10
+}
+
+/**
+ * 块与正文之间、以及两段正文之间的留白(设置面板「外观 → 块间距」),
+ * 单位同样是「档」。
+ *
+ *   · bodyBetween —— 两段正文之间那条空行的留白(设置里的「段间距」);
+ *   · codeBefore / codeAfter —— 代码块前面 / 后面是正文时的留白;
+ *   · listBefore / listAfter —— 列表前面 / 后面是正文时的留白;
+ *   · quoteBefore / quoteAfter —— 引用前面 / 后面是正文时的留白。
+ *
+ * 默认 1 档(一个正文字号):与标题间距、正文行距用同一把尺子,块与正文
+ * 之间的留白和段落之间看起来一致。刻度与标题间距相同(0–3 档,0.1 一档)。
+ */
+export const BLOCK_SPACE_MIN = HEADING_SPACE_MIN
+export const BLOCK_SPACE_MAX = HEADING_SPACE_MAX
+export const BLOCK_SPACE_STEP = HEADING_SPACE_STEP
+export const BLOCK_SPACE_DEFAULTS = {
+  bodyBetween: 1,
+  codeBefore: 1,
+  codeAfter: 1,
+  listBefore: 1,
+  listAfter: 1,
+  quoteBefore: 1,
+  quoteAfter: 1
+} as const
+export type BlockSpaceSide = keyof typeof BLOCK_SPACE_DEFAULTS
+
+export function clampBlockSpace(value: unknown, fallback: number): number {
+  return clampHeadingSpace(value, fallback)
+}
 
 /**
  * 代码块内按 Tab 插入的空格数。
@@ -39,10 +122,34 @@ export const EDITOR_DEFAULTS = {
    */
   autoSaveDelay: 1,
   lineWrapping: true,
-  /** 与 Obsidian 的正文设置一致(13px) */
-  editorFontSize: 13,
+  /** 与旧版默认(基准 13px × 1.375 ≈ 17.9px)在视觉上一致 */
+  editorFontSize: 18,
+  /** 见 EDITOR_FONT_SIZE_VERSION:2 = 设置值即实际正文字号 */
+  editorFontSizeVersion: EDITOR_FONT_SIZE_VERSION,
+  /** 行间距(档,× 正文字号);行高 = 1 + 这一档 */
+  lineSpace: LINE_SPACE_DEFAULT,
   /** 与 Obsidian 的 Tab size 默认档一致 */
-  codeIndentSize: 4
+  codeIndentSize: 4,
+  /** 标题上方留白(档,× 正文字号) */
+  headingSpaceBefore: HEADING_SPACE_DEFAULTS.before,
+  /** 标题下方留白(档,× 正文字号) */
+  headingSpaceAfter: HEADING_SPACE_DEFAULTS.after,
+  /** 两个紧挨着的标题之间的留白(档,× 正文字号) */
+  headingSpaceBetween: HEADING_SPACE_DEFAULTS.between,
+  /** 两段正文之间的留白(档,× 正文字号) */
+  bodySpaceBetween: BLOCK_SPACE_DEFAULTS.bodyBetween,
+  /** 代码块上方留白(档,× 正文字号) */
+  codeSpaceBefore: BLOCK_SPACE_DEFAULTS.codeBefore,
+  /** 代码块下方留白(档,× 正文字号) */
+  codeSpaceAfter: BLOCK_SPACE_DEFAULTS.codeAfter,
+  /** 列表上方留白(档,× 正文字号) */
+  listSpaceBefore: BLOCK_SPACE_DEFAULTS.listBefore,
+  /** 列表下方留白(档,× 正文字号) */
+  listSpaceAfter: BLOCK_SPACE_DEFAULTS.listAfter,
+  /** 引用上方留白(档,× 正文字号) */
+  quoteSpaceBefore: BLOCK_SPACE_DEFAULTS.quoteBefore,
+  /** 引用下方留白(档,× 正文字号) */
+  quoteSpaceAfter: BLOCK_SPACE_DEFAULTS.quoteAfter
 } as const
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {

@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import * as imark from 'imark'
 import type {
   AgentError,
@@ -37,14 +37,23 @@ import { DocumentApplyError, DocumentBridge } from './core/document'
 import { Inventory } from './core/inventory'
 import { inlineImageSources } from './core/markdown'
 import { buildReplay, buildTurnPrompt } from './core/prompt'
-import { attachmentsOf, SessionStore, workspaceKey, type SessionMeta } from './core/sessions'
+import {
+  attachmentsOf,
+  resolveStorageRoot,
+  SessionStore,
+  workspaceKey,
+  type SessionMeta
+} from './core/sessions'
 import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
 const CMD_OPEN = 'imark.agent.openChat'
 const CMD_STOP = 'imark.agent.stop'
+const CMD_CLEANUP = 'imark.agent.cleanupSessions'
 
 const DOC_PUSH_DEBOUNCE_MS = 80
+const DAY_MS = 24 * 60 * 60 * 1000
+const SESSION_PRUNE_INTERVAL_MS = 60 * 60 * 1000
 const AGENT_ERROR_CODES = new Set<AgentErrorCode>([
   'provider-unavailable',
   'auth-required',
@@ -61,6 +70,12 @@ const AGENT_ERROR_CODES = new Set<AgentErrorCode>([
   'edit-rejected',
   'not-found'
 ])
+
+interface ActionResult {
+  ok: boolean
+  message: string
+  detail?: string
+}
 
 interface TurnRuntime {
   turnId: string
@@ -130,9 +145,14 @@ function escapeAttr(value: string): string {
 }
 
 class AgentHost {
-  private readonly sessions: SessionStore
-  private readonly attachments: AttachmentStager
-  private readonly artifacts: ArtifactStore
+  // 会话存储目录可以由设置切换，所以这几个不是 readonly；由 installStores() 统一换绑
+  private sessions!: SessionStore
+  private attachments!: AttachmentStager
+  private artifacts!: ArtifactStore
+  /** 当前会话数据根目录（`sessions/` 的上一级），用于判断设置是否真的变了 */
+  private storageBase = ''
+  /** 上一次已提示过的目录错误，避免每轮结束重试时反复弹同一个框 */
+  private lastStorageError = ''
   private readonly documents = new DocumentBridge()
   private readonly inventory = new Inventory()
   private readonly providers: ProviderRegistry
@@ -143,23 +163,33 @@ class AgentHost {
   private statusItem: imark.StatusBarItem | null = null
   private config: AgentConfig | null = null
   private docTimer: NodeJS.Timeout | null = null
+  private pruneTimer: NodeJS.Timeout | null = null
   private disposed = false
 
   constructor(private readonly context: imark.ExtensionContext) {
-    this.sessions = new SessionStore(context.globalStoragePath)
-    this.attachments = new AttachmentStager(this.sessions)
-    this.artifacts = new ArtifactStore(sessionId => this.sessions.preparedDir(sessionId))
+    // 先用默认目录占位，start() 再按设置决定是否换目录并 init
+    this.installStores(new SessionStore(context.globalStoragePath))
     this.providers = new ProviderRegistry(context)
     this.output = imark.window.createOutputChannel('Agent Core')
   }
 
   async start(): Promise<void> {
-    await this.sessions.init()
-    this.refreshConfig()
+    this.config = readConfig().config
+    await this.prepareStorage(this.config)
+    // 启动时先清一次过期会话；之后每小时再检查，长期驻留也不会越积越多
+    await this.pruneExpiredSessions().catch(err => {
+      this.output.warn(`清理过期会话失败：${err instanceof Error ? err.message : String(err)}`)
+    })
+    this.pruneTimer = setInterval(() => {
+      void this.pruneExpiredSessions().catch(err => {
+        this.output.warn(`清理过期会话失败：${err instanceof Error ? err.message : String(err)}`)
+      })
+    }, SESSION_PRUNE_INTERVAL_MS)
 
     this.context.subscriptions.push(
       imark.commands.registerCommand(CMD_OPEN, () => this.openChat()),
       imark.commands.registerCommand(CMD_STOP, () => this.cancelAllTurns()),
+      imark.commands.registerCommand(CMD_CLEANUP, () => this.cleanupNow()),
       imark.window.registerWebviewPanelSerializer(VIEW_TYPE, {
         deserializeWebviewPanel: async panel => this.adoptPanel(panel)
       }),
@@ -194,6 +224,10 @@ class AgentHost {
       clearTimeout(this.docTimer)
       this.docTimer = null
     }
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer)
+      this.pruneTimer = null
+    }
     this.cancelAllTurns()
     this.panel?.dispose()
     this.panel = null
@@ -222,12 +256,22 @@ class AgentHost {
 
   private async onConfigChanged(): Promise<void> {
     if (this.disposed) return
+    const retentionBefore = this.config?.sessionRetentionDays
+    const storageBefore = this.config?.sessionDataDir
     const config = this.refreshConfig()
     this.push({
       type: 'push',
       kind: 'config',
       value: { config: safeConfigView(config) }
     })
+    // 目录切换要在保留期清理之前：新目录里的旧会话也按当前设置清一次
+    if (storageBefore !== config.sessionDataDir) await this.switchStorage()
+    // 保留期可能刚被改短：立即按新值清一次；其它设置变化不重复扫盘
+    if (retentionBefore !== config.sessionRetentionDays) {
+      await this.pruneExpiredSessions().catch(err => {
+        this.output.warn(`清理过期会话失败：${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
   }
 
   /**
@@ -243,6 +287,86 @@ class AgentHost {
     // 连续切换仓库时，先发出的那次读盘可能后完成；只推当前仓库的结果
     if (this.disposed || workspace !== this.currentWorkspace()) return
     this.push({ type: 'push', kind: 'workspace', value: { sessions } })
+  }
+
+  // ---------- 存储目录 ----------
+
+  /** 换绑会话存储；附件与产物都跟着当前 store 走，不能只换其中一个 */
+  private installStores(store: SessionStore): void {
+    this.sessions = store
+    this.attachments = new AttachmentStager(store)
+    this.artifacts = new ArtifactStore(sessionId => store.preparedDir(sessionId))
+    this.storageBase = dirname(store.rootPath)
+  }
+
+  private async openStorage(base: string): Promise<SessionStore> {
+    const store = new SessionStore(base)
+    await store.init()
+    return store
+  }
+
+  /** 同一个目录错误只弹一次；回合结束后的重试不会反复打扰 */
+  private reportStorageError(key: string, message: string): void {
+    this.output.error(message)
+    if (this.lastStorageError === key) return
+    this.lastStorageError = key
+    void imark.window.showErrorMessage(message)
+  }
+
+  /** 启动时按设置选目录；自定义目录不可用时回退到扩展默认目录 */
+  private async prepareStorage(config: AgentConfig): Promise<void> {
+    const fallback = this.context.globalStoragePath
+    const resolved = resolveStorageRoot(config.sessionDataDir, fallback)
+    if (resolved.error) this.output.warn(resolved.error)
+    try {
+      this.installStores(await this.openStorage(resolved.root))
+    } catch (err) {
+      if (resolved.root === resolve(fallback)) throw err
+      const reason = err instanceof Error ? err.message : String(err)
+      this.reportStorageError(
+        `${resolved.root}:${reason}`,
+        `会话数据目录不可用，已回退到默认目录：${reason}`
+      )
+      this.installStores(await this.openStorage(fallback))
+    }
+  }
+
+  /** 设置里改了目录：空闲时立即切过去，有回合在跑就等结束后再切 */
+  private async switchStorage(): Promise<void> {
+    const config = this.config ?? this.refreshConfig()
+    const resolved = resolveStorageRoot(config.sessionDataDir, this.context.globalStoragePath)
+    if (resolved.error) {
+      this.reportStorageError(`invalid:${resolved.error}`, resolved.error)
+      return
+    }
+    if (resolved.root === this.storageBase) return
+    if (this.activeTurns.size > 0) {
+      void imark.window.showWarningMessage('会话正在运行，新的会话数据目录会在本轮结束后生效')
+      return
+    }
+    let next: SessionStore
+    try {
+      next = await this.openStorage(resolved.root)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      this.reportStorageError(
+        `${resolved.root}:${reason}`,
+        `无法使用会话数据目录：${reason}`
+      )
+      return
+    }
+    // 先取消旧目录里还没完成的上传，再整体换绑
+    await this.attachments.disposeAll()
+    this.installStores(next)
+    this.lastStorageError = ''
+    if (this.panel) {
+      this.push({ type: 'push', kind: 'sessions', value: { sessions: await this.listSessions() } })
+    }
+    this.output.info(`会话数据目录已切换：${resolved.root}`)
+    void imark.window.showInformationMessage(`会话数据目录已切换：${resolved.root}`)
+    await this.pruneExpiredSessions().catch(err => {
+      this.output.warn(`清理过期会话失败：${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   private currentDocMeta(): DocMeta | null {
@@ -553,6 +677,56 @@ class AgentHost {
     return { deleted: true }
   }
 
+  /**
+   * 按保留期清理会话：消息、附件和产物随会话目录一起删除，
+   * 再回收不再被任何会话引用的共享附件 blob。返回被删掉的会话 ID。
+   */
+  private async pruneExpiredSessions(): Promise<string[]> {
+    if (this.disposed) return []
+    const config = this.config ?? this.refreshConfig()
+    const removed = await this.sessions.pruneExpired(config.sessionRetentionDays * DAY_MS)
+    if (removed.length === 0) return []
+    await this.attachments.gcAll()
+    if (this.panel) {
+      // 正在界面里打开的会话也可能被清掉：逐条通知，让面板回到空状态
+      for (const sessionId of removed) {
+        this.push({ type: 'push', kind: 'sessionDeleted', value: { sessionId } })
+      }
+      this.push({ type: 'push', kind: 'sessions', value: { sessions: await this.listSessions() } })
+    }
+    return removed
+  }
+
+  /** 设置页的「立即清理过期会话」：手动执行一次，结果写进状态卡与调试日志 */
+  private async cleanupNow(): Promise<ActionResult> {
+    const config = this.config ?? this.refreshConfig()
+    if (config.sessionRetentionDays <= 0) {
+      const message = '当前设置为永久保留，没有需要清理的会话'
+      imark.imark.reportStatus({ status: 'ok', message, lastRunAt: Date.now() })
+      return { ok: true, message }
+    }
+    try {
+      const removed = await this.pruneExpiredSessions()
+      // 把过期线写出来：用户看到「昨天 17:11 的会话还在」时能立刻明白为什么
+      const cutoff = new Date(
+        Date.now() - config.sessionRetentionDays * DAY_MS
+      ).toLocaleString('zh-CN', { hour12: false })
+      const message =
+        removed.length > 0
+          ? `已清理 ${removed.length} 个过期会话（保留 ${config.sessionRetentionDays} 天，最后活动早于 ${cutoff}）`
+          : `没有需要清理的过期会话（保留 ${config.sessionRetentionDays} 天，最后活动早于 ${cutoff} 的才会清理）`
+      this.output.info(message)
+      imark.imark.reportStatus({ status: 'ok', message, lastRunAt: Date.now() })
+      return { ok: true, message }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      const message = `清理过期会话失败：${reason}`
+      this.output.error(message)
+      imark.imark.reportStatus({ status: 'error', message, lastRunAt: Date.now() })
+      return { ok: false, message }
+    }
+  }
+
   private async viewOf(sessionId: string): Promise<SessionView> {
     const open = await this.sessions.open(sessionId)
     if (!open) throw new Error('会话不存在')
@@ -825,6 +999,10 @@ class AgentHost {
       this.activeTurns.delete(input.turnId)
       this.turnBySession.delete(input.sessionId)
       this.updateStatusBar()
+      // 设置目录时如果还有回合在跑，那次切换被推迟了；空闲下来后补上
+      if (!this.disposed && this.activeTurns.size === 0) {
+        void this.switchStorage().catch(() => undefined)
+      }
     }
   }
 

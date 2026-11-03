@@ -28,6 +28,29 @@
   cursor: pointer;
 }
 
+/*
+ * 行盒顶上留了结构间距(块与正文贴紧时那段 padding,见 editor.css 的
+ * .cm-md-gap-*-after)后,按 top 定位的按钮会被顶到空白里,离正文越来越远。
+ * 跟着下移同样的距离,让它继续贴着正文第一行。
+ */
+.cm-editor .cm-line.cm-md-gap-code-after .line-plus {
+  top: calc(var(--md-code-gap-after) + 0.15em);
+}
+
+.cm-editor .cm-line.cm-md-gap-list-after .line-plus {
+  top: calc(var(--md-list-gap-after) + 0.15em);
+}
+
+/*
+ * 标题行上方留了一档 padding(见 editor.css 的标题留白),按钮同样跟着下移,
+ * 否则会停在标题上方的空白里、离标题文字越来越远。
+ */
+.cm-editor
+  .cm-line:is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)
+  .line-plus {
+  top: calc(var(--md-heading-pad) + 0.15em);
+}
+
 .line-plus:hover {
   background: var(--bg-toolbar-btn-hover);
   color: var(--accent);

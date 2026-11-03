@@ -52,6 +52,9 @@ interface Metrics {
   gutter: number
   /** 内容是否高过了可视区(即当前有没有滚动条) */
   scrollable: boolean
+  /** 内容总高 / 可视区高 —— 断言不成立时用来判断还差多少 */
+  scrollHeight: number
+  clientHeight: number
   /** 说明文字的高度与落在第几行 */
   descLines: number
   /** 说明文字最后一个字的顶边 —— 折行位置一变它就变 */
@@ -86,6 +89,8 @@ const METRICS = `
     width: body.clientWidth,
     gutter: body.offsetWidth - body.clientWidth,
     scrollable: body.scrollHeight > body.clientHeight,
+    scrollHeight: body.scrollHeight,
+    clientHeight: body.clientHeight,
     descLines: Math.round(rect.height / lineHeight),
     lastCharTop: round(r.getBoundingClientRect().top),
     helpHeight: round(help.getBoundingClientRect().height) - round(help.querySelector('summary').getBoundingClientRect().height),
@@ -147,12 +152,12 @@ async function main(): Promise<void> {
     return false
   }
 
-  // 面板尺寸是 90vw × 86vh(见 settings.css):窗口一矮,面板跟着缩到装不下内容的地步,
-  // 「收起时放得下、展开才溢出」这个场景就造不出来(两种状态都在滚,断言等于空转)。
-  // 所以窗口本身不够大时缩一档,把 **CSS 视口**撑到至少 1040×780 —— 那正是设计尺寸
-  // 880×620 所需的大小(缩放变小 → 塞进更多 CSS px)。够大就不动它,不去改窗口尺寸。
+  // 面板尺寸是 min(1080px, 92vw) × min(760px, 88vh)(见 settings.css):窗口一矮,
+  // 面板跟着缩到装不下内容的地步,「收起时放得下、展开才溢出」这个场景就造不出来
+  // (两种状态都在滚,断言等于空转)。窗口不够大时缩一档,把 **CSS 视口**撑到至少
+  // 1040×1000。够大就不动它,不去改窗口尺寸。
   const [dipW, dipH] = win.getContentSize()
-  const zoom = Math.min(1, dipW / 1040, dipH / 780)
+  const zoom = Math.min(1, dipW / 1040, dipH / 1000)
   if (zoom < 1) wc.setZoomFactor(zoom)
   await sleep(600)
 
@@ -166,6 +171,24 @@ async function main(): Promise<void> {
     app.exit(1)
     return
   }
+  await sleep(300)
+
+  /*
+   * 外观页加过「标题间距」「块间距」两块后,收起状态本来就高过面板 760px 的上限 ——
+   * 「收起放得下、展开才溢出」在整页上已经造不出来了。这里把与自定义样式无关的
+   * 区块临时收起、把面板调矮,只复现「展开帮助 → 多出滚动条 → 可用宽度变化」这个
+   * 机制。宽度断言不受影响(说明文字还在同一列、同一宽度)。
+   */
+  await evalJs(`
+    (() => {
+      const help = document.querySelector('.userstyle-help')
+      const section = help?.closest('.settings-section')
+      for (const el of document.querySelectorAll('.settings-section')) {
+        if (el !== section) el.style.display = 'none'
+      }
+      const frame = document.querySelector('.settings-dialog-frame')
+      if (frame) frame.style.height = '600px'
+    })()`)
   await sleep(300)
 
   const collapsed = await metrics()
