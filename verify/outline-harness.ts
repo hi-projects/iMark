@@ -125,11 +125,20 @@ async function main(): Promise<void> {
   const vault = join(ud, 'vault')
   const longNote = join(vault, '长文.md')
   const shortNote = join(vault, '短文.md')
+  const nestedNote = join(vault, '层级.md')
   await rm(vault, { recursive: true, force: true })
   await mkdir(vault, { recursive: true })
   await rm(join(ud, 'plugins'), { recursive: true, force: true })
   await writeFile(longNote, makeDoc(20), 'utf8')
   await writeFile(shortNote, makeDoc(5), 'utf8')
+  // 一/二/三级标题交错,用来量层级引导线的条数与位置
+  await writeFile(
+    nestedNote,
+    ['# 第一章', '', '正文', '', '## 1.1 小节', '', '正文', '', '### 1.1.1 细节', '', '正文', '', '## 1.2 小节', '', '正文', '', '# 第二章', '', '正文', '', '## 2.1 小节', ''].join(
+      '\n'
+    ),
+    'utf8'
+  )
   await writeFile(
     join(ud, 'settings.json'),
     JSON.stringify(
@@ -271,6 +280,126 @@ async function main(): Promise<void> {
     console.log(`    短文滚到底:首条可见行="${s.firstVisible}" → 期望 ${want},实际 ${s.active}`)
     check('短文档:滚到底时高亮跟得上', want !== '' && s.active === want, `期望 ${want},实际 ${s.active}`)
   }
+
+  // ---------- 层级引导线:像 Obsidian 一样在缩进处画竖线 ----------
+  await openNote(nestedNote)
+  check('层级文档:大纲有 6 条', await waitFor(`document.querySelectorAll('.outline-item').length === 6`))
+  await sleep(400)
+
+  interface GuideShape {
+    text: string
+    /** 条目自身占满整行的行高 */
+    height: number
+    /** 每条引导线相对条目左边框的水平偏移与高度 */
+    guides: { left: number; height: number; width: number }[]
+  }
+
+  const shapes = await evalJs<GuideShape[]>(`(() => {
+    return [...document.querySelectorAll('.outline-item')].map(el => {
+      const r = el.getBoundingClientRect()
+      return {
+        text: (el.textContent || '').trim(),
+        height: Math.round(r.height),
+        guides: [...el.querySelectorAll('.outline-guide')].map(g => {
+          const gr = g.getBoundingClientRect()
+          return {
+            left: Math.round(gr.left - r.left),
+            height: Math.round(gr.height),
+            width: Math.round(gr.width)
+          }
+        })
+      }
+    })
+  })()`)
+
+  const wantTexts = ['第一章', '1.1 小节', '1.1.1 细节', '1.2 小节', '第二章', '2.1 小节']
+  // 每条标题画 level-1 条线:一级 0 条,二级 1 条,三级 2 条
+  const wantCounts = [0, 1, 2, 1, 0, 1]
+  // 线与该层祖先正文左缘对齐:条目有 2px 左边框,正文从 14px 起,每级 +14px
+  const wantLefts = [[], [16], [16, 30], [16], [], [16]]
+
+  check(
+    '层级文档:大纲文本按顺序',
+    shapes.map(s => s.text).join('|') === wantTexts.join('|'),
+    shapes.map(s => s.text).join('|')
+  )
+  const counts = shapes.map(s => s.guides.length)
+  check('引导线:条数 = 标题级别 - 1', counts.join(',') === wantCounts.join(','), `实际 ${counts.join(',')}`)
+  const leftsOk = shapes.every(
+    (s, i) => s.guides.map(g => g.left).join(',') === wantLefts[i]!.join(',')
+  )
+  check(
+    '引导线:水平位置对齐各层祖先正文',
+    leftsOk,
+    shapes.map((s, i) => `L${i + 1}=[${s.guides.map(g => g.left).join(',')}]`).join(' ')
+  )
+  // 竖线要在每行内撑满高度,相邻行接起来才是连续的一条
+  const spansOk = shapes.every(s => s.guides.every(g => Math.abs(g.height - s.height) <= 1))
+  check(
+    '引导线:撑满行高(相邻行相连)',
+    spansOk,
+    shapes.map(s => `${s.text}:${s.guides.map(g => `${g.height}/${s.height}`).join(',')}`).join(' ')
+  )
+  const widthOk = shapes.every(s => s.guides.every(g => g.width === 1))
+  check('引导线:宽 1px', widthOk)
+
+  // ---------- 展开 / 收起大纲:宽度做滑动动画,不是瞬间消失 ----------
+  const sidebarWidth = (): Promise<number> =>
+    evalJs<number>(`(() => {
+      const el = document.querySelector('.outline-sidebar')
+      return el ? Math.round(el.getBoundingClientRect().width) : 0
+    })()`)
+
+  const clickOutlineToggle = (): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const btn = [...document.querySelectorAll('.status-toggles button')]
+        .find(b => (b.title || '').includes('大纲'))
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`)
+
+  /** 点一下后按帧采样 500ms,拿到宽度随时间的变化曲线 */
+  const sampleWidths = (): Promise<number[]> =>
+    evalJs<number[]>(`new Promise(resolve => {
+      const out = []
+      const t0 = performance.now()
+      const tick = () => {
+        const el = document.querySelector('.outline-sidebar')
+        out.push(el ? Math.round(el.getBoundingClientRect().width) : 0)
+        if (performance.now() - t0 < 500) requestAnimationFrame(tick)
+        else resolve(out)
+      }
+      requestAnimationFrame(tick)
+    })`)
+
+  const isDisplayed = (): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const el = document.querySelector('.outline-sidebar')
+      return !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0
+    })()`)
+
+  const fullWidth = await sidebarWidth()
+  check('动画:开始时大纲可见且宽度 > 0', (await isDisplayed()) && fullWidth > 100, `width=${fullWidth}`)
+  check('动画:找到状态栏的大纲开关', await clickOutlineToggle())
+
+  const closing = await sampleWidths()
+  await sleep(120)
+  const closedDisplayed = await isDisplayed()
+  const inBetweenClose = closing.some(w => w > 0 && w < fullWidth)
+  console.log(`    收起宽度采样:${closing.slice(0, 12).join(',')} … ${closing.slice(-4).join(',')}`)
+  check('动画:收起过程中出现中间宽度(滑动而非瞬间消失)', inBetweenClose, closing.join(','))
+  check('动画:收起后大纲隐藏', !closedDisplayed)
+  check('动画:收起后宽度归零', (await sidebarWidth()) === 0, `width=${await sidebarWidth()}`)
+
+  check('动画:再次点击展开', await clickOutlineToggle())
+  const opening = await sampleWidths()
+  await sleep(120)
+  const reopenedWidth = await sidebarWidth()
+  const inBetweenOpen = opening.some(w => w > 0 && w < fullWidth)
+  console.log(`    展开宽度采样:${opening.slice(0, 12).join(',')} … ${opening.slice(-4).join(',')}`)
+  check('动画:展开过程中出现中间宽度(滑动而非瞬间出现)', inBetweenOpen, opening.join(','))
+  check('动画:展开后恢复到原宽度', Math.abs(reopenedWidth - fullWidth) <= 1, `${reopenedWidth} vs ${fullWidth}`)
 
   console.log(`\n[outline] ${pass} 通过, ${fail} 失败`)
   win.destroy()

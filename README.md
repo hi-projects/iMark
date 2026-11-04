@@ -21,6 +21,7 @@
   - 状态栏左侧显示当前仓库名,点击回到仓库选择界面切换(有未保存内容时先询问)
   - 仓库选择界面底部可勾选「启动时直接打开上次使用的仓库」以跳过选择步骤
 - **表格编辑**:渲染态表格支持单元格就地输入(回车 / Tab 换格,最后一格自动加行)、鼠标靠近行列边界时增删行列、整表选择 / 对齐 / 删除、拖动矩形选区后按 Backspace / Delete 清空;隐藏的源码行不可输入,方向键可越过整张表。表格上下紧邻的结构空行保留在源码里(GFM / markdown-it / Obsidian 的要求),渲染态下折成零高度,间距由 `--md-table-gap-top` / `--md-table-gap-bottom`(或 `--md-table-gap`)控制。
+- **行内 HTML 白名单**:`b` / `strong` / `i` / `em` / `u` / `s` / `del` / `ins` / `mark` / `sub` / `sup` / `kbd` / `code` / `span` / `br` 在正文、表格单元格和导出的 HTML 里都按标签渲染(属性一律丢弃,`<br>` 换成真正的换行);不在名单里的标签、块级 HTML、脚本与事件属性继续按字面转义显示。光标移入标签范围时翻回源码。
 - **扩展系统**:VS Code 式扩展模型 —— 清单是扩展目录根部的 `package.json`,代码跑在独立的 `utilityProcess` 扩展宿主里,通过 `require('imark')` 使用 `commands` / `window` / `workspace` / `webview` 等 API;`contributes` 驱动命令面板、快捷键、状态栏、行首菜单与设置页。默认所有扩展共用一个宿主(`shared`),也可切换 `isolated` 或按 `extensionHost.affinity` 分组。**扩展代码以当前用户权限运行,不做权限沙箱**;含代码扩展安装时必须勾选风险确认。设置面板「扩展」分类统一管理启用/停用、自动渲染配置表单、动作按钮与运行日志,「设置 → 扩展分配」集中管理宿主分组;密钥经 Electron safeStorage 加密后单独存于数据目录的 `secrets.json`(默认 `<应用目录>/.imark/secrets.json`),**渲染层与 webview 永远拿不到明文**
   - **远程同步(Git)**:随应用预置、默认关闭的官方扩展——按固定间隔与 GitLab / Gitee / GitHub 等任意 Git 远端**双向同步**:提交本地改动、拉取并合并远端改动、再推送回远端;另有「上传文件」「拉取文件」「测试连接」动作(「拉取文件」会先暂存本地未提交改动,拉取后自动恢复,恢复冲突时进入冲突界面),以及状态栏同步图标(成功/失败/进行中/未启用四态)。同步前会先把编辑器里**未保存的改动**落盘,刚敲的内容不会漏;无改动时直接跳过,不产生空提交;合并冲突会在编辑器里显示 VSCode 风格的冲突操作栏(接受当前 / 接受传入 / 保留两者),没有打开在编辑器里的冲突文件会自动弹出冲突处理窗口;处理完再同步即可,不会静默丢掉任何一边
   - **快速编辑(Quick Edit)**:随应用预置、默认启用的官方扩展。光标所在行左侧的「+」→「表格」→ 填行数与列数,表格插入到当前行下方并停在渲染态。按钮、菜单、对话框与插入位置全部由宿主实现,扩展只声明 `lineMenu` 条目并返回要插入的文本(见 §四);所有扩展的 `lineMenu` 合进同一个「+」菜单
@@ -138,6 +139,7 @@ RangeSet(Decoration.set)  +  EditorView.atomicRanges
 | `services/mermaid.ts` | Mermaid 异步渲染服务:动态 import、串行队列、按「主题 + 源码」缓存、Lucide 图标包注册 |
 | `editor/wysiwyg/inline.ts` | 行内片段渲染(表格单元格用);**刻意不复用 `services/exportHtml.ts`** —— 那个模块顺带牵连 katex 与 highlight.js,编辑器不该依赖导出服务,但两者的 markdown-it 配置必须保持一致 |
 | `editor/wysiwyg/selection.ts` | 闭区间相交判定(行内粒度 / 行粒度) |
+| `services/inlineHtml.ts` | 行内 HTML 白名单与 markdown-it 行内规则;编辑器与导出共用同一份名单,属性一律丢弃 |
 | `editor/imagePaste.ts` | 剪贴板图片粘贴:先于 CM 只认文本的 paste handler 拦下图片、存到文档旁 `assets/`、按异步保存期间的光标变化定位插入 |
 | `editor/setup.ts` | 扩展组装(换行、历史、markdown、WYSIWYG、键位、主题) |
 

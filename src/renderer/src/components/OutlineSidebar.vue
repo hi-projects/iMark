@@ -30,25 +30,43 @@ function jump(item: OutlineItem): void {
 function indent(level: number): string {
   return `${14 + (level - 1) * 14}px`
 }
+
+/**
+ * 层级引导线:每个后代层级一条竖线,位置与该层祖先的正文左缘对齐。
+ * 例如三级标题会画两条 —— 一级和二级标题文字开始的地方。
+ * 这里只算相对条目 left 的偏移;条目自身的 2px 左侧边框由 CSS 让开。
+ */
+function guideLeft(depth: number): string {
+  return `${14 + (depth - 1) * 14}px`
+}
 </script>
 
 <template>
-  <aside v-show="appStore.outlineVisible" class="outline-sidebar">
-    <div class="outline-header">大纲</div>
-    <div class="outline-list">
-      <div
-        v-for="item in outline"
-        :key="item.from"
-        :ref="el => setItemRef(item.from, el)"
-        class="outline-item"
-        :class="['outline-h' + item.level, { 'outline-active': item.from === appStore.outlineActive }]"
-        :style="{ paddingLeft: indent(item.level) }"
-        :title="item.text"
-        @click="jump(item)"
-      >
-        {{ item.text }}
+  <Transition name="outline-slide">
+    <aside v-show="appStore.outlineVisible" class="outline-sidebar">
+      <div class="outline-header">大纲</div>
+      <div class="outline-list">
+        <div
+          v-for="item in outline"
+          :key="item.from"
+          :ref="el => setItemRef(item.from, el)"
+          class="outline-item"
+          :class="['outline-h' + item.level, { 'outline-active': item.from === appStore.outlineActive }]"
+          :style="{ paddingLeft: indent(item.level) }"
+          :title="item.text"
+          @click="jump(item)"
+        >
+          <span
+            v-for="depth in item.level - 1"
+            :key="depth"
+            class="outline-guide"
+            :style="{ left: guideLeft(depth) }"
+            aria-hidden="true"
+          ></span>
+          {{ item.text }}
+        </div>
+        <div v-if="outline.length === 0" class="outline-empty">暂无标题,使用 # 创建标题后显示大纲</div>
       </div>
-      <div v-if="outline.length === 0" class="outline-empty">暂无标题,使用 # 创建标题后显示大纲</div>
-    </div>
-  </aside>
+    </aside>
+  </Transition>
 </template>

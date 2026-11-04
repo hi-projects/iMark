@@ -182,3 +182,46 @@
   background: var(--bg-toolbar-btn-hover);
   color: var(--text-primary);
 }
+
+/* ---------- 标签右键菜单 ---------- */
+
+/* 只负责接住"点别处"与"再右键一次",本身不可见 */
+.tab-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+
+.tab-menu {
+  position: fixed;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.tab-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab-menu-item:hover:not(:disabled) {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.tab-menu-item:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}

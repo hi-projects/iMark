@@ -34,6 +34,15 @@ if (!entry || !outfile) {
  */
 function resolveTarget(spec, resolveDir) {
   if (spec.startsWith('@shared/')) return path.join(ROOT, 'src', 'shared', spec.slice('@shared/'.length))
+  // 裸模块名(katex/dist/...css、@iconify-json/lucide/icons.json)要按 Node 的
+  // 包解析规则找,不能相对导入方目录拼 —— 拼出来会变成 src/.../katex/dist/...
+  if (!spec.startsWith('.') && !spec.startsWith('/')) {
+    try {
+      return require.resolve(spec)
+    } catch {
+      /* 落到下面的相对解析,交给 esbuild 报出原始错误 */
+    }
+  }
   return path.resolve(resolveDir, spec)
 }
 

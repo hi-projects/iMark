@@ -6,6 +6,7 @@ import katex from 'katex'
 import { renderInline } from './inline'
 import { mermaidErrorMessage, renderMermaid, type MermaidTheme } from '../../services/mermaid'
 import { copyText } from '../../utils/clipboard'
+import { formatWidthsDirective, normalizeWidths } from '../../services/tableWidths'
 
 /** 单元格对齐方式,取自 GFM 分隔行里的冒号;null = 文档没声明,交给 CSS */
 export type TableAlign = 'left' | 'center' | 'right' | null
@@ -43,6 +44,30 @@ export class MathWidget extends WidgetType {
   }
 
   // 点击交给 CodeMirror 映射到文档位置 → 光标进入公式区间 → 自动翻回源码
+  ignoreEvent(): boolean {
+    return false
+  }
+}
+
+/**
+ * 行内 HTML 的 `<br>`:返回一个真正的 <br> 元素。
+ *
+ * CM 把 inline widget 的 DOM 原样插进 .cm-line,浏览器会把它当行内换行处理 ——
+ * 同一条源码行在视觉上断成两行,而文档里仍然只有一个换行符(表格单元格里
+ * 换行只能这么写)。后面的字照样按 DOM Range 计算坐标,光标映射不受影响。
+ */
+export class HtmlBreakWidget extends WidgetType {
+  eq(_other: HtmlBreakWidget): boolean {
+    return true
+  }
+
+  toDOM(): HTMLElement {
+    const br = document.createElement('br')
+    br.className = 'cm-md-html-br'
+    return br
+  }
+
+  // 点换行处要能把光标落到 <br> 的源码位置,交给 CodeMirror 处理
   ignoreEvent(): boolean {
     return false
   }
@@ -196,11 +221,32 @@ export interface TableRowSpec {
   cells: TableCellSpec[]
 }
 
+/**
+ * 表格上方那行列宽指令在源码里的位置。
+ *
+ * 渲染态要把这一行藏起来(别人看到的是渲染出来的表格),但它仍然属于文档:
+ * 拖动列边界、增删列、删除整表都直接改写这行源码。
+ */
+export interface TableWidthLine {
+  /** 整行范围(含容器前缀),改写/删除时用 */
+  from: number
+  to: number
+  /** 指令文本本身的范围,渲染态隐藏用 */
+  textFrom: number
+  textTo: number
+  /** 行首的容器前缀(`> ` / 缩进),原地改写时保留 */
+  prefix: string
+}
+
 export interface TableSpec {
   from: number
   to: number
   columns: number
   align: TableAlign[]
+  /** 自定义列宽(百分比,总和 100);null = 内容自适应 */
+  widths: number[] | null
+  /** 上方那行 `<!-- imark:table-widths ... -->`;没有自定义宽度时为 null */
+  widthLine: TableWidthLine | null
   head: TableRowSpec
   body: TableRowSpec[]
   /** 表头下面那条分隔行(插/删列时必须同步重写) */
@@ -244,6 +290,8 @@ interface TableControls {
   /** 整张表格的文字对齐;点开弹出 alignMenu */
   alignTable: HTMLButtonElement
   alignMenu: HTMLElement
+  /** 列宽拖拽热区;下标 = 第 i 列与第 i+1 列之间的边界(1..columns-1) */
+  colGrips: HTMLElement[]
 }
 
 /** widget DOM 与模型的对应关系;事件委托与「当前在编辑哪一格」都挂在这里 */
@@ -258,6 +306,8 @@ interface TableDomState {
       不跳过的话在文档任何地方打字都会把整张表的 innerHTML 重刷一遍) */
   rendered: string[][]
   aligns: TableAlign[]
+  /** 当前 DOM 上实际应用的列宽(百分比);null = 内容自适应 */
+  widths: number[] | null
   view: EditorView
   model: TableSpec
   /** 上一轮模型的表首位置。DOM 被复用给**另一张**表时用它识别 */
@@ -268,8 +318,10 @@ interface TableDomState {
   layoutScheduled: boolean
   /** 上一次鼠标位置(视口坐标);结构重建后据此恢复控件的按需显隐 */
   hover: { x: number; y: number } | null
-  /** 正在拖拽选择单元格时,用来在 destroy 时解绑 window 监听 */
+  /** 正在拖拽选择单元格 / 调整列宽时,用来在 destroy 时解绑 window 监听 */
   cancelDrag: (() => void) | null
+  /** 正在拖动列边界:此时 DOM 上的宽度是临时值,别被模型同步覆盖 */
+  resizing: boolean
   /** 刚创建、autoFocus 还没跑完:这段时间不要让"光标别停进表格"的守卫抢先挪走选区 */
   autoFocusPending: boolean
 }
@@ -291,6 +343,22 @@ function rowOf(model: TableSpec, index: number): TableRowSpec | undefined {
   return index === 0 ? model.head : model.body[index - 1]
 }
 
+function sameWidths(a: number[] | null, b: number[] | null): boolean {
+  if (a === null || b === null) return a === b
+  return a.length === b.length && a.every((w, i) => w === b[i])
+}
+
+function sameWidthLine(a: TableWidthLine | null, b: TableWidthLine | null): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.from === b.from &&
+    a.to === b.to &&
+    a.textFrom === b.textFrom &&
+    a.textTo === b.textTo &&
+    a.prefix === b.prefix
+  )
+}
+
 /**
  * 两份表格模型是不是同一张表(忽略绝对位置)。
  *
@@ -300,6 +368,7 @@ function rowOf(model: TableSpec, index: number): TableRowSpec | undefined {
 function sameTableSource(a: TableSpec, b: TableSpec): boolean {
   if (a.columns !== b.columns || a.align.length !== b.align.length) return false
   if (a.align.some((align, i) => align !== b.align[i])) return false
+  if (!sameWidths(a.widths, b.widths)) return false
   const rowsA = allRows(a)
   const rowsB = allRows(b)
   if (rowsA.length !== rowsB.length) return false
@@ -317,6 +386,7 @@ function sameTableModel(a: TableSpec, b: TableSpec): boolean {
   if (a.from !== b.from || a.to !== b.to) return false
   if (a.protectFrom !== b.protectFrom || a.protectTo !== b.protectTo) return false
   if (a.delimiter.from !== b.delimiter.from || a.delimiter.to !== b.delimiter.to) return false
+  if (!sameWidthLine(a.widthLine, b.widthLine)) return false
   if (!sameTableSource(a, b)) return false
   const rowsA = allRows(a)
   const rowsB = allRows(b)
@@ -547,6 +617,39 @@ function startEdit(state: TableDomState, row: number, col: number, x?: number, y
   setCaret(cell, offset ?? spec.text.length)
 }
 
+/**
+ * 增删行/列之后进入某一格编辑。
+ *
+ * 结构改动会让 widget 重建网格,而重建不一定发生在本次 dispatch 的同一个栈里:
+ * 立刻 startEdit 拿到的还是旧网格(新格子还不存在),它会静默返回,焦点留在
+ * 编辑器正文上。所以等网格里真的出现目标格再进编辑。
+ *
+ * 不能按表首位置找回 state:增删列会顺带改写上方的列宽指令,指令长度一变整张
+ * 表就平移了;而且内容变了 CM 往往直接重建 DOM(旧 state 已断开)。`before` 是
+ * 派发前就在渲染的表格集合,「同一个 state 或这次新造出来的那张」就是要编辑的表。
+ */
+function startEditAfterChange(
+  prev: TableDomState,
+  before: ReadonlySet<TableDomState>,
+  row: number,
+  col: number
+): void {
+  let attempts = 0
+  const run = (): void => {
+    for (const state of renderedTables) {
+      if (state.view !== prev.view || !state.wrap.isConnected) continue
+      if (state !== prev && before.has(state)) continue
+      if (state.rows[row]?.[col]) {
+        startEdit(state, row, col)
+        return
+      }
+    }
+    // 一帧内没等到就放弃,免得用户已经点去别处了还被抢焦点
+    if (attempts++ < 20) setTimeout(run, 16)
+  }
+  run()
+}
+
 function cancelEdit(state: TableDomState): void {
   const active = state.active
   if (!active) return
@@ -592,8 +695,49 @@ function buildStructure(state: TableDomState): void {
   state.rows = rows
   state.rendered = rendered
   state.aligns = [...model.align]
+  applyColumnWidths(state, model.widths)
   buildControlLayer(state)
   scheduleLayout(state)
+}
+
+/**
+ * 把列宽应用到 DOM:百分比交给 `<colgroup>`,表格同时切成固定布局。
+ *
+ * 固定布局需要一个确定的表格宽度才有意义 —— 自定义过列宽的表格铺满正文宽度,
+ * 拖动出来的比例才能跟着窗口一起缩放。没有宽度(null)时移除 colgroup,
+ * 回到原来的内容自适应(见 editor.css 的 .cm-md-table-fixed)。
+ *
+ * 拖动过程中也直接调它:此时模型还没写回源码,所以只动 DOM,不派发事务。
+ */
+function applyColumnWidths(state: TableDomState, widths: number[] | null): void {
+  const table = state.table
+  const usable = widths && widths.length === state.model.columns ? widths : null
+  const existing = table.querySelector<HTMLElement>(':scope > colgroup')
+  if (!usable) {
+    existing?.remove()
+    table.classList.remove('cm-md-table-fixed')
+    state.frame.classList.remove('cm-md-table-frame-sized')
+    state.widths = null
+    return
+  }
+  let colgroup = existing
+  if (!colgroup) {
+    colgroup = document.createElement('colgroup')
+    table.insertBefore(colgroup, table.firstChild)
+  }
+  const cols = Array.from(colgroup.children) as HTMLElement[]
+  while (cols.length < usable.length) {
+    const col = document.createElement('col')
+    colgroup.appendChild(col)
+    cols.push(col)
+  }
+  while (cols.length > usable.length) cols.pop()?.remove()
+  usable.forEach((w, i) => {
+    cols[i].style.width = `${Math.round(w * 10) / 10}%`
+  })
+  table.classList.add('cm-md-table-fixed')
+  state.frame.classList.add('cm-md-table-frame-sized')
+  state.widths = usable.slice()
 }
 
 function paintCell(state: TableDomState, row: number, col: number, text: string): void {
@@ -636,6 +780,10 @@ function syncCells(state: TableDomState): void {
     }
   }
   state.aligns = model.align.slice()
+  // 拖动过程中 DOM 上是临时宽度,别被还没写回源码的旧模型冲掉
+  if (!state.resizing && !sameWidths(state.widths, model.widths)) {
+    applyColumnWidths(state, model.widths)
+  }
   applySelectionClasses(state)
   // 内容变长/变短会改行高,控件的落点要跟着重新算
   scheduleLayout(state)
@@ -877,6 +1025,26 @@ function buildControlLayer(state: TableDomState): void {
   }
 
   /*
+   * 列宽拖拽热区:每两条列边界一个(左右边缘不拖 —— 拖表格外沿等于改整表宽度,
+   * 与"列宽"是两件事)。放在控件层里,绝对定位跟着单元格边界走。
+   */
+  const colGrips: HTMLElement[] = []
+  for (let b = 1; b < model.columns; b++) {
+    const grip = document.createElement('div')
+    grip.className = 'cm-md-table-col-grip'
+    grip.dataset.boundary = String(b)
+    grip.title = '拖动调整列宽（双击恢复内容自适应）'
+    grip.setAttribute('aria-hidden', 'true')
+    grip.addEventListener('mousedown', e => beginColumnResize(state, b, e))
+    grip.addEventListener('dblclick', e => {
+      e.preventDefault()
+      e.stopPropagation()
+      clearColumnWidths(state)
+    })
+    colGrips.push(grip)
+  }
+
+  /*
    * 整表对齐:按钮和「选择整表 / 删除整表」一起放在右上角,点开从按钮左侧展开菜单。
    * 对齐是整张表的属性,所以入口不挂在某一格/某一行上。
    */
@@ -927,7 +1095,8 @@ function buildControlLayer(state: TableDomState): void {
     ...rowDeletes,
     ...addRows,
     ...colDeletes,
-    ...addCols
+    ...addCols,
+    ...colGrips
   )
   state.controls = {
     selectTable,
@@ -937,7 +1106,8 @@ function buildControlLayer(state: TableDomState): void {
     colDeletes,
     addCols,
     alignTable,
-    alignMenu
+    alignMenu,
+    colGrips
   }
   applySelectionClasses(state)
   // 重建后按上一次鼠标位置恢复"只在生效范围内显示"的状态
@@ -1081,6 +1251,10 @@ const ROW_CTL_BAND_LEFT = 20
 const ROW_CTL_BAND_RIGHT = CTL_RIGHT + 8
 const COL_CTL_BAND_TOP = 16
 
+/** 拖动列宽时每列的下限:百分比与像素取更严的那个,免得把列拖成一条缝 */
+const MIN_COL_PERCENT = 4
+const MIN_COL_PX = 56
+
 function layoutControls(state: TableDomState): void {
   const { frame, table, controls } = state
   const headRow = table.tHead?.rows[0]
@@ -1125,6 +1299,137 @@ function layoutControls(state: TableDomState): void {
     // 与列删除 × 同一带,紧贴表格上沿:列 × 不再悬得老远
     place(btn, x - frameRect.left, topY)
   })
+
+  // 列宽拖拽热区:盖在第 i 列与第 i+1 列之间的边界上,高度跟整张表走
+  controls.colGrips.forEach((grip, i) => {
+    const leftCell = headCells[i]
+    if (!leftCell) return
+    grip.style.left = `${Math.round(leftCell.getBoundingClientRect().right - frameRect.left)}px`
+    grip.style.top = `${Math.round(tableRect.top - frameRect.top)}px`
+    grip.style.height = `${Math.round(tableRect.height)}px`
+  })
+}
+
+/**
+ * 拖动列边界调宽。
+ *
+ * 拖动期间只改 DOM 里的 `<colgroup>`,松手才把结果写回表格上方那行指令 ——
+ * 每移动一像素就派发一次文档事务会把撤销栈和输入法状态搅乱,表格越大也越卡。
+ *
+ * 第一次真正拖动时表格会从「内容自适应」切成「铺满正文宽度 + 固定布局」:
+ * 百分比列宽必须有一个参照宽度才有意义。这个切换会让各列按比例整体放大一次,
+ * 属于预期内的视觉跳变。
+ */
+function beginColumnResize(state: TableDomState, boundary: number, event: MouseEvent): void {
+  if (event.button !== 0) return
+  const head = state.table.tHead?.rows[0]
+  if (!head) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (state.active) finishEdit(state, true)
+  state.cancelDrag?.()
+  clearSelection(state)
+
+  const cells = Array.from(head.cells)
+  const px = cells.map(cell => cell.getBoundingClientRect().width)
+  const total = px.reduce((sum, w) => sum + w, 0)
+  if (!(total > 0)) return
+
+  const startWidths = px.map(w => (w / total) * 100)
+  let current = startWidths.slice()
+  let moved = false
+  const startX = event.clientX
+  const grip = state.controls?.colGrips[boundary - 1]
+  state.resizing = true
+  grip?.classList.add('is-active')
+  state.wrap.classList.add('is-resizing')
+
+  const cleanup = (): void => {
+    window.removeEventListener('mousemove', move)
+    window.removeEventListener('mouseup', up)
+    window.removeEventListener('blur', cancel)
+    state.cancelDrag = null
+    state.resizing = false
+    grip?.classList.remove('is-active')
+    state.wrap.classList.remove('is-resizing')
+  }
+  const cancel = (): void => cleanup()
+
+  const move = (ev: MouseEvent): void => {
+    if (!moved) {
+      if (Math.abs(ev.clientX - startX) < 3) return
+      moved = true
+      // 先切到固定布局,后面的像素增量才有稳定的百分比参照
+      applyColumnWidths(state, startWidths)
+      state.model = { ...state.model, widths: startWidths }
+    }
+    const tableWidth = state.table.getBoundingClientRect().width || total
+    const min = Math.max(MIN_COL_PERCENT, (MIN_COL_PX / tableWidth) * 100)
+    const left = startWidths[boundary - 1]!
+    const right = startWidths[boundary]!
+    const delta = Math.max(
+      min - left,
+      Math.min(right - min, ((ev.clientX - startX) / tableWidth) * 100)
+    )
+    const next = startWidths.slice()
+    next[boundary - 1] = left + delta
+    next[boundary] = right - delta
+    current = next
+    applyColumnWidths(state, next)
+    // 模型也换成拖动中的宽度:期间若有事务重建装饰,别用旧值把 DOM 冲回去
+    state.model = { ...state.model, widths: next }
+    scheduleLayout(state)
+  }
+
+  const up = (): void => {
+    cleanup()
+    if (!moved) return
+    commitColumnWidths(state, current)
+  }
+
+  state.cancelDrag = cleanup
+  window.addEventListener('mousemove', move)
+  window.addEventListener('mouseup', up)
+  window.addEventListener('blur', cancel)
+}
+
+/** 双击拖拽热区:删掉指令行,回到内容自适应 */
+function clearColumnWidths(state: TableDomState): void {
+  const model = state.model
+  const view = state.view
+  const doc = view.state.doc
+  const widthLine = model.widthLine
+  if (!widthLine) return
+  // 行位置来自上一次解析;文档变过就放弃,交给下一轮装饰重建
+  if (doc.sliceString(model.head.from, model.head.to) !== model.head.raw) return
+  const line = doc.lineAt(widthLine.from)
+  const from = line.number < doc.lines ? line.from : Math.max(0, line.from - 1)
+  const to = line.number < doc.lines ? line.to + 1 : line.to
+  view.dispatch({ changes: { from, to, insert: '' } })
+  remeasureWidget(view)
+}
+
+/** 松手后把拖动结果写回源码;已有指令行就原地改,没有就插在表格正上方 */
+function commitColumnWidths(state: TableDomState, widths: number[]): void {
+  const model = state.model
+  const view = state.view
+  const doc = view.state.doc
+  // 拖动期间文档可能被整体换掉(切文件):位置对不上就绝不落笔
+  if (doc.sliceString(model.head.from, model.head.to) !== model.head.raw) return
+  const normalized = normalizeWidths(widths)
+  if (!normalized) return
+  const line = formatWidthsDirective(normalized)
+  if (model.widthLine) {
+    const sourceLine = doc.lineAt(model.widthLine.from)
+    view.dispatch({
+      changes: { from: sourceLine.from, to: sourceLine.to, insert: `${model.widthLine.prefix}${line}` }
+    })
+  } else {
+    const tableLine = doc.lineAt(model.from)
+    const prefix = doc.sliceString(tableLine.from, model.from)
+    view.dispatch({ changes: { from: tableLine.from, insert: `${prefix}${line}\n` } })
+  }
+  remeasureWidget(view)
 }
 
 /** 指针的 y 落在第几行(超出表格时夹到首/末行)—— 拖动时算矩形选区的下边界 */
@@ -1223,7 +1528,8 @@ function deleteTable(state: TableDomState): void {
   const doc = view.state.doc
   const first = doc.lineAt(state.model.from)
   const last = doc.lineAt(state.model.to)
-  let from = first.from
+  // 列宽指令行跟着表格一起删,否则会留下一行指向不存在表格的注释
+  let from = state.model.widthLine?.from ?? first.from
   let to = last.to
   if (to < doc.length) to += 1
   else if (from > 0) from -= 1
@@ -1292,6 +1598,25 @@ function deleteColumn(state: TableDomState, col: number): void {
   deleteColumns(state, [col])
 }
 
+/** 删列后的宽度:去掉对应条目后重新归一化 */
+function widthsAfterDelete(widths: number[], selected: Set<number>): number[] | null {
+  return normalizeWidths(widths.filter((_, i) => !selected.has(i)))
+}
+
+/**
+ * 插列后的宽度:把相邻列(插在最右端时是最后一列)的份额对半分给新列。
+ * 不重新平均分配 —— 用户已经调好的其他列不该被一次插入打乱。
+ */
+function widthsAfterInsert(widths: number[], before: number): number[] | null {
+  if (widths.length === 0) return null
+  const index = Math.min(Math.max(before, 0), widths.length - 1)
+  const next = widths.slice()
+  const share = next[index]! / 2
+  next[index] = share
+  next.splice(before, 0, share)
+  return normalizeWidths(next)
+}
+
 /** 删除连续/多列(点某一列的 ×;拖动选中的矩形只清空内容,不动表格结构) */
 function deleteColumns(state: TableDomState, cols: number[]): void {
   const model = state.model
@@ -1320,6 +1645,16 @@ function deleteColumns(state: TableDomState, cols: number[]): void {
     to: model.delimiter.to,
     insert: serializeDelimiter(nextAlign)
   })
+  if (model.widthLine && model.widths) {
+    const nextWidths = widthsAfterDelete(model.widths, isSelected)
+    if (nextWidths) {
+      changes.push({
+        from: model.widthLine.from,
+        to: model.widthLine.to,
+        insert: `${model.widthLine.prefix}${formatWidthsDirective(nextWidths)}`
+      })
+    }
+  }
   state.selection = null
   state.view.dispatch({ changes: sortedChanges(changes) })
 }
@@ -1342,8 +1677,9 @@ function insertRowAfter(state: TableDomState, after: number): void {
     change = { from: line.to, insert: `\n${containerPrefix(doc, model)}${text}` }
   }
   state.selection = null
+  const before = new Set(renderedTables)
   state.view.dispatch({ changes: change })
-  startEdit(state, after + 1, 0)
+  startEditAfterChange(state, before, after + 1, 0)
 }
 
 function insertColumnBefore(state: TableDomState, before: number): void {
@@ -1366,9 +1702,20 @@ function insertColumnBefore(state: TableDomState, before: number): void {
     to: model.delimiter.to,
     insert: serializeDelimiter(nextAlign)
   })
+  if (model.widthLine && model.widths) {
+    const nextWidths = widthsAfterInsert(model.widths, before)
+    if (nextWidths) {
+      changes.push({
+        from: model.widthLine.from,
+        to: model.widthLine.to,
+        insert: `${model.widthLine.prefix}${formatWidthsDirective(nextWidths)}`
+      })
+    }
+  }
   state.selection = null
+  const known = new Set(renderedTables)
   state.view.dispatch({ changes: sortedChanges(changes) })
-  startEdit(state, 0, before)
+  startEditAfterChange(state, known, 0, before)
 }
 
 /**
@@ -1655,10 +2002,11 @@ function pasteGrid(state: TableDomState, anchorRow: number, anchorCol: number, g
   for (let r = 1; r < matrix.length; r++) lines.push(`${prefix}${serialize(matrix[r])}`)
 
   state.selection = null
+  const before = new Set(renderedTables)
   state.view.dispatch({
     changes: { from: model.from, to: model.to, insert: lines.join('\n') }
   })
-  startEdit(state, anchorR, anchorC)
+  startEditAfterChange(state, before, anchorR, anchorC)
 }
 
 /**
@@ -1712,6 +2060,7 @@ export class TableWidget extends WidgetType {
       rows: [],
       rendered: [],
       aligns: [],
+      widths: null,
       view,
       model: this.spec,
       tableFrom: this.spec.from,
@@ -1721,6 +2070,7 @@ export class TableWidget extends WidgetType {
       layoutScheduled: false,
       hover: null,
       cancelDrag: null,
+      resizing: false,
       autoFocusPending: false
     }
     tableStates.set(wrap, state)

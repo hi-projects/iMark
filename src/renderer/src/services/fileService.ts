@@ -338,15 +338,12 @@ export async function saveBeforeClose(): Promise<void> {
   api.notifySaveDone(ok)
 }
 
-export async function exportHtmlFile(): Promise<void> {
-  const view = requireView()
-  const tab = activeTab()
-  if (!view || !tab) return
-  flushTableEdits()
+/** 渲染并让用户选路径落盘。两个导出入口共用,免得默认文件名与失败提示各写一份 */
+async function saveMarkdownAsHtml(markdown: string, fileName: string): Promise<void> {
   // Mermaid 是异步渲染,导出得等所有图表画完再落盘
-  const html = await renderHtml(view.state.doc.toString(), tab.fileName)
+  const html = await renderHtml(markdown, fileName)
   const target = await api.saveFileDialog({
-    defaultName: `${stripMarkdownExt(tab.fileName)}.html`,
+    defaultName: `${stripMarkdownExt(fileName)}.html`,
     kind: 'html'
   })
   if (!target) return
@@ -355,6 +352,38 @@ export async function exportHtmlFile(): Promise<void> {
   } catch (err) {
     notifyError('导出', err)
   }
+}
+
+export async function exportHtmlFile(): Promise<void> {
+  const tab = activeTab()
+  if (!tab) return
+  const markdown = tabText(tab.id)
+  if (markdown === null) return
+  await saveMarkdownAsHtml(markdown, tab.fileName)
+}
+
+/**
+ * 把文件树里任意文件导出成 HTML。
+ *
+ * 已经打开的标签取编辑器里的正文(含未保存改动)—— 从磁盘重读会让用户
+ * 刚敲的内容出现在屏幕上、却不在导出的文件里。当前标签的 tabText 顺带
+ * 刷新表格单元格里还没提交的字符,和处理活动标签导出时保持一致。
+ */
+export async function exportHtmlForPath(path: string, fileName: string): Promise<void> {
+  const tab = tabByPath(path)
+  let markdown: string | null
+  if (tab) {
+    markdown = tabText(tab.id)
+  } else {
+    try {
+      markdown = (await api.readFile(path)).content
+    } catch (err) {
+      notifyError('导出', err)
+      return
+    }
+  }
+  if (markdown === null) return
+  await saveMarkdownAsHtml(markdown, fileName)
 }
 
 // ---------- 关闭 ----------
@@ -378,6 +407,22 @@ export async function closeTab(tabId: string): Promise<boolean> {
   if (!(await confirmDiscardTab(tab))) return false
   closeTabNow(tabId)
   return true
+}
+
+/** 关闭除 keepId 之外的所有标签。逐个走脏确认,任一被取消就停下(已关的不会重开) */
+export async function closeOtherTabs(keepId: string): Promise<void> {
+  for (const tab of [...appStore.tabs]) {
+    if (tab.id === keepId) continue
+    if (!(await closeTab(tab.id))) return
+  }
+  activateTab(keepId)
+}
+
+/** 关闭所有标签。与 closeOtherTabs 一样逐个确认,取消后停止,不静默丢改动 */
+export async function closeAllTabs(): Promise<void> {
+  for (const tab of [...appStore.tabs]) {
+    if (!(await closeTab(tab.id))) return
+  }
 }
 
 /**

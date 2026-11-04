@@ -80,12 +80,39 @@ body.pane-resizing * {
 .explorer {
   display: flex;
   flex-direction: column;
-  flex: 0 0 var(--explorer-width, 240px);
+  flex: 0 0 auto;
+  width: var(--explorer-width, 240px);
   min-width: 0;
   /* 兜底:两个侧栏都取持久化的极宽值时,正文区至少还能剩 320px */
   max-width: calc(50% - 160px);
   background: var(--bg-app);
   user-select: none;
+  /* 收起时内容跟着宽度一起被裁掉,而不是压扁换行 */
+  overflow: hidden;
+}
+
+/*
+ * v-show + Transition:收起 = 宽度滑到 0。
+ * 过渡只挂动画类,不挂 .explorer 本体 —— 拖动分界条改变 explorerWidth 时不该有延迟。
+ */
+.explorer-slide-enter-active,
+.explorer-slide-leave-active {
+  transition:
+    width 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.explorer-slide-enter-from,
+.explorer-slide-leave-to {
+  width: 0;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .explorer-slide-enter-active,
+  .explorer-slide-leave-active {
+    transition: none;
+  }
 }
 
 /* 仅承载左上角操作按钮(新建文件 / 新建文件夹 / 刷新),无标题文字。
@@ -152,6 +179,7 @@ body.pane-resizing * {
 }
 
 .explorer-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -161,6 +189,19 @@ body.pane-resizing * {
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
+}
+
+/*
+ * 层级引导线:每条祖先层级一根,与该层目录行的展开箭头对齐。
+ * 撑满行高;相邻行上下相接,就是一条连续的竖线。
+ */
+.explorer-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .explorer-item:hover {
@@ -237,8 +278,15 @@ body.pane-resizing * {
   color: var(--text-primary);
 }
 
+/* 新建目录时占住展开箭头的位置,让输入框与建好后的目录行同列 */
+.explorer-chevron-space {
+  flex: 0 0 auto;
+  width: 13px;
+}
+
 .explorer-editing input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 2px 6px;
   border: 1px solid var(--accent);
   border-radius: 4px;
@@ -315,16 +363,44 @@ body.pane-resizing * {
 
 /* ---------- 大纲侧栏 ---------- */
 
-/* 大纲固定在窗口右侧 */
+/* 大纲固定在窗口右侧。宽度用 width 而不是 flex-basis:折叠动画要过渡它 */
 .outline-sidebar {
   display: flex;
   flex-direction: column;
-  flex: 0 0 var(--outline-width, 240px);
+  flex: 0 0 auto;
+  width: var(--outline-width, 240px);
   min-width: 0;
   /* 同文件栏:防止持久化的极宽值把正文区挤没 */
   max-width: calc(50% - 160px);
   background: var(--bg-app);
   user-select: none;
+  /* 收起时内容跟着宽度一起被裁掉,而不是压扁换行 */
+  overflow: hidden;
+}
+
+/*
+ * v-show + Transition:收起 = 宽度滑到 0。
+ * 过渡只挂在动画类上,不挂在 .outline-sidebar 本体 —— 拖动分界条时
+ * outlineWidth 会连续变化,挂在本体上会让拖动慢半拍。
+ */
+.outline-slide-enter-active,
+.outline-slide-leave-active {
+  transition:
+    width 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.outline-slide-enter-from,
+.outline-slide-leave-to {
+  width: 0;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .outline-slide-enter-active,
+  .outline-slide-leave-active {
+    transition: none;
+  }
 }
 
 .outline-header {
@@ -346,6 +422,7 @@ body.pane-resizing * {
 }
 
 .outline-item {
+  position: relative;
   padding: 4px 14px 4px 14px;
   font-size: 13px;
   line-height: 1.5;
@@ -355,6 +432,20 @@ body.pane-resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
   border-left: 2px solid transparent;
+}
+
+/*
+ * 层级引导线:每条后代层级一根,和该层祖先正文的左缘对齐。
+ * 相对条目绝对定位、撑满行高;相邻条目上下相接,看起来就是一条连续的竖线。
+ * 颜色取 --border,与侧栏分界/表格线同一档,深色主题下自动变淡。
+ */
+.outline-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .outline-item:hover {

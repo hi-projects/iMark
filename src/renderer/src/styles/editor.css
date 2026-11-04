@@ -168,6 +168,40 @@
   padding: 0.12em 0.4em;
 }
 
+/* ---------- 行内 HTML 白名单(services/inlineHtml) ---------- */
+/* 与 Markdown 写法重叠的标签已经复用上面的类,这里只补 Markdown 没有的几种 */
+.cm-md-html-u {
+  text-decoration: underline;
+}
+
+.cm-md-html-mark {
+  background: var(--bg-code);
+  border-radius: 2px;
+  padding: 0 0.15em;
+}
+
+.cm-md-html-sub,
+.cm-md-html-sup {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.cm-md-html-sub {
+  vertical-align: sub;
+}
+
+.cm-md-html-sup {
+  vertical-align: super;
+}
+
+.cm-md-html-kbd {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+}
+
 /*
  * 代码块整行底色 + 左侧留白。
  *
@@ -494,6 +528,8 @@
 .cm-md-table-frame {
   position: relative;
   display: inline-block;
+  /* 自定义过列宽的表格铺满正文宽度(见 .cm-md-table-frame-sized) */
+  box-sizing: border-box;
   /* 表格与正文的上下间距:这两段是 widget 自己的留白,不是可点击的文档行 */
   padding: var(--md-table-gap-top, var(--md-table-gap, 12px)) 30px
     var(--md-table-gap-bottom, var(--md-table-gap, 12px)) 24px;
@@ -509,6 +545,27 @@
   font-family: var(--font-text);
   font-size: 0.95em;
   line-height: 1.45;
+}
+
+/*
+ * 自定义过列宽(源码里表格上方有 <!-- imark:table-widths ... -->):
+ * frame 改成块级,table 铺满正文宽度,列宽全部交给拖动写入的 <colgroup>。
+ * 百分比要在块级容器里才有稳定的参照宽度 —— 保持 inline-block 的内容宽度,
+ * 列宽比例就会随内容一起缩,拖出来的效果和窗口宽度脱钩。
+ */
+.cm-md-table-frame.cm-md-table-frame-sized {
+  display: block;
+}
+
+.cm-md-table-widget table.cm-md-table-fixed {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* 固定布局下,单元格的 min-width 会和 colgroup 抢列宽;让拖动结果说话 */
+.cm-md-table-widget table.cm-md-table-fixed th,
+.cm-md-table-widget table.cm-md-table-fixed td {
+  min-width: 0;
 }
 
 /*
@@ -584,6 +641,40 @@
   inset: 0;
   pointer-events: none;
   z-index: 2;
+}
+
+/*
+ * 列宽拖拽热区:盖在两条列的边界线上,坐标由 layoutControls 按单元格几何算。
+ * 热区本身透明,悬停/拖动时才画一条强调色线 —— 平时别打扰表格内容。
+ */
+.cm-md-table-col-grip {
+  position: absolute;
+  width: 9px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.cm-md-table-col-grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+
+.cm-md-table-col-grip:hover::after,
+.cm-md-table-col-grip.is-active::after {
+  background: var(--accent);
+}
+
+.cm-md-table-widget.is-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .cm-md-table-ctl {
@@ -717,7 +808,8 @@
  * .cm-md-table-frame 的 --md-table-gap-top / --md-table-gap-bottom。
  */
 .cm-md-table-void,
-.cm-md-table-gap {
+.cm-md-table-gap,
+.cm-md-table-widths {
   line-height: 0;
   font-size: 0;
   min-height: 0;

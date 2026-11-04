@@ -298,7 +298,10 @@ RangeSet + EditorView.atomicRanges
 - 中文输入法组合期间（`compositionstart` 到 `compositionend`）跳过重建，避免候选窗被打断。
 - 跨行块（表格、块级公式、Mermaid）只替换首行成 widget，其余行清空并折叠为零高度；首行不在
   视口内时整块退回源码，避免出现空白。详见 `rules.ts` / `widgets.ts` 的注释。
-- 表格的单元格输入、行列增删、整表对齐/删除、矩形选区等都在 `widgets.ts` 内实现。
+- 表格的单元格输入、行列增删、整表对齐/删除、矩形选区、拖动列边界调宽等都在 `widgets.ts` 内实现。
+- 自定义列宽存成表格正上方的一行 HTML 注释（`<!-- imark:table-widths 20% 45% 35% -->`，
+  解析见 `services/tableWidths.ts`）：GFM 没有列宽语法，注释对其他渲染器无害；渲染态把它
+  和表格一起隐藏，导出时转成 `<colgroup>`。
 
 ### 9.2 公式与图表
 

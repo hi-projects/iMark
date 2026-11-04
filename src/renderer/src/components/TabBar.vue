@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Plus, X } from 'lucide-vue-next'
 import { appStore } from '../stores/app'
 import { activateTab, moveTab, tabLabel, tabTooltip, type DocTab } from '../services/tabs'
-import { closeTab, newFile } from '../services/fileService'
+import { closeAllTabs, closeOtherTabs, closeTab, newFile } from '../services/fileService'
 
 /**
  * 标签栏(仿 Obsidian):
- *   - 点击激活;中键关闭;右键留给以后(目前不抢上下文菜单)
+ *   - 点击激活;中键关闭;右键菜单可关闭其余/全部标签
  *   - 拖动排序;拖到目标标签的左/右半边决定插在前面还是后面
  *   - 脏标记是标题右侧的小圆点,鼠标悬停/激活时圆点让位给关闭按钮
  *   - 空白处双击 = 新建标签页(与 Obsidian 一致)
@@ -65,6 +65,54 @@ function createTab(): void {
   void newFile()
 }
 
+// ---------- 右键菜单 ----------
+
+const menu = reactive<{ open: boolean; x: number; y: number; tabId: string | null }>({
+  open: false,
+  x: 0,
+  y: 0,
+  tabId: null
+})
+const menuEl = ref<HTMLElement | null>(null)
+
+async function openMenu(e: MouseEvent, tab: DocTab): Promise<void> {
+  e.preventDefault()
+  menu.tabId = tab.id
+  menu.x = e.clientX
+  menu.y = e.clientY
+  menu.open = true
+  // 贴边右键时把菜单挪回可视区;nextTick 在浏览器绘制前跑完,不会闪一下
+  await nextTick()
+  const el = menuEl.value
+  if (!el) return
+  const { width, height } = el.getBoundingClientRect()
+  menu.x = Math.max(4, Math.min(menu.x, window.innerWidth - width - 4))
+  menu.y = Math.max(4, Math.min(menu.y, window.innerHeight - height - 4))
+}
+
+function closeMenu(): void {
+  menu.open = false
+  menu.tabId = null
+}
+
+function runCloseOthers(): void {
+  const keepId = menu.tabId
+  closeMenu()
+  if (keepId) void closeOtherTabs(keepId)
+}
+
+function runCloseAll(): void {
+  closeMenu()
+  void closeAllTabs()
+}
+
+function onWindowKeydown(e: KeyboardEvent): void {
+  if (menu.open && e.key === 'Escape') closeMenu()
+}
+
+onMounted(() => window.addEventListener('keydown', onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
+
 /** 激活项变化时把标签滚进可视区(标签多了以后,切换快捷键不能切到看不见的页) */
 watch(
   () => appStore.activeTabId,
@@ -99,6 +147,7 @@ watch(
         :title="tabTooltip(tab)"
         draggable="true"
         @click="activateTab(tab.id)"
+        @contextmenu.prevent="openMenu($event, tab)"
         @auxclick="onAuxClick($event, tab)"
         @dragstart="onDragStart($event, tab)"
         @dragover="onDragOver($event, tab)"
@@ -123,5 +172,32 @@ watch(
     <button class="tab-new" title="新建标签页 (Ctrl+N)" @click="createTab">
       <Plus :size="15" />
     </button>
+  </div>
+
+  <!-- 标签右键菜单。遮罩负责「点别处就关掉」,也挡住底下的误点 -->
+  <div
+    v-if="menu.open"
+    class="tab-menu-mask"
+    @click="closeMenu"
+    @contextmenu.prevent="closeMenu"
+    @wheel="closeMenu"
+  >
+    <div
+      ref="menuEl"
+      class="tab-menu"
+      role="menu"
+      :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
+      @click.stop
+    >
+      <button
+        class="tab-menu-item"
+        role="menuitem"
+        :disabled="appStore.tabs.length <= 1"
+        @click="runCloseOthers"
+      >
+        关闭其余标签
+      </button>
+      <button class="tab-menu-item" role="menuitem" @click="runCloseAll">关闭所有标签</button>
+    </div>
   </div>
 </template>

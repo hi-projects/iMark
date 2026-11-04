@@ -5,6 +5,7 @@ import {
   CheckboxWidget,
   CodeCopyWidget,
   HrWidget,
+  HtmlBreakWidget,
   ImageWidget,
   MathWidget,
   MermaidWidget,
@@ -13,9 +14,12 @@ import {
   type TableAlign,
   type TableCellSpec,
   type TableRowSpec,
-  type TableSpec
+  type TableSpec,
+  type TableWidthLine
 } from './widgets'
 import { touches, touchesLines } from './selection'
+import { parseInlineTag } from '../../services/inlineHtml'
+import { fitWidths, parseWidthsDirectiveLine } from '../../services/tableWidths'
 import { mathContentRange, mathSource } from '../math'
 import { currentMermaidTheme } from '../../services/mermaid'
 import { resolveImageSrc } from '../../utils/text'
@@ -419,6 +423,27 @@ function scanRow(doc: Text, from: number, to: number): TableCellSpec[] {
  * 行边界取自解析器(TableHeader / TableRow),所以引用块、缩进里的表格也能正确
  * 定位 —— 行节点的 from/to 天然把 `> ` 这类容器前缀排除在外,整行重写时不会碰它们。
  */
+/**
+ * 表格正上方那行是不是列宽指令。
+ *
+ * 只认**紧邻**的一行:指令是 iMark 自己写的,不会和表格之间隔空行。返回整行范围
+ * (改写/删除用)与指令文本范围(渲染态只隐藏指令本身,保留 `> ` 这类容器前缀)。
+ */
+function readWidthLine(line: Line): { line: TableWidthLine; widths: number[] } | null {
+  const parsed = parseWidthsDirectiveLine(line.text)
+  if (!parsed) return null
+  return {
+    line: {
+      from: line.from,
+      to: line.to,
+      textFrom: line.from + parsed.from,
+      textTo: line.from + parsed.to,
+      prefix: line.text.slice(0, parsed.from)
+    },
+    widths: parsed.widths
+  }
+}
+
 function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
   const header = table.getChild('TableHeader')
   if (!header) return null
@@ -465,17 +490,25 @@ function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
    * 表格上下紧邻的空行是 Markdown 的结构行,渲染态下要跟表格一起藏起来
    * (见 TableSpec.protectFrom/protectTo)。只认**紧邻**的一行:再往外是
    * 用户自己写的空行,照常参与排版。
+   *
+   * 有列宽指令时,指令行插在表格与结构空行之间:两者都算进保护范围,
+   * 光标/点击不会停在这两行看不见的源码上。
    */
   const first = doc.lineAt(table.from)
   const last = doc.lineAt(table.to)
-  const above = first.number > 1 ? doc.line(first.number - 1) : null
+  const widthInfo = first.number > 1 ? readWidthLine(doc.line(first.number - 1)) : null
+  const aboveNumber = widthInfo ? first.number - 2 : first.number - 1
+  const above = aboveNumber >= 1 ? doc.line(aboveNumber) : null
   const below = last.number < doc.lines ? doc.line(last.number + 1) : null
+  const widthLine = widthInfo?.line ?? null
 
   return {
     from: table.from,
     to: table.to,
     columns,
     align,
+    widths: widthInfo ? fitWidths(widthInfo.widths, columns) : null,
+    widthLine,
     head: {
       from: header.from,
       to: header.to,
@@ -488,7 +521,10 @@ function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
     delimiter: delim
       ? { from: delim.from, to: delim.to }
       : { from: header.to, to: header.to },
-    protectFrom: above && isBlankLine(above.text) ? above.from : table.from,
+    protectFrom:
+      above && isBlankLine(above.text)
+        ? above.from
+        : (widthLine?.from ?? table.from),
     protectTo: below && isBlankLine(below.text) ? below.to : table.to
   }
 }
@@ -672,6 +708,83 @@ function stylePendingListMarker(ctx: RuleContext, para: SyntaxNode): void {
     runLast = line
   }
   flush()
+}
+
+// ---------- 行内 HTML(白名单,见 services/inlineHtml) ----------
+
+/**
+ * 白名单标签 → 编辑器里的样式类。
+ *
+ * 和 Markdown 有对应写法的标签复用同一套类(b/strong 与 `**`、i/em 与 `*`、
+ * s/del 与 `~~`、code 与反引号),颜色和字体度量因此完全一致。span 只藏标签、
+ * 不加样式;没列出的标签不会走到这里。
+ */
+const HTML_TAG_CLASS: Record<string, string> = {
+  b: 'cm-md-strong',
+  strong: 'cm-md-strong',
+  i: 'cm-md-em',
+  em: 'cm-md-em',
+  u: 'cm-md-html-u',
+  ins: 'cm-md-html-u',
+  s: 'cm-md-strike',
+  del: 'cm-md-strike',
+  mark: 'cm-md-html-mark',
+  sub: 'cm-md-html-sub',
+  sup: 'cm-md-html-sup',
+  kbd: 'cm-md-html-kbd',
+  code: 'cm-md-inlinecode',
+  span: ''
+}
+
+/**
+ * 在**同一父节点**里找配对的结束标签。
+ *
+ * 只走兄弟节点:正常的 `<b>…</b>` 会解析成同一段/标题里的两个 HTMLTag。
+ * 开始标签在强调、链接内部时结束标签可能是别的父节点,这种情况按"没配对"
+ * 处理 —— 保持源码,总比把内容莫名其妙地套上样式好。
+ */
+function findHtmlCloseTag(open: SyntaxNode, name: string, doc: Text): SyntaxNode | null {
+  let depth = 0
+  for (let node = open.nextSibling; node; node = node.nextSibling) {
+    if (node.name !== 'HTMLTag') continue
+    const tag = parseInlineTag(doc.sliceString(node.from, node.to))
+    if (!tag || tag.name !== name) continue
+    if (tag.closing) {
+      if (depth === 0) return node
+      depth--
+    } else if (!tag.void) {
+      depth++
+    }
+  }
+  return null
+}
+
+/**
+ * 一个行内 HTML 标签 → 装饰。
+ *
+ * 成对标签在**选区不碰整个元素**时把标签藏起来,内容套上等价样式;落单的开始
+ * 标签保持源码 —— 打了一半的 `<b>` 不该悄悄吃掉后面的正文。<br> 是空元素,
+ * 换成一个真正的换行元素(见 HtmlBreakWidget)。
+ */
+function styleInlineHtmlTag(tag: SyntaxNode, ctx: RuleContext): void {
+  const parsed = parseInlineTag(ctx.doc.sliceString(tag.from, tag.to))
+  if (!parsed) return
+  // 配对的结束标签由开始标签统一隐藏;落单的结束标签保持源码
+  if (parsed.closing) return
+  if (parsed.void) {
+    if (!touches(ctx.sel, tag.from, tag.to)) {
+      hideWithWidget(ctx, tag.from, tag.to, new HtmlBreakWidget())
+    }
+    return
+  }
+  const close = findHtmlCloseTag(tag, parsed.name, ctx.doc)
+  if (!close) return
+  if (!touches(ctx.sel, tag.from, close.to)) {
+    hide(ctx, tag.from, tag.to)
+    hide(ctx, close.from, close.to)
+  }
+  const cls = HTML_TAG_CLASS[parsed.name]
+  if (cls) addMark(ctx, tag.to, close.from, cls)
 }
 
 // ---------- 节点 → 装饰规则分发表(唯一落点) ----------
@@ -1074,11 +1187,24 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        * 光标/点击由 keepCaretOutOfTables 与 caretOutsideRenderedTable 按
        * TableSpec.protectFrom/protectTo 越过这段范围,用户不会停在看不见的行上。
        */
-      if (spec.protectFrom < node.from) addLine(ctx, spec.protectFrom, 'cm-md-table-gap')
+      if (spec.widthLine) {
+        // 列宽指令是表格的一部分:渲染态只藏指令文本,保留容器前缀的原位
+        addLine(ctx, spec.widthLine.from, 'cm-md-table-widths')
+        hide(ctx, spec.widthLine.textFrom, spec.widthLine.textTo)
+      }
+      if (spec.protectFrom < node.from && spec.protectFrom !== spec.widthLine?.from) {
+        addLine(ctx, spec.protectFrom, 'cm-md-table-gap')
+      }
       if (spec.protectTo > node.to) addLine(ctx, spec.protectTo, 'cm-md-table-gap')
       // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
       // 行内高亮由 widget 内部的 renderInline 负责
       return false
+    }
+
+    // ----- 行内 HTML(白名单) -----
+    case 'HTMLTag': {
+      styleInlineHtmlTag(node.node, ctx)
+      return
     }
 
     // ----- 独立 URL(autolink) -----

@@ -4,7 +4,9 @@ import katexCssRaw from 'katex/dist/katex.min.css?raw'
 import katexOverrides from '../styles/katex-overrides.css?raw'
 import { installMath } from './markdownMath'
 import { installCellLists } from './cellList'
+import { installInlineHtml } from './inlineHtml'
 import { mermaidErrorMessage, renderMermaid } from './mermaid'
+import { fitWidths, parseWidthsDirectiveLine } from './tableWidths'
 
 /** KaTeX 的字体走 CDN(导出文件给浏览器打开,内联 CSS 只保留字体外链) */
 const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/'
@@ -64,6 +66,65 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 installMath(md)
 // 单元格里的单行列表:与编辑器共用同一份解析(services/cellList)
 installCellLists(md)
+// 行内 HTML 白名单:与编辑器共用同一份名单(services/inlineHtml),属性一律丢弃
+installInlineHtml(md)
+// 列宽指令:导出时别把注释当正文显示,并把宽度落到 <colgroup> 上
+installTableWidths(md)
+
+/**
+ * 列宽指令(`<!-- imark:table-widths ... -->`)的导出支持。
+ *
+ * 导出用的 markdown-it 开了 html:false,不加处理的话这一行会被转义成一段
+ * 可见的注释文本。这里在 inline 之后把「只含指令的段落 + 紧跟的表格」认出来:
+ * 段落整个删掉,宽度挂到 table_open token 的 meta 上,由渲染器输出 colgroup。
+ */
+function installTableWidths(instance: MarkdownIt): void {
+  instance.core.ruler.after('inline', 'imark_table_widths', state => {
+    const tokens = state.tokens
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!
+      if (token.type !== 'inline') continue
+      const parsed = parseWidthsDirectiveLine(token.content)
+      if (!parsed) continue
+      if (tokens[i - 1]?.type !== 'paragraph_open' || tokens[i + 1]?.type !== 'paragraph_close') {
+        continue
+      }
+      const tableOpen = tokens[i + 2]
+      if (tableOpen?.type !== 'table_open') continue
+      const columns = tableColumnCount(tokens, i + 2)
+      const widths = columns > 0 ? fitWidths(parsed.widths, columns) : null
+      if (!widths) continue
+      tableOpen.meta = { ...(tableOpen.meta ?? {}), widths }
+      // 指令行本身不参与导出:连 paragraph_open / inline / paragraph_close 一起删
+      tokens.splice(i - 1, 3)
+      i = Math.max(0, i - 2)
+    }
+  })
+
+  instance.renderer.rules.table_open = (tokens, idx) => {
+    const widths = (tokens[idx]?.meta as { widths?: number[] } | null)?.widths
+    if (!widths || widths.length === 0) return '<table>\n'
+    const cols = widths.map(w => `<col style="width: ${Math.round(w * 10) / 10}%">`).join('')
+    return `<table class="imark-table-fixed">\n<colgroup>${cols}</colgroup>\n`
+  }
+}
+
+/** 表头那一行有几个 th —— 列宽条目要对齐到真实列数 */
+function tableColumnCount(tokens: MarkerToken[], tableOpenIndex: number): number {
+  let count = 0
+  for (let i = tableOpenIndex + 1; i < tokens.length; i++) {
+    const type = tokens[i]?.type
+    if (type === 'thead_close' || type === 'tbody_open' || type === 'tr_close') {
+      if (count > 0) break
+      continue
+    }
+    if (type === 'th_open') count += 1
+    if (type === 'table_close') break
+  }
+  return count
+}
+
+type MarkerToken = { type: string; meta?: unknown }
 
 const EXPORT_CSS = `
   :root { color-scheme: light; }
@@ -80,11 +141,16 @@ const EXPORT_CSS = `
   h4, h5, h6 { font-size: 1em; }
   a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  /* 行内 HTML 白名单(services/inlineHtml)里浏览器默认样式偏弱的两种 */
+  mark { background: #fff8c5; padding: 0 0.15em; border-radius: 2px; }
+  kbd { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.85em; border: 1px solid #d0d7de; border-radius: 3px; padding: 0.05em 0.35em; }
   code { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; background: rgba(175,184,193,0.25); border-radius: 4px; padding: 0.15em 0.4em; }
   pre { background: #f6f8fa; border-radius: 8px; padding: 16px; overflow-x: auto; }
   pre code { background: none; padding: 0; font-size: 0.88em; }
   blockquote { margin: 0; padding: 0 1em; border-left: 3px solid #d0d7de; color: #57606a; }
   table { border-collapse: collapse; margin: 1em 0; }
+  /* 拖动调过列宽的表:固定布局 + 百分比列宽,与编辑器里看到的比例一致 */
+  table.imark-table-fixed { table-layout: fixed; width: 100%; }
   th, td { border: 1px solid #d0d7de; padding: 6px 13px; }
   th .cm-md-cell-list, td .cm-md-cell-list { margin: 0; padding: 0 0 0 1.15em; }
   /* 空格子没有行盒,会塌成一条 —— 用零宽空格把行盒立起来,和编辑器里一个道理 */

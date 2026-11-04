@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'v
 import {
   ChevronDown,
   ChevronRight,
+  FileDown,
   FilePlus,
   FileText,
   Folder,
@@ -24,6 +25,7 @@ import {
   renamePath,
   requestVaultSwitch
 } from '../services/vaultService'
+import { exportHtmlForPath } from '../services/fileService'
 import { isInside, joinPath } from '../utils/paths'
 
 interface Row {
@@ -85,6 +87,14 @@ const newEditDepth = computed<number>(() => {
   const i = newEditAfter.value
   if (i === null || i < 0) return 1
   return (rows.value[i]?.depth ?? 0) + 1
+})
+
+/**
+ * 新建输入行的左内边距:与建好后那一行完全一致 ——
+ * 文件行没有展开箭头,靠 +16 把图标对齐到目录图标列;目录行则要留出箭头位置。
+ */
+const newEditPadding = computed<number>(() => {
+  return 8 + newEditDepth.value * 14 + (editing.mode === 'new-file' ? 16 : 0)
 })
 
 function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, target: VaultNode | null, initial = ''): void {
@@ -252,7 +262,7 @@ const menu = reactive<{ open: boolean; x: number; y: number; node: VaultNode | n
 })
 const menuEl = ref<HTMLElement | null>(null)
 
-/** 条目按节点类型给:目录能"在此新建",文件只有改名与删除 */
+/** 条目按节点类型给:目录能"在此新建",文件能导出;改名与删除两者都有 */
 const menuEntries = computed<MenuEntry[]>(() => {
   const node = menu.node
   if (!node) return []
@@ -262,6 +272,8 @@ const menuEntries = computed<MenuEntry[]>(() => {
       { label: '新建文件', run: () => startEdit('new-file', node.path, null) },
       { label: '新建文件夹', run: () => startEdit('new-dir', node.path, null) }
     )
+  } else {
+    entries.push({ label: '导出 HTML...', run: () => void exportHtmlForPath(node.path, node.name) })
   }
   entries.push({ label: '重命名', run: () => startEdit('rename', '', node, node.name) })
   entries.push({ label: '删除', danger: true, run: () => void onDelete(node) })
@@ -298,154 +310,67 @@ function onWindowKeydown(e: KeyboardEvent): void {
 
 onMounted(() => window.addEventListener('keydown', onWindowKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
+
+/**
+ * 层级引导线:每个祖先层级一条竖线,与该层目录行的展开箭头**中心**对齐。
+ * 根目录行的 depth 是 1、缩进 8 + depth * 14,所以 depth 为 d 的行要画 d-1 条。
+ * 展开箭头是 13px 宽、贴在缩进处,中心在 paddingLeft + 6.5;1px 的线左移 0.5
+ * 落在整数像素上正好居中,所以偏移取 8 + level * 14 + 6。
+ */
+function guideLeft(level: number): string {
+  return `${8 + level * 14 + 6}px`
+}
 </script>
 
 <template>
-  <aside v-show="appStore.explorerVisible" class="explorer">
-    <div class="explorer-header">
-      <span class="explorer-actions">
-        <button
-          v-if="appStore.vaultTree"
-          title="新建文件"
-          @click="startEdit('new-file', appStore.vaultPath!, null)"
-        >
-          <FilePlus :size="13" />
-        </button>
-        <button
-          v-if="appStore.vaultTree"
-          title="新建文件夹"
-          @click="startEdit('new-dir', appStore.vaultPath!, null)"
-        >
-          <FolderPlus :size="13" />
-        </button>
-        <button v-if="appStore.vaultTree" title="刷新" @click="refreshVault()">
-          <RefreshCw :size="13" />
-        </button>
-      </span>
-    </div>
-
-    <div
-      class="explorer-list"
-      :class="{ 'explorer-list-drop': rootDrop }"
-      @dragover="onRootDragOver"
-      @dragleave="onRootDragLeave"
-      @drop="onRootDrop"
-    >
-      <button
-        v-if="!appStore.vaultTree"
-        class="explorer-open-vault"
-        @click="requestVaultSwitch()"
-      >
-        打开仓库...
-      </button>
-
-      <!-- 新建输入行:建在仓库根时出现在最前 -->
-      <div
-        v-if="newEditAfter === -1"
-        class="explorer-item explorer-editing"
-        :style="{ paddingLeft: 8 + newEditDepth * 14 + 'px' }"
-      >
-        <input
-          v-model="editing.value"
-          :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
-          @keydown.enter="onEnter"
-          @keydown.esc.prevent="cancelEdit"
-          @blur="cancelEdit"
-        />
+  <Transition name="explorer-slide">
+    <aside v-show="appStore.explorerVisible" class="explorer">
+      <div class="explorer-header">
+        <span class="explorer-actions">
+          <button
+            v-if="appStore.vaultTree"
+            title="新建文件"
+            @click="startEdit('new-file', appStore.vaultPath!, null)"
+          >
+            <FilePlus :size="13" />
+          </button>
+          <button
+            v-if="appStore.vaultTree"
+            title="新建文件夹"
+            @click="startEdit('new-dir', appStore.vaultPath!, null)"
+          >
+            <FolderPlus :size="13" />
+          </button>
+          <button v-if="appStore.vaultTree" title="刷新" @click="refreshVault()">
+            <RefreshCw :size="13" />
+          </button>
+        </span>
       </div>
 
-      <template v-for="(row, i) in rows" :key="row.node.path">
-        <!-- 重命名输入行 -->
-        <div v-if="editing.mode === 'rename' && editing.target?.path === row.node.path" class="explorer-item explorer-editing" :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }">
-          <input
-            v-model="editing.value"
-            @keydown.enter="onEnter"
-            @keydown.esc.prevent="cancelEdit"
-            @blur="cancelEdit"
-          />
-        </div>
-
-        <!-- 目录行 -->
-        <div
-          v-else-if="row.node.type === 'dir'"
-          class="explorer-item"
-          :class="{
-            'explorer-dragging': draggingNode?.path === row.node.path,
-            'explorer-drop-target': dropPath === row.node.path
-          }"
-          :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }"
-          draggable="true"
-          @click="toggleDir(row.node)"
-          @contextmenu.prevent="openMenu($event, row.node)"
-          @dragstart="onDragStart($event, row.node)"
-          @dragend="resetDrag"
-          @dragover.stop="onDragOver($event, row.node)"
-          @drop.stop="onDrop($event, row.node)"
+      <div
+        class="explorer-list"
+        :class="{ 'explorer-list-drop': rootDrop }"
+        @dragover="onRootDragOver"
+        @dragleave="onRootDragLeave"
+        @drop="onRootDrop"
+      >
+        <button
+          v-if="!appStore.vaultTree"
+          class="explorer-open-vault"
+          @click="requestVaultSwitch()"
         >
-          <component
-            :is="appStore.expandedDirs.has(row.node.path) ? ChevronDown : ChevronRight"
-            :size="13"
-            class="explorer-chevron"
-          />
-          <component
-            :is="appStore.expandedDirs.has(row.node.path) ? FolderOpen : Folder"
-            :size="14"
-            class="explorer-icon"
-          />
-          <span class="explorer-name" :title="row.node.name">{{ row.node.name }}</span>
-          <span class="explorer-item-actions" @click.stop>
-            <button title="新建文件" @click="startEdit('new-file', row.node.path, null)">
-              <FilePlus :size="13" />
-            </button>
-            <button title="新建文件夹" @click="startEdit('new-dir', row.node.path, null)">
-              <FolderPlus :size="13" />
-            </button>
-            <button title="重命名" @click="startEdit('rename', '', row.node, row.node.name)">
-              <Pencil :size="13" />
-            </button>
-            <button title="删除" @click="onDelete(row.node)">
-              <Trash2 :size="13" />
-            </button>
-          </span>
-        </div>
+          打开仓库...
+        </button>
 
-        <!-- 文件行 -->
+        <!-- 新建输入行:建在仓库根时出现在最前 -->
         <div
-          v-else
-          class="explorer-item explorer-file"
-          :class="{
-            'explorer-file-active': isOpenFile(row.node),
-            'explorer-dragging': draggingNode?.path === row.node.path,
-            'explorer-drop-target': dropPath === row.node.path
-          }"
-          :style="{ paddingLeft: 8 + row.depth * 14 + 16 + 'px' }"
-          :title="row.node.path"
-          draggable="true"
-          @click="openVaultFile(row.node.path)"
-          @contextmenu.prevent="openMenu($event, row.node)"
-          @dragstart="onDragStart($event, row.node)"
-          @dragend="resetDrag"
-          @dragover.stop="onDragOver($event, row.node)"
-          @drop.stop="onDrop($event, row.node)"
-        >
-          <FileText :size="14" class="explorer-icon" />
-          <span class="explorer-name">{{ row.node.name }}</span>
-          <span class="explorer-item-actions" @click.stop>
-            <button title="重命名" @click="startEdit('rename', '', row.node, row.node.name)">
-              <Pencil :size="13" />
-            </button>
-            <button title="删除" @click="onDelete(row.node)">
-              <Trash2 :size="13" />
-            </button>
-          </span>
-        </div>
-
-        <!-- 新建输入行:落在对应父目录展开后的第一个子项位置 -->
-        <div
-          v-if="newEditAfter === i"
+          v-if="newEditAfter === -1"
           class="explorer-item explorer-editing"
-          :style="{ paddingLeft: 8 + newEditDepth * 14 + 'px' }"
+          :style="{ paddingLeft: newEditPadding + 'px' }"
         >
+          <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
+          <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
+          <FileText v-else :size="14" class="explorer-icon" />
           <input
             v-model="editing.value"
             :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
@@ -454,9 +379,138 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
             @blur="cancelEdit"
           />
         </div>
-      </template>
-    </div>
-  </aside>
+
+        <template v-for="(row, i) in rows" :key="row.node.path">
+          <!-- 重命名输入行 -->
+          <div v-if="editing.mode === 'rename' && editing.target?.path === row.node.path" class="explorer-item explorer-editing" :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }">
+            <input
+              v-model="editing.value"
+              @keydown.enter="onEnter"
+              @keydown.esc.prevent="cancelEdit"
+              @blur="cancelEdit"
+            />
+          </div>
+
+          <!-- 目录行 -->
+          <div
+            v-else-if="row.node.type === 'dir'"
+            class="explorer-item"
+            :class="{
+              'explorer-dragging': draggingNode?.path === row.node.path,
+              'explorer-drop-target': dropPath === row.node.path
+            }"
+            :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }"
+            draggable="true"
+            @click="toggleDir(row.node)"
+            @contextmenu.prevent="openMenu($event, row.node)"
+            @dragstart="onDragStart($event, row.node)"
+            @dragend="resetDrag"
+            @dragover.stop="onDragOver($event, row.node)"
+            @drop.stop="onDrop($event, row.node)"
+          >
+            <span
+              v-for="level in row.depth - 1"
+              :key="level"
+              class="explorer-guide"
+              :style="{ left: guideLeft(level) }"
+              aria-hidden="true"
+            ></span>
+            <component
+              :is="appStore.expandedDirs.has(row.node.path) ? ChevronDown : ChevronRight"
+              :size="13"
+              class="explorer-chevron"
+            />
+            <component
+              :is="appStore.expandedDirs.has(row.node.path) ? FolderOpen : Folder"
+              :size="14"
+              class="explorer-icon"
+            />
+            <span class="explorer-name" :title="row.node.name">{{ row.node.name }}</span>
+            <span class="explorer-item-actions" @click.stop>
+              <button title="新建文件" @click="startEdit('new-file', row.node.path, null)">
+                <FilePlus :size="13" />
+              </button>
+              <button title="新建文件夹" @click="startEdit('new-dir', row.node.path, null)">
+                <FolderPlus :size="13" />
+              </button>
+              <button title="重命名" @click="startEdit('rename', '', row.node, row.node.name)">
+                <Pencil :size="13" />
+              </button>
+              <button title="删除" @click="onDelete(row.node)">
+                <Trash2 :size="13" />
+              </button>
+            </span>
+          </div>
+
+          <!-- 文件行 -->
+          <div
+            v-else
+            class="explorer-item explorer-file"
+            :class="{
+              'explorer-file-active': isOpenFile(row.node),
+              'explorer-dragging': draggingNode?.path === row.node.path,
+              'explorer-drop-target': dropPath === row.node.path
+            }"
+            :style="{ paddingLeft: 8 + row.depth * 14 + 16 + 'px' }"
+            :title="row.node.path"
+            draggable="true"
+            @click="openVaultFile(row.node.path)"
+            @contextmenu.prevent="openMenu($event, row.node)"
+            @dragstart="onDragStart($event, row.node)"
+            @dragend="resetDrag"
+            @dragover.stop="onDragOver($event, row.node)"
+            @drop.stop="onDrop($event, row.node)"
+          >
+            <span
+              v-for="level in row.depth - 1"
+              :key="level"
+              class="explorer-guide"
+              :style="{ left: guideLeft(level) }"
+              aria-hidden="true"
+            ></span>
+            <FileText :size="14" class="explorer-icon" />
+            <span class="explorer-name">{{ row.node.name }}</span>
+            <span class="explorer-item-actions" @click.stop>
+              <button title="导出 HTML" @click="exportHtmlForPath(row.node.path, row.node.name)">
+                <FileDown :size="13" />
+              </button>
+              <button title="重命名" @click="startEdit('rename', '', row.node, row.node.name)">
+                <Pencil :size="13" />
+              </button>
+              <button title="删除" @click="onDelete(row.node)">
+                <Trash2 :size="13" />
+              </button>
+            </span>
+          </div>
+
+          <!-- 新建输入行:落在对应父目录展开后的第一个子项位置,缩进与建好后的那一行一致 -->
+          <div
+            v-if="newEditAfter === i"
+            class="explorer-item explorer-editing"
+            :style="{ paddingLeft: newEditPadding + 'px' }"
+          >
+            <span
+              v-for="level in newEditDepth - 1"
+              :key="level"
+              class="explorer-guide"
+              :style="{ left: guideLeft(level) }"
+              aria-hidden="true"
+            ></span>
+            <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
+            <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
+            <FileText v-else :size="14" class="explorer-icon" />
+            <input
+              v-model="editing.value"
+              :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
+              @keydown.enter="onEnter"
+              @keydown.esc.prevent="cancelEdit"
+              @blur="cancelEdit"
+            />
+          </div>
+        </template>
+      </div>
+    </aside>
+  </Transition>
 
   <!--
     右键菜单。整屏透明遮罩负责"点别处就关掉",顺带挡住底下的误点;

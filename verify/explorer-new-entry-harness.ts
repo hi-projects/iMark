@@ -7,7 +7,8 @@
  * 仓库根)时才出现在最前。
  *
  * 断言:
- *   A 目录行「新建文件」→ 输入行紧跟该目录行、在它第一个子项之前,缩进 +1 层
+ *   A 目录行「新建文件」→ 输入行紧跟该目录行、在它第一个子项之前,
+ *     缩进与建好后的文件行一致(图标 + 无展开箭头的 16px 补偿)
  *   B 输入框自动聚焦;输入名字回车 → 文件真的建在那个目录里
  *   C 工具栏「新建文件」(仓库根)→ 输入行在列表最前,缩进第一层
  *   D 右键菜单「新建文件」→ 同样落在该目录下
@@ -61,6 +62,9 @@ interface EditInfo {
   /** 输入行与父目录行的 paddingLeft */
   padding: number | null
   parentPadding: number | null
+  /** 输入框左缘 / 相邻行名字左缘(px):两者对齐 = 输入框落在建好后的那一列 */
+  inputLeft: number | null
+  siblingLeft: number | null
   focused: boolean
   /** 输入行是不是列表里的第一个 .explorer-item */
   first: boolean
@@ -71,7 +75,7 @@ const EDIT_INFO = (name: string) => `
 (() => {
   const items = [...document.querySelectorAll('.explorer-list .explorer-item')]
   const input = document.querySelector('.explorer-editing input')
-  if (!input) return { found: false, prev: null, next: null, padding: null, parentPadding: null, focused: false, first: false, index: -1 }
+  if (!input) return { found: false, prev: null, next: null, padding: null, parentPadding: null, inputLeft: null, siblingLeft: null, focused: false, first: false, index: -1 }
   const row = input.closest('.explorer-item')
   const idx = items.indexOf(row)
   const label = el => {
@@ -82,12 +86,18 @@ const EDIT_INFO = (name: string) => `
   }
   const dir = items.find(el => el.querySelector('.explorer-name')?.textContent === ${JSON.stringify(name)})
   const px = el => el ? parseFloat(getComputedStyle(el).paddingLeft) : null
+  // 输入行后面紧跟的就是落点处的真实行;它(或前一行)的名字列就是输入框该在的位置
+  const sibling = [row.nextElementSibling, row.previousElementSibling]
+    .find(el => el && el.classList.contains('explorer-item'))
+  const siblingName = sibling ? sibling.querySelector('.explorer-name') : null
   return {
     found: true,
     prev: label(row.previousElementSibling),
     next: label(row.nextElementSibling),
     padding: px(row),
     parentPadding: px(dir),
+    inputLeft: input.getBoundingClientRect().left,
+    siblingLeft: siblingName ? siblingName.getBoundingClientRect().left : null,
     focused: document.activeElement === input,
     first: idx === 0,
     index: idx
@@ -157,6 +167,9 @@ async function main(): Promise<void> {
     return false
   }
   const editInfo = (name: string): Promise<EditInfo> => evalJs<EditInfo>(EDIT_INFO(name))
+  /** 输入框左缘是否落在建好后那一行的名字列上(±1px 容差:文件行与目录行的图标宽度差 1px) */
+  const aligned = (i: EditInfo): boolean =>
+    i.inputLeft !== null && i.siblingLeft !== null && Math.abs(i.inputLeft - i.siblingLeft) <= 1.5
   const rowNames = (): Promise<string[]> =>
     evalJs<string[]>(`[...document.querySelectorAll('.explorer-list .explorer-item .explorer-name')].map(e => e.textContent)`)
 
@@ -213,10 +226,11 @@ async function main(): Promise<void> {
   const aReady = await waitFor(`document.querySelector('.explorer-editing input')`)
   check('出现新建输入行', aReady)
   const a = await editInfo('ros2-moveit2')
-  console.log(`     prev=${a.prev} next=${a.next} padding=${a.padding}/${a.parentPadding}`)
+  console.log(`     prev=${a.prev} next=${a.next} padding=${a.padding}/${a.parentPadding} left=${a.inputLeft}/${a.siblingLeft}`)
   check('紧跟在 ros2-moveit2 目录行之后(不是在列表最前)', a.prev === 'ros2-moveit2' && !a.first, JSON.stringify([a.prev, a.first, a.index]))
   check('位于该目录第一个子项之前', a.next === '管线.md', String(a.next))
-  check('缩进比父目录深一层', a.padding !== null && a.parentPadding !== null && a.padding === a.parentPadding + 14, `${a.padding} vs ${a.parentPadding}`)
+  check('缩进与建好后的文件行一致(父目录 +14 层 +16 无箭头补偿)', a.padding !== null && a.parentPadding !== null && a.padding === a.parentPadding + 30, `${a.padding} vs ${a.parentPadding}`)
+  check('输入框与相邻文件名的列对齐', aligned(a), `${a.inputLeft} vs ${a.siblingLeft}`)
   check('输入框自动聚焦', a.focused)
 
   // ---------- B ----------
@@ -248,10 +262,11 @@ async function main(): Promise<void> {
   })()`)
   await waitFor(`document.querySelector('.explorer-editing input')`)
   const c = await editInfo('新文件.md')
-  console.log(`     prev=${c.prev} next=${c.next} padding=${c.padding}`)
+  console.log(`     prev=${c.prev} next=${c.next} padding=${c.padding} left=${c.inputLeft}/${c.siblingLeft}`)
   check('输入行是列表里的第一个 .explorer-item', c.first && c.prev === null, JSON.stringify([c.prev, c.first, c.index]))
   check('下一行是第一个顶层项', c.next === 'ros2', String(c.next))
-  check('缩进为第一层(8 + 1*14)', c.padding === 22, String(c.padding))
+  check('缩进为第一层的文件行(8 + 1*14 + 16)', c.padding === 38, String(c.padding))
+  check('输入框与相邻文件名的列对齐', aligned(c), `${c.inputLeft} vs ${c.siblingLeft}`)
   check('输入框自动聚焦', c.focused)
   await escape()
   await sleep(200)
@@ -278,7 +293,7 @@ async function main(): Promise<void> {
   const d = await editInfo('ros2-moveit2')
   console.log(`     prev=${d.prev} next=${d.next} padding=${d.padding}/${d.parentPadding}`)
   check('输入行紧跟 ros2-moveit2 目录行', d.prev === 'ros2-moveit2' && !d.first, JSON.stringify([d.prev, d.first]))
-  check('缩进比父目录深一层', d.padding !== null && d.parentPadding !== null && d.padding === d.parentPadding + 14, `${d.padding} vs ${d.parentPadding}`)
+  check('缩进与建好后的文件行一致', d.padding !== null && d.parentPadding !== null && d.padding === d.parentPadding + 30, `${d.padding} vs ${d.parentPadding}`)
   await escape()
   await sleep(200)
 
@@ -287,9 +302,10 @@ async function main(): Promise<void> {
   await clickRowAction('ros2-moveit2', '新建文件夹')
   await waitFor(`document.querySelector('.explorer-editing input')`)
   const e = await editInfo('ros2-moveit2')
-  console.log(`     prev=${e.prev} next=${e.next} padding=${e.padding}/${e.parentPadding}`)
+  console.log(`     prev=${e.prev} next=${e.next} padding=${e.padding}/${e.parentPadding} left=${e.inputLeft}/${e.siblingLeft}`)
   check('输入行紧跟 ros2-moveit2 目录行', e.prev === 'ros2-moveit2' && !e.first, JSON.stringify([e.prev, e.first]))
-  check('缩进比父目录深一层', e.padding !== null && e.parentPadding !== null && e.padding === e.parentPadding + 14, `${e.padding} vs ${e.parentPadding}`)
+  check('缩进比父目录深一层(目录行要留出展开箭头)', e.padding !== null && e.parentPadding !== null && e.padding === e.parentPadding + 14, `${e.padding} vs ${e.parentPadding}`)
+  check('输入框与相邻文件名的列对齐', aligned(e), `${e.inputLeft} vs ${e.siblingLeft}`)
   check('焦点在输入框', e.focused)
   await typeAndEnter('新目录')
   const dirCreated = join(vault, 'ros2/ros2-moveit2/新目录')
