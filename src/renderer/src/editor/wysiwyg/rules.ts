@@ -41,6 +41,10 @@ export interface RuleContext {
    * 没有则为 null。
    */
   pendingFence: number | null
+  /**
+   * 回车创建、仍空着的段落行首(见 editor/emptyParagraph.ts)。
+   */
+  emptyParagraphs: ReadonlySet<number>
   decos: Range<Decoration>[]
   atomic: Range<Decoration>[]
   links: LinkInfo[]
@@ -285,7 +289,12 @@ function addGapBefore(ctx: RuleContext, pos: number, padClass: string, blankClas
   const line = ctx.doc.lineAt(pos)
   if (line.number <= 1) return
   const prev = ctx.doc.line(line.number - 1)
-  if (!isBlankLine(prev.text) || caretOnGapLine(ctx, prev.from, prev.to)) addLine(ctx, prev.from, padClass)
+  if (
+    !isBlankLine(prev.text) ||
+    caretOnGapLine(ctx, prev.from, prev.to) ||
+    keptEmptyParagraph(ctx, prev.from)
+  )
+    addLine(ctx, prev.from, padClass)
   else addLine(ctx, prev.from, `cm-md-block-gap ${blankClass}`)
 }
 
@@ -293,7 +302,12 @@ function addGapAfter(ctx: RuleContext, pos: number, padClass: string, blankClass
   const line = ctx.doc.lineAt(pos)
   if (line.number >= ctx.doc.lines) return
   const next = ctx.doc.line(line.number + 1)
-  if (!isBlankLine(next.text) || caretOnGapLine(ctx, next.from, next.to)) addLine(ctx, next.from, padClass)
+  if (
+    !isBlankLine(next.text) ||
+    caretOnGapLine(ctx, next.from, next.to) ||
+    keptEmptyParagraph(ctx, next.from)
+  )
+    addLine(ctx, next.from, padClass)
   else addLine(ctx, next.from, `cm-md-block-gap ${blankClass}`)
 }
 
@@ -309,6 +323,16 @@ function addGapAfter(ctx: RuleContext, pos: number, padClass: string, blankClass
  */
 function caretOnGapLine(ctx: RuleContext, from: number, to: number): boolean {
   return ctx.sel.ranges.some(r => r.empty && r.head >= from && r.head <= to)
+}
+
+/**
+ * 这条空行是不是「回车创建、仍空着的段落」(见 editor/emptyParagraph.ts)。
+ *
+ * 它和光标停在上面的空行按同一种排法处理:保持整行高,不收紧成块间距 ——
+ * 否则光标一点开,第二段就缩成一道缝,再也点不回去。
+ */
+function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
+  return ctx.emptyParagraphs.has(from)
 }
 
 /**
@@ -358,6 +382,8 @@ export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: nu
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
     if (caretOnGapLine(ctx, line.from, line.to)) continue
+    // 光标刚离开的空段落仍是可点击的一行,不能收成间距
+    if (keptEmptyParagraph(ctx, line.from)) continue
     addLine(ctx, line.from, 'cm-md-block-gap cm-md-block-gap-body')
   }
 }
@@ -387,6 +413,35 @@ function listEndsWithLazyText(ctx: RuleContext, list: SyntaxNode): boolean {
   return false
 }
 
+/** 这一行是否以硬换行结束(Markdown 的硬换行 = 行尾两个以上空格,或反斜杠) */
+function endsWithHardBreak(line: Line): boolean {
+  return /(?: {2,}|\\)$/.test(line.text)
+}
+
+/**
+ * 行尾的单个反斜杠是硬换行标记:**始终**藏起来。
+ *
+ * 它只决定两行属于同一段,不是正文内容;光标移到这一行时也不应该露出来
+ * (删硬换行用续行行首退格或行尾退格)。双反斜杠是转义的字面反斜杠,
+ * 文末没有下一行时也保持原样。
+ */
+function hideTrailingBackslashLine(ctx: RuleContext, line: Line): void {
+  if (!/\\$/.test(line.text) || /\\{2}$/.test(line.text)) return
+  if (line.number >= ctx.doc.lines) return
+  hide(ctx, line.to - 1, line.to)
+}
+
+/**
+ * 段落最后一行行尾的单个反斜杠,在下一行还是空行时不会生成 HardBreak 节点
+ * (段落到反斜杠就结束)。但它就是 Shift+回车刚写下的硬换行标记:光标不在
+ * 这一行时也藏起来,免得刚按完 Shift+回车就看到一个反斜杠。
+ */
+function hideTrailingBackslash(ctx: RuleContext, para: SyntaxNode): void {
+  const last = ctx.doc.lineAt(para.to)
+  if (last.to !== para.to) return
+  hideTrailingBackslashLine(ctx, last)
+}
+
 /** 列表子树里最后一个列表标记:列表在视觉上的结尾(续行、嵌套列表都排在它后面) */
 function lastListMark(list: SyntaxNode): SyntaxNode | null {
   let found: SyntaxNode | null = null
@@ -401,13 +456,13 @@ function lastListMark(list: SyntaxNode): SyntaxNode | null {
 }
 
 /**
- * 有序列表标记是否已经敲完整(数字 + `.` / `)` 后面跟着空格或 Tab)。
+ * 列表标记是否已经敲完整(标记后面跟着空格或 Tab)。
  *
- * CommonMark 把行尾的 `1.` 也解析成空的有序列表项,所以只敲下 `1.` 时
- * OrderedList/ListMark 节点就已经存在。列表标记要等空格敲出来才渲染,
- * 和无序列表的 `- ` / `* ` 保持一致。
+ * CommonMark 把行尾的 `-` / `1.` 也解析成空的列表项,所以只敲下标记时
+ * ListMark 节点就已经存在。列表标记要等空格敲出来才渲染:输入短横线时
+ * 它还是正文,补上空格才变成圆点;有序列表同理(`1.` → `1. `)。
  */
-function orderedMarkerComplete(ctx: RuleContext, mark: SyntaxNode | null): boolean {
+function markerComplete(ctx: RuleContext, mark: SyntaxNode | null): boolean {
   if (!mark) return true
   const next = ctx.doc.sliceString(mark.to, Math.min(mark.to + 1, ctx.doc.length))
   return next === ' ' || next === '\t'
@@ -715,10 +770,18 @@ function isPendingFence(ctx: RuleContext, code: SyntaxNode): boolean {
  *
  * 多行占位(连着敲了几条空项)算一个列表:只在第一条前、最后一条后留白,
  * 项与项之间不额外隔开。
+ *
+ * 段内硬换行(Shift+回车)连着的行仍然属于同一段:这时不补列表的前/后间距,
+ * 否则硬换行会被撑成段落距离。等补上正文变成真正的列表时再按列表间距排。
  */
 function stylePendingListGaps(ctx: RuleContext, first: Line, last: Line = first): void {
-  addGapBefore(ctx, first.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
-  addGapAfter(ctx, last.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+  const prev = first.number > 1 ? ctx.doc.line(first.number - 1) : null
+  if (!prev || !endsWithHardBreak(prev)) {
+    addGapBefore(ctx, first.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
+  }
+  if (!endsWithHardBreak(last)) {
+    addGapAfter(ctx, last.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
+  }
 }
 
 /**
@@ -890,6 +953,10 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
           hide(ctx, node.from, endOfTrailingSpaces(ctx.doc, node.to))
         }
       } else if (parent.name === 'SetextHeading2' && ctx.doc.sliceString(node.from, node.to) === '-') {
+        // 上一行末尾若是硬换行反斜杠(Shift+回车后接着敲 `-` / `- `),
+        // 这一行会被解析成 Setext 下划线、没有 HardBreak 节点,兜底藏掉反斜杠
+        const markLine = ctx.doc.lineAt(node.from)
+        if (markLine.number > 1) hideTrailingBackslashLine(ctx, ctx.doc.line(markLine.number - 1))
         // 只敲了 `-`:还不算列表,按普通正文显示,补上空格才换圆点
         if (!isListDash(ctx, node.node)) return
         // 列表符号(不是 Setext 下划线):和真正的 ListMark 一样渲染成圆点
@@ -901,7 +968,9 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         // 这里同样还是「占位」状态(补字后才变 BulletList),列表间距提前打上
         stylePendingListGaps(ctx, ctx.doc.lineAt(node.from))
       } else {
-        // Setext 下划线:降级为变暗,不隐藏
+        // Setext 下划线:降级为变暗,不隐藏。上一行末尾的硬换行反斜杠同样藏掉。
+        const markLine = ctx.doc.lineAt(node.from)
+        if (markLine.number > 1) hideTrailingBackslashLine(ctx, ctx.doc.line(markLine.number - 1))
         ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-headermark') })
       }
       return
@@ -933,6 +1002,15 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       if (parent && !touches(ctx.sel, parent.from, parent.to)) {
         hide(ctx, node.from, node.to)
       }
+      return
+    }
+
+    // ----- 硬换行(Shift+回车的段内换行) -----
+    case 'HardBreak': {
+      // 反斜杠写法:始终藏起来,屏幕上只留行间距(见 hideTrailingBackslashLine)。
+      // 行尾两个空格的写法本来就看不见,不用处理。
+      const text = ctx.doc.sliceString(node.from, node.to)
+      if (text.startsWith('\\')) hide(ctx, node.from, node.from + 1)
       return
     }
 
@@ -1034,6 +1112,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'Paragraph':
       stylePendingListMarker(ctx, node.node)
       styleBodyGap(ctx, node.node)
+      hideTrailingBackslash(ctx, node.node)
       return // 下钻:行内强调 / 链接
 
     // ----- 列表 -----
@@ -1055,16 +1134,19 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         }
       }
       if (!nested) {
-        const ordered = node.name === 'OrderedList'
-        const firstMark = ordered
-          ? node.node.getChild('ListItem')?.getChild('ListMark') ?? null
-          : null
-        // 只敲了 `1.`(还没空格):整行按普通正文显示,也不补列表间距
-        if (ordered && !orderedMarkerComplete(ctx, firstMark)) return
+        const firstMark = node.node.getChild('ListItem')?.getChild('ListMark') ?? null
+        if (!markerComplete(ctx, firstMark)) {
+          // 只敲了 `-` / `1.`(还没空格):整行按普通正文显示,不补列表间距。
+          // 上下空行都按「两段正文之间」的段间距收起 —— 否则敲下短横线、
+          // 或在新段里开始输入时,空行从段间距恢复成整行,光标行会跳一下。
+          addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+          addGapAfter(ctx, node.to, 'cm-md-gap-body', 'cm-md-block-gap-body')
+          return
+        }
         const mark = lastListMark(node.node)
         if (mark) {
           addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
-          if (!ordered || orderedMarkerComplete(ctx, mark)) {
+          if (markerComplete(ctx, mark)) {
             addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
           }
         }
@@ -1078,8 +1160,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       // (由 checkbox widget 代替),其余字符仍保留在文档中,只是视觉上换成 •。
       const text = ctx.doc.sliceString(node.from, node.to)
       const isBullet = text === '-' || text === '*' || text === '+'
-      // 有序标记必须敲出后面的空格才渲染;只敲了 `1.` 时保持普通正文
-      if (!isBullet && !orderedMarkerComplete(ctx, node.node)) return
+      // 标记必须敲出后面的空格才渲染;只敲了 `-` / `1.` 时保持普通正文
+      if (!markerComplete(ctx, node.node)) return
       const after = ctx.doc.sliceString(node.to, Math.min(node.to + 4, ctx.doc.length))
       const isTask = /^\s?\[[ xX]\]/.test(after)
       ctx.decos.push({

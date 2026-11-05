@@ -6,6 +6,7 @@ import type { EditorView } from '@codemirror/view'
 import type { SyntaxNode } from '@lezer/common'
 import type { MenuCommandId } from '@shared/ipc-channels'
 import { getPendingFence } from './pendingFence'
+import { getEmptyParagraphs, paragraphBreak, paragraphBreakAfter } from './emptyParagraph'
 
 /**
  * 格式命令:工具栏 / 键位 / 原生菜单三端共用。
@@ -234,33 +235,80 @@ export function deleteEmptyListMarkup(view: EditorView): boolean {
  * 不依赖 iMark 的显示规则。
  *
  * 只处理顶格列表的最后一项;嵌套列表 / 引用里的空项仍交给默认命令逐级
- * 处理。默认命令把空项改成松散列表(标记还在)时也保持原样。
+ * 处理。
+ *
+ * 紧凑的两项列表(第二项是空项)上,默认命令会先把它改成松散列表 ——
+ * 空项连同标记往下挪一行,再按一次才退出。用户按回车的意图就是「退出」,
+ * 所以这里把下移后的标记行直接清空,一次回车就回到列表后的空段落。
  */
 export function exitListOnEmptyItem(view: EditorView): boolean {
   const state = view.state
   const sel = state.selection.main
   if (!sel.empty) return false
-  if (!isLastTopLevelEmptyListItem(state, state.doc.lineAt(sel.head))) return false
+  const line = state.doc.lineAt(sel.head)
+  if (!isLastTopLevelEmptyListItem(state, line)) return clearPendingListMarker(view, line)
   if (!insertNewlineContinueMarkup(view)) return false
 
   const next = view.state
   const caretLine = next.doc.lineAt(next.selection.main.head)
-  // 标记没被删掉(例如改成松散列表):这次回车不是在退出列表
+  // 默认命令把空项改成松散列表、标记还留在行上:清掉它,一次退出。
+  // 上面已经补好了分隔空行,光标留在这一条空行上。
+  if (/^(?:[-+*]|\d{1,9}[.)])[ \t]*$/.test(caretLine.text)) {
+    view.dispatch({
+      changes: { from: caretLine.from, to: caretLine.to },
+      selection: { anchor: caretLine.from },
+      scrollIntoView: true,
+      userEvent: 'delete',
+      annotations: paragraphBreakAfter.of(true)
+    })
+    return true
+  }
+  // 光标行上还有别的内容:没有在退出列表,保持原有行为
   if (/\S/.test(caretLine.text)) return true
   // 光标这行上面已经是一条空行(松散列表再退一次):已经隔开了,不用再补
   if (caretLine.number > 1 && !/\S/.test(next.doc.line(caretLine.number - 1).text)) return true
   const after = caretLine.number < next.doc.lines ? next.doc.line(caretLine.number + 1) : null
   if (after && !/\S/.test(after.text)) {
     // 下面已经是一条空行:它留作分隔,光标移过去
-    view.dispatch({ selection: { anchor: after.from }, scrollIntoView: true })
+    view.dispatch({
+      selection: { anchor: after.from },
+      scrollIntoView: true,
+      annotations: paragraphBreakAfter.of(true)
+    })
   } else {
     // 下面直接是正文(或已经是文末):补一条空行,光标落到新空行的行首
     view.dispatch({
       changes: { from: caretLine.to, insert: next.lineBreak },
       selection: { anchor: caretLine.to + next.lineBreak.length },
-      scrollIntoView: true
+      scrollIntoView: true,
+      annotations: paragraphBreakAfter.of(true)
     })
   }
+  return true
+}
+
+/**
+ * 还没被解析成列表项、只渲染成占位圆点/编号的标记行回车 = 取消这个空标记。
+ *
+ * 段内硬换行后的续行上敲 `- ` 时,CommonMark 会把它读成上一行的 Setext 下划线
+ * (空的列表项不能打断段落),没有 ListItem 节点;默认回车只会在下面新开一行,
+ * 标记留在原地。用户按回车的意图是「取消这个空列表项」,这里直接把标记行清空。
+ * 真正的列表项、代码 / 引用 / 表格里的行都不走这里。
+ */
+function clearPendingListMarker(view: EditorView, line: Line): boolean {
+  if (!/^[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+$/.test(line.text)) return false
+  const state = view.state
+  const node = nodeAtLineStart(state, line)
+  if (hasAncestor(node, ATOMIC_BLOCKS) || hasAncestor(node, QUOTE_NODES)) return false
+  for (let cur: SyntaxNode | null = node; cur; cur = cur.parent) {
+    if (cur.name === 'ListItem') return false
+  }
+  view.dispatch({
+    changes: { from: line.from, to: line.to },
+    selection: { anchor: line.from },
+    scrollIntoView: true,
+    userEvent: 'delete'
+  })
   return true
 }
 
@@ -319,7 +367,11 @@ const HEADING_NODES = new Set([
  * 字直接开始新段。导出的文件在任何 Markdown 编辑器里都是两段,不依赖 iMark
  * 自己的显示规则。
  *
- * 空行上回车只补一行:空行本身就是分隔,再补两行会连出三条空行。
+ * 空行上回车同样是新段:空行就是当前这段(还空着)的载体,回车把它结束掉、
+ * 在下面起一段新的。补两条换行 —— 第一条结束当前空段落,第二条做新段和它
+ * 之间的分隔,光标落在第二条换行之后;下面紧接正文时再多补一条,否则新段
+ * 会和下文并成同一段(别的编辑器看到的就是段内换行)。
+ *
  * 标题行尾回车也按新段,但标题本身就是块边界,新段不需要再和它隔空行 ——
  * 比正文少补一条,否则标题后面一按回车同样会连出三条空行。
  * 代码 / 表格 / 公式 / 引用 / 列表标记行 / 缩进行返回 false,交给原有命令
@@ -336,8 +388,12 @@ export function insertParagraph(view: EditorView): boolean {
   if (kind === 'other') return false
   const lb = state.lineBreak
 
-  // 空行上回车只补一行:空行本身就是分隔
-  if (kind === 'blank') return breakAt(view, pos, lb, lb.length)
+  // 空行上回车也是新段(见上面的说明)
+  if (kind === 'blank') {
+    const next = line.number < state.doc.lines ? state.doc.line(line.number + 1) : null
+    const gapBelow = next !== null && /\S/.test(next.text)
+    return breakAt(view, pos, gapBelow ? lb + lb + lb : lb + lb, lb.length * 2)
+  }
 
   const next = line.number < state.doc.lines ? state.doc.line(line.number + 1) : null
   // 标题到行尾就自己结束了:下面接正文不需要空行分隔,新段可以紧贴着标题。
@@ -359,7 +415,11 @@ export function insertParagraph(view: EditorView): boolean {
   // 标题后面只剩空行(文末):直接把光标挪到下面那条空行上。文件末尾本来
   // 就有换行,再补就是往源码里堆空行。敲下的字紧接在标题下面,仍是新段。
   if (selfEnding && next && !hasContentAfter(state, next)) {
-    view.dispatch({ selection: EditorSelection.cursor(next.from), scrollIntoView: true })
+    view.dispatch({
+      selection: EditorSelection.cursor(next.from),
+      scrollIntoView: true,
+      annotations: paragraphBreak.of(true)
+    })
     return true
   }
   // 段尾(下一行是空行或文末)/ 行中间:补一条空行,光标落到空行下面
@@ -381,7 +441,9 @@ function breakAt(view: EditorView, pos: number, insert: string, caretOffset: num
     changes: { from: pos, insert },
     selection: EditorSelection.cursor(pos + caretOffset),
     scrollIntoView: true,
-    userEvent: 'input'
+    userEvent: 'input',
+    // 空段落的记录只认这一条路径(见 emptyParagraph.ts)
+    annotations: paragraphBreak.of(true)
   })
   return true
 }
@@ -397,12 +459,93 @@ function inSameParagraph(state: EditorState, line: Line, next: Line): boolean {
 }
 
 /**
- * Shift+回车 = 段内换行。源码写成硬换行(行尾两个空格 + 换行),别的编辑器
+ * 段内硬换行的续行行首退格:连硬换行标记一起删。
+ *
+ * 光标停在 Shift+回车出来的下一行行首时,默认退格只删掉换行,上一行末尾的
+ * `\`(或旧写法的两个空格)会留下来变成正文 —— 光标回到上一行末尾,反斜杠
+ * 就露出来了。这里把标记和换行一起删掉,两行接回一行。
+ *
+ * 只处理正文段落(硬换行标记由 insertHardBreak 写在行尾);列表 / 引用 / 代码
+ * 里的续行有自己的前缀或语义,仍交给默认命令。
+ */
+export function deleteHardBreakBackward(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection.main
+  if (state.selection.ranges.length > 1 || !sel.empty) return false
+  const line = state.doc.lineAt(sel.head)
+  if (sel.head !== line.from || line.number <= 1) return false
+  const prev = state.doc.line(line.number - 1)
+  if (bodyLineKind(state, prev) !== 'plain') return false
+  // 行尾单个反斜杠(双反斜杠是转义的字面反斜杠),或旧写法的两个以上空格
+  const backslash = /\\+$/.exec(prev.text)
+  const spaces = / {2,}$/.exec(prev.text)
+  let markerLen = 0
+  if (backslash && backslash[0].length % 2 === 1) markerLen = 1
+  else if (spaces) markerLen = spaces[0].length
+  if (markerLen === 0) return false
+  const from = prev.to - markerLen
+  view.dispatch({
+    changes: { from, to: line.from },
+    selection: EditorSelection.cursor(from),
+    scrollIntoView: true,
+    userEvent: 'delete'
+  })
+  return true
+}
+
+/**
+ * 空段落上退格 = 收回这一次分段,光标回到上一段的行尾。
+ *
+ * 「回车 = 新段」在源码里补出的段落分隔是一条空行 + 一条换行:光标所在的空行
+ * 和上一段之间隔着两条换行。默认退格只删掉光标前的那一条,光标落到空行上,
+ * 屏幕上段间距还在,要再按一次才回到正文 —— 比别处「退格一下回到上一行」多走
+ * 一步。
+ *
+ * 这里只处理**回车创建的空段落**(见 emptyParagraph.ts),一次收回一段:
+ *   - 上一行是段间距(空行):上一段在它再上面一行,删掉「间距 + 当前空段落」,
+ *     光标落到那一行的行尾(它可能还是另一条空段落);
+ *   - 上一行就是正文:直接把它和当前行接起来。
+ *
+ * 这样连按多次回车生成的多条空段落,退格会一条一条往回退,不会一下退到最初的
+ * 正文。手写的空行 / 代码块、引用、列表、表格里的空行仍走默认退格逐字符删。
+ */
+export function deleteParagraphBreakBackward(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection.main
+  if (state.selection.ranges.length > 1 || !sel.empty) return false
+  const line = state.doc.lineAt(sel.head)
+  // 光标要在空行行首:这一行没有字可删,退格删的是它上面的段落分隔
+  if (sel.head !== line.from || /\S/.test(line.text)) return false
+  // 只认回车建出来的空段落,别把手写空行 / 容器里的结构空行一起吃掉
+  if (!getEmptyParagraphs(state).includes(line.from)) return false
+  if (line.number <= 1) return false
+  const prev = state.doc.line(line.number - 1)
+  // 上一行是段落分隔:上一段在它再上面一行;否则上一行本身就是上一段。
+  // 再上面已经没有行时(文首的空段落)就接到这一条空行上。
+  const target =
+    /\S/.test(prev.text) || line.number <= 2 ? prev : state.doc.line(line.number - 2)
+  view.dispatch({
+    changes: { from: target.to, to: line.to },
+    // 落点是另一条空段落时停在行首(方便继续退);落到正文时停在行尾
+    selection: EditorSelection.cursor(/\S/.test(target.text) ? target.to : target.from),
+    scrollIntoView: true,
+    userEvent: 'delete'
+  })
+  return true
+}
+
+/**
+ * Shift+回车 = 段内换行。源码写成硬换行(行尾反斜杠 + 换行),别的编辑器
  * 渲染成同一段里的一次换行;iMark 里两行仍是同一个段落(行间距,不是段间距)。
+ * 不用「行尾两个空格」的写法:保存/格式化工具经常顺手把行尾空白删掉,
+ * 硬换行会悄悄退化成段内软换行。
  *
  * 列表项 / 引用里要留在原来的容器里:把容器前缀复制到下一行(列表换成等宽
- * 缩进,引用保留 `> `),否则下一行会掉出列表或引用。代码块里两个空格会被
- * 当成代码内容,只插普通换行;空行和标题行也没有「段内」可言。
+ * 缩进,引用保留 `> `),否则下一行会掉出列表或引用。
+ *
+ * 代码块 / 标题行没有「段内」可言,只插普通换行;正文空行上则什么都不做 ——
+ * 空行没有内容可断,再补一条换行只会多出一条空行,之后输入的字被推下去,
+ * 看起来像另起了一段。
  */
 export function insertHardBreak(view: EditorView): boolean {
   const state = view.state
@@ -411,12 +554,12 @@ export function insertHardBreak(view: EditorView): boolean {
   const pos = sel.main.head
   const line = state.doc.lineAt(pos)
   const node = nodeAtLineStart(state, line)
-  const plain =
-    !/\S/.test(line.text) ||
+  const plainBlock =
     hasAncestor(node, HEADING_NODES) ||
     hasAncestor(node, ATOMIC_BLOCKS) ||
     codeBlockCovering(state, pos) !== null
-  const insert = plain ? state.lineBreak : '  ' + state.lineBreak + continuationPrefix(line.text)
+  if (!plainBlock && !/\S/.test(line.text)) return true
+  const insert = plainBlock ? state.lineBreak : '\\' + state.lineBreak + continuationPrefix(line.text)
   view.dispatch({
     changes: { from: pos, insert },
     selection: EditorSelection.cursor(pos + insert.length),
@@ -439,8 +582,10 @@ function bodyLineKind(state: EditorState, line: Line): 'plain' | 'heading' | 'bl
   if (!/\S/.test(line.text)) return 'blank'
   // 引用:行首带 `>`,或者是引用里的懒续行(祖先里有 Blockquote)
   if (/^[ \t]*>/.test(line.text) || hasAncestor(node, QUOTE_NODES)) return 'other'
-  // 列表标记行(列表项之间的回车由 markdownKeymap 负责)
-  if (/^[ \t]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/.test(line.text)) return 'other'
+  // 列表标记行(列表项之间的回车由 markdownKeymap 负责)。
+  // 标记后面必须已经有空格 / Tab:单敲的 `-` / `1.` 按正文显示,回车也该分段,
+  // 不能交给列表续写命令(那样只会在同一段里换一行)。
+  if (/^[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]/.test(line.text)) return 'other'
   // 缩进行:缩进代码块已经排除,剩下的是列表 / 引用的续行
   if (/^[ \t]/.test(line.text)) return 'other'
   if (hasAncestor(node, HEADING_NODES)) return 'heading'

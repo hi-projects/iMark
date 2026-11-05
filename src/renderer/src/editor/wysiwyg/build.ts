@@ -1,7 +1,8 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
-import type { ChangeDesc, Line, Range, Text } from '@codemirror/state'
+import type { ChangeDesc, EditorState, Line, Range, Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
+import { getEmptyParagraphs } from '../emptyParagraph'
 import { applyRule, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import {
@@ -57,13 +58,19 @@ function gapLineClickAnchor(view: EditorView, plugin: WysiwygPlugin, pos: number
   const doc = view.state.doc
   const line = doc.lineAt(pos)
   if (!isBlankLine(line.text)) return null
+  // 回车创建的空段落是用户要能点回去的一行,不按结构空行处理
+  const kept = new Set(getEmptyParagraphs(view.state))
+  if (kept.has(line.from)) return null
   const classes = lineClasses(plugin, line)
   if (!classes.includes('cm-md-block-gap')) return null
   const isSide = (side: 'before' | 'after'): boolean =>
     classes.some(c => c.startsWith('cm-md-block-gap-') && c.endsWith(`-${side}`))
+  const isKept = (l: Line): boolean => kept.has(l.from)
   const above = (): number | null => {
     for (let n = line.number - 1; n >= 1; n--) {
       const l = doc.line(n)
+      // 光标刚离开的空段落虽然也是空行,但它是用户点得回去的一行,优先落到它上面
+      if (isKept(l)) return l.from
       if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
       return l.to
     }
@@ -72,15 +79,21 @@ function gapLineClickAnchor(view: EditorView, plugin: WysiwygPlugin, pos: number
   const below = (): number | null => {
     for (let n = line.number + 1; n <= doc.lines; n++) {
       const l = doc.line(n)
+      if (isKept(l)) return l.from
       if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
       return l.from
     }
     return null
   }
+  // 点的是空段落旁边的段间距:用户就是在点那个空着的第二段,别送回上一段
+  const up = above()
+  const down = below()
+  if (up !== null && kept.has(up)) return up
+  if (down !== null && kept.has(down)) return down
   // 空行挂的是 "-before"(间距属于下一块)或正文之间:往上找;
   // 否则("-after")往下找。两个方向都没有可停的正文行时再从另一侧兜一次底。
-  if (classes.includes('cm-md-block-gap-body') || isSide('before')) return above() ?? below()
-  if (isSide('after')) return below() ?? above()
+  if (classes.includes('cm-md-block-gap-body') || isSide('before')) return up ?? down
+  if (isSide('after')) return down ?? up
   return null
 }
 
@@ -99,6 +112,8 @@ export class WysiwygPlugin {
   private guardScheduled = false
   /** 本次光标移动之前的落点(用于判断是朝表格上方还是下方走) */
   private guardFromHead: number | null = null
+  /** 本次键盘移动落到的那条间距行(重建前的判断,见 gapLineLanding) */
+  private guardGapLine: number | null = null
   /** 组合进行中(以 compositionstart/end 事件为准,比 view.composing 更早、更稳) */
   private composing = false
   /** 这一轮微任务里是否要用键盘方向键跳过块间距行 */
@@ -169,15 +184,37 @@ export class WysiwygPlugin {
     }
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
-      this.rebuild()
       // 把"移动之前"的光标位置交给护栏:从表格上面往下走、从下面往上走
       // 都会落在隐藏源码/结构空行的边界上,护栏得知道该把光标送到表格的哪一侧。
       // 块间距空行只对**键盘方向键**做跨越;回车/输入产生的空白行要留给用户继续输入。
       const gapNav = update.transactions.some(
         tr => tr.isUserEvent('select') && !tr.isUserEvent('select.pointer')
       )
-      this.scheduleCaretGuard(update.startState.selection.main.head, gapNav)
+      // 方向键落点是不是间距行,必须在 rebuild 之前判断(见 gapLineLanding)
+      const gapLine = gapNav && !update.docChanged ? this.gapLineLanding(update.state) : null
+      this.rebuild()
+      this.scheduleCaretGuard(update.startState.selection.main.head, gapNav, gapLine)
     }
+  }
+
+  /**
+   * 方向键的落点是不是一条被收紧的间距行(行首位置)。
+   *
+   * 要在 rebuild **之前**调用:光标落上去以后,collapseBlankRuns 会因为
+   * caretOnGapLine 跳过这一行,原来挂着的 gap 类当场就被摘掉了,重建后再看
+   * 根本认不出来。用移动前的装饰来判断,才能把「价格行」和文件末尾那种
+   * 普通空行(可以正常停)区分开。
+   */
+  private gapLineLanding(state: EditorState): number | null {
+    const sel = state.selection
+    if (sel.ranges.length !== 1 || !sel.main.empty) return null
+    const line = state.doc.lineAt(sel.main.head)
+    if (!isBlankLine(line.text)) return null
+    const classes = lineClasses(this, line)
+    const isGap =
+      classes.includes('cm-md-block-gap') ||
+      classes.some(cls => cls.startsWith('cm-md-gap-'))
+    return isGap ? line.from : null
   }
 
   onCompositionStart(): void {
@@ -219,22 +256,25 @@ export class WysiwygPlugin {
    * 必须排在 rebuild 之后 —— 新建表格的 autoFocus 也是微任务，先让它把焦点
    * 放进单元格；这里再检查时选区通常已经被挪到表格外，不会抢走插入后的焦点。
    */
-  private scheduleCaretGuard(fromHead?: number, gapNav = false): void {
+  private scheduleCaretGuard(fromHead?: number, gapNav = false, gapLine: number | null = null): void {
     // 一个微任务里可能连着跑好几轮 update;记住**最早**那个起点,
     // 它才是这次光标移动真正的来处
     if (fromHead !== undefined && this.guardFromHead === null) this.guardFromHead = fromHead
     if (gapNav) this.guardGapNav = true
+    if (gapLine !== null && this.guardGapLine === null) this.guardGapLine = gapLine
     if (this.guardScheduled) return
     this.guardScheduled = true
     queueMicrotask(() => {
       this.guardScheduled = false
       const from = this.guardFromHead ?? undefined
       const gapNav = this.guardGapNav
+      const gapLine = this.guardGapLine
       this.guardFromHead = null
       this.guardGapNav = false
+      this.guardGapLine = null
       try {
         keepCaretOutOfTables(this.view, from)
-        if (gapNav) this.keepCaretOutOfBlockGaps(from)
+        if (gapNav) this.keepCaretOutOfBlockGaps(from, gapLine)
       } catch {
         /* 视图已销毁 */
       }
@@ -242,14 +282,19 @@ export class WysiwygPlugin {
   }
 
   /**
-   * 方向键落在块间距空行上时,沿移动方向跳过它。
+   * 方向键落在结构空行上时,沿移动方向跳过它。
    *
-   * 这类空行是排版用的结构行(列表/代码/引用与正文之间),本身不该成为
-   * 编辑落点。鼠标点击已经由 gapLineClickAnchor 处理;键盘上下键落在上面时
-   * `caretOnGapLine` 会把空行撑成一整行,看起来像凭空多出一行。这里在选区
-   * 落定的微任务里把它跨过去,落点保持在来向那一侧的正文行。
+   * 这类空行是排版用的结构行(段间距、文末空行等),本身不该成为编辑落点。
+   * 鼠标点击已经由 gapLineClickAnchor 处理;键盘上下键落在上面时
+   * `caretOnGapLine` 会把空行撑成一整行 —— 一段空白里凭空多出一条「段内
+   * 换行」。这里在选区落定的微任务里把它跨过去:
+   *   - 方向上的第一个空段落(回车创建)或正文行才是落点;
+   *   - 方向上什么都没有(文末只剩空行)就留在原地。
+   *
+   * 只在相邻行的移动时处理(Ctrl+End 这类直接跳到文末的命令保持原样)。
+   * 代码 / 表格 / 公式里的空行是块内容,不跨。
    */
-  private keepCaretOutOfBlockGaps(fromHead?: number): void {
+  private keepCaretOutOfBlockGaps(fromHead?: number, gapLine: number | null = null): void {
     const view = this.view
     const state = view.state
     if (!state.selection.main.empty) return
@@ -257,38 +302,38 @@ export class WysiwygPlugin {
     const doc = state.doc
     const line = doc.lineAt(head)
     if (!isBlankLine(line.text)) return
-    const classes = lineClasses(this, line)
-    const isGap =
-      classes.includes('cm-md-block-gap') ||
-      classes.some(cls => cls.startsWith('cm-md-gap-'))
-    if (!isGap) return
-    const hasSide = (side: 'before' | 'after'): boolean =>
-      classes.some(
-        cls =>
-          (cls.startsWith('cm-md-block-gap-') || cls.startsWith('cm-md-gap-')) &&
-          cls.endsWith(`-${side}`)
-      )
-    // 有明确移动方向就按方向跨;没有方向(鼠标/程序化选区)沿用点击规则:
-    // after 间隙属于上方块,往下落;其余情况往上落。
-    const dir: 1 | -1 =
-      fromHead !== undefined && head !== fromHead
-        ? head > fromHead
-          ? 1
-          : -1
-        : hasSide('after')
-          ? 1
-          : -1
+    // 只有「移动前就是被收紧的间距行」才跨;文件末尾那种普通空行可以正常停
+    if (gapLine === null || line.from !== gapLine) return
+    // 回车创建的空段落是真正的落点
+    const kept = new Set(getEmptyParagraphs(state))
+    if (kept.has(line.from)) return
+    // 只处理方向键的相邻移动;程序化选区 / Ctrl+End 等保持原落点
+    if (fromHead === undefined) return
+    const origin = doc.lineAt(fromHead)
+    if (Math.abs(origin.number - line.number) !== 1) return
+    const dir: 1 | -1 = head > fromHead ? 1 : -1
     let target: Line | null = null
     for (let n = line.number + dir; n >= 1 && n <= doc.lines; n += dir) {
       const candidate = doc.line(n)
+      // 空段落按正文落点对待:跨过间距行后应当停在它上面
+      if (kept.has(candidate.from)) {
+        target = candidate
+        break
+      }
       if (isBlankLine(candidate.text) || lineReplaced(this, candidate)) continue
       target = candidate
       break
     }
-    if (!target) return
-    const origin = fromHead !== undefined && fromHead !== head ? doc.lineAt(fromHead) : line
-    const column = Math.max(0, (fromHead ?? head) - origin.from)
-    const anchor = target.from + Math.min(column, target.length)
+    // 方向上没有可停的正文/空段落:留在原地,别把这条结构空行撑成整行
+    if (!target) {
+      if (head !== fromHead) view.dispatch({ selection: { anchor: fromHead } })
+      return
+    }
+    // 向上跨过段间距:用户是在「回到上一段」,落到目标行行尾,而不是保持
+    // 同一列、停在上一行的第一个字前面。段内上下移动不经过这里,仍按列对齐。
+    const column = Math.max(0, fromHead - origin.from)
+    const atEnd = dir === -1
+    const anchor = atEnd ? target.to : target.from + Math.min(column, target.length)
     view.dispatch({ selection: { anchor } })
   }
 
@@ -366,6 +411,20 @@ export class WysiwygPlugin {
           continue
         }
       }
+      const emptyParagraphs = new Set(getEmptyParagraphs(state))
+      // 空段落行挂一个标记类:它可能同时挨着一档段落间距,样式据此保住整行高。
+      // 也方便验收直接看出「这一行被认作空段落」,而不是碰巧没被收紧。
+      for (const pos of emptyParagraphs) {
+        if (pos < from || pos > to) continue
+        const line = state.doc.lineAt(pos)
+        if (line.from === pos) {
+          decos.push({
+            from: pos,
+            to: pos,
+            value: Decoration.line({ class: 'cm-md-empty-paragraph' })
+          })
+        }
+      }
       const ctx: RuleContext = {
         sel: state.selection,
         doc: state.doc,
@@ -373,6 +432,7 @@ export class WysiwygPlugin {
         visibleFrom: from,
         visibleTo: to,
         pendingFence: getPendingFence(state),
+        emptyParagraphs,
         decos,
         atomic,
         links,
@@ -452,10 +512,11 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
               // 表格贴着文末:补出结构空行 + 正文行,点击才能真正落到表格后面
               view.dispatch({
                 changes: { from: view.state.doc.length, insert: hit.insert },
-                selection: { anchor: hit.anchor }
+                selection: { anchor: hit.anchor },
+                userEvent: 'select.pointer'
               })
             } else {
-              view.dispatch({ selection: { anchor: hit.anchor } })
+              view.dispatch({ selection: { anchor: hit.anchor }, userEvent: 'select.pointer' })
             }
             view.focus()
             return true
@@ -465,7 +526,8 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
           const anchor = plugin ? gapLineClickAnchor(view, plugin, pos) : null
           if (anchor != null) {
             event.preventDefault()
-            view.dispatch({ selection: { anchor } })
+            // 这是用户在点击:光标从空段落上离开时,空段落要留下(见 emptyParagraph.ts)
+            view.dispatch({ selection: { anchor }, userEvent: 'select.pointer' })
             view.focus()
             return true
           }

@@ -3,14 +3,21 @@
  *
  * 规则(源码层面,别的 Markdown 编辑器打开也成立):
  *   - 正文里回车:源码补空行,光标落下去接着写;两行之间真的隔着一个空行。
+ *   - 空行上回车同样是新段:原来的空段落按整行留着,新段在它下面,和下面
+ *     紧接的正文之间也隔着空行(不是只往下挪一行、看起来像段内换行)。
  *   - 光标在行尾、下一行还是同一段(源码软换行):回车从中间断段,光标落到
  *     断点后面的文字上,只补一个换行 —— 原来的行尾换行就充当空行。
  *   - 下一行已经是另一个块(标题等):新段两边都要空行,否则会并进相邻段。
  *   - 标题行尾回车:标题自己就是块边界,标题和新段之间不再补空行(比正文少
  *     一条),否则标题后面一按回车就出现三条空行;标题后面只剩空行(文末)
  *     时只把光标挪到空行上,源码不动。
- *   - Shift+回车:硬换行(行尾两个空格),两行仍是同一段;iMark 里是行间距,
+ *   - Shift+回车:硬换行(行尾反斜杠),两行仍是同一段;iMark 里是行间距,
  *     别的编辑器里是段内换行。列表 / 引用里把容器前缀带到下一行。
+ *   - 新段里退格:把这次分段收回 —— 补出来的空行连同段落分隔一起删掉,光标
+ *     回到上一段行尾(不是只退到空行上、要再按一次)。连按多次回车生成的多条
+ *     空段落一次只收回一条。代码块里的空行是代码内容,仍按普通退格逐字符删。
+ *   - 光标点回上一段后,空着的新段仍按整行留出、点得回去(不被当成结构空行
+ *     收紧成段间距);点回去再输入,字落在那一行上,不会被并进上一段。
  *   - 列表项回车仍是下一项;代码块 / 引用 / 表格 / 公式里的回车保持原样。
  *
  * 跑法(在仓库根目录,改了 src/renderer/ 先 npx electron-vite build):
@@ -165,6 +172,33 @@ async function main(): Promise<void> {
     return false
   }
 
+  const caretInfo = (): Promise<{ line: number; text: string; head: number; from: number; to: number }> =>
+    evalJs<{ line: number; text: string; head: number; from: number; to: number }>(`
+      (() => {
+        const view = document.querySelector('.cm-content').cmTile.root.view
+        const head = view.state.selection.main.head
+        const line = view.state.doc.lineAt(head)
+        return { line: line.number, text: line.text, head, from: line.from, to: line.to }
+      })()`)
+
+  /** 按 DOM 行序号模拟一次真实鼠标点击(点在行首附近,避开行尾的浮动按钮) */
+  async function clickDomLine(index: number): Promise<boolean> {
+    const spot = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const el = [...document.querySelectorAll('.cm-content .cm-line')][${index}]
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        // 离行首远一点:避开行首左侧的「+」按钮,不然点到的是行菜单
+        return { x: Math.round(r.left + 24), y: Math.round(r.top + r.height / 2) }
+      })()`)
+    if (!spot) return false
+    wc.focus()
+    wc.sendInputEvent({ type: 'mouseDown', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    await sleep(320)
+    return true
+  }
+
   const readSource = async (): Promise<string[]> => {
     wc.send(IPC.MenuCommand, 'file:save')
     await sleep(600)
@@ -245,15 +279,28 @@ async function main(): Promise<void> {
   await loadDoc('\n')
   await type('上半')
   await key('Enter', ['shift'])
+  {
+    const lines = await domLines()
+    check(
+      '刚按完 Shift+回车(下一行还空着)也不显示反斜杠',
+      lines[0]?.text === '上半',
+      JSON.stringify(lines.map(l => l.text))
+    )
+  }
   await type('下半')
   {
     const src = await readSource()
-    check('落盘:行尾是两个空格 + 换行(标准硬换行)', src.join('|') === '上半  |下半', JSON.stringify(src))
+    check('落盘:行尾是反斜杠 + 换行(标准硬换行)', src.join('|') === '上半\\|下半', JSON.stringify(src))
     const lines = await domLines()
     const p = pitch(lines, '上半', '下半')
     const h = lines[0]?.height ?? 0
     check('两行按行间距排,不是段间距', p !== null && Math.abs(p - h) <= 1, `pitch=${p} h=${h} ${JSON.stringify(lines)}`)
     check('第二行没有段间距 class', !/cm-md-block-gap/.test(lines[1]?.cls ?? ''), lines[1]?.cls ?? 'none')
+    check(
+      '渲染态不显示硬换行反斜杠(光标不在上一行)',
+      lines[0]?.text === '上半',
+      JSON.stringify(lines.map(l => l.text))
+    )
   }
 
   console.log('\n【F】列表项 Shift+回车 —— 硬换行留在同一项里(续行缩进到内容列)')
@@ -263,7 +310,7 @@ async function main(): Promise<void> {
   await type('续行')
   {
     const src = await readSource()
-    check('落盘:第二行缩进到内容列,仍是同一项', src.join('|') === '- 第一项  |  续行', JSON.stringify(src))
+    check('落盘:第二行缩进到内容列,仍是同一项', src.join('|') === '- 第一项\\|  续行', JSON.stringify(src))
     const lines = await domLines()
     const bullets = await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-listmark-bullet').length`)
     check('只有第一行画列表圆点(第二行是项内容)', bullets === 1, `bullets=${bullets}`)
@@ -280,7 +327,7 @@ async function main(): Promise<void> {
     check('落盘:第二行自动带 `- `', src.join('|') === '- 第一项|- 第二项', JSON.stringify(src))
   }
 
-  console.log('\n【H】代码块里回车 / Shift+回车 —— 都是普通换行,不补空行也不写硬换行空格')
+  console.log('\n【H】代码块里回车 / Shift+回车 —— 都是普通换行,不补空行也不写硬换行标记')
   await loadDoc('```js\ncode\ndone\n```\n')
   await key('ArrowDown')
   await key('End')
@@ -291,7 +338,11 @@ async function main(): Promise<void> {
   {
     const src = await readSource()
     check('落盘:代码行逐行往下,没有空行', src.join('|') === '```js|code|x|y|done|```', JSON.stringify(src))
-    check('代码行尾没有硬换行空格', src.slice(1, 5).every(l => !/\s$/.test(l)), JSON.stringify(src.slice(1, 5)))
+    check(
+      '代码行尾没有硬换行标记',
+      src.slice(1, 5).every(l => !/\s$/.test(l) && !/\\$/.test(l)),
+      JSON.stringify(src.slice(1, 5))
+    )
   }
 
   console.log('\n【I】引用里回车仍续 `> `;Shift+回车在引用里也留在引用内')
@@ -311,15 +362,55 @@ async function main(): Promise<void> {
   await type('续')
   {
     const src = await readSource()
-    check('Shift+回车:硬换行 + 下一行仍是引用', src.join('|') === '|> 引用  |> 续', JSON.stringify(src))
+    check('Shift+回车:硬换行 + 下一行仍是引用', src.join('|') === '|> 引用\\|> 续', JSON.stringify(src))
   }
 
-  console.log('\n【J】空行上回车只补一行')
+  console.log('\n【J】空行上回车也是新段 —— 原空段落留着,新段和正文之间留空行')
   await loadDoc('\n正文')
   await key('Enter')
   {
     const src = await readSource()
-    check('落盘:从 2 行变 3 行,不是连出两条空行', src.length === 3 && src[2] === '正文', JSON.stringify(src))
+    check(
+      '落盘:光标所在空段落和下面正文之间隔着一条空行',
+      src.join('|') === '||||正文',
+      JSON.stringify(src)
+    )
+    const lines = await domLines()
+    const body = lines[4]?.height ?? 0
+    check(
+      '空行也是当前段落:回车后它仍按整行留着,新段在它下面',
+      lines.length === 5 &&
+        /cm-md-empty-paragraph/.test(lines[0]?.cls ?? '') &&
+        lines[1].height < body - 8 &&
+        lines[2].height >= body - 1,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:新段和下面正文各占一段(中间都隔空行)', src.join('|') === '||X||正文', JSON.stringify(src))
+  }
+
+  console.log('\n【J2】空文档第一行回车 —— 同样是新段,不是往下挪一行')
+  await loadDoc('')
+  await key('Enter')
+  {
+    const lines = await domLines()
+    const body = lines[2]?.height ?? 0
+    check(
+      '原空段落仍按整行留着,新段在段间距下面',
+      lines.length === 3 &&
+        /cm-md-empty-paragraph/.test(lines[0]?.cls ?? '') &&
+        lines[0].height >= body - 1 &&
+        lines[1].height < body - 8,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:输入落在新段里', src.join('|') === '||X', JSON.stringify(src))
   }
 
   console.log('\n【K】标题行尾回车 —— 新段是正文,且紧贴标题(标题自己就是块边界)')
@@ -404,6 +495,426 @@ async function main(): Promise<void> {
     check('落盘:第一段 / 空行 / 新段 / 空行 / 第二段', src.join('|') === '第一段||新段||第二段', JSON.stringify(src))
     const lines = await domLines()
     check('新段按正文渲染', !!lines[2] && !/cm-md-h[1-6]/.test(lines[2].cls), JSON.stringify(lines.slice(0, 5)))
+  }
+
+  console.log('\n【M】新段里退格 —— 收回这次分段,光标回到上一段行尾')
+  await loadDoc('\n')
+  await type('啊')
+  await key('Enter')
+  await key('Backspace')
+  {
+    const src = await readSource()
+    check('落盘:空行连同段落分隔一起删掉,回到分段前的样子', src.join('|') === '啊', JSON.stringify(src))
+    const caret = await caretInfo()
+    check('光标回到上一段行尾(不是停在空行上)', caret.line === 1 && caret.text === '啊' && caret.head === 1, JSON.stringify(caret))
+  }
+
+  console.log('\n【M2】文档中间起的新段 —— 退格同样收回,不留连排空行')
+  await loadDoc('第一段\n\n第二段\n')
+  await key('End')
+  await key('Enter')
+  await key('Backspace')
+  {
+    const src = await readSource()
+    check('落盘:恢复成原来的两段(中间只有一条空行)', src.join('|') === '第一段||第二段', JSON.stringify(src))
+    const caret = await caretInfo()
+    check('光标回到第一段行尾', caret.line === 1 && caret.text === '第一段' && caret.head === 3, JSON.stringify(caret))
+  }
+
+  console.log('\n【M3】代码块里的空行不是段落分隔 —— 退格仍逐字符删')
+  await loadDoc('```js\ncode\n\n\n```\n')
+  await key('ArrowDown')
+  await key('ArrowDown')
+  await key('Backspace')
+  {
+    const expected = ['```js', 'code', '', '```']
+    const src = await readSource()
+    check('落盘:只少了一条换行(代码里留一条空行),没有退到 code 行尾', src.join('|') === expected.join('|'), JSON.stringify(src))
+  }
+
+  console.log('\n【M4】回车后点回第一段 —— 空段落仍按整行留着,点得回去')
+  await loadDoc('\n')
+  await type('啊')
+  await key('Enter')
+  {
+    const before = await caretInfo()
+    check('回车后光标就在空段落上', before.line === 3 && before.text === '', JSON.stringify(before))
+  }
+  await clickDomLine(0)
+  {
+    const caret = await caretInfo()
+    check('点击落到第一段', caret.line === 1 && caret.text === '啊', JSON.stringify(caret))
+    const lines = await domLines()
+    const body = lines[0]?.height ?? 0
+    const emptyIndex = lines.findIndex(l => l.text === '' && l.height >= body - 1)
+    check(
+      '空段落仍按整行留出(没有收紧成段间距)',
+      emptyIndex >= 0,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}`))
+    )
+    check(
+      '空段落行被认作可点击的空段落',
+      emptyIndex >= 0 && /cm-md-empty-paragraph/.test(lines[emptyIndex].cls),
+      emptyIndex >= 0 ? lines[emptyIndex].cls : 'none'
+    )
+    const clicked = await clickDomLine(emptyIndex)
+    const back = await caretInfo()
+    check(
+      '点空段落时光标能落回去',
+      clicked && back.line === 3 && back.text === '',
+      JSON.stringify({ clicked, back })
+    )
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:输入落在空段落那一行,没有被并进第一段', src.join('|') === '啊||X', JSON.stringify(src))
+  }
+
+  console.log('\n【M5】文档中间起的新段 —— 点开再点回来,内容落在原来那一行')
+  await loadDoc('第一段\n\n第二段\n')
+  await key('End')
+  await key('Enter')
+  await clickDomLine(0)
+  {
+    const lines = await domLines()
+    const body = lines[0]?.height ?? 0
+    const emptyIndex = lines.findIndex(l => l.text === '' && l.height >= body - 1)
+    check(
+      '空段落仍在两段之间按整行留出',
+      emptyIndex >= 0,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}`))
+    )
+    await clickDomLine(emptyIndex)
+    const caret = await caretInfo()
+    check('点空段落时光标能落回去', caret.line === 3 && caret.text === '', JSON.stringify(caret))
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check(
+      '落盘:新内容插在两段之间,前后各一条空行',
+      src.join('|') === '第一段||X||第二段',
+      JSON.stringify(src)
+    )
+  }
+
+  console.log('\n【M6】点空段落上方的段间距 —— 落到空段落,不被送回第一段')
+  await loadDoc('\n')
+  await type('啊')
+  await key('Enter')
+  await clickDomLine(0)
+  {
+    const lines = await domLines()
+    const gapIndex = lines.findIndex(l => l.text === '' && /cm-md-block-gap/.test(l.cls))
+    const clicked = await clickDomLine(gapIndex)
+    const caret = await caretInfo()
+    check(
+      '点刚离开的第一段正下方(段间距)时光标落到空段落',
+      clicked && caret.line === 3 && caret.text === '',
+      JSON.stringify({ gapIndex, caret })
+    )
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:输入落在空段落那一行,没有被并进第一段', src.join('|') === '啊||X', JSON.stringify(src))
+  }
+
+  console.log('\n【N】方向键在空段落与文末空行上 —— 落点回到上一段行尾,不撑开结构空行')
+  await loadDoc('\n\n\n\n')
+  await type('啊')
+  await key('Enter')
+  await key('ArrowUp')
+  {
+    const caret = await caretInfo()
+    check(
+      '从空段落往上:光标落在上一段最后一个字后面',
+      caret.line === 1 && caret.text === '啊' && caret.head === 1,
+      JSON.stringify(caret)
+    )
+  }
+  await key('ArrowDown')
+  {
+    const caret = await caretInfo()
+    check('再往下回到空段落', caret.line === 3 && caret.text === '', JSON.stringify(caret))
+  }
+  await key('ArrowDown')
+  await key('ArrowDown')
+  {
+    const lines = await domLines()
+    const body = lines[2]?.height ?? 0
+    const marker = lines.findIndex(l => /cm-md-empty-paragraph/.test(l.cls))
+    const fullBlanks = lines.filter(l => l.text === '' && l.height >= body - 1).length
+    const caret = await caretInfo()
+    check(
+      '光标仍停在回车创建的空段落上',
+      caret.line === 3 && caret.text === '',
+      JSON.stringify({ caret, marker })
+    )
+    check('空段落标记没有移动', marker === 2, JSON.stringify({ marker }))
+    check(
+      '后面的结构空行没有被撑成整行',
+      fullBlanks === 1,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+
+  console.log('\n【P】连续四段 —— 最后起的新空段落也要有段间距')
+  await loadDoc('')
+  for (let i = 0; i < 4; i++) {
+    await type('啊')
+    await key('Enter')
+  }
+  {
+    const src = await readSource()
+    const lines = await domLines()
+    const ah = lines.flatMap((l, i) => (l.text === '啊' ? [i] : []))
+    const lastEmpty = lines.findIndex(l => /cm-md-empty-paragraph/.test(l.cls))
+    const pitch = (i: number, j: number): number => lines[j].top - lines[i].top
+    const dump = JSON.stringify(lines.map(l => `${JSON.stringify(l.text)} top=${Math.round(l.top)} h=${Math.round(l.height)}`))
+    check('落盘:四段「啊」', src.filter(t => t === '啊').length === 4, JSON.stringify(src))
+    check(
+      '最后一段到新空段落的间距与段间距一致',
+      ah.length === 4 && lastEmpty > ah[3] && Math.abs(pitch(ah[3], lastEmpty) - pitch(ah[0], ah[1])) <= 2,
+      dump
+    )
+  }
+
+  console.log('\n【R】长正文行下回车,按上键 —— 落到长行最后一个字后面')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await type('啊')
+  await key('Enter')
+  await type('啊')
+  await key('Enter')
+  const long = '啊'.repeat(17)
+  await type(long)
+  await key('Enter')
+  await key('ArrowUp')
+  {
+    const caret = await caretInfo()
+    check(
+      '光标落在长行最后一个字后面(不是行首)',
+      caret.line === 7 && caret.text === long && caret.head === caret.to,
+      JSON.stringify(caret)
+    )
+  }
+
+  console.log('\n【R2】从下一段正文行按上键 —— 同样落到上一段长行末尾')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await type('啊')
+  await key('Enter')
+  await type('啊')
+  await key('Enter')
+  await type(long)
+  await key('Enter')
+  await type('啊')
+  await key('Home')
+  await key('ArrowUp')
+  {
+    const caret = await caretInfo()
+    check(
+      '光标落到长行最后一个字后面(不是行首)',
+      caret.line === 7 && caret.text === long && caret.head === caret.to,
+      JSON.stringify(caret)
+    )
+  }
+
+  console.log('\n【Q】多个空段落逐个退格 —— 一次只收回一段')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await key('Enter')
+  await key('Backspace')
+  {
+    const caret = await caretInfo()
+    check(
+      '第一次退格只收回最近一段,光标停在上一段空段落上',
+      caret.line === 3 && caret.text === '',
+      JSON.stringify(caret)
+    )
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:输入仍落在新段里', src.join('|') === '啊||X', JSON.stringify(src))
+  }
+
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await key('Enter')
+  await key('Backspace')
+  await key('Backspace')
+  {
+    const caret = await caretInfo()
+    check(
+      '连续退格,最后才回到正文行尾',
+      caret.line === 1 && caret.text === '啊' && caret.head === 1,
+      JSON.stringify(caret)
+    )
+  }
+
+  console.log('\n【S】新段里敲短横线再删掉 —— 再退格仍能收回整段')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await type('-')
+  await key('Backspace')
+  {
+    const caret = await caretInfo()
+    check('删掉短横线后光标仍在空段落上', caret.line === 3 && caret.text === '', JSON.stringify(caret))
+  }
+  await key('Backspace')
+  {
+    const caret = await caretInfo()
+    check(
+      '再退格收回整段,回到正文行尾(中间不留整行空行)',
+      caret.line === 1 && caret.text === '啊' && caret.head === 1,
+      JSON.stringify(caret)
+    )
+    const src = await readSource()
+    check('落盘:只剩正文', src.join('|') === '啊', JSON.stringify(src))
+  }
+
+  console.log('\n【T】不完整的短横线后回车 —— 仍然是新段,不是段内换行')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await type('-')
+  await key('Enter')
+  await waitFor(`document.querySelectorAll('.cm-content .cm-line').length === 5`)
+  {
+    const caret = await caretInfo()
+    const lines = await domLines()
+    const dash = lines.findIndex(l => l.text === '-')
+    const pitch = dash > 0 && caret.line - 1 < lines.length ? lines[caret.line - 1].top - lines[dash].top : -1
+    const paragraphPitch = dash > 0 ? lines[dash].top - lines[0].top : -1
+    check(
+      '光标落到新段落的空行上',
+      caret.line === 5 && caret.text === '',
+      JSON.stringify(caret)
+    )
+    check(
+      '新段与短横线之间是段间距(不是行间距)',
+      dash >= 0 && Math.abs(pitch - paragraphPitch) <= 1,
+      JSON.stringify({ pitch, paragraphPitch, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.cls}`) })
+    )
+    const topBefore = lines[caret.line - 1]?.top ?? -1
+    await type('X')
+    const after = await domLines()
+    const typed = after.find(l => l.text === 'X')
+    check(
+      '在新段里输入后光标行位置不动',
+      !!typed && Math.abs(typed.top - topBefore) <= 1,
+      JSON.stringify({ topBefore, after: typed?.top, lines: after.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.cls}`) })
+    )
+  }
+
+  console.log('\n【U】Shift+回车后输入无序列表 —— 仍是段内行距')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await type('- ')
+  {
+    const lines = await domLines()
+    const marker = lines[1]
+    const pitch = marker ? marker.top - lines[0].top : -1
+    const bullets = await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-listmark-bullet').length`)
+    check(
+      '硬换行后的列表标记仍按行间距排(不是段间距)',
+      !!marker && Math.abs(pitch - marker.height) <= 1 && bullets === 1,
+      JSON.stringify({ pitch, bullets, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.height}[${l.cls}]`) })
+    )
+  }
+
+  console.log('\n【V】段内硬换行后的空列表标记回车 —— 取消标记,不新开段')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await type('- ')
+  await key('Enter')
+  {
+    const bullets = await evalJs<number>(`document.querySelectorAll('.cm-content .cm-md-listmark-bullet').length`)
+    const caret = await caretInfo()
+    const lines = await domLines()
+    const src = await readSource()
+    const pitch = lines.length === 2 ? lines[1].top - lines[0].top : -1
+    check('标记被取消(没有残留圆点)', bullets === 0, `bullets=${bullets}`)
+    check(
+      '光标回到原续行的空行上,没有新开一行',
+      caret.line === 2 && caret.text === '' && lines.length === 2,
+      JSON.stringify({ caret, count: lines.length })
+    )
+    check('落盘:标记已清掉,硬换行还在', src.length === 1 && src[0] === '啊\\', JSON.stringify(src))
+    check(
+      '仍是段内行距',
+      lines.length === 2 && Math.abs(pitch - lines[1].height) <= 1,
+      JSON.stringify({ pitch, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.height}[${l.cls}]`) })
+    )
+  }
+
+  console.log('\n【W】硬换行后输入短横线 —— 上一行不露出反斜杠')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await type('-')
+  {
+    const lines = await domLines()
+    check('敲 `-` 后上一行不显示反斜杠', lines[0]?.text === '啊', JSON.stringify(lines.map(l => l.text)))
+  }
+  await type(' ')
+  {
+    const lines = await domLines()
+    check('补空格后上一行仍不显示反斜杠', lines[0]?.text === '啊', JSON.stringify(lines.map(l => l.text)))
+  }
+
+  console.log('\n【X】Shift+回车后直接退格 —— 硬换行标记和换行一起删掉')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await key('Backspace')
+  {
+    const caret = await caretInfo()
+    const lines = await domLines()
+    const src = await readSource()
+    check('落盘:回到一行正文,没有残留反斜杠', src.length === 1 && src[0] === '啊', JSON.stringify(src))
+    check('光标回到正文行尾', caret.line === 1 && caret.text === '啊' && caret.head === 1, JSON.stringify(caret))
+    check('DOM 只剩一行', lines.length === 1, JSON.stringify(lines.map(l => l.text)))
+  }
+
+  console.log('\n【Y】硬换行后按方向键回到上一行 —— 仍不显示反斜杠')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await key('ArrowUp')
+  {
+    const caret = await caretInfo()
+    const lines = await domLines()
+    check('上一行不显示反斜杠', lines[0]?.text === '啊', JSON.stringify(lines.map(l => l.text)))
+    check('光标回到上一行', caret.line === 1 && caret.head === 0, JSON.stringify(caret))
+  }
+
+  console.log('\n【Z】新段里先 Shift+回车再输入 —— 不再多出一条空行')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter')
+  await key('Enter', ['shift'])
+  await type('啊')
+  {
+    const src = await readSource()
+    const lines = await domLines()
+    const caret = await caretInfo()
+    check('落盘:两段之间只有一条空行', src.join('|') === '啊||啊', JSON.stringify(src))
+    check(
+      'DOM 只有三行,光标在新段的正文行上',
+      lines.length === 3 && caret.line === 3 && caret.text === '啊',
+      JSON.stringify({ caret, lines: lines.map(l => l.text) })
+    )
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

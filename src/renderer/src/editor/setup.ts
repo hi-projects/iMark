@@ -13,6 +13,7 @@ import { extensionDecorationsExtension } from './extensionDecorations'
 import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { pendingFenceField } from './pendingFence'
+import { emptyParagraphsField } from './emptyParagraph'
 import { imagePaste } from './imagePaste'
 import { outlineFollower, updateActiveOutline } from './outline'
 
@@ -116,6 +117,8 @@ export function buildExtensions(
     syntaxHighlighting(classHighlighter),
     // 刚敲出来的开围栏:回车补全与渲染抑制都要读它(见 pendingFence.ts)
     pendingFenceField,
+    // 回车创建的空段落:继续按整行渲染,点得回去(见 emptyParagraph.ts)
+    emptyParagraphsField,
     wysiwyg(),
     // 剪贴板图片:先于 CM 自带的 paste handler 拦下图片数据
     imagePaste(),

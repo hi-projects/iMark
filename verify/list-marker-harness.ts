@@ -23,7 +23,7 @@
  *   E `* ` / `+ ` 也在输入文字的瞬间显示圆点;单独的 `*` 还不算列表
  *   F `1. ` 立刻显示有序标记,补字后是真正的有序列表
  *   G 空行之后的 `1.` 不渲染,补上空格才显示有序标记
- *   H 回归:空行之后的 `-` 本来就能立即渲染(普通列表不受影响)
+ *   H 空行之后的 `-` 同样先按正文,补上空格才显示圆点(和有序标记一致)
  *   I 删除空的有序列表项后不留对齐空格,光标顶格
  *   J 标题前主动留出的空行占完整行高(不被列表后的块间距压扁)
  *   K 列表后第一行正文按上键:光标跳过块间距空行,空行不被撑开
@@ -70,6 +70,8 @@ type LineInfo = {
   bullet: string
   /** 行盒高度(px):用来断言空行有没有被压成块间距 */
   height: number
+  /** 行盒顶部坐标(px):用来断言输入前后位置不动 */
+  top: number
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -146,7 +148,8 @@ async function main(): Promise<void> {
           weight: cs.fontWeight,
           mark: m ? m.textContent : '',
           bullet: b ? getComputedStyle(b, '::after').content : '',
-          height: Math.round(el.getBoundingClientRect().height * 10) / 10
+          height: Math.round(el.getBoundingClientRect().height * 10) / 10,
+          top: Math.round(el.getBoundingClientRect().top * 10) / 10
         }
       })`)
 
@@ -356,16 +359,30 @@ async function main(): Promise<void> {
   }
 
   // ---------- H ----------
-  console.log('\n【H】回归:空行之后的 `-` 本来就能立即渲染')
+  console.log('\n【H】空行之后的 `-`:先按正文,补上空格才显示圆点')
   await loadDoc('')
   await type('阿')
   // 新段回车会在下面留一条空行,光标正落在空行下面那行
   await key('Enter')
+  await waitFor(`document.querySelectorAll('.cm-content .cm-line').length === 3`)
+  const beforeLines = await domLines()
+  const topBefore = beforeLines[beforeLines.length - 1]?.top ?? -1
   await type('-')
   {
     const lines = await domLines()
-    const marker = lines[2]
-    check('空行后的 `-` 仍是圆点', !!marker && marker.bullet === '"•"', marker ? looks(marker) : '缺行')
+    const marker = lines[lines.length - 1]
+    check('单独一个 `-` 仍是普通文本(没有圆点)', !!marker && marker.bullet === '' && marker.mark === '', marker ? looks(marker) : '缺行')
+    check(
+      '敲下短横线后光标行位置不动(上面空行仍按段间距收起)',
+      marker !== undefined && Math.abs(marker.top - topBefore) <= 1 && /cm-md-block-gap/.test(lines[1]?.cls ?? ''),
+      JSON.stringify({ topBefore, after: marker?.top, gap: lines[1]?.cls })
+    )
+  }
+  await type(' ')
+  {
+    const lines = await domLines()
+    const marker = lines[lines.length - 1]
+    check('补上空格后立刻显示圆点', !!marker && marker.bullet === '"•"', marker ? looks(marker) : '缺行')
   }
 
   // ---------- I ----------
@@ -424,6 +441,52 @@ async function main(): Promise<void> {
       '空行仍保持收起(没有被光标撑开)',
       !!blank && blank.cls.includes('cm-md-block-gap') && blank.height < bodySizePx * 2 - 1,
       blank ? JSON.stringify(blank) : '缺行'
+    )
+  }
+
+  // ---------- L ----------
+  console.log('\n【L】空的有序项上回车 —— 一次就退出列表')
+  await loadDoc('啊\n\n1. 啊\n2. ')
+  await key('End', ['control'])
+  await key('Enter')
+  {
+    const lines = await domLines()
+    const last = lines[lines.length - 1]
+    const src = await readSource()
+    check(
+      '标记一次消失,光标停在列表后的空段落上',
+      !!last && last.text.trim() === '' && last.mark === '' && last.bullet === '',
+      last ? looks(last) : '缺行'
+    )
+    check('落盘:列表后只剩空段落,没有残留的空项', src.join('|') === '啊||1. 啊', JSON.stringify(src))
+    check('列表和空段落之间仍有一条分隔空行', lines.length === 5 && /cm-md-block-gap/.test(lines[3]?.cls ?? ''), JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}[${l.cls}]`)))
+  }
+
+  // ---------- M ----------
+  console.log('\n【M】空的无序项(前面有内容项)回车 —— 一次退出,不凭空多行')
+  await loadDoc('啊\n\n- 啊\n- 啊\n- 啊\n- ')
+  await key('End', ['control'])
+  await key('Enter')
+  {
+    const src = await readSource()
+    const lines = await domLines()
+    const body = lines[0]?.height ?? 0
+    const caret = lines[lines.length - 1]
+    const gap = lines[lines.length - 2]
+    check('落盘:空项消失,列表后只剩一条空段落', src.join('|') === '啊||- 啊|- 啊|- 啊', JSON.stringify(src))
+    check(
+      '列表后只有光标这一条整行空段落(没有多出一行)',
+      lines.length === 7 &&
+        !!caret &&
+        caret.text === '' &&
+        caret.height >= body - 1 &&
+        /cm-md-empty-paragraph/.test(caret.cls),
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+    check(
+      '列表与空段落之间的结构空行仍按间距收起',
+      !!gap && !/cm-md-empty-paragraph/.test(gap.cls) && gap.height < body - 8,
+      gap ? JSON.stringify(gap) : '缺行'
     )
   }
 

@@ -3,6 +3,8 @@ import { insertCodeIndent } from './codeIndent'
 import {
   completeFenceOnEnter,
   deleteEmptyListMarkup,
+  deleteHardBreakBackward,
+  deleteParagraphBreakBackward,
   exitListOnEmptyItem,
   insertCodeBlock,
   insertHardBreak,
@@ -31,9 +33,13 @@ export const editorKeymap: KeyBinding[] = [
   { key: 'Enter', run: completeFenceOnEnter },
   // 空列表项上回车退出列表:在源码里留一条空行,别让后面的正文变成懒续行
   { key: 'Enter', run: exitListOnEmptyItem },
-  // 正文回车 = 新段(源码补空行),Shift+回车 = 段内换行(行尾两空格)
+  // 正文回车 = 新段(源码补空行),Shift+回车 = 段内换行(行尾反斜杠)
   { key: 'Enter', run: insertParagraph },
   { key: 'Shift-Enter', run: insertHardBreak },
+  // 硬换行续行行首退格:把上一行末尾的 `\` 连同换行一起删掉,两行接回一行
+  { key: 'Backspace', run: deleteHardBreakBackward },
+  // 新段里退格:把「回车 = 新段」补出来的空行连同段落分隔一起删掉,光标回到上一段行尾
+  { key: 'Backspace', run: deleteParagraphBreakBackward },
   // 删除空列表项时别留下 CodeMirror 补的对齐空格(光标要顶格)
   { key: 'Backspace', run: deleteEmptyListMarkup },
   // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
