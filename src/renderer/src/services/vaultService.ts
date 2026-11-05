@@ -53,6 +53,17 @@ export function withExtension(name: string): string {
   return EDITABLE_EXTS.has(ext) ? name : `${name}.md`
 }
 
+/**
+ * withExtension 会补上的那一段(没有则空串)。
+ * 新建/改名的输入框用它把 `.md` 用浅色挂在文字后面 —— 提示最终生成的名字,
+ * 又不用真的写进输入值里。
+ */
+export function autoExtension(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return ''
+  return withExtension(trimmed).slice(trimmed.length)
+}
+
 function flatten(node: VaultNode, vaultPath: string, out: VaultFileRef[]): void {
   if (node.type === 'file') {
     const rel = relativeTo(vaultPath, node.path) ?? node.path

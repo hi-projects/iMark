@@ -234,11 +234,14 @@ async function main(): Promise<void> {
     return lines
   }
 
-  /** 正文 + 回车 + 标记:先把「正文正下方敲列表符号」的场景搭出来 */
+  /**
+   * 正文 + 下移一行 + 标记:把「正文正下方敲列表符号」的场景搭出来。
+   * 别用回车 —— 回车现在是「新段」,会在两行之间留一条空行,这里要的是
+   * 紧挨着上一行的状态(旧文档里很常见,渲染规则仍要守住)。
+   */
   async function paragraphThen(marker: string): Promise<void> {
-    await loadDoc('')
-    await type('阿')
-    await key('Enter')
+    await loadDoc('阿\n')
+    await key('ArrowDown')
     await type(marker)
     // 大纲刷新有 300ms 防抖,等它结算
     await sleep(450)
@@ -356,7 +359,7 @@ async function main(): Promise<void> {
   console.log('\n【H】回归:空行之后的 `-` 本来就能立即渲染')
   await loadDoc('')
   await type('阿')
-  await key('Enter')
+  // 新段回车会在下面留一条空行,光标正落在空行下面那行
   await key('Enter')
   await type('-')
   {
@@ -390,14 +393,16 @@ async function main(): Promise<void> {
   await key('Enter')
   {
     const lines = await domLines()
-    const blank = lines[2]
-    check('标题前多出一行', lines.length === 4, JSON.stringify(lines.map(l => l.text)))
+    // 光标停在标题行首,回车 = 新段:标题上面多出「空段」(两条空行),
+    // 紧贴标题的那条才是新段落的分隔,不能被列表后的块间距压扁
+    const blank = lines[3]
+    check('标题前多出新段的空行', lines.length === 5, JSON.stringify(lines.map(l => l.text)))
     check(
-      '空行是完整行高(不是一档块间距)',
+      '紧贴标题的空行是完整行高(不是一档块间距)',
       !!blank && blank.height >= bodySizePx * 2 - 1,
       blank ? JSON.stringify(blank) : '缺行'
     )
-    check('标题仍在空行之后', !!lines[3] && lines[3].text.includes('附录'), lines[3] ? looks(lines[3]) : '缺行')
+    check('标题仍在空行之后', !!lines[4] && lines[4].text.includes('附录'), lines[4] ? looks(lines[4]) : '缺行')
   }
 
   // ---------- K ----------

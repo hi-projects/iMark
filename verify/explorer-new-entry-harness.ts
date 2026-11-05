@@ -9,11 +9,12 @@
  * 断言:
  *   A 目录行「新建文件」→ 输入行紧跟该目录行、在它第一个子项之前,
  *     缩进与建好后的文件行一致(图标 + 无展开箭头的 16px 补偿)
- *   B 输入框自动聚焦;输入名字回车 → 文件真的建在那个目录里
+ *   B 输入框自动聚焦;敲名字时文字后跟一个浅色 `.md`(扩展名提示),
+ *     回车 → 文件真的建在那个目录里
  *   C 工具栏「新建文件」(仓库根)→ 输入行在列表最前,缩进第一层
  *   D 右键菜单「新建文件」→ 同样落在该目录下
- *   E 目录行「新建文件夹」→ 同样落在该目录下,并建出子目录
- *   F 重命名输入行仍在原位且自动聚焦(顺带回归重构后的聚焦方式)
+ *   E 目录行「新建文件夹」→ 同样落在该目录下,并建出子目录(不带 `.md` 提示)
+ *   F 重命名输入行仍在原位且自动聚焦;名字已带 `.md` 时不重复提示
  *
  * 跑法(先 `npm run build`):
  *   xvfb-run -a node verify/run.mjs explorer-new-entry
@@ -101,6 +102,68 @@ const EDIT_INFO = (name: string) => `
     focused: document.activeElement === input,
     first: idx === 0,
     index: idx
+  }
+})()`
+
+interface GhostInfo {
+  input: boolean
+  ghost: boolean
+  /** ghost 的完整文本,应等于「已输入的名字 + .md」 */
+  text: string | null
+  color: string | null
+  inputColor: string | null
+  /** ghost 文字宽度(隐藏的镜像部分)与 canvas 按同字体量出的输入值宽度 */
+  mirrorWidth: number | null
+  textWidth: number | null
+  /** ghost 左缘相对输入框左缘 = 1px 边框 + 6px 内边距 */
+  offsetLeft: number | null
+  /** ghost 是否被裁在输入框内(长名字滚动时不能溢出) */
+  insideInput: boolean | null
+  /** 输入框文字与 ghost 的基线(px):同一值 = 在同一行上 */
+  inputBaseline: number | null
+  ghostBaseline: number | null
+  /** 输入框内容区高度(即文字行盒高度)与 ghost 的 line-height */
+  contentHeight: number | null
+  ghostLineHeight: number | null
+}
+
+/** 浅色扩展名提示的 DOM 状态。没有输入框/没有 ghost 时对应字段为 null */
+const GHOST_INFO = `
+(() => {
+  const input = document.querySelector('.explorer-editing input')
+  if (!input) return { input: false, ghost: false, text: null, color: null, inputColor: null, mirrorWidth: null, textWidth: null, offsetLeft: null, insideInput: null, inputBaseline: null, ghostBaseline: null, contentHeight: null, ghostLineHeight: null }
+  const ghost = document.querySelector('.explorer-name-ghost')
+  const inputRect = input.getBoundingClientRect()
+  const inputStyle = getComputedStyle(input)
+  if (!ghost) return { input: true, ghost: false, text: null, color: null, inputColor: inputStyle.color, mirrorWidth: null, textWidth: null, offsetLeft: null, insideInput: null, inputBaseline: null, ghostBaseline: null, contentHeight: null, ghostLineHeight: null }
+  const ghostStyle = getComputedStyle(ghost)
+  const ghostRect = ghost.getBoundingClientRect()
+  const mirror = ghost.querySelector('.explorer-name-ghost-text')
+  const ctx = document.createElement('canvas').getContext('2d')
+  ctx.font = ghostStyle.fontSize + ' ' + ghostStyle.fontFamily
+  // 同一字体下 ascent/descent 一致,两侧基线只差行盒起点与行高的算法
+  const fm = ctx.measureText('新')
+  const ascent = fm.fontBoundingBoxAscent
+  const descent = fm.fontBoundingBoxDescent
+  const padTop = parseFloat(inputStyle.paddingTop)
+  const padBottom = parseFloat(inputStyle.paddingBottom)
+  const borderTop = parseFloat(inputStyle.borderTopWidth)
+  const contentHeight = input.clientHeight - padTop - padBottom
+  const ghostLineHeight = parseFloat(ghostStyle.lineHeight)
+  return {
+    input: true,
+    ghost: true,
+    text: ghost.textContent,
+    color: ghostStyle.color,
+    inputColor: inputStyle.color,
+    mirrorWidth: mirror ? mirror.getBoundingClientRect().width : null,
+    textWidth: ctx.measureText(input.value).width,
+    offsetLeft: ghostRect.left - inputRect.left,
+    insideInput: ghostRect.right <= inputRect.right + 0.5,
+    inputBaseline: inputRect.top + borderTop + padTop + (contentHeight - (ascent + descent)) / 2 + ascent,
+    ghostBaseline: ghostRect.top + (ghostLineHeight - (ascent + descent)) / 2 + ascent,
+    contentHeight,
+    ghostLineHeight
   }
 })()`
 
@@ -192,6 +255,26 @@ async function main(): Promise<void> {
       return true
     })()`)
 
+  /** 只敲字不回车,方便检查输入过程中的显示 */
+  const typeValue = (value: string): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const input = document.querySelector('.explorer-editing input')
+      if (!input) return false
+      input.value = ${JSON.stringify(value)}
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    })()`)
+
+  const pressEnter = (): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const input = document.querySelector('.explorer-editing input')
+      if (!input) return false
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      return true
+    })()`)
+
+  const ghostInfo = (): Promise<GhostInfo> => evalJs<GhostInfo>(GHOST_INFO)
+
   const typeAndEnter = (value: string): Promise<boolean> =>
     evalJs<boolean>(`(() => {
       const input = document.querySelector('.explorer-editing input')
@@ -234,8 +317,19 @@ async function main(): Promise<void> {
   check('输入框自动聚焦', a.focused)
 
   // ---------- B ----------
-  console.log('\n【B】输入名字回车:文件建在目标目录里')
-  check('输入行接受输入', await typeAndEnter('新文件'))
+  console.log('\n【B】输入名字:文字后跟浅色 .md,回车建文件')
+  check('输入行接受输入', await typeValue('新文件'))
+  await waitFor(`document.querySelector('.explorer-name-ghost')`)
+  const b = await ghostInfo()
+  console.log(`     ghost=${JSON.stringify(b.text)} color=${b.color}/${b.inputColor} left=${b.offsetLeft} width=${b.mirrorWidth}/${b.textWidth} baseline=${b.ghostBaseline}/${b.inputBaseline}`)
+  check('文字后显示 .md 提示', b.ghost && b.text === '新文件.md', JSON.stringify([b.ghost, b.text]))
+  check('.md 提示颜色比正文淡', b.color !== null && b.inputColor !== null && b.color !== b.inputColor, `${b.color} vs ${b.inputColor}`)
+  check('.md 紧跟在已输入文字之后(镜像宽度与文字实际宽度一致)', b.mirrorWidth !== null && b.textWidth !== null && Math.abs(b.mirrorWidth - b.textWidth) <= 1, `${b.mirrorWidth} vs ${b.textWidth}`)
+  check('.md 的行盒与输入框文字行盒同高', b.ghostLineHeight !== null && b.contentHeight !== null && Math.abs(b.ghostLineHeight - b.contentHeight) <= 0.5, `${b.ghostLineHeight} vs ${b.contentHeight}`)
+  check('.md 与输入文字在同一基线上', b.inputBaseline !== null && b.ghostBaseline !== null && Math.abs(b.inputBaseline - b.ghostBaseline) <= 0.6, `${b.ghostBaseline} vs ${b.inputBaseline}`)
+  check('.md 与输入框文字起点对齐(左缘 = 1px 边框 + 6px 内边距)', b.offsetLeft !== null && Math.abs(b.offsetLeft - 7) <= 1, String(b.offsetLeft))
+  check('.md 提示被裁在输入框内', b.insideInput === true, String(b.insideInput))
+  check('回车确认输入', await pressEnter())
   const created = join(vault, 'ros2/ros2-moveit2/新文件.md')
   const createdOk = await (async () => {
     for (let i = 0; i < 100; i++) {
@@ -268,6 +362,9 @@ async function main(): Promise<void> {
   check('缩进为第一层的文件行(8 + 1*14 + 16)', c.padding === 38, String(c.padding))
   check('输入框与相邻文件名的列对齐', aligned(c), `${c.inputLeft} vs ${c.siblingLeft}`)
   check('输入框自动聚焦', c.focused)
+  check('输入行接受输入', await typeValue('笔记.txt'))
+  await sleep(120)
+  check('名字已带仓库认得的扩展名(.txt)时不提示 .md', !(await ghostInfo()).ghost)
   await escape()
   await sleep(200)
 
@@ -307,6 +404,7 @@ async function main(): Promise<void> {
   check('缩进比父目录深一层(目录行要留出展开箭头)', e.padding !== null && e.parentPadding !== null && e.padding === e.parentPadding + 14, `${e.padding} vs ${e.parentPadding}`)
   check('输入框与相邻文件名的列对齐', aligned(e), `${e.inputLeft} vs ${e.siblingLeft}`)
   check('焦点在输入框', e.focused)
+  check('新建文件夹不提示 .md', !(await ghostInfo()).ghost)
   await typeAndEnter('新目录')
   const dirCreated = join(vault, 'ros2/ros2-moveit2/新目录')
   const dirOk = await (async () => {
@@ -330,6 +428,12 @@ async function main(): Promise<void> {
   check('重命名输入框带原文件名', renameValue === '管线.md', renameValue)
   check('重命名输入行在文件原来的位置(不是列表最前)', !f.first, String(f.index))
   check('重命名输入框自动聚焦', f.focused)
+  check('原名已带 .md 时不重复提示', !(await ghostInfo()).ghost)
+  check('输入新名字', await typeValue('管线改名'))
+  await waitFor(`document.querySelector('.explorer-name-ghost')`)
+  const fGhost = await ghostInfo()
+  console.log(`     ghost=${JSON.stringify(fGhost.text)}`)
+  check('改名时敲的名字后同样跟浅色 .md', fGhost.ghost && fGhost.text === '管线改名.md', JSON.stringify(fGhost.text))
   await escape()
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)

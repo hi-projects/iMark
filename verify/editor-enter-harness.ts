@@ -267,11 +267,17 @@ async function main(): Promise<void> {
   await type('TARGETS')
   {
     const src = await readSource()
-    check('第 1 行是手写的 `### 参数`', src[0] === '### 参数', JSON.stringify(src.slice(0, 2)))
-    check('第 2 行是裸正文,回车没把 `### ` 带下来', src[1] === 'TARGETS', JSON.stringify(src.slice(0, 2)))
-    check('后面原有内容没被动过', src.slice(2).join('|') === TAIL.join('|'), JSON.stringify(src.slice(2)))
+    check('第 1 行是手写的 `### 参数`', src[0] === '### 参数', JSON.stringify(src.slice(0, 3)))
+    // 回车 = 新段:标题本身就是块边界,新段紧贴在它下面,靠下面的空行和下一个块分开
+    check('第 2 行是裸正文,回车没把 `### ` 带下来', src[1] === 'TARGETS', JSON.stringify(src.slice(0, 3)))
+    check(
+      '后面原有内容没被动过(新段和标题之间只多了一条空行)',
+      src.slice(2).join('|') === ['', ...TAIL].join('|'),
+      JSON.stringify(src.slice(2))
+    )
 
-    const [head, body] = await domLines()
+    const lines = await domLines()
+    const [head, body] = lines
     check('第 1 行仍按三级标题渲染', /cm-md-h3/.test(head.cls) && isHeading(head), looks(head))
     check('第 2 行不是标题(无 cm-md-hN)', !/cm-md-h[1-6]/.test(body.cls), looks(body))
     check('第 2 行按正文字号字重渲染', isBody(body), looks(body))
@@ -284,10 +290,10 @@ async function main(): Promise<void> {
   await key('Enter')
   {
     const src = await readSource()
-    check('落盘:前半段留标记,后半段是裸文本', src.slice(0, 2).join('|') === '### 参|数', JSON.stringify(src.slice(0, 2)))
-    check('后面原有内容没被动过', src.slice(2).join('|') === TAIL.join('|'), JSON.stringify(src.slice(2)))
+    check('落盘:前半段留标记,后半段是裸文本', src.slice(0, 3).join('|') === '### 参||数', JSON.stringify(src.slice(0, 3)))
+    check('后面原有内容没被动过', src.slice(3).join('|') === TAIL.join('|'), JSON.stringify(src.slice(3)))
 
-    const [head, body] = await domLines()
+    const [head, , body] = await domLines()
     check('前半段还是三级标题', /cm-md-h3/.test(head.cls), looks(head))
     check('后半段是正文', !/cm-md-h[1-6]/.test(body.cls) && isBody(body), looks(body))
   }

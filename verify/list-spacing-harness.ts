@@ -285,23 +285,31 @@ async function main(): Promise<void> {
   const beforeTyping = await metrics()
   console.log(`     [输入第一项文字前] ${JSON.stringify(beforeTyping)}`)
   check('输入第一项文字前标记已画上', beforeTyping.mark === '1.', JSON.stringify(beforeTyping.mark))
-  check('输入第一项文字前上方留白已生效(16px)', near(beforeTyping.beforePad, DEFAULT_GAP), String(beforeTyping.beforePad))
+  // 回车 = 新段,列表和新段落之间隔着一条结构空行:留白落在空行上(和 F 一样),
+  // 上一行不再额外加 padding。
+  check('上一行不额外加 padding', near(beforeTyping.beforePad, 0), String(beforeTyping.beforePad))
+  check(
+    '输入第一项文字前上方留白已生效(16px)',
+    near(beforeTyping.gapLineHeight, DEFAULT_GAP),
+    String(beforeTyping.gapLineHeight)
+  )
   await type('x')
   await sleep(350)
   const afterTyping = await metrics()
   console.log(`     [补上 x 之后] ${JSON.stringify(afterTyping)}`)
-  check('补字后上方留白不变(16px)', near(afterTyping.beforePad, DEFAULT_GAP), String(afterTyping.beforePad))
+  check('补字后上方留白不变(16px)', near(afterTyping.gapLineHeight, DEFAULT_GAP), String(afterTyping.gapLineHeight))
 
   // ---------- H ----------
-  console.log('\n【H】真输入流程(两段正文之间):回车 + `1. ` 立刻有上下留白')
-  await loadDoc('正文甲。\n正文乙。')
+  console.log('\n【H】真输入流程(两段正文之间):光标落在空行上敲 `1. ` 立刻有上下留白')
+  // 回车现在按「新段」补空行,这条要验的是「空行上直接输入列表标记」的瞬时观感,
+  // 所以把光标直接放到两段之间的空行上,别让回车再插一条空行。
+  await loadDoc('正文甲。\n\n正文乙。')
   await evalJs(`(() => {
     const view = document.querySelector('.cm-content').cmTile.root.view
-    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } })
+    view.dispatch({ selection: { anchor: view.state.doc.line(2).from } })
     view.focus()
     return true
   })()`)
-  await key('Enter')
   await type('1. ')
   await sleep(350)
   const inserted = await metrics()

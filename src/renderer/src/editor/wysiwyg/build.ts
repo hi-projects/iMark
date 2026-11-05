@@ -2,7 +2,7 @@ import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/l
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import type { ChangeDesc, Line, Range, Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
-import { applyRule, type LinkInfo, type RuleContext } from './rules'
+import { applyRule, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import {
   addConflictDecorations,
@@ -375,7 +375,8 @@ export class WysiwygPlugin {
         pendingFence: getPendingFence(state),
         decos,
         atomic,
-        links
+        links,
+        decorated: new Set()
       }
       syntaxTree(state).iterate({
         from,
@@ -386,6 +387,7 @@ export class WysiwygPlugin {
           return applyRule(node, ctx)
         }
       })
+      collapseBlankRuns(ctx, inConflict)
     }
 
     // sort=true:自动排序 + RangeSet 校验(重叠的 replace 会在此抛错,便于开发期暴露)

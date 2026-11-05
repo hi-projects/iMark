@@ -44,6 +44,8 @@ export interface RuleContext {
   decos: Range<Decoration>[]
   atomic: Range<Decoration>[]
   links: LinkInfo[]
+  /** 已经有行装饰的行首(collapseBlankRuns 用它跳过代码行等特殊空行) */
+  decorated: Set<number>
 }
 
 // ---------- 基础 emit 工具 ----------
@@ -65,6 +67,7 @@ function addMark(ctx: RuleContext, from: number, to: number, cls: string): void 
 
 function addLine(ctx: RuleContext, pos: number, cls: string): void {
   const line = ctx.doc.lineAt(pos)
+  ctx.decorated.add(line.from)
   ctx.decos.push({ from: line.from, to: line.from, value: Decoration.line({ class: cls }) })
 }
 
@@ -316,15 +319,72 @@ function caretOnGapLine(ctx: RuleContext, from: number, to: number): boolean {
  * 排法:空行只留一档高,光标落上去时再按正文行撑开(见 addGapBefore)。
  * 没有空行的两行在 CommonMark 里是同一段,距离归「行间距」管 —— 不归这里。
  *
- * 只处理两个普通段落之间的空行:段落挨着标题 / 代码块 / 列表 / 引用时,
+ * 只处理「两段正文」之间的空行:上一段是普通段落,或者是排版上已经按正文
+ * 处理的列表结尾(见 listEndsWithLazyText)。段落挨着标题 / 代码块 / 引用时,
  * 那是那些块的间距在管,不要叠一份。
+ *
+ * 连排两条以上的空行由 collapseBlankRuns 统一收紧。
  */
 function styleBodyGap(ctx: RuleContext, para: SyntaxNode): void {
   if (para.parent?.name !== 'Document') return
-  if (para.prevSibling?.name !== 'Paragraph') return
+  const prev = para.prevSibling
+  if (!prev) return
+  if (prev.name !== 'Paragraph' && !listEndsWithLazyText(ctx, prev)) return
   const line = ctx.doc.lineAt(para.from)
   if (line.number <= 1 || !isBlankLine(ctx.doc.line(line.number - 1).text)) return
   addGapBefore(ctx, para.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+}
+
+/**
+ * 连排的空行只留光标所在的那一条整行,其余按段间距收紧。
+ *
+ * CommonMark 里多出来的空行只是分隔,不是排版内容;而「回车 = 新段」恰好会
+ * 补出连排空行 —— 新段先占一条空段落,上下各有一条分隔。不收的话,按一次
+ * 回车屏幕上就连出两三行空白;收完正好是「一条空行 + 段间距」。
+ *
+ * 光标所在的那条不收(得能看见光标、接着打字);已经有行装饰的空行也不动
+ * (代码块里的空行是代码内容,块间距行已经有自己的高度)。
+ */
+export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: number) => boolean): void {
+  const first = ctx.doc.lineAt(ctx.visibleFrom).number
+  const last = ctx.doc.lineAt(ctx.visibleTo).number
+  for (let number = first; number <= last; number++) {
+    const line = ctx.doc.line(number)
+    if (!isBlankLine(line.text)) continue
+    // 只有挨着另一条空行时才算「连排」;单独一条空行是正常的分隔,保持整行
+    const prevBlank = number > 1 && isBlankLine(ctx.doc.line(number - 1).text)
+    const nextBlank = number < ctx.doc.lines && isBlankLine(ctx.doc.line(number + 1).text)
+    if (!prevBlank && !nextBlank) continue
+    if (ctx.decorated.has(line.from)) continue
+    if (skip && skip(line.from, line.to)) continue
+    if (caretOnGapLine(ctx, line.from, line.to)) continue
+    addLine(ctx, line.from, 'cm-md-block-gap cm-md-block-gap-body')
+  }
+}
+
+/**
+ * 列表节点是不是「列表标记之后还跟着没有列表点的正文」。
+ *
+ * 用户按两次回车去掉列表点,就是想跳出列表;CommonMark 仍然把紧接着的
+ * 无标记行算成最后一项的懒续行(见上面 List 分支的说明)。这些行在界面上
+ * 按正文排,所以它们下面的空行也该按「两段正文之间」的空行处理 —— 否则
+ * 空行两头都不是 Paragraph,谁都不压它,就会留成一整行(间距凭空变高)。
+ *
+ * 只认列表标记后面确实还有内容的列表;标记所在行就是列表最后一行时返回
+ * false,那种情况归列表自己的 after 间距管。
+ */
+function listEndsWithLazyText(ctx: RuleContext, list: SyntaxNode): boolean {
+  if (list.name !== 'BulletList' && list.name !== 'OrderedList') return false
+  const mark = lastListMark(list)
+  if (!mark) return false
+  if (ctx.doc.lineAt(list.to).number <= ctx.doc.lineAt(mark.from).number) return false
+  // 最后那一行还必须属于正文段落:代码块 / 嵌套列表 / 表格收尾的列表,
+  // 它们下面的空行归各自的块间距管,不要再叠一份段间距。
+  for (let cur: SyntaxNode | null = list.resolve(list.to - 1, -1); cur; cur = cur.parent) {
+    if (cur.name === 'Paragraph') return true
+    if (cur.name === list.name) return false
+  }
+  return false
 }
 
 /** 列表子树里最后一个列表标记:列表在视觉上的结尾(续行、嵌套列表都排在它后面) */

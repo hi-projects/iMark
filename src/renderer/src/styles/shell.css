@@ -292,8 +292,50 @@ body.pane-resizing * {
   border-radius: 4px;
   background: var(--bg-editor);
   color: var(--text-primary);
+  /* 表单控件默认不继承字体;ghost 必须和输入框同一个字体才对得齐 */
+  font-family: inherit;
   font-size: 12px;
   outline: none;
+}
+
+/*
+ * 输入框 + 浅色扩展名提示的外层:ghost 绝对定位在输入框文字后面,
+ * 只做视觉提示,不参与取值(见 ExplorerNameInput.vue)。
+ */
+.explorer-name-field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.explorer-name-field input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+
+.explorer-name-ghost {
+  position: absolute;
+  /*
+   * 与输入框文字起点对齐:1px 边框 + 6px 内边距。
+   * top / line-height 由 ExplorerNameInput 量出输入框的行盒后写进内联样式 ——
+   * 表单控件与普通元素对 `line-height: normal` 的算法不同,写死会对不齐基线。
+   */
+  left: 7px;
+  display: block;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: pre;
+  pointer-events: none;
+}
+
+/* 占位用的前半截:撑出输入框里已输入文字的宽度,本身不可见 */
+.explorer-name-ghost-text {
+  visibility: hidden;
 }
 
 /* ---------- 文件树右键菜单 ---------- */

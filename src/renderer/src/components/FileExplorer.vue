@@ -15,7 +15,9 @@ import {
 } from 'lucide-vue-next'
 import type { VaultNode } from '@shared/types'
 import { activeTab, appStore } from '../stores/app'
+import ExplorerNameInput from './ExplorerNameInput.vue'
 import {
+  autoExtension,
   createDir,
   createFile,
   deleteNode,
@@ -41,6 +43,16 @@ interface Editing {
 }
 
 const editing = reactive<Editing>({ mode: null, parentPath: '', target: null, value: '' })
+
+/**
+ * 输入框后面浅色显示的扩展名:只有确认时会被自动补 `.md` 才显示。
+ * 新建/改名文件夹,以及名字已带仓库认得的扩展名(如 `.txt`)时都不提示。
+ */
+const nameSuffix = computed(() => {
+  if (editing.mode === 'new-file') return autoExtension(editing.value)
+  if (editing.mode === 'rename' && editing.target?.type === 'file') return autoExtension(editing.value)
+  return ''
+})
 
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
@@ -371,9 +383,10 @@ function guideLeft(level: number): string {
           <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
           <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
           <FileText v-else :size="14" class="explorer-icon" />
-          <input
+          <ExplorerNameInput
             v-model="editing.value"
             :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
+            :suffix="nameSuffix"
             @keydown.enter="onEnter"
             @keydown.esc.prevent="cancelEdit"
             @blur="cancelEdit"
@@ -383,8 +396,9 @@ function guideLeft(level: number): string {
         <template v-for="(row, i) in rows" :key="row.node.path">
           <!-- 重命名输入行 -->
           <div v-if="editing.mode === 'rename' && editing.target?.path === row.node.path" class="explorer-item explorer-editing" :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }">
-            <input
+            <ExplorerNameInput
               v-model="editing.value"
+              :suffix="nameSuffix"
               @keydown.enter="onEnter"
               @keydown.esc.prevent="cancelEdit"
               @blur="cancelEdit"
@@ -499,9 +513,10 @@ function guideLeft(level: number): string {
             <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
             <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
             <FileText v-else :size="14" class="explorer-icon" />
-            <input
+            <ExplorerNameInput
               v-model="editing.value"
               :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
+              :suffix="nameSuffix"
               @keydown.enter="onEnter"
               @keydown.esc.prevent="cancelEdit"
               @blur="cancelEdit"
