@@ -269,8 +269,10 @@ key =
   `localResourceRoots` 路径范围。
 - `webview.asWebviewUri()` 把包内文件变成带 token 的协议 URL；`webview.cspSource` 用于拼 CSP。
 - 主题变量与 bootstrap 只能用 `postMessage` 送进去，渲染层不碰 iframe DOM。
-- `presentation` 支持 `sidebar` / `overlay` / `floating`；运行时可用
-  `panel.imark.setPresentation/setSize/setPosition/setStatus` 调整。
+- `presentation` 支持 `sidebar` / `overlay` / `floating`：`sidebar` 是编辑器右侧的
+  flex 子项，占布局宽度（编辑器变窄），另两种绝对定位浮在编辑区上；运行时可用
+  `panel.imark.setPresentation/setSize/setPosition/setStatus` 调整，
+  `setVisible(false)` 收起而不销毁（`reveal()` 重新显示）。
 
 ## 8. 内置官方扩展
 

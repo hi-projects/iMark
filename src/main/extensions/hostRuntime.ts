@@ -888,6 +888,10 @@ class HostWebviewPanel implements WebviewPanel {
     setPosition: (anchor: WebviewPanelStateDto['anchor']): void => {
       this.sendPresentation({ anchor })
     },
+    setVisible: (visible: boolean): void => {
+      this.visible = visible
+      this.sendPresentation({ visible })
+    },
     setStatus: (status: WebviewPanelStatusDto): void => {
       // 状态是瞬时信息，不进面板记录之外的任何地方；main 只负责转给 renderer
       this.whenReady(() => {
@@ -910,6 +914,7 @@ class HostWebviewPanel implements WebviewPanel {
     width?: number
     height?: number
     anchor?: WebviewPanelStateDto['anchor']
+    visible?: boolean
   }): void {
     // 先把补丁记在自己的状态里，再连同完整状态发给 main。
     // main 的记录是展示真身；这里保持一份副本只是为了下一次补丁能正确合并。
@@ -917,6 +922,7 @@ class HostWebviewPanel implements WebviewPanel {
     if (patch.width !== undefined) this.width = patch.width
     if (patch.height !== undefined) this.height = patch.height
     if (patch.anchor !== undefined) this.anchor = patch.anchor
+    if (patch.visible !== undefined) this.visible = patch.visible
     const run = (): void => {
       this.runtime.send({
         kind: 'webview.setPresentation',
@@ -926,7 +932,8 @@ class HostWebviewPanel implements WebviewPanel {
         width: this.width,
         height: this.height,
         transparent: this.transparent,
-        anchor: this.anchor
+        anchor: this.anchor,
+        ...(patch.visible !== undefined ? { visible: patch.visible } : {})
       })
     }
     this.whenReady(run)
@@ -993,7 +1000,10 @@ class HostWebviewPanel implements WebviewPanel {
   }
 
   reveal(): void {
-    /* renderer 根据 presentation 决定它显示在哪；这里没有额外动作 */
+    // renderer 根据 presentation 决定它显示在哪；这里只负责把收起的面板重新显示
+    if (this.visible) return
+    this.visible = true
+    this.sendPresentation({ visible: true })
   }
 
   updateViewState(visible: boolean, active: boolean): void {

@@ -549,9 +549,13 @@ panel.webview.postMessage({ type: 'hello' })
 - 应用会发送 `imark:bootstrap`（含 `panelId`、`extensionId`、`theme`）与 `imark:theme`
   （主题变量）；主题变量的 `colors` 是一组 `--*` CSS 自定义属性，页面可自行注入到
   `document.documentElement`。
-- `presentation` 支持 `sidebar` / `overlay` / `floating`，运行时可用
+- `presentation` 支持 `sidebar` / `overlay` / `floating`：`sidebar` 占据编辑器右侧的
+  布局宽度（编辑器让位，不遮挡正文），`overlay` / `floating` 浮在编辑区上；运行时可用
   `panel.imark.setPresentation/setSize/setPosition` 调整，`setStatus('idle' | 'busy')`
   控制标题栏状态点。
+- `panel.imark.setVisible(false)` 收起面板但保留 iframe 与页面状态（配合
+  `retainContextWhenHidden`），`panel.reveal()` 重新显示；`dispose()` 才会销毁。
+  侧栏宽度可在渲染层拖动左边缘调整。
 - 用 `registerWebviewPanelSerializer(viewType, serializer)` 在重启后恢复面板；
   `webview.getState()` / `setState()` 随面板元数据持久化。
 - 卸载扩展时主进程会删除它的面板记录；HTML 不持久化，恢复时由序列化器重新生成。

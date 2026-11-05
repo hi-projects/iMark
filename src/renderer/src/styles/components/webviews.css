@@ -1,15 +1,13 @@
 /*
  * 扩展 webview 的宿主层。
  *
- * 整层不接收指针事件（pointer-events: none）：没有面板时它完全不挡编辑器；
- * 每个面板自己重新打开 pointer-events。层级高于编辑器、低于模态框
- * （设置/市场/通知在 100+）。
+ * `display: contents`：宿主不生成盒子，面板直接成为 `.editor-stage` 的
+ * flex / 定位子项 —— sidebar 占布局宽度（编辑器跟着变窄），overlay / floating
+ * 才按绝对定位盖在编辑区上。没有面板时不留任何盒子，不会挡住编辑器。
+ * 面板层级高于编辑器、低于模态框（设置/市场/通知在 100+）。
  */
 .webview-host {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  pointer-events: none;
+  display: contents;
 }
 
 /* 浮动面板拖动中：整窗接管指针，避免指针重新进入 iframe 后宿主收不到事件 */
@@ -22,6 +20,8 @@
 }
 
 .webview-panel {
+  position: relative;
+  z-index: 20;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -45,11 +45,16 @@
 
 /* ---------- 位置 ---------- */
 
+/*
+ * 侧栏是编辑区里的 flex 子项：宽度写在 inline style 上（见 WebviewHost 的
+ * styleOf），高度拉满编辑区。它占掉的实际宽度由编辑器让出来，不遮正文。
+ */
 .webview-panel-sidebar {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  flex: 0 0 auto;
+  align-self: stretch;
+  height: auto;
+  /* 窗口很窄时宁可让侧栏缩一点，也不要溢出编辑区盖住右侧大纲 */
+  max-width: 100%;
   border-width: 0 0 0 1px;
   border-radius: 0;
   box-shadow: none;
@@ -66,22 +71,23 @@
   border-radius: 8px;
 }
 
-.webview-anchor-top-left {
+/* 锚点只对浮动面板生效；sidebar / overlay 的定位不能被它改写 */
+.webview-panel-floating.webview-anchor-top-left {
   top: 16px;
   left: 16px;
 }
 
-.webview-anchor-top-right {
+.webview-panel-floating.webview-anchor-top-right {
   top: 16px;
   right: 16px;
 }
 
-.webview-anchor-bottom-left {
+.webview-panel-floating.webview-anchor-bottom-left {
   left: 16px;
   bottom: 16px;
 }
 
-.webview-anchor-bottom-right {
+.webview-panel-floating.webview-anchor-bottom-right {
   right: 16px;
   bottom: 16px;
 }
@@ -197,10 +203,26 @@
 
 .webview-resize-column {
   top: 0;
-  left: -3px;
+  left: 0;
   bottom: 0;
-  width: 6px;
+  width: 8px;
   cursor: col-resize;
+  z-index: 3;
+}
+
+/*
+ * 侧栏拖动把手没有任何常驻装饰，容易让人以为不能调宽；悬停到面板上时
+ * 在分界线上亮一条强调色（拖动中一直亮着）。命中区仍向两侧各扩 4px。
+ */
+.webview-panel-sidebar:hover .webview-resize-column::after,
+.webview-panel-sidebar .webview-resize-column:active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: var(--accent);
 }
 
 .webview-resize-corner {

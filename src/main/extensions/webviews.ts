@@ -220,6 +220,7 @@ export class WebviewRegistry {
       height?: number
       transparent?: boolean
       anchor?: WebviewAnchorDto
+      visible?: boolean
     }
   ): void {
     record.presentation = patch.presentation
@@ -227,6 +228,7 @@ export class WebviewRegistry {
     if (patch.height !== undefined) record.height = patch.height
     if (patch.transparent !== undefined) record.transparent = patch.transparent
     if (patch.anchor !== undefined) record.anchor = patch.anchor
+    if (patch.visible !== undefined) record.visible = patch.visible
   }
 
   setViewState(record: WebviewRecord, visible: boolean, active: boolean): void {

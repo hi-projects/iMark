@@ -48,6 +48,7 @@ import { ProviderRegistry } from './core/providers'
 
 const VIEW_TYPE = 'imark.agent.chat'
 const CMD_OPEN = 'imark.agent.openChat'
+const CMD_TOGGLE = 'imark.agent.toggleChat'
 const CMD_STOP = 'imark.agent.stop'
 const CMD_CLEANUP = 'imark.agent.cleanupSessions'
 
@@ -188,6 +189,7 @@ class AgentHost {
 
     this.context.subscriptions.push(
       imark.commands.registerCommand(CMD_OPEN, () => this.openChat()),
+      imark.commands.registerCommand(CMD_TOGGLE, () => this.toggleChat()),
       imark.commands.registerCommand(CMD_STOP, () => this.cancelAllTurns()),
       imark.commands.registerCommand(CMD_CLEANUP, () => this.cleanupNow()),
       imark.window.registerWebviewPanelSerializer(VIEW_TYPE, {
@@ -209,8 +211,9 @@ class AgentHost {
 
     this.statusItem = imark.window.createStatusBarItem(imark.StatusBarAlignment.Right, 95)
     this.statusItem.text = '$(hubot) Agent Core'
-    this.statusItem.tooltip = '打开 Agent Core 对话'
-    this.statusItem.command = CMD_OPEN
+    this.statusItem.tooltip = '打开 / 收起 Agent Core 对话'
+    // 状态栏图标是开关：再点一次收起面板（收起不销毁，草稿与滚动位置都保留）
+    this.statusItem.command = CMD_TOGGLE
     this.statusItem.show()
     this.context.subscriptions.push(this.statusItem)
 
@@ -384,9 +387,28 @@ class AgentHost {
 
   // ---------- 面板 ----------
 
+  /**
+   * 状态栏图标的开关语义。
+   *
+   * 收起用 `setVisible(false)` 而不是 `dispose()`：面板与 iframe 保留，输入框
+   * 草稿、待发附件、会话滚动位置都不会丢；再点一次只是重新显示。
+   */
+  private toggleChat(): void {
+    if (!this.panel) {
+      this.openChat()
+      return
+    }
+    if (this.panel.visible) {
+      this.panel.imark.setVisible(false)
+      return
+    }
+    this.openChat()
+  }
+
   private openChat(): void {
     if (this.disposed) return
     if (this.panel) {
+      // 收起状态由 reveal 负责重新显示（见 HostWebviewPanel.reveal）
       this.panel.reveal()
       // 重新显示时再探测一次后端：默认模型等只读信息可能已在设置里改过
       this.push({ type: 'push', kind: 'refresh' })

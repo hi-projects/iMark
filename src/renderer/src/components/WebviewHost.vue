@@ -6,9 +6,13 @@
  * 面板不能直接访问应用的 DOM（跨源 + sandbox），所有交互都走 postMessage。
  *
  * 三种呈现：
- *   - sidebar：编辑器右侧停靠，可拖左边缘改宽；
+ *   - sidebar：编辑器右侧停靠，**占布局宽度**（编辑器跟着变窄），可拖左边缘改宽；
  *   - overlay：铺满编辑区；
  *   - floating：按 anchor 贴在编辑区四角之一。
+ *
+ * 宿主根节点是 `display: contents`：sidebar 面板因此成为 `.editor-stage` 的
+ * flex 子项，而不是盖在编辑器上的绝对定位层；overlay / floating 仍按绝对定位
+ * 铺在编辑区上。多面板同时存在时，sidebar 与浮层互不挤占。
  *
  * `retainContextWhenHidden` 为真时隐藏只切 `v-show` 语义（这里用 v-if 的组合：
  * 留着一个 `display:none` 的 section），iframe 不销毁，页面状态与 localStorage 都在；
@@ -66,7 +70,9 @@ const EDGE_GAP = 8
 
 function beginMove(event: PanelDragEvent): void {
   const section = event.frame.closest('.webview-panel') as HTMLElement | null
-  const host = hostEl.value
+  // 宿主本身是 display: contents（不生成盒子），limits 以它所在的编辑区为准
+  const stage = event.frame.closest('.editor-stage') as HTMLElement | null
+  const host = stage ?? hostEl.value
   if (!section || !host) return
   endMove()
   const rect = section.getBoundingClientRect()

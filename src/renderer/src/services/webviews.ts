@@ -183,8 +183,14 @@ function markReady(panelId: string): void {
   for (const payload of queue ?? []) {
     iframe?.contentWindow?.postMessage(payload, targetOrigin(panel))
   }
-  // 页面就绪即视为可见且活动；隐藏由组件在切换时报告
-  api.sendExtensionMessage({ type: 'webview.viewState', panelId, visible: true, active: true })
+  // 按面板当前状态回报，而不是硬编码可见：扩展可以主动收起面板，页面重载
+  // （如恢复已收起的面板）时不能把它又顶回可见状态
+  api.sendExtensionMessage({
+    type: 'webview.viewState',
+    panelId,
+    visible: panel.visible,
+    active: panel.active
+  })
 }
 
 export type PanelDragPhase = 'start' | 'move' | 'end'

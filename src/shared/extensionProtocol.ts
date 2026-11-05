@@ -535,6 +535,8 @@ export type HostRequestMessage =
       height?: number
       transparent?: boolean
       anchor?: WebviewAnchorDto
+      /** 显示 / 收起;省略表示不改 */
+      visible?: boolean
     }
   | {
       kind: 'webview.setState'

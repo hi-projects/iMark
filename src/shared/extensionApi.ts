@@ -719,6 +719,14 @@ export interface WebviewPanel extends Disposable {
     setPresentation(presentation: WebviewPresentation): void
     setSize(width: number, height: number): void
     setPosition(anchor: ImarkWebviewOptions['anchor']): void
+    /**
+     * 显示 / 收起面板。
+     *
+     * 收起不同于 `dispose()`:面板与 iframe 都保留（配合
+     * `retainContextWhenHidden`），下次显示时页面状态、草稿与滚动位置都还在。
+     * `reveal()` 会重新显示。
+     */
+    setVisible(visible: boolean): void
     /** 标题栏状态点:扩展在忙/闲之间切换 */
     setStatus(status: WebviewPanelStatus): void
   }

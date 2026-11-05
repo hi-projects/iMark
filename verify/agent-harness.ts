@@ -587,6 +587,70 @@ async function main(): Promise<void> {
   check('未启用 provider 时有明确提示', await waitText('#banner', '未安装或未启用'))
   check('设置项与文件输入存在', await agentEval<boolean>(`!!document.querySelector('#file-input')`))
 
+  // 侧栏必须占布局宽度，而不是盖在编辑器上：面板左缘贴住编辑器的右缘
+  check(
+    '侧栏占布局宽度（不覆盖编辑器）',
+    await evalHost<boolean>(`(() => {
+      const panel = document.querySelector('.webview-panel-sidebar')
+      const editor = document.querySelector('.editor-pane')
+      if (!panel || !editor) return false
+      const p = panel.getBoundingClientRect()
+      const e = editor.getBoundingClientRect()
+      const position = getComputedStyle(panel).position
+      return (position === 'relative' || position === 'static') && p.left >= e.right - 1
+    })()`)
+  )
+
+  // 拖动左边框改宽：真实的鼠标输入（合成 PointerEvent 拿不到 pointer capture）
+  const sideWidth = (): Promise<number> =>
+    evalHost<number>(`document.querySelector('.webview-panel-sidebar')?.getBoundingClientRect().width ?? 0`)
+  const widthBefore = await sideWidth()
+  const grip = await evalHost<{ x: number; y: number } | null>(`(() => {
+    const el = document.querySelector('.webview-panel-sidebar .webview-resize-column')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: Math.round(r.left + 4), y: Math.round(r.top + 60) }
+  })()`)
+  check('侧栏有拖动把手', Boolean(grip))
+  if (grip) {
+    wc.sendInputEvent({ type: 'mouseDown', x: grip.x, y: grip.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseMove', x: grip.x - 120, y: grip.y, button: 'left', movementX: -120, movementY: 0 })
+    wc.sendInputEvent({ type: 'mouseUp', x: grip.x - 120, y: grip.y, button: 'left', clickCount: 1 })
+  }
+  await sleep(200)
+  const widthAfter = await sideWidth()
+  check(
+    '拖动把手能改变侧栏宽度',
+    widthAfter > widthBefore + 80,
+    `${Math.round(widthBefore)} → ${Math.round(widthAfter)}`
+  )
+
+  // 状态栏图标是开关：第二次点击收起但保留 iframe，再点一次恢复
+  await service.executeCommand('imark.agent.toggleChat')
+  check(
+    '再次点击收起侧栏（iframe 保留）',
+    await waitUntilAsync(
+      () =>
+        evalHost<boolean>(`(() => {
+          const panel = document.querySelector('.webview-panel-sidebar')
+          return !!panel && getComputedStyle(panel).display === 'none' && !!panel.querySelector('iframe')
+        })()`),
+      5000
+    )
+  )
+  await service.executeCommand('imark.agent.toggleChat')
+  check(
+    '再次点击重新显示侧栏',
+    await waitUntilAsync(
+      () =>
+        evalHost<boolean>(`(() => {
+          const panel = document.querySelector('.webview-panel-sidebar')
+          return !!panel && getComputedStyle(panel).display !== 'none'
+        })()`),
+      5000
+    )
+  )
+
   console.log('\n【1b】启用 Claude Code：宿主重启、惰性激活')
   await service.setEnabled(CLAUDE_ID, true)
   const restarted = await waitUntilAsync(async () => {
@@ -648,7 +712,11 @@ async function main(): Promise<void> {
   )
   const coreActions =
     (await service.getExtensionView(CORE_ID))?.descriptor.contributes['imark.actions'] ?? []
-  check('Agent Core 不再声明检测动作', coreActions.length === 0, JSON.stringify(coreActions))
+  // 只断言「不再有检测动作」；清理会话等普通动作可以保留
+  const coreHasDetect = coreActions.some(
+    action => String(action.command).toLowerCase().includes('check') || String(action.label).includes('检测')
+  )
+  check('Agent Core 不再声明检测动作', !coreHasDetect, JSON.stringify(coreActions))
 
   await service.executeCommand('imark.claude-code.check')
   const checkedView = await waitUntilAsync(async () => {
@@ -1329,14 +1397,21 @@ async function main(): Promise<void> {
     )
   )
   check(
-    '标题与文档同字号（而非浏览器默认 h1）',
+    '标题按正文档位缩放（不是浏览器默认 h1）',
     await waitInFrame(
       '.agent',
       `(() => {
         const h = [...document.querySelectorAll('.agent-msg.assistant .agent-text h1')].pop()
         if (!h) return false
+        const body = h.closest('.agent-text')
+        if (!body) return false
         const style = getComputedStyle(h)
-        return parseFloat(style.fontSize) < 18 && Number(style.fontWeight) === 600
+        const base = parseFloat(getComputedStyle(body).fontSize)
+        // H1 = 正文 × 1.4545（见 agent webview styles.css），不是 2em 的浏览器默认值
+        return (
+          Math.abs(parseFloat(style.fontSize) - base * 1.4545) < 1 &&
+          Number(style.fontWeight) === 600
+        )
       })()`,
       10_000
     )
