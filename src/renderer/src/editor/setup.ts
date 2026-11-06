@@ -14,6 +14,8 @@ import { editorKeymap } from './keymap'
 import { mathExtension } from './math'
 import { pendingFenceField } from './pendingFence'
 import { emptyParagraphsField } from './emptyParagraph'
+import { codeTabsField, codeTabsStripField } from './wysiwyg/codeTabs'
+import { emptyFenceDeleteFilter, emptyMathBlockDeleteFilter } from './fenceCleanup'
 import { imagePaste } from './imagePaste'
 import { outlineFollower, updateActiveOutline } from './outline'
 
@@ -100,6 +102,10 @@ export function buildExtensions(
     EditorView.editable.of(opts?.editable ?? true),
     // 用户输入绝不能落进渲染表格的隐藏源码(输入法组合也在这一层兜底)
     EditorState.transactionFilter.of(tr => tableInputFilter(tr)),
+    // 删掉空代码块的开围栏时,自动写的收围栏也跟着删(见 fenceCleanup.ts)
+    EditorState.transactionFilter.of(tr => emptyFenceDeleteFilter(tr)),
+    // 空公式块的 `$$` / `\[` 定界符删掉一个字符,整块一起删
+    EditorState.transactionFilter.of(tr => emptyMathBlockDeleteFilter(tr)),
     drawSelection(),
     editorTheme,
     history(),
@@ -119,6 +125,10 @@ export function buildExtensions(
     pendingFenceField,
     // 回车创建的空段落:继续按整行渲染,点得回去(见 emptyParagraph.ts)
     emptyParagraphsField,
+    // 相邻代码块标签组当前选中的文件(见 wysiwyg/codeTabs.ts)
+    codeTabsField,
+    // 组头上方的文件标签条(块级 widget,只能由 StateField 提供)
+    codeTabsStripField,
     wysiwyg(),
     // 剪贴板图片:先于 CM 自带的 paste handler 拦下图片数据
     imagePaste(),
@@ -158,6 +168,24 @@ export function buildExtensions(
 }
 
 /**
+ * 打开文档时的初始光标:跳过开头连排的空行,落到第一条有内容的行首。
+ *
+ * 文件开头留着空行(常见于「回车 = 新段」在文件最前面补出来的分隔)时,
+ * 这些行平时被收紧成一档间距;光标一落上去就撑成整行,第一次点击别处又
+ * 缩回去 —— 看着像凭空多出一行、文章整体上下跳(见 rules 的 caretOnGapLine)。
+ * 初始光标不是用户自己放的,不该触发这种撑开,直接落到正文起点上。
+ *
+ * 整篇没有正文(空文档 / 只有空白)时返回 undefined,仍停在文档开头 ——
+ * 新文档本来就要能在第一行接着写。
+ */
+function initialCaret(content: string): { anchor: number } | undefined {
+  const first = content.search(/\S/)
+  if (first <= 0) return undefined
+  const lineStart = content.lastIndexOf('\n', first - 1) + 1
+  return lineStart > 0 ? { anchor: lineStart } : undefined
+}
+
+/**
  * 新建一份文档的 EditorState。
  *
  * 标签页各自持有一份:撤销栈、选区都随 state 走,切换标签不会串历史,
@@ -168,7 +196,11 @@ export function buildDocumentState(
   onDocChange: (view: EditorView) => void,
   opts?: EditorOptions
 ): EditorState {
-  return EditorState.create({ doc: content, extensions: buildExtensions(onDocChange, opts) })
+  return EditorState.create({
+    doc: content,
+    selection: initialCaret(content),
+    extensions: buildExtensions(onDocChange, opts)
+  })
 }
 
 export function createEditor(

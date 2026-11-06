@@ -1,8 +1,9 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
-import type { ChangeDesc, EditorState, Line, Range, Text } from '@codemirror/state'
+import { Transaction, type ChangeDesc, type EditorState, type Line, type Range, type Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
-import { getEmptyParagraphs } from '../emptyParagraph'
+import { autoTitleChanges, caretGroupRange, codeTabsField } from './codeTabs'
+import { getEmptyParagraphs, paragraphClick } from '../emptyParagraph'
 import { applyRule, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import {
@@ -19,6 +20,42 @@ const MAX_RETRY = 20
 function isCompositionChange(update: ViewUpdate): boolean {
   if (update.transactions.length === 0) return false
   return update.transactions.every(tr => !tr.docChanged || tr.isUserEvent('input.type.compose'))
+}
+
+/**
+ * 点击是不是落在「文件最后一行下方」的空白里。
+ *
+ * 只有文档末尾真的在视口里时才算 —— 长文档滚到中间时,下方的空白是还没滚到
+ * 的内容,不是文末。点击位置在最后一行底部以下,才当作「想在文末新起一段」。
+ */
+function clickBelowDocEnd(view: EditorView, event: MouseEvent): boolean {
+  const coords = view.coordsAtPos(view.state.doc.length)
+  if (!coords) return false
+  const box = view.scrollDOM.getBoundingClientRect()
+  if (coords.bottom < box.top || coords.top > box.bottom) return false
+  return event.clientY > coords.bottom + 1
+}
+
+/**
+ * 在文末新起一个空段落,返回临时补出来的区间(文末已经有空段落时为 null)。
+ *
+ * Markdown 里新段与上一段之间要空一行,所以文末要么已经是 `\n\n`,要么补到
+ * `\n\n`;只补换行,不写任何可见内容。光标先落到新行上,用户真输入就留下,
+ * 没输入就移开时由 WysiwygPlugin 撤回(见 dropTailDraft)。
+ */
+function insertTailParagraph(view: EditorView): { from: number; to: number; text: string } | null {
+  const { doc } = view.state
+  const end = doc.length
+  const tail = end === 0 ? '' : doc.sliceString(Math.max(0, end - 2), end)
+  const text = end === 0 || tail.endsWith('\n\n') ? '' : tail.endsWith('\n') ? '\n' : '\n\n'
+  view.dispatch({
+    changes: text ? { from: end, insert: text } : undefined,
+    selection: { anchor: end + text.length },
+    annotations: [paragraphClick.of(true)],
+    userEvent: 'select.pointer',
+    scrollIntoView: true
+  })
+  return text ? { from: end, to: end + text.length, text } : null
 }
 
 /** 这一行是不是被整行替换掉了(代码围栏、表格宿主行、公式、独占一行的图片等) */
@@ -109,6 +146,10 @@ export class WysiwygPlugin {
   private pendingRetry = false
   private retryScheduled = false
   private retryCount = 0
+  /** 自动补 title 已排进微任务(连续输入只补一次) */
+  private autoTitleScheduled = false
+  /** 这一轮有待补的自动名(改动落在光标所在的标签组里) */
+  private autoTitleWanted = false
   private guardScheduled = false
   /** 本次光标移动之前的落点(用于判断是朝表格上方还是下方走) */
   private guardFromHead: number | null = null
@@ -121,6 +162,8 @@ export class WysiwygPlugin {
   private themeObserver: MutationObserver | null = null
   /** 窗口失焦(切到别的应用):元素不会触发 blur,但组合一定已经结束 */
   private windowBlur = (): void => this.onEditorBlur()
+  /** 点击文末空白临时补出来的空段落;用户没输入就撤掉(见 openTailParagraph) */
+  private tailDraft: { from: number; to: number; text: string } | null = null
 
   constructor(readonly view: EditorView) {
     this.rebuild()
@@ -153,6 +196,15 @@ export class WysiwygPlugin {
   }
 
   update(update: ViewUpdate): void {
+    if (this.tailDraft) {
+      if (update.docChanged) {
+        // 用户输入了内容(或文档被别处改动):新段落成立,不再撤回
+        this.tailDraft = null
+      } else if (update.selectionSet && !this.selectionInTail(update.state)) {
+        // 光标移开临时空段落(点别处 / 方向键):没输入过,就当无事发生
+        this.dropTailDraft()
+      }
+    }
     // IME 组合期间不重建装饰(重建会打断中文输入),但必须把已有装饰按本次变更平移:
     // CM6 在组合中就会把上屏文字作为变更派发(userEvent input.type.compose),
     // 装饰原地不动就会与文档错位——表现为标记/widget 乱串、内容出现在错误位置,
@@ -194,7 +246,50 @@ export class WysiwygPlugin {
       const gapLine = gapNav && !update.docChanged ? this.gapLineLanding(update.state) : null
       this.rebuild()
       this.scheduleCaretGuard(update.startState.selection.main.head, gapNav, gapLine)
+      if (update.docChanged) this.scheduleAutoTitle(update)
     }
+  }
+
+  /**
+   * 未命名的代码块自动补 `title="未命名代码块N"`(见 codeTabs.ts 的
+   * autoTitleChanges)。名字写进源码,标签只是跟着源码显示。
+   *
+   * 只有**改动本身落在光标所在的标签组里**才补:光标停在组里(刚打开文件时
+   * 会停在组头围栏行上)并不代表用户在编辑这一组,点文末新起段落之类的改动
+   * 也发生在组外,不该顺带改源码。
+   *
+   * update 里不能直接 dispatch,推到微任务;addToHistory:false —— 这是渲染层
+   * 补的标注,不该在撤销栈里单独占一步(否则撤销它又会被立刻补回来)。
+   */
+  private scheduleAutoTitle(update: ViewUpdate): void {
+    const group = caretGroupRange(update.state)
+    if (!group) return
+    let edited = false
+    update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+      // 新文档坐标;纯插入时 fromB === toB,端点贴着组尾(文末补空行)不算组内
+      if (fromB < group.to && toB > group.from) edited = true
+    })
+    if (!edited) return
+    this.autoTitleWanted = true
+    if (this.autoTitleScheduled) return
+    this.autoTitleScheduled = true
+    queueMicrotask(() => {
+      this.autoTitleScheduled = false
+      const wanted = this.autoTitleWanted
+      this.autoTitleWanted = false
+      // 组合期间不插字,免得打断输入法;组合结束后还有一次 docChanged
+      if (!wanted || this.composing || this.view.composing) return
+      try {
+        const changes = autoTitleChanges(this.view.state)
+        if (changes.length === 0) return
+        this.view.dispatch({
+          changes,
+          annotations: Transaction.addToHistory.of(false)
+        })
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
   }
 
   /**
@@ -225,8 +320,50 @@ export class WysiwygPlugin {
     this.composing = false
   }
 
+  /**
+   * 点击文末空白:光标落到最后一行下面新起的一段上。
+   * 文档只临时补出段落换行,真输入才留下;没输入就移开光标 / 失焦时撤回。
+   */
+  openTailParagraph(): void {
+    const draft = insertTailParagraph(this.view)
+    this.tailDraft = draft
+    // 已经有空段落可落(文末本来就是 `\n\n`)时没有草稿,光标直接停上去即可
+    this.view.focus()
+  }
+
+  /** 当前选区是不是仍然停在那段临时空段落上 */
+  private selectionInTail(state: EditorState): boolean {
+    const draft = this.tailDraft
+    if (!draft) return false
+    return state.selection.ranges.every(r => r.from >= draft.from && r.to <= draft.to)
+  }
+
+  /**
+   * 撤回文末临时空段落。
+   *
+   * 不能同步 dispatch(这里通常是在一次 update 里被叫到的),排进微任务;
+   * 真删之前再核对一遍原文,期间如果文档变过(update 会先清掉草稿)就不动。
+   */
+  private dropTailDraft(): void {
+    const draft = this.tailDraft
+    this.tailDraft = null
+    if (!draft) return
+    queueMicrotask(() => {
+      const view = this.view
+      const doc = view.state.doc
+      if (draft.to > doc.length || doc.sliceString(draft.from, draft.to) !== draft.text) return
+      try {
+        view.dispatch({ changes: { from: draft.from, to: draft.to }, userEvent: 'delete.draft' })
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
+  }
+
   /** 编辑器失焦:组合不可能还活着,把可能丢失的 compositionend 补上 */
   onEditorBlur(): void {
+    // 没输入过的文末空段落不该因为切窗口而留在文档里
+    this.dropTailDraft()
     if (!this.composing && !this.view.composing) return
     this.endComposition()
     // 失焦本身不产生事务,不主动补一次重建就得等下一次输入才恢复样式
@@ -432,6 +569,7 @@ export class WysiwygPlugin {
         visibleFrom: from,
         visibleTo: to,
         pendingFence: getPendingFence(state),
+        codeTabs: state.field(codeTabsField, false) ?? [],
         emptyParagraphs,
         decos,
         atomic,
@@ -503,7 +641,26 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       if (!event.ctrlKey && !event.metaKey) {
         // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码或结构空行上的点击一律挪出去
         if (target?.closest?.('.cm-md-table-widget')) return false
-        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+        // 点在最后一行下方的空白:在文末新起一个空段落。文档只临时补出段落
+        // 换行,键入才留下;没输入就移开时撤回(见 openTailParagraph)。
+        // 点在图表 / 图片这类块控件自己身上不算(控件内部各有各的点击语义)。
+        const plugin = view.plugin(wysiwygViewPlugin)
+        if (
+          plugin &&
+          !target?.closest?.('.cm-md-widget') &&
+          !event.shiftKey &&
+          !event.altKey &&
+          clickBelowDocEnd(view, event)
+        ) {
+          event.preventDefault()
+          plugin.openTailParagraph()
+          return true
+        }
+        // 精确解析对「空行正好是视口第一行」这种位置返回 null(CM 把视口起点上的
+        // 空块当成视口外);退回 CM 默认点击处理用的宽松解析,才认得出点的是不是
+        // 收紧的结构空行 —— 否则光标直接落在间距行上,把它撑开、把下面正文顶下去。
+        const coords = { x: event.clientX, y: event.clientY }
+        const pos = view.posAtCoords(coords) ?? view.posAtCoords(coords, false)
         if (pos != null) {
           const hit = caretOutsideRenderedTable(view, pos, event.clientY)
           if (hit != null) {
@@ -522,7 +679,6 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
             return true
           }
           // 收紧的结构空行:点它不把空行撑出来,光标挪到最近的正文行(见 gapLineClickAnchor)
-          const plugin = view.plugin(wysiwygViewPlugin)
           const anchor = plugin ? gapLineClickAnchor(view, plugin, pos) : null
           if (anchor != null) {
             event.preventDefault()

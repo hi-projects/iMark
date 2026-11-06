@@ -3,6 +3,7 @@ import { insertCodeIndent } from './codeIndent'
 import {
   completeFenceOnEnter,
   deleteEmptyListMarkup,
+  deleteBlockStartBackward,
   deleteHardBreakBackward,
   deleteParagraphBreakBackward,
   exitListOnEmptyItem,
@@ -12,7 +13,7 @@ import {
   insertParagraph,
   insertImage,
   insertLink,
-  selectAllInCodeBlock,
+  selectAllInBlock,
   setHeading,
   toggleBlockQuote,
   toggleBold,
@@ -29,7 +30,7 @@ import {
  * 这里主要作为菜单缺失场景的兜底;标点键同时绑定原始键与 shift 后的键名。
  */
 export const editorKeymap: KeyBinding[] = [
-  // 刚敲出开围栏时按回车:补一行空行 + 闭合围栏,别让后面的正文变成代码
+  // 刚敲出开围栏 / `$$` 时按回车:补一行空行 + 收尾标记,别让后面的正文被吞进去
   { key: 'Enter', run: completeFenceOnEnter },
   // 空列表项上回车退出列表:在源码里留一条空行,别让后面的正文变成懒续行
   { key: 'Enter', run: exitListOnEmptyItem },
@@ -40,12 +41,14 @@ export const editorKeymap: KeyBinding[] = [
   { key: 'Backspace', run: deleteHardBreakBackward },
   // 新段里退格:把「回车 = 新段」补出来的空行连同段落分隔一起删掉,光标回到上一段行尾
   { key: 'Backspace', run: deleteParagraphBreakBackward },
+  // 新段里已经敲了字(标题等)再在行首退格:连同块标记一起并回上一段,别变成段内换行
+  { key: 'Backspace', run: deleteBlockStartBackward },
   // 删除空列表项时别留下 CodeMirror 补的对齐空格(光标要顶格)
   { key: 'Backspace', run: deleteEmptyListMarkup },
   // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
   { key: 'Tab', run: insertCodeIndent },
-  // 代码块里 Ctrl+A 只选这一块(不扩到整篇;整篇全选在默认 keymap 里)
-  { key: 'Mod-a', run: selectAllInCodeBlock },
+  // 代码块 / 块级公式里 Ctrl+A 只选这一块(不扩到整篇;整篇全选在默认 keymap 里)
+  { key: 'Mod-a', run: selectAllInBlock },
   { key: 'Mod-b', run: toggleBold },
   { key: 'Mod-i', run: toggleItalic },
   { key: 'Mod-e', run: toggleInlineCode },

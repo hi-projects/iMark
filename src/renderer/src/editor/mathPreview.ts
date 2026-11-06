@@ -14,6 +14,7 @@ import type { Extension } from '@codemirror/state'
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view'
 import katex from 'katex'
 import { mathSource } from './math'
+import { getPendingFence } from './pendingFence'
 
 /** 源码与预览之间、预览与编辑区边缘之间的距离(px) */
 const GAP = 10
@@ -43,6 +44,7 @@ function mathAtCursor(view: EditorView): MathHit | null {
    * wysiwyg 那边把「贴着 $」也算在公式内(touches 是闭区间),这里两个方向都试,
    * 免得在公式首尾出现「源码态却没有预览」的空档。
    */
+  const pending = getPendingFence(state)
   for (const bias of [-1, 1] as const) {
     let node = tree.resolveInner(head, bias)
     while (node.parent && !isMathNode(node.name)) {
@@ -50,6 +52,15 @@ function mathAtCursor(view: EditorView): MathHit | null {
     }
     if (!isMathNode(node.name)) continue
     if (head < node.from || head > node.to) continue
+    /*
+     * 刚敲出来的 `$$` 先按普通文本显示(见 editor/pendingFence.ts),这时
+     * 块解析器已经把下面的正文吞进 MathContent —— 不跳过的话预览会把
+     * 后面一整段正文当 TeX 渲染出来。
+     */
+    if (node.name === 'MathBlock' && pending !== null) {
+      const first = node.firstChild
+      if (first && first.name === 'MathMark' && state.doc.lineAt(first.from).from === pending) continue
+    }
     const tex = mathSource(state.doc, node)
     if (!tex.trim()) continue
     return { from: node.from, to: node.to, tex, display: node.name !== 'InlineMath' }

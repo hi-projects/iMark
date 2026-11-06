@@ -291,6 +291,72 @@
   color: var(--text-secondary);
 }
 
+/* ---------- 相邻代码块:文件标签页 ---------- */
+
+/*
+ * 标签条是块级 widget,挂在组头开围栏行上方(见 wysiwyg/codeTabs.ts 的
+ * CodeTabsWidget);开围栏行本身按源码显示,标签条和它拼成同一个代码块底板。
+ */
+.cm-md-code-tabs {
+  background: var(--bg-codeblock);
+  font-family: var(--font-mono);
+  font-size: calc(var(--editor-body-size) * 0.85);
+  line-height: 1.5;
+  user-select: none;
+  /* 标签条宽度铺满正文栏,不跟着标签数量收缩 */
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 开围栏行:源码原样显示(` ```js title="main.js" `),淡淡的一行,改就在这儿改 */
+.cm-md-code-fence {
+  color: var(--text-tertiary);
+}
+
+/* 文件标签行:下边框就是标签条和代码正文之间的分隔线 */
+.cm-md-code-tabs-row {
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+/*
+ * 标签:未选中是次要文字色,选中项用强调色 + 下划线(压住标签条底边)。
+ * 负 margin 让下划线盖在 border-bottom 上,而不是多出一条缝。
+ */
+.cm-md-code-tab {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 7px 1px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.cm-md-code-tab:hover {
+  color: var(--text-primary);
+}
+
+.cm-md-code-tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* 不显示的那几块:整行折成零高度(text 已由 replace 装饰隐藏) */
+.cm-md-code-void {
+  line-height: 0;
+  font-size: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /*
  * 段落之间、代码块 / 列表 / 引用与正文之间的结构间距,按「块类型 × 方向」
  * 各留一个旋钮(设置「外观 → 样式」;--md-*-space-* 是根元素上的档数)。
@@ -867,6 +933,38 @@
 .cm-md-math-src {
   background: var(--bg-code);
   border-radius: 3px;
+}
+
+/*
+ * 块级公式源码态:整块(含 `$$` / `\[` 定界行)铺一层与代码块一致的底色。
+ * 内容片段的 .cm-md-math-src 叠在上面,公式体与定界符仍能看出区别。
+ * 用整行背景而不是只染 MathContent:多行公式每行一个内容片段,行首的
+ * 引用 / 列表前缀不在内容区间里,只染片段会碎成一条条。
+ *
+ * 左侧留白与 .cm-md-code 完全一致:用透明 border-left 而不是 padding-left
+ * (理由见上面 .cm-md-code 的说明),背景默认画到 border-box,这段留白
+ * 自然也是同色。多行整行选区除首行外会多染一截留白,用 ::before 盖回去;
+ * 选区起点在块之前时由 rules.ts 挂 bleed 类,放开这层遮盖。
+ */
+.cm-md-math-src-line {
+  background: var(--bg-codeblock);
+  border-left: 1.25em solid transparent;
+}
+
+.cm-md-math-src-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1.25em;
+  width: 1.25em;
+  background: inherit;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cm-md-math-src-line.cm-md-math-src-bleed::before {
+  background: transparent;
 }
 
 .cm-md-mathmark {

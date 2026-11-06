@@ -832,12 +832,13 @@ async function main(): Promise<void> {
   const bodyDefault = await bodyGapMetrics()
   console.log(`     [实测] ${JSON.stringify(bodyDefault)}`)
   check('默认 1 档(16px)', near(bodyDefault.bodyH, DEFAULT_GAP), String(bodyDefault.bodyH))
+  // 标题前那条空行也带 cm-md-block-gap(方向键 / 点击要把它当结构行跨过),
+  // 但 CSS 会把行高放开成一整行 —— 这里按**实际行高**判断,不再看类名。
   check(
     '只有两段正文之间的空行被收紧(段落与标题之间仍是正常行距)',
     bodyDefault.bodyCount === 1 &&
-      bodyDefault.lines[3]?.cls.split(/\s+/).includes('cm-line') &&
-      !bodyDefault.lines[3]?.cls.includes('cm-md-block-gap') &&
-      bodyDefault.lines[3].h > DEFAULT_GAP + 8,
+      bodyDefault.lines[3]?.h > DEFAULT_GAP + 8 &&
+      Math.abs((bodyDefault.lines[3]?.h ?? 0) - (bodyDefault.lines[2]?.h ?? 0)) <= 1,
     JSON.stringify(bodyDefault.lines)
   )
 

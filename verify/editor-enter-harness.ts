@@ -234,6 +234,14 @@ async function main(): Promise<void> {
       await done
       if (await waitFor(ready, 6000)) {
         await focusEditor()
+        // 打开文件时光标会跳过开头连排的空行(见 setup.ts 的 initialCaret);
+        // 这些用例仍以「文首」为起点,显式放回去,不依赖新建 state 的默认选区。
+        await evalJs(`(() => {
+          const view = document.querySelector('.cm-content').cmTile.root.view
+          view.dispatch({ selection: { anchor: 0 } })
+          return true
+        })()`)
+        await sleep(100)
         return true
       }
       const dom = (await domLines()).map(l => l.text)
@@ -253,8 +261,8 @@ async function main(): Promise<void> {
   }
 
   /**
-   * 起始文档故意以空行开头:重载后光标在 position 0,也就是这个空行的行首,
-   * 打字就直接落在第 1 行上,不用按键去挪光标。
+   * 起始文档故意以空行开头:loadDoc 把光标放回 position 0(见那里的说明),
+   * 也就是这个空行的行首,打字就直接落在第 1 行上,不用按键去挪光标。
    * (别用「文首按回车开空行」那招 —— 光标停在原处,即下一行的行首,不是新空行的行首。)
    */
   const START = '\n# 标题\n\n正文段落\n'

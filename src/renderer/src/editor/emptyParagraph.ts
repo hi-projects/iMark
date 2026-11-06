@@ -17,6 +17,14 @@ export const paragraphBreak = Annotation.define<boolean>()
 export const paragraphBreakAfter = Annotation.define<boolean>()
 
 /**
+ * 点击文末空白新起的段落(见 build.ts 的 clickBelowDocEnd / openTailParagraph)。
+ *
+ * 文档里临时补出来的空行只在用户真输入时留下;光标一移开就撤回,
+ * 但撤回前这一行也是「空段落」,得按整行留高,否则光标会落进收紧后的间距里。
+ */
+export const paragraphClick = Annotation.define<boolean>()
+
+/**
  * 回车创建、还空着的段落行首位置(升序)。没有空段落时是空数组。
  *
  * 「回车 = 新段」在源码里补出来的新段是一条空行。光标停上去时靠
@@ -53,8 +61,20 @@ export const emptyParagraphsField = StateField.define<readonly number[]>({
         const line = tr.state.doc.lineAt(after.main.head)
         // 光标落在空行上:这是刚起的新空段落
         if (!/\S/.test(line.text)) add(line.from)
+        // 在块 / 段的行首回车:光标按普通编辑器的习惯留在原来那一行的行首,
+        // 新段是它上面那条空行 —— 两条新换行插在光标前,光标没落上去也得记下来。
+        // 不记的话它会被当成结构空行收紧成块间距,点击又被重定向到上一块,
+        // 新段看着在那儿却点不进去(见 rules 的 collapseBlankRuns /
+        // markHeadingSpaceBefore 与 build 的 gapLineClickAnchor)。
+        else if (after.main.head === line.from && line.number > 1) {
+          const above = tr.state.doc.line(line.number - 1)
+          if (!/\S/.test(above.text)) add(above.from)
+        }
       }
-    } else if (tr.annotation(paragraphBreakAfter) === true) {
+    } else if (
+      tr.annotation(paragraphBreakAfter) === true ||
+      tr.annotation(paragraphClick) === true
+    ) {
       const after = tr.state.selection
       if (after.ranges.length === 1 && after.main.empty) {
         const line = tr.state.doc.lineAt(after.main.head)

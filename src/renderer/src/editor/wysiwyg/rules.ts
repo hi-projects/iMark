@@ -23,6 +23,12 @@ import { fitWidths, parseWidthsDirectiveLine } from '../../services/tableWidths'
 import { mathContentRange, mathSource } from '../math'
 import { currentMermaidTheme } from '../../services/mermaid'
 import { resolveImageSrc } from '../../utils/text'
+import {
+  codeGroupAt,
+  resolveGroupActive,
+  type CodeMember,
+  type CodeTabSelection
+} from './codeTabs'
 
 export interface LinkInfo {
   from: number
@@ -41,6 +47,11 @@ export interface RuleContext {
    * 没有则为 null。
    */
   pendingFence: number | null
+  /**
+   * 相邻代码块标签组各自选中的文件(见 wysiwyg/codeTabs.ts);
+   * 没点过标签的组按第一块显示。
+   */
+  codeTabs: readonly CodeTabSelection[]
   /**
    * 回车创建、仍空着的段落行首(见 editor/emptyParagraph.ts)。
    */
@@ -97,19 +108,32 @@ function isHeadingText(text: string): boolean {
  * 中间留了空行的不算 —— 那是作者主动写下的分隔。
  */
 /**
- * 标题前紧邻的空行保留完整行高。
+ * 标题前紧邻的空行:保留完整行高,同时算作结构分隔。
  *
- * 列表 / 代码块 / 引用后面的空行会被 addGapAfter 收成一档间距;但用户
- * 主动在标题前留出的空行应当是一整行,不能被当成块间距压扁。只给空行
- * 打标记,CSS 仅在它同时带 cm-md-block-gap 时才放开行高 —— 普通空行本来
- * 就是完整高度,表格的结构空行仍保持折叠。
+ * 列表 / 代码块 / 引用后面的空行会被 addGapAfter 收成一档间距;标题前这条
+ * 空行却是「回车 = 新段」补出来的分隔,视觉上要占一整行 —— 所以标
+ * cm-md-h-space-before,由 CSS 把 block-gap 收紧的行高放开。
+ *
+ * 它同时还是排版用的结构行:方向键不该停在上面,点击也该落到正文(见
+ * build.ts 的 keepCaretOutOfBlockGaps / gapLineClickAnchor)。所以两个类都
+ * 要打,只留标就会被当成一条能停光标、带「+」的空行 —— 看着像新段里凭空
+ * 多出来的段内换行。光标正停在这上面、或它是回车留下还没写字的空段落时
+ * 例外:那是用户要编辑的落点,和 addGapBefore 一样不按结构行处理。
  */
 function markHeadingSpaceBefore(ctx: RuleContext, pos: number): void {
   const line = ctx.doc.lineAt(pos)
   if (line.number <= 1) return
   const prev = ctx.doc.line(line.number - 1)
   if (!isBlankLine(prev.text)) return
-  addLine(ctx, prev.from, 'cm-md-h-space-before')
+  const structural =
+    !caretOnGapLine(ctx, prev.from, prev.to) && !keptEmptyParagraph(ctx, prev.from)
+  addLine(
+    ctx,
+    prev.from,
+    structural
+      ? 'cm-md-h-space-before cm-md-block-gap cm-md-block-gap-heading-before'
+      : 'cm-md-h-space-before'
+  )
 }
 
 function markHeadingEdges(ctx: RuleContext, firstPos: number, lastPos: number): void {
@@ -379,6 +403,9 @@ export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: nu
     const prevBlank = number > 1 && isBlankLine(ctx.doc.line(number - 1).text)
     const nextBlank = number < ctx.doc.lines && isBlankLine(ctx.doc.line(number + 1).text)
     if (!prevBlank && !nextBlank) continue
+    // 文末空行是新段的落点:重新打开文件后「回车建出的空段落」记录会丢,
+    // 但它后面没有内容可分隔,只能是留给用户接着写的一行,得按整行留出来。
+    if (number === ctx.doc.lines) continue
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
     if (caretOnGapLine(ctx, line.from, line.to)) continue
@@ -694,10 +721,10 @@ function readCodeSource(doc: Text, code: SyntaxNode): string {
  * .cm-md-code-copy)。代码正文从语法树现取,而不是点按钮时再去文档里找区间 ——
  * 装饰重建时 eq() 能据正文判断要不要复用旧 DOM,按钮状态也就不会乱跳。
  */
-function addCodeCopy(ctx: RuleContext, code: SyntaxNode): void {
+function addCodeCopy(ctx: RuleContext, code: SyntaxNode, at?: number): void {
   // CodeText 不含闭合围栏前的那一个换行,所以这里连末尾空行都不用剥 —— 原样复制
   const source = readCodeSource(ctx.doc, code)
-  const pos = ctx.doc.lineAt(code.from).from
+  const pos = at ?? ctx.doc.lineAt(code.from).from
   ctx.decos.push({
     from: pos,
     to: pos,
@@ -745,6 +772,121 @@ function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
   }
 }
 
+/** 这一行至少有一部分落在视口里(装饰只给视口内的行,滚动时重建会补上) */
+function lineInView(ctx: RuleContext, line: Line): boolean {
+  return line.to >= ctx.visibleFrom && line.from <= ctx.visibleTo
+}
+
+/**
+ * 把一块代码按「普通代码块」的样子画出来,但不加块前后的间距。
+ *
+ * 开围栏行按源码显示(` ```js title="main.js" `):它就是用户改语言、改文件
+ * 名的那一行 —— 标签条只负责选文件,名字从这一行现读(见 wysiwyg/codeTabs.ts)。
+ * 围栏标记不隐藏,否则改 title 时看不到自己在改什么。
+ *
+ * 复制按钮挂在正文第一行右上角(开围栏行现在是看得见的源码行,挂首行会叠上去)。
+ */
+function styleGroupMember(ctx: RuleContext, member: CodeMember): void {
+  const code = member.node
+  const doc = ctx.doc
+  const firstLine = doc.lineAt(code.from).number
+  const lastLine = doc.lineAt(code.to).number
+  const first = code.firstChild
+  const last = code.lastChild
+
+  const open = doc.line(firstLine)
+  if (lineInView(ctx, open)) {
+    addLine(ctx, open.from, codeLineClass(ctx, member.from) + ' cm-md-code-fence')
+  }
+
+  for (let n = firstLine + 1; n <= lastLine; n++) {
+    const line = doc.line(n)
+    if (!lineInView(ctx, line)) continue
+    addLine(ctx, line.from, codeLineClass(ctx, member.from))
+  }
+
+  if (last?.name === 'CodeMark' && last.from !== first?.from && lineUntouched(ctx, last.from)) {
+    hide(ctx, last.from, endOfTrailingSpaces(ctx.doc, last.to))
+  }
+
+  // 只有正文行才挂复制按钮;空文件(围栏之间没有内容)挂上去只会复制空白
+  if (lastLine > firstLine && readCodeSource(doc, code).trim()) {
+    addCodeCopy(ctx, code, doc.line(firstLine + 1).from)
+  }
+}
+
+/** 把一块代码折成零高度(不显示的那几块) */
+function collapseGroupMember(ctx: RuleContext, member: CodeMember): void {
+  const doc = ctx.doc
+  const firstLine = doc.lineAt(member.from).number
+  const lastLine = doc.lineAt(member.to).number
+  for (let n = firstLine; n <= lastLine; n++) {
+    const line = doc.line(n)
+    if (!lineInView(ctx, line)) continue
+    addLine(ctx, line.from, 'cm-md-code-void')
+    hide(ctx, line.from, line.to)
+  }
+}
+
+/**
+ * 相邻代码块 → 文件标签页。
+ *
+ * 只在「视口里最靠前的那一块」被访问时统一生成整组装饰(见 FencedCode 分支),
+ * 所以这里的 members 只算一次,不会重复。
+ *
+ * 显示哪一块:
+ *   · 光标/选区碰到哪一块就显示哪一块(拖选、Ctrl+A 时能同时看到多块源码);
+ *   · 光标不在组里时,显示上次点标签选中的那块(默认第一块)。
+ *
+ * 标签条是块级 widget,挂在组头开围栏行上方,不替换任何文字;选中块的
+ * 开围栏行照常按源码显示(` ```js title="main.js" `),语言和文件名就在这一行
+ * 上直接改,标签名从 info string 现读。其余块整块折成零高度,但源码还在
+ * 文档里:点标签、键盘上下移动、撤销/重做都只改变哪一块可见。
+ */
+function styleFencedCodeGroup(ctx: RuleContext, members: CodeMember[]): void {
+  const doc = ctx.doc
+  const head = members[0]
+  const key = doc.lineAt(head.from).from
+  const last = members[members.length - 1]
+
+  addGapBefore(ctx, head.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+  addGapAfter(ctx, last.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
+
+  // 高亮哪一块、显示哪一块必须是同一份结果 —— 标签条也按它画(见 codeTabs.ts),
+  // 否则会出现「高亮 a.js、正文却是 b.js」
+  const { active, touched } = resolveGroupActive(doc, ctx.sel, ctx.codeTabs, key, members)
+  const anyTouched = touched.some(Boolean)
+  const visible = members.map((_, i) => (anyTouched ? touched[i] : i === active))
+
+  // 组内两块之间只隔着空白(见 codeTabs.ts 的 adjacentFence)。按标签页显示时
+  // 这些空行不该在标签和正文之间留出一道空白,折成零高度;光标 / 选区落到空行
+  // 上时保持原样,否则光标会藏进零高度行里。
+  const gaps: Line[] = []
+  for (let i = 1; i < members.length; i++) {
+    const from = doc.lineAt(members[i - 1].to).number + 1
+    const to = doc.lineAt(members[i].from).number - 1
+    for (let n = from; n <= to; n++) gaps.push(doc.line(n))
+  }
+  const gapTouched = gaps.some(line => touchesLines(ctx.sel, doc, line.from, line.to))
+  if (!gapTouched) {
+    for (const line of gaps) {
+      if (!lineInView(ctx, line)) continue
+      // 用户自己回车留出来的空段落不是组内间隔,照常整行显示、能点回去
+      if (keptEmptyParagraph(ctx, line.from)) continue
+      addLine(ctx, line.from, 'cm-md-code-void')
+      hide(ctx, line.from, line.to)
+    }
+  }
+
+  // 标签条自己不在这个 ViewPlugin 里:块级 widget 只能由 StateField 提供
+  // (见 codeTabs.ts 的 codeTabsStripField),它挂在组头开围栏行的上方。
+
+  for (let i = 0; i < members.length; i++) {
+    if (visible[i]) styleGroupMember(ctx, members[i])
+    else collapseGroupMember(ctx, members[i])
+  }
+}
+
 /**
  * 这条围栏是不是用户刚敲出来、还没回车补全的那一条(见 editor/pendingFence.ts)。
  *
@@ -757,6 +899,19 @@ function isPendingFence(ctx: RuleContext, code: SyntaxNode): boolean {
   return (
     !!first && first.name === 'CodeMark' && ctx.doc.lineAt(first.from).from === ctx.pendingFence
   )
+}
+
+/**
+ * 是不是用户刚敲出来的公式开标记(`$$` / `\[`,还没按回车补全)。
+ *
+ * 与代码围栏同一条规则:开标记所在行就是 pendingFence 记下的那一行。
+ * 刻意不看块有没有闭合 —— 远处的 `$$` 可能把它配成一对,用户此刻要的是
+ * 在光标处新开一个公式块,不该被那一段带着走。
+ */
+function isPendingMathFence(ctx: RuleContext, block: SyntaxNode): boolean {
+  if (ctx.pendingFence === null) return false
+  const first = block.firstChild
+  return !!first && first.name === 'MathMark' && ctx.doc.lineAt(first.from).from === ctx.pendingFence
 }
 
 /**
@@ -910,6 +1065,29 @@ function styleInlineHtmlTag(tag: SyntaxNode, ctx: RuleContext): void {
   if (cls) addMark(ctx, tag.to, close.from, cls)
 }
 
+/**
+ * 公式源码态:内容片段加淡底(便于看出公式边界)。
+ *
+ * 块级公式(MathsBlock)另外给整块每一行(含 `$$` / `\[` 定界行)铺一层
+ * 与代码块相同的底色。多行公式的 MathContent 每行一个,且行首的引用 / 列表
+ * 前缀不在内容区间里 —— 只染内容片段时,底色会在定界行和前缀处断开,
+ * 看起来是几块碎条,而不是一个源码块。
+ *
+ * 左侧留白与代码块同一套做法:1.25em 的透明 border-left(见 CSS)。
+ * 选区从块上方起时挂上 bleed 类,让那块留白跟着选区染色,不在左边挖缺口。
+ */
+function styleMathSource(ctx: RuleContext, node: SyntaxNode): void {
+  const content = mathContentRange(node)
+  if (!content) return
+  if (node.name === 'MathBlock') {
+    const cls = selectionStartsBefore(ctx, node.from)
+      ? 'cm-md-math-src-line cm-md-math-src-bleed'
+      : 'cm-md-math-src-line'
+    addLineRange(ctx, node.from, node.to, cls)
+  }
+  ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
+}
+
 // ---------- 节点 → 装饰规则分发表(唯一落点) ----------
 
 /**
@@ -1044,6 +1222,18 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       const code = node.node
       // 刚敲出来的围栏先别渲染成代码块,否则后面的正文会立刻被吞进去
       if (isPendingFence(ctx, code)) return false
+      // 相邻代码块 → 文件标签页。整组装饰只由视口里最靠前的那一块生成,
+      // 否则迭代器每进一块都会把同一组画一遍(装饰重叠会直接抛错)。
+      const group = codeGroupAt(ctx.doc, code, ctx.pendingFence)
+      if (group) {
+        const firstVisible = group.findIndex(
+          m => m.to >= ctx.visibleFrom && m.from <= ctx.visibleTo
+        )
+        if (group.findIndex(m => m.node === code) === firstVisible) {
+          styleFencedCodeGroup(ctx, group)
+        }
+        return false
+      }
       if (fenceLanguage(ctx.doc, code) === 'mermaid') {
         const firstLine = ctx.doc.lineAt(node.from)
         const lastLine = ctx.doc.lineAt(node.to)
@@ -1195,10 +1385,22 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // DisplayMath 是段落中间的行内块级公式。两者外观与编辑行为完全一致。
     case 'DisplayMath':
     case 'MathBlock': {
+      /*
+       * 光标在公式块里时(包括刚敲出开标记、还没回车补全的待定状态),上方那条
+       * 空行按正文段间距收紧。语法树里这一行已经不是 Paragraph,没人再给它补
+       * 间距;不补的话,敲下第二个 `$`、或回车补全成公式块的那一刻,原本收紧的
+       * 空行会恢复成整行高,光标行往下跳(和只敲了 `-` 的列表标记同理,见
+       * BulletList 分支)。
+       */
+      if (node.name === 'MathBlock' && touches(ctx.sel, node.from, node.to)) {
+        styleBodyGap(ctx, node.node)
+      }
+      // 刚敲出来的 `$$` / `\[` 先按普通文本显示,回车补全后再当公式块
+      if (node.name === 'MathBlock' && isPendingMathFence(ctx, node.node)) return false
       const content = mathContentRange(node.node)
       if (!content) return false
       if (touches(ctx.sel, node.from, node.to)) {
-        ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
+        styleMathSource(ctx, node.node)
         return false
       }
       const tex = mathSource(ctx.doc, node.node)
@@ -1215,7 +1417,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        * 这种情况退回源码态(内容加底色),而不是公式 + 空白。
        */
       if (firstLine.from < ctx.visibleFrom || firstLine.to > ctx.visibleTo) {
-        ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
+        styleMathSource(ctx, node.node)
         return false
       }
       // 多行:首行渲染公式,其余行清空内容并折叠高度

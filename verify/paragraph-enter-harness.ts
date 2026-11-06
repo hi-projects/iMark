@@ -16,8 +16,14 @@
  *   - 新段里退格:把这次分段收回 —— 补出来的空行连同段落分隔一起删掉,光标
  *     回到上一段行尾(不是只退到空行上、要再按一次)。连按多次回车生成的多条
  *     空段落一次只收回一条。代码块里的空行是代码内容,仍按普通退格逐字符删。
+ *   - 重新打开文件后「回车建出的空段落」记录会丢,但文末那条空行仍按整行
+ *     留出、退格同样一次收回整段 —— 它后面没有内容可分隔,只能是接着写的那行。
  *   - 光标点回上一段后,空着的新段仍按整行留出、点得回去(不被当成结构空行
  *     收紧成段间距);点回去再输入,字落在那一行上,不会被并进上一段。
+ *   - 在块 / 段的**行首**回车:光标按普通编辑器的习惯留在原行的行首,新段是
+ *     上面那条空行 —— 它也得是「可点进去的一行」,不能当成块间距收掉。
+ *     文档第一行行首回车只补一条换行:新段就是文件第一行,上面没有上一段要分隔,
+ *     多补出来的那条纯结构空行在点击时会撑开、把下面的正文顶下去。
  *   - 列表项回车仍是下一项;代码块 / 引用 / 表格 / 公式里的回车保持原样。
  *
  * 跑法(在仓库根目录,改了 src/renderer/ 先 npx electron-vite build):
@@ -181,6 +187,31 @@ async function main(): Promise<void> {
         return { line: line.number, text: line.text, head, from: line.from, to: line.to }
       })()`)
 
+  /** 编辑器里的源码(保留文末空行;readSource 会把它们剪掉,数不了条数) */
+  const docText = (): Promise<string> =>
+    evalJs<string>(`document.querySelector('.cm-content').cmTile.root.view.state.doc.toString()`)
+
+  /** 把光标放到绝对位置(合成按键只负责触发命令,落点必须是确定的) */
+  async function setCaret(pos: number): Promise<void> {
+    await evalJs(`(() => {
+      const view = document.querySelector('.cm-content').cmTile.root.view
+      view.dispatch({ selection: { anchor: ${pos} }, scrollIntoView: true })
+      view.focus()
+      return true
+    })()`)
+    await sleep(120)
+  }
+
+  /** 把光标放到文末最后一行,模拟用户点进文末的空行 */
+  async function caretToDocEnd(): Promise<void> {
+    await evalJs(`(() => {
+      const view = document.querySelector('.cm-content').cmTile.root.view
+      view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })
+      return true
+    })()`)
+    await sleep(120)
+  }
+
   /** 按 DOM 行序号模拟一次真实鼠标点击(点在行首附近,避开行尾的浮动按钮) */
   async function clickDomLine(index: number): Promise<boolean> {
     const spot = await evalJs<{ x: number; y: number } | null>(`
@@ -200,9 +231,22 @@ async function main(): Promise<void> {
   }
 
   const readSource = async (): Promise<string[]> => {
+    // 菜单保存是异步的:固定等 600ms 偶尔会在写盘前就读文件,读到上一次的内容
+    // (偶发假失败)。这里以「文件内容和编辑器当前文档一致」为准,最多等 2 秒。
+    const docLines = (await docText()).split('\n')
+    while (docLines.length && docLines[docLines.length - 1] === '') docLines.pop()
+    const same = (text: string): boolean => {
+      const lines = text.split('\n')
+      while (lines.length && lines[lines.length - 1] === '') lines.pop()
+      return lines.join('\n') === docLines.join('\n')
+    }
     wc.send(IPC.MenuCommand, 'file:save')
-    await sleep(600)
-    const text = await readFile(note, 'utf8')
+    let text = ''
+    for (let i = 0; i < 20; i++) {
+      await sleep(100)
+      text = await readFile(note, 'utf8').catch(() => '')
+      if (same(text)) break
+    }
     const lines = text.split('\n')
     while (lines.length && lines[lines.length - 1] === '') lines.pop()
     return lines
@@ -245,6 +289,9 @@ async function main(): Promise<void> {
 
   console.log('\n【C】行尾回车,下一行仍是同一段(软换行)—— 只补一条空行,光标到下一行行首')
   await loadDoc('\n建 PlanningScene')
+  // 打开文件时光标会落到第一条有内容的行(见 setup.ts 的 initialCaret),这里要
+  // 测的是「从文首第一行开始写」,显式把光标放到第一行行首。
+  await setCaret(0)
   await type('加载模型')
   await key('Enter')
   {
@@ -261,6 +308,7 @@ async function main(): Promise<void> {
 
   console.log('\n【D】行尾回车,下一行是另一个块(标题)—— 新段两边都留空行')
   await loadDoc('\n# 标题')
+  await setCaret(0) // 同上:文首第一行(空行)开始写,下面紧跟着标题块
   await type('正文')
   await key('Enter')
   await type('新段')
@@ -367,6 +415,7 @@ async function main(): Promise<void> {
 
   console.log('\n【J】空行上回车也是新段 —— 原空段落留着,新段和正文之间留空行')
   await loadDoc('\n正文')
+  await setCaret(0) // 光标停在文首那条空行上(用户点/方向键停上去的那一步)
   await key('Enter')
   {
     const src = await readSource()
@@ -415,6 +464,7 @@ async function main(): Promise<void> {
 
   console.log('\n【K】标题行尾回车 —— 新段是正文,且紧贴标题(标题自己就是块边界)')
   await loadDoc('\n# 标题')
+  await setCaret(0) // 文首空行开始写新标题,原来的「# 标题」在下面
   await type('### 参数')
   await key('Enter')
   await type('正文')
@@ -645,7 +695,11 @@ async function main(): Promise<void> {
     const lines = await domLines()
     const body = lines[2]?.height ?? 0
     const marker = lines.findIndex(l => /cm-md-empty-paragraph/.test(l.cls))
-    const fullBlanks = lines.filter(l => l.text === '' && l.height >= body - 1).length
+    // 文末空行始终按整行留(重新打开文件后它就是用户接着写的那一行),
+    // 中间的连排空行仍要收紧;这里只数光标空段落和它下面的结构空行。
+    const fullBlanks = lines.filter(
+      (l, i) => i < lines.length - 1 && l.text === '' && l.height >= body - 1
+    ).length
     const caret = await caretInfo()
     check(
       '光标仍停在回车创建的空段落上',
@@ -656,6 +710,13 @@ async function main(): Promise<void> {
     check(
       '后面的结构空行没有被撑成整行',
       fullBlanks === 1,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+    check(
+      '文末空行按整行留出',
+      lines.length > 0 &&
+        lines[lines.length - 1].text === '' &&
+        lines[lines.length - 1].height >= body - 1,
       JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
     )
   }
@@ -914,6 +975,194 @@ async function main(): Promise<void> {
       'DOM 只有三行,光标在新段的正文行上',
       lines.length === 3 && caret.line === 3 && caret.text === '啊',
       JSON.stringify({ caret, lines: lines.map(l => l.text) })
+    )
+  }
+
+  console.log('\n【AA】重新打开存过的新段(没有空段落记录)—— 文末空行仍是整行,退格收回整段')
+  await loadDoc('啊\n\n')
+  {
+    const lines = await domLines()
+    const body = lines[0]?.height ?? 0
+    const last = lines[lines.length - 1]
+    check(
+      '文末空行按整行留出',
+      lines.length === 3 && last?.text === '' && last.height >= body - 1,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  await caretToDocEnd()
+  await key('Backspace')
+  {
+    const doc = await docText()
+    const caret = await caretInfo()
+    check('落盘:整段收回,只剩正文', doc === '啊', JSON.stringify(doc))
+    check(
+      '光标回到上一段行尾,没有多出空行',
+      caret.line === 1 && caret.text === '啊' && caret.head === 1,
+      JSON.stringify(caret)
+    )
+  }
+
+  console.log('\n【AB】重新打开多条空段落 —— 一次仍只收回一段')
+  await loadDoc('啊\n\n\n\n')
+  {
+    const lines = await domLines()
+    const body = lines[0]?.height ?? 0
+    const last = lines[lines.length - 1]
+    check(
+      '文末空行按整行留出',
+      lines.length === 5 && last?.text === '' && last.height >= body - 1,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  await caretToDocEnd()
+  await key('Backspace')
+  {
+    const doc = await docText()
+    const caret = await caretInfo()
+    check('一次只收回最近一段,源码只少一条空段落', doc === '啊\n\n', JSON.stringify(doc))
+    check(
+      '光标停在剩下那条空段落上',
+      caret.line === 3 && caret.text === '',
+      JSON.stringify(caret)
+    )
+  }
+
+  console.log('\n【AC】在标题前面回车 —— 新段(标题上面那条空行)要能点进去接着写')
+  await loadDoc('正文\n\n# 标题\n\n内容\n')
+  await setCaret(4) // 「# 标题」行首
+  await key('Enter')
+  {
+    const doc = await docText()
+    check('源码:新段占一条空行,上下各隔一条', doc === '正文\n\n\n\n# 标题\n\n内容\n', JSON.stringify(doc))
+    const lines = await domLines()
+    // DOM 行:正文 / 空 / 空 / 空 / # 标题 / 空 / 内容 / 文末空行
+    const para = lines[3]
+    check(
+      '标题上面那条空行是新段,不按结构空行收紧',
+      !!para && para.text === '' && !/cm-md-block-gap/.test(para.cls),
+      para?.cls ?? 'none'
+    )
+    check('标题仍按标题渲染', /cm-md-h1/.test(lines[4]?.cls ?? ''), JSON.stringify(lines.map(l => `${l.text}[${l.cls}]`)))
+  }
+  check('能点进这条新段', await clickDomLine(3))
+  {
+    const caret = await caretInfo()
+    check('光标落在这条空行上(没被送回上一段/标题)', caret.line === 4 && caret.text === '', JSON.stringify(caret))
+  }
+  await type('新段')
+  {
+    const src = await readSource()
+    check('落盘:写在新段里,标题没被吞', src.join('|') === '正文|||新段|# 标题||内容', JSON.stringify(src))
+    const lines = await domLines()
+    check('标题仍是标题', /cm-md-h1/.test(lines[4]?.cls ?? ''), JSON.stringify(lines.map(l => `${l.text}[${l.cls}]`)))
+  }
+
+  console.log('\n【AD】在正文段行首回车 —— 光标留在原行行首,上面那条空行同样点得进去')
+  await loadDoc('甲\n\n乙\n')
+  await setCaret(3) // 「乙」行首
+  await key('Enter')
+  {
+    const doc = await docText()
+    check('源码:甲 / 空 / 空 / 乙', doc === '甲\n\n\n\n乙\n', JSON.stringify(doc))
+    const lines = await domLines()
+    const para = lines[3] // 「乙」上面那条空行
+    check(
+      '新段不按结构空行收紧',
+      !!para && para.text === '' && !/cm-md-block-gap/.test(para.cls),
+      para?.cls ?? 'none'
+    )
+    check('新段和下面的正文之间留着段间距', !!para && /cm-md-gap-body/.test(para.cls), para?.cls ?? 'none')
+  }
+  check('能点进这条新段', await clickDomLine(3))
+  {
+    const caret = await caretInfo()
+    check('光标落在这条空行上', caret.line === 4 && caret.text === '', JSON.stringify(caret))
+  }
+
+  console.log('\n【AE】代码块和标题之间回车 —— 代码块间距和标题上留白夹着的新段也点得进去')
+  await loadDoc('```\ncode\n```\n\n# 标题\n\n内容\n')
+  await setCaret(14) // 「# 标题」行首
+  await key('Enter')
+  {
+    const doc = await docText()
+    check('源码:标题前面多出一条空段落', doc === '```\ncode\n```\n\n\n\n# 标题\n\n内容\n', JSON.stringify(doc))
+    const lines = await domLines()
+    // DOM 行:``` / code / ``` / 空 / 空 / 空 / # 标题 / 空 / 内容 / 文末空行
+    const para = lines[5]
+    check(
+      '新段没有被代码块间距收成结构空行',
+      !!para && para.text === '' && !/cm-md-block-gap/.test(para.cls),
+      para?.cls ?? 'none'
+    )
+  }
+  check('能点进这条新段', await clickDomLine(5))
+  {
+    const caret = await caretInfo()
+    check('光标落在这条空行上', caret.line === 6 && caret.text === '', JSON.stringify(caret))
+  }
+  await type('新段')
+  {
+    const src = await readSource()
+    check('落盘:新段在代码块和标题之间', src.join('|') === '```|code|```|||新段|# 标题||内容', JSON.stringify(src))
+  }
+
+  console.log('\n【AF】文档第一行行首回车 —— 新段是第一行,下面正文之间要留段落间距')
+  await loadDoc('1\n')
+  await setCaret(0)
+  await key('Enter')
+  {
+    const doc = await docText()
+    check('源码:第一行是新段,和下面正文之间隔着一条空行', doc === '\n\n1\n', JSON.stringify(doc))
+    const lines = await domLines()
+    check(
+      '第一行就是新段,按整行留出,和下面的正文隔开段落间距',
+      lines.length === 4 &&
+        lines[0]?.text === '' &&
+        /cm-md-empty-paragraph/.test(lines[0].cls) &&
+        !/cm-md-block-gap/.test(lines[0].cls) &&
+        lines[0].height >= 30 &&
+        !!lines[1] &&
+        /cm-md-block-gap/.test(lines[1].cls) &&
+        lines[2]?.text === '1',
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  const topBefore = (await domLines())[2]?.top ?? 0
+  check('能点进这条新段', await clickDomLine(0))
+  {
+    const caret = await caretInfo()
+    check('光标落在第一行', caret.line === 1 && caret.text === '', JSON.stringify(caret))
+    const topAfter = (await domLines())[2]?.top ?? 0
+    check('点进去后下面那行没有往下挪', topAfter === topBefore, `${topBefore} → ${topAfter}`)
+  }
+  await type('X')
+  {
+    const src = await readSource()
+    check('落盘:写在新段里,原有正文仍在下面', src.join('|') === 'X||1', JSON.stringify(src))
+  }
+
+  console.log('\n【AG】文件开头留着空行时,点最上面那条结构空行 —— 光标挪到正文,不把行撑开')
+  await loadDoc('\n\n1\n')
+  await setCaret(4)
+  {
+    const lines = await domLines()
+    check(
+      '前导空行按结构空行收紧',
+      lines.length === 4 && !!lines[0] && /cm-md-block-gap/.test(lines[0].cls),
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
+    )
+  }
+  const topsBefore = (await domLines()).map(l => l.top)
+  check('点最上面那条', await clickDomLine(0))
+  {
+    const caret = await caretInfo()
+    const after = await domLines()
+    check('光标落到正文行,不留在结构空行上', caret.line === 3 && caret.text === '1', JSON.stringify(caret))
+    check(
+      '各行位置不变(结构空行没有被撑开)',
+      after.length === topsBefore.length && after.every((l, i) => l.top === topsBefore[i]),
+      JSON.stringify({ before: topsBefore, after: after.map(l => l.top) })
     )
   }
 

@@ -16,8 +16,18 @@ import { StateField, type EditorState, type Transaction } from '@codemirror/stat
  * 里不能再有反引号(有的话这一行根本不是围栏)。引用 / 列表里的围栏前面还带
  * 容器标记(如「> ```」「- ```」),判定只看标记后面的围栏部分;这里放宽一点
  * 不会误事 —— 真正要不要补全,commands 那边还会用语法树再核一遍。
+ *
+ * 块级公式的开标记 `$$` / `\[` 也走同一套「待定围栏」:刚敲完还没回车时按
+ * 普通文本显示。只认光秃秃的开标记(后面只允许空白)——`$$x` 已经是用户在
+ * 写公式,再按回车该换行,不能替他闭合。`$$$` 不是公式(与解析器一致)。
  */
-const FENCE_LINE = /^(?:[ \t]*(?:>\s*|[-*+]\s+|\d+[.)]\s+))*[ \t]*(?:`{3,}[^`]*|~{3,}.*)$/
+const FENCE_LINE =
+  /^(?:[ \t]*(?:>\s*|[-*+]\s+|\d+[.)]\s+))*[ \t]*(?:`{3,}[^`]*|~{3,}.*|(?:\$\$(?!\$)|\\\[)[ \t]*)$/
+
+/** 整行文本是不是一条围栏行(代码围栏 / 块级公式开标记) */
+export function isFenceLineText(text: string): boolean {
+  return FENCE_LINE.test(text)
+}
 
 /** 单个空选区且贴在行尾 */
 function caretAtLineEnd(state: EditorState): boolean {

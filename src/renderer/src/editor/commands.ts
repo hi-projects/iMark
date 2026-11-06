@@ -422,6 +422,11 @@ export function insertParagraph(view: EditorView): boolean {
     })
     return true
   }
+  // 文档最前面回车(光标在第一行行首):新段就是文件第一行,光标直接落到它
+  // 上面。它和下面原来的正文之间仍要隔一条空行 —— 只补一条的话源码里就是
+  // 「空行 + 正文」,新段和正文贴在一起,看着成了段内换行。分隔空行因此留在
+  // 新段下面(光标偏移 0),不像其它行首那样把光标留在正文行上。
+  if (pos === 0) return breakAt(view, pos, lb + lb, 0)
   // 段尾(下一行是空行或文末)/ 行中间:补一条空行,光标落到空行下面
   return selfEnding
     ? breakAt(view, pos, lb, lb.length)
@@ -506,6 +511,10 @@ export function deleteHardBreakBackward(view: EditorView): boolean {
  *     光标落到那一行的行尾(它可能还是另一条空段落);
  *   - 上一行就是正文:直接把它和当前行接起来。
  *
+ * 文末那条空行即使没有记录(重新打开文件后记录会丢)也按空段落处理:它后面
+ * 什么都没有,只可能是留给用户接着写的一行;若按默认退格只删一条换行,光标
+ * 会停在一条空行上,看起来像凭空多出一个段内换行。
+ *
  * 这样连按多次回车生成的多条空段落,退格会一条一条往回退,不会一下退到最初的
  * 正文。手写的空行 / 代码块、引用、列表、表格里的空行仍走默认退格逐字符删。
  */
@@ -516,9 +525,12 @@ export function deleteParagraphBreakBackward(view: EditorView): boolean {
   const line = state.doc.lineAt(sel.head)
   // 光标要在空行行首:这一行没有字可删,退格删的是它上面的段落分隔
   if (sel.head !== line.from || /\S/.test(line.text)) return false
-  // 只认回车建出来的空段落,别把手写空行 / 容器里的结构空行一起吃掉
-  if (!getEmptyParagraphs(state).includes(line.from)) return false
   if (line.number <= 1) return false
+  // 只认回车建出来的空段落,别把手写空行 / 容器里的结构空行一起吃掉。
+  // 文末空行是例外:它没有下文可分隔,重开文件丢了记录也该能整段收回。
+  const recorded = getEmptyParagraphs(state).includes(line.from)
+  const atDocEnd = line.number === state.doc.lines && bodyLineKind(state, line) === 'blank'
+  if (!recorded && !atDocEnd) return false
   const prev = state.doc.line(line.number - 1)
   // 上一行是段落分隔:上一段在它再上面一行;否则上一行本身就是上一段。
   // 再上面已经没有行时(文首的空段落)就接到这一条空行上。
@@ -528,6 +540,52 @@ export function deleteParagraphBreakBackward(view: EditorView): boolean {
     changes: { from: target.to, to: line.to },
     // 落点是另一条空段落时停在行首(方便继续退);落到正文时停在行尾
     selection: EditorSelection.cursor(/\S/.test(target.text) ? target.to : target.from),
+    scrollIntoView: true,
+    userEvent: 'delete'
+  })
+  return true
+}
+
+/**
+ * 正文 / 标题行首退格 = 收回这一次分段,把这一行并回上一段。
+ *
+ * 空段落由 deleteParagraphBreakBackward 整段收回;这一段已经敲了字(最常见的是
+ * 回车后把它写成了标题)时,光标停在行首按退格,默认命令只删掉一条换行 ——
+ * 标题就直接贴在上一段下面,看着像段内换行;再按一次也只是把 `#` 变成正文,
+ * 永远并不回上一段。这里一次删掉「段落分隔 + 块标记」,标题文字接在上一段
+ * 行尾,光标落到接缝处,继续退格就是正常删字。
+ *
+ * 只处理自己这一行是正文 / ATX 标题、上一块是正文段落的情况。列表、引用、
+ * 代码、表格里的行首有自己的语义;上一块是标题 / 列表 / 引用时也不并入,
+ * 仍交给默认退格。源码里本来就是同一段的软换行不是分段,也交给默认命令。
+ */
+export function deleteBlockStartBackward(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection.main
+  if (state.selection.ranges.length > 1 || !sel.empty) return false
+  const line = state.doc.lineAt(sel.head)
+  if (sel.head !== line.from || !/\S/.test(line.text) || line.number <= 1) return false
+  const kind = bodyLineKind(state, line)
+  if (kind !== 'plain' && kind !== 'heading') return false
+  // ATX 标题的 `# ` 是块语法,并段时一起删掉;没有这种标记的标题行
+  // (setext 下划线等)不在这里处理。
+  let markerLen = 0
+  if (kind === 'heading') {
+    const m = /^#{1,6}[ \t]+/.exec(line.text)
+    if (!m) return false
+    markerLen = m[0].length
+  }
+  // 上一块:跳过段落分隔空行
+  let n = line.number - 1
+  while (n >= 1 && !/\S/.test(state.doc.line(n).text)) n--
+  if (n < 1) return false
+  const target = state.doc.line(n)
+  if (bodyLineKind(state, target) !== 'plain') return false
+  // 紧贴着的上一行是同一段的软换行续行:两行本来就在一段里,不是分段
+  if (n === line.number - 1 && inSameParagraph(state, target, line)) return false
+  view.dispatch({
+    changes: { from: target.to, to: line.from + markerLen },
+    selection: EditorSelection.cursor(target.to),
     scrollIntoView: true,
     userEvent: 'delete'
   })
@@ -677,35 +735,57 @@ export function insertCodeBlock(view: EditorView): boolean {
 }
 
 /**
- * 围栏行尾回车:把「刚敲出来的半个代码块」一次性补完整。
+ * 围栏行尾回车:把「刚敲出来的半个代码块 / 公式块」一次性补完整。
  *
- * 在空行上敲 ``` 时,CommonMark 立刻把后面所有内容都读成代码 —— 光标还在
- * 围栏行上,下面的正文却已经变成代码正文,再往下写什么都进了代码块。这里在
- * 回车时补一条空行和闭合围栏,块里只留一行可写的空行,后面的内容仍是正文。
+ * 在空行上敲 ``` 时,CommonMark 立刻把后面所有内容都读成代码;敲 `$$` 时
+ * 块解析器同样会吞到文档末尾 —— 光标还在开标记行上,下面的正文却已经变成
+ * 块内容。这里在回车时补一条空行和收尾标记(``` / $$ / \]),块里只留一行
+ * 可写的空行,后面的内容仍是正文。
  *
- * 只对 pendingFence.ts 记下的「刚敲出来的围栏行」生效,而且光标必须还在
- * 行尾:已有代码块的开围栏行、闭合围栏行、光标停在围栏行中间,回车都照常
- * 断行——在已有围栏行上回车不该凭空多出一条闭合围栏。
+ * 只对 pendingFence.ts 记下的「刚敲出来的开标记行」生效,而且光标必须还在
+ * 行尾:已有代码块 / 公式块的开围栏行、闭合围栏行、光标停在行中间,回车都
+ * 照常断行——在已有开标记上回车不该凭空多出一条闭合标记。
  *
  * 这里刻意不要求语法树里围栏「未闭合」:笔记下方可能本来就有一条没写完的
  * 围栏,新敲的这条会和它配成对,树看到的是已闭合的块。用户要的是在光标处
  * 新建一个空代码块,不该和远处那条围栏扯上关系。
  */
-function fenceAtLineStart(state: EditorState, line: Line): { fence: string; prefix: string } | null {
-  let found: { fence: string; prefix: string } | null = null
+interface FenceOpener {
+  /** 开标记原文(` ``` ` / `$$` / `\[`) */
+  fence: string
+  /** 回车补全时要写回的收尾标记(``` 与 $$ 同形,\[ 要写成 \]) */
+  close: string
+  /** 开标记前面的容器前缀(缩进 / `> ` / `- `) */
+  prefix: string
+}
+
+function fenceAtLineStart(state: EditorState, line: Line): FenceOpener | null {
+  let found: FenceOpener | null = null
   syntaxTree(state).iterate({
     from: line.from,
     to: line.to,
     enter(ref) {
-      if (ref.name !== 'FencedCode') return undefined
-      const first = ref.node.firstChild
-      // 开围栏必须在这一行上;块从上一行开始时,这一行是代码正文
-      if (!first || first.name !== 'CodeMark' || first.from < line.from) return false
-      found = {
-        fence: state.sliceDoc(first.from, first.to),
-        prefix: state.sliceDoc(line.from, first.from)
+      if (ref.name === 'FencedCode') {
+        const first = ref.node.firstChild
+        // 开围栏必须在这一行上;块从上一行开始时,这一行是代码正文
+        if (!first || first.name !== 'CodeMark' || first.from < line.from) return false
+        const fence = state.sliceDoc(first.from, first.to)
+        found = { fence, close: fence, prefix: state.sliceDoc(line.from, first.from) }
+        return false
       }
-      return false
+      if (ref.name === 'MathBlock') {
+        const first = ref.node.firstChild
+        // 与代码围栏同理:块从更早的行开始时,这一行已经是公式体内
+        if (!first || first.name !== 'MathMark' || first.from < line.from) return false
+        const fence = state.sliceDoc(first.from, first.to)
+        found = {
+          fence,
+          close: fence === '\\[' ? '\\]' : fence,
+          prefix: state.sliceDoc(line.from, first.from)
+        }
+        return false
+      }
+      return undefined
     }
   })
   return found
@@ -735,7 +815,7 @@ export function completeFenceOnEnter(view: EditorView): boolean {
   const opener = fenceAtLineStart(state, line)
   if (!opener) return false
   const prefix = fencePrefix(opener.prefix)
-  const insert = `\n${prefix}\n${prefix}${opener.fence}`
+  const insert = `\n${prefix}\n${prefix}${opener.close}`
   view.dispatch({
     changes: { from: pos, insert },
     // 光标落在开围栏和闭合围栏中间的那条空行上
@@ -926,8 +1006,88 @@ export function selectAllInCodeBlock(view: EditorView): boolean {
   return true
 }
 
-/** 菜单「全选」:编辑器拿着焦点时先按代码块选,其余情况用 CM 的整篇全选 */
+/**
+ * 覆盖这一行的块级公式节点(MathBlock / 段落里的 DisplayMath)。
+ *
+ * 按行遍历而不是只 resolveInner:MathBlock 的节点从行首标记之后开始
+ * (引用 / 列表里还隔着容器前缀),光标停在 `> ` 或列表缩进里时
+ * resolveInner 会先落在容器的其他节点上。DisplayMath 可能只占一行的一段,
+ * 所以要求光标确实落在节点区间内。
+ */
+function mathBlockCovering(state: EditorState, pos: number): SyntaxNode | null {
+  const line = state.doc.lineAt(pos)
+  let found: SyntaxNode | null = null
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter(ref) {
+      if (ref.name === 'MathBlock') {
+        // 行首块级公式:整行都属于它,容器前缀里也算
+        found = ref.node
+        return false
+      }
+      if (ref.name === 'DisplayMath' && ref.from <= pos && pos <= ref.to) {
+        found = ref.node
+        return false
+      }
+      return undefined
+    }
+  })
+  return found
+}
+
+/**
+ * 公式源码(不含定界符)的范围。
+ *
+ * MathBlock 每行一个 MathContent,开标记所在行的片段可能为空(`$$\n...`),
+ * 收标记所在行的片段也可能为空(`...\n$$`)。首尾的空片段要跳过,否则选出
+ * 来的正文会多出一头一尾的换行。中间的空行属于公式体,不额外处理。
+ */
+function mathSelectRange(node: SyntaxNode): { from: number; to: number } | null {
+  let first: SyntaxNode | null = null
+  let last: SyntaxNode | null = null
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name !== 'MathContent' || child.to <= child.from) continue
+    if (!first) first = child
+    last = child
+  }
+  return first && last ? { from: first.from, to: last.to } : null
+}
+
+/**
+ * Ctrl+A:光标 / 选区在块级公式里时,选中公式源码(不含 `$$` / `\[` 定界符,
+ * 与代码块全选一致),重复按也不扩到整篇。
+ *
+ * 只处理块级公式(MathBlock / DisplayMath);行内 `$...$` 不拦,否则在
+ * 普通段落里按全选会意外只选中公式。不在公式里返回 false。
+ */
+export function selectAllInMathBlock(view: EditorView): boolean {
+  const state = view.state
+  if (state.selection.ranges.length > 1) return false
+  const sel = state.selection.main
+  const block = mathBlockCovering(state, sel.from)
+  if (!block) return false
+  // 选区另一头已经跨出这个公式(例如上一次已是整篇):交给整篇全选
+  const tail = mathBlockCovering(state, sel.to)
+  if (!tail || tail.from !== block.from || tail.to !== block.to) return false
+  const content = mathSelectRange(block)
+  if (!content) return false
+  if (sel.from === content.from && sel.to === content.to) return true
+  view.dispatch({
+    selection: { anchor: content.from, head: content.to },
+    scrollIntoView: true,
+    userEvent: 'select'
+  })
+  return true
+}
+
+/** 编辑器里的「选当前块」:代码块优先,其次块级公式 */
+export function selectAllInBlock(view: EditorView): boolean {
+  return selectAllInCodeBlock(view) || selectAllInMathBlock(view)
+}
+
+/** 菜单「全选」:编辑器拿着焦点时先按块选,其余情况用 CM 的整篇全选 */
 export function selectAllSmart(view: EditorView): void {
-  if (selectAllInCodeBlock(view)) return
+  if (selectAllInBlock(view)) return
   selectAll(view)
 }

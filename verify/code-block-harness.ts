@@ -340,7 +340,9 @@ async function main(): Promise<void> {
   const plusInFence = await evalJs<number>(`document.querySelectorAll('.line-plus').length`)
   check('围栏内的代码行上不画「+」', plusInFence === 0, String(plusInFence))
   await key('Home', ['control'])
-  for (let i = 0; i < 8; i++) await key('ArrowDown') // 第 9 行 = 普通段落
+  // 方向键会跳过被收紧的结构空行(第 2 行代码块前的间距),所以 6 次下键
+  // 才落到第 9 行的普通段落:3 → 4 → 5 → 6 → 7 → 9。
+  for (let i = 0; i < 6; i++) await key('ArrowDown')
   const plusOnParagraph = await evalJs<number>(`document.querySelectorAll('.line-plus').length`)
   check('普通段落上「+」仍然出现', plusOnParagraph === 1, String(plusOnParagraph))
   for (let i = 0; i < 2; i++) await key('ArrowDown') // 第 11 行 = 缩进代码
