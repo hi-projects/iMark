@@ -11,7 +11,8 @@
  *  · 点标签切换显示的文件,文档内容一个字符都不改;
  *  · 光标进入某一块(点标签、键盘移动)时显示那一块,离开后回到上次选中的文件;
  *  · 跨块的整篇选中会把所有块都露出来,不隐藏选中的内容;
- *  · 中间只隔空行仍算「连在一起」(回车会补空行,不合并的话正常输入凑不出组);
+ *  · 严格相邻才合并:闭合围栏的下一行必须就是下一块的开围栏,中间隔了空行
+ *    就**不**合并(空行是作者写下的分隔);
  *  · 中间夹了正文的代码块**不**合并,仍按普通代码块显示;
  *  · 与 Mermaid 相邻不算「连在一起」(Mermaid 有自己的渲染态);
  *  · 选中块的开围栏行原样显示 ` ```js title="main.js" `(真实源码行,能直接点
@@ -84,7 +85,7 @@ const PLAIN = [
   ''
 ].join('\n')
 
-/** 用户实际文件的样子:回车补出的空行隔在两块之间 */
+/** 两块之间隔了一个空行:不算「严格相邻」,各自按普通代码块显示 */
 const SPLIT = [
   '# 隔了空行',
   '',
@@ -511,19 +512,18 @@ async function main(): Promise<void> {
     JSON.stringify(info.labels)
   )
 
-  // ---------- 7. 只隔空行仍然合并 ----------
+  // ---------- 7. 隔了空行就不合并 ----------
 
-  console.log('\n【7】中间只隔空行的代码块也算「连在一起」')
+  console.log('\n【7】中间隔了空行的代码块不合并(严格相邻)')
   await loadDoc(SPLIT)
   info = await tabsInfo()
-  check('出现标签条', info.count === 2, String(info.count))
+  check('没有标签条', info.count === 0, String(info.count))
   check(
-    '标签取两块的 title',
-    JSON.stringify(info.labels) === '["a.js","b.js"]',
-    JSON.stringify(info.labels)
+    '两块正文都按普通代码块显示',
+    info.text.includes('const a = 1') && info.text.includes('const b = 2')
   )
-  check('默认只显示第一块', info.text.includes('const a = 1') && !info.text.includes('const b = 2'))
-  check('组内空行也折成零高度', info.voidLineCount === 4, String(info.voidLineCount))
+  check('没有块被折叠', info.voidLineCount === 0, String(info.voidLineCount))
+  check('源码没被改动', info.source === SPLIT)
 
   // ---------- 7b. 中间夹正文不合并 ----------
 

@@ -858,25 +858,8 @@ function styleFencedCodeGroup(ctx: RuleContext, members: CodeMember[]): void {
   const anyTouched = touched.some(Boolean)
   const visible = members.map((_, i) => (anyTouched ? touched[i] : i === active))
 
-  // 组内两块之间只隔着空白(见 codeTabs.ts 的 adjacentFence)。按标签页显示时
-  // 这些空行不该在标签和正文之间留出一道空白,折成零高度;光标 / 选区落到空行
-  // 上时保持原样,否则光标会藏进零高度行里。
-  const gaps: Line[] = []
-  for (let i = 1; i < members.length; i++) {
-    const from = doc.lineAt(members[i - 1].to).number + 1
-    const to = doc.lineAt(members[i].from).number - 1
-    for (let n = from; n <= to; n++) gaps.push(doc.line(n))
-  }
-  const gapTouched = gaps.some(line => touchesLines(ctx.sel, doc, line.from, line.to))
-  if (!gapTouched) {
-    for (const line of gaps) {
-      if (!lineInView(ctx, line)) continue
-      // 用户自己回车留出来的空段落不是组内间隔,照常整行显示、能点回去
-      if (keptEmptyParagraph(ctx, line.from)) continue
-      addLine(ctx, line.from, 'cm-md-code-void')
-      hide(ctx, line.from, line.to)
-    }
-  }
+  // 组内两块严格相邻(见 codeTabs.ts 的 adjacentFence):闭合围栏的下一行就是
+  // 下一块的开围栏,没有空行需要折叠。
 
   // 标签条自己不在这个 ViewPlugin 里:块级 widget 只能由 StateField 提供
   // (见 codeTabs.ts 的 codeTabsStripField),它挂在组头开围栏行的上方。

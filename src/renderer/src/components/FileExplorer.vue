@@ -15,12 +15,11 @@ import {
 } from 'lucide-vue-next'
 import type { VaultNode } from '@shared/types'
 import { activeTab, appStore } from '../stores/app'
-import ExplorerNameInput from './ExplorerNameInput.vue'
 import {
-  autoExtension,
   createDir,
   createFile,
   deleteNode,
+  editableBaseName,
   moveNode,
   openVaultFile,
   refreshVault,
@@ -44,16 +43,6 @@ interface Editing {
 
 const editing = reactive<Editing>({ mode: null, parentPath: '', target: null, value: '' })
 
-/**
- * 输入框后面浅色显示的扩展名:只有确认时会被自动补 `.md` 才显示。
- * 新建/改名文件夹,以及名字已带仓库认得的扩展名(如 `.txt`)时都不提示。
- */
-const nameSuffix = computed(() => {
-  if (editing.mode === 'new-file') return autoExtension(editing.value)
-  if (editing.mode === 'rename' && editing.target?.type === 'file') return autoExtension(editing.value)
-  return ''
-})
-
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
   function walk(n: VaultNode, depth: number): void {
@@ -75,6 +64,38 @@ function toggleDir(node: VaultNode): void {
   } else {
     appStore.expandedDirs.add(node.path)
   }
+}
+
+/**
+ * 文件树里选中的行 —— F2 改名的目标。按路径记:树刷新、改名、移动后
+ * 原路径找不到了就当作没有选中,不用到处清理这份状态。
+ */
+const selectedPath = ref<string | null>(null)
+
+const selectedNode = computed<VaultNode | null>(
+  () => rows.value.find(r => r.node.path === selectedPath.value)?.node ?? null
+)
+
+/**
+ * 还没在树里点过任何行时,F2 的落点:当前打开的文件。
+ * 只认树里能看见的节点 —— 看不见就没有地方显示改名框,不能凭路径硬改。
+ */
+function openFileNode(): VaultNode | null {
+  const path = activeTab()?.filePath
+  if (!path) return null
+  return rows.value.find(r => r.node.path === path)?.node ?? null
+}
+
+/** 目录行:点一下既展开/收起,也把它设为 F2 的目标 */
+function onDirClick(node: VaultNode): void {
+  selectedPath.value = node.path
+  toggleDir(node)
+}
+
+/** 文件行:点一下既打开,也把它设为 F2 的目标 */
+function onFileClick(node: VaultNode): void {
+  selectedPath.value = node.path
+  void openVaultFile(node.path)
 }
 
 function isOpenFile(node: VaultNode): boolean {
@@ -113,7 +134,9 @@ function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, 
   editing.mode = mode
   editing.parentPath = parentPath
   editing.target = target
-  editing.value = initial
+  // 改名文件时输入框只放名字(不带会自动补回的 `.md`)—— 自动选中(下面的
+  // select)于是只选中名字部分,敲字不会把扩展名一起替换掉
+  editing.value = mode === 'rename' && target?.type === 'file' ? editableBaseName(initial) : initial
   if (mode !== 'rename' && parentPath) appStore.expandedDirs.add(parentPath)
   // 输入行可能在 v-for 里(v-for 的模板 ref 会被 Vue 收成数组),按类名取更稳
   void nextTick(() => {
@@ -293,6 +316,7 @@ const menuEntries = computed<MenuEntry[]>(() => {
 })
 
 async function openMenu(e: MouseEvent, node: VaultNode): Promise<void> {
+  selectedPath.value = node.path
   menu.node = node
   menu.x = e.clientX
   menu.y = e.clientY
@@ -316,8 +340,28 @@ function runEntry(entry: MenuEntry): void {
   entry.run()
 }
 
+/**
+ * F2:重命名文件树里选中的那一行(文件或文件夹)。
+ *
+ * 点文件行会把焦点交给编辑器(contenteditable),点目录行也不一定把焦点留在树上,
+ * 所以这里**不**把"焦点不在文件树"当成不处理 —— 只要不在真正的输入框里(F2 在
+ * input/textarea 里是用户自己的输入)、没有对话框挡着,就重命名选中的行。
+ */
 function onWindowKeydown(e: KeyboardEvent): void {
-  if (menu.open && e.key === 'Escape') closeMenu()
+  if (e.key === 'Escape' && menu.open) {
+    closeMenu()
+    return
+  }
+  if (e.key !== 'F2' || e.defaultPrevented) return
+  const target = e.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+  if (editing.mode || !appStore.explorerVisible) return
+  if (document.querySelector('[role="dialog"]')) return
+  const node = selectedNode.value ?? openFileNode()
+  if (!node) return
+  e.preventDefault()
+  closeMenu()
+  startEdit('rename', '', node, node.name)
 }
 
 onMounted(() => window.addEventListener('keydown', onWindowKeydown))
@@ -383,10 +427,9 @@ function guideLeft(level: number): string {
           <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
           <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
           <FileText v-else :size="14" class="explorer-icon" />
-          <ExplorerNameInput
+          <input
             v-model="editing.value"
-            :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
-            :suffix="nameSuffix"
+            :placeholder="editing.mode === 'new-file' ? '文件名' : '文件夹名'"
             @keydown.enter="onEnter"
             @keydown.esc.prevent="cancelEdit"
             @blur="cancelEdit"
@@ -394,11 +437,27 @@ function guideLeft(level: number): string {
         </div>
 
         <template v-for="(row, i) in rows" :key="row.node.path">
-          <!-- 重命名输入行 -->
-          <div v-if="editing.mode === 'rename' && editing.target?.path === row.node.path" class="explorer-item explorer-editing" :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }">
-            <ExplorerNameInput
+          <!--
+            重命名输入行:缩进、引导线、图标都和这一行正常显示时一致
+            (文件行没有展开箭头,靠 +16 把图标对齐到目录图标列),输入框才落在名字列上。
+          -->
+          <div
+            v-if="editing.mode === 'rename' && editing.target?.path === row.node.path"
+            class="explorer-item explorer-editing"
+            :style="{ paddingLeft: 8 + row.depth * 14 + (row.node.type === 'file' ? 16 : 0) + 'px' }"
+          >
+            <span
+              v-for="level in row.depth - 1"
+              :key="level"
+              class="explorer-guide"
+              :style="{ left: guideLeft(level) }"
+              aria-hidden="true"
+            ></span>
+            <span v-if="row.node.type === 'dir'" class="explorer-chevron-space" aria-hidden="true"></span>
+            <Folder v-if="row.node.type === 'dir'" :size="14" class="explorer-icon" />
+            <FileText v-else :size="14" class="explorer-icon" />
+            <input
               v-model="editing.value"
-              :suffix="nameSuffix"
               @keydown.enter="onEnter"
               @keydown.esc.prevent="cancelEdit"
               @blur="cancelEdit"
@@ -410,12 +469,13 @@ function guideLeft(level: number): string {
             v-else-if="row.node.type === 'dir'"
             class="explorer-item"
             :class="{
+              'explorer-selected': selectedPath === row.node.path,
               'explorer-dragging': draggingNode?.path === row.node.path,
               'explorer-drop-target': dropPath === row.node.path
             }"
             :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }"
             draggable="true"
-            @click="toggleDir(row.node)"
+            @click="onDirClick(row.node)"
             @contextmenu.prevent="openMenu($event, row.node)"
             @dragstart="onDragStart($event, row.node)"
             @dragend="resetDrag"
@@ -462,13 +522,14 @@ function guideLeft(level: number): string {
             class="explorer-item explorer-file"
             :class="{
               'explorer-file-active': isOpenFile(row.node),
+              'explorer-selected': selectedPath === row.node.path,
               'explorer-dragging': draggingNode?.path === row.node.path,
               'explorer-drop-target': dropPath === row.node.path
             }"
             :style="{ paddingLeft: 8 + row.depth * 14 + 16 + 'px' }"
             :title="row.node.path"
             draggable="true"
-            @click="openVaultFile(row.node.path)"
+            @click="onFileClick(row.node)"
             @contextmenu.prevent="openMenu($event, row.node)"
             @dragstart="onDragStart($event, row.node)"
             @dragend="resetDrag"
@@ -513,10 +574,9 @@ function guideLeft(level: number): string {
             <span v-if="editing.mode === 'new-dir'" class="explorer-chevron-space" aria-hidden="true"></span>
             <Folder v-if="editing.mode === 'new-dir'" :size="14" class="explorer-icon" />
             <FileText v-else :size="14" class="explorer-icon" />
-            <ExplorerNameInput
+            <input
               v-model="editing.value"
-              :placeholder="editing.mode === 'new-file' ? '文件名.md' : '文件夹名'"
-              :suffix="nameSuffix"
+              :placeholder="editing.mode === 'new-file' ? '文件名' : '文件夹名'"
               @keydown.enter="onEnter"
               @keydown.esc.prevent="cancelEdit"
               @blur="cancelEdit"

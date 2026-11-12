@@ -277,6 +277,78 @@ async function main(): Promise<void> {
     check('落盘:没有上一段可并,内容不变', src === '# 标题\n', JSON.stringify(src))
   }
 
+  // ---------- 8. 只敲了标题符号(还没有标题文字) ----------
+
+  console.log('\n【8】新段里只敲了 `#`,行首退格同样并回上一段')
+  await loadDoc('正文\n')
+  await setCaret(2)
+  await key('Enter')
+  await type('#')
+  {
+    const src = await docText()
+    check('先确认新段里只有标题符号', src === '正文\n\n#\n', JSON.stringify(src))
+  }
+  await setCaret((await docText()).indexOf('#'))
+  await key('Backspace')
+  {
+    const src = await docText()
+    const caret = await caretInfo()
+    const lines = await domLines()
+    check('落盘:分隔空行和 `#` 一起删掉', src === '正文\n', JSON.stringify(src))
+    check('光标回到上一段行尾', caret.line === 1 && caret.head === 2, JSON.stringify(caret))
+    check('DOM:没有残留的空标题行', lines.length === 2 && lines[0]?.text === '正文', dump(lines))
+  }
+
+  console.log('\n【8b】`# ` / `###` 这类只有标记的标题同样一次并回')
+  await loadDoc('正文\n\n# \n')
+  await setCaret((await docText()).indexOf('#'))
+  await key('Backspace')
+  {
+    const src = await docText()
+    check('落盘:`# ` 和分隔空行一起删掉', src === '正文\n', JSON.stringify(src))
+  }
+  await loadDoc('正文\n\n###\n')
+  await setCaret((await docText()).indexOf('#'))
+  await key('Backspace')
+  {
+    const src = await docText()
+    check('落盘:`###` 和分隔空行一起删掉', src === '正文\n', JSON.stringify(src))
+  }
+
+  // ---------- 9. 并段后在接缝处回车:新段间距仍是正常段间距 ----------
+
+  console.log('\n【9】并段后在接缝处回车:段间距不能被撑成整行')
+  await loadDoc('阿\n')
+  await setCaret(1)
+  await key('Enter')
+  await type('# 阿')
+  await setCaret((await docText()).indexOf('#'))
+  await key('Backspace')
+  {
+    const src = await docText()
+    check('并段后是「阿阿」', src === '阿阿\n', JSON.stringify(src))
+  }
+  await key('Enter')
+  {
+    const src = await docText()
+    const caret = await caretInfo()
+    const lines = await domLines()
+    check('落盘:接缝处回车分出两段', src === '阿\n\n阿\n', JSON.stringify(src))
+    check('光标落在新段行首', caret.line === 3 && caret.text === '阿', JSON.stringify(caret))
+    // 上面的正文 36px,所以段间距(结构空行)应当明显矮于一行
+    const bodyH = lines[0]?.height ?? 36
+    check(
+      'DOM:中间那条空行仍是收紧的段间距,不是整行空段落',
+      !!lines[1] && lines[1].text === '' && lines[1].height < bodyH - 8,
+      dump(lines)
+    )
+    check(
+      'DOM:空行没有 cm-md-empty-paragraph(不该被记成空段落)',
+      !!lines[1] && !/cm-md-empty-paragraph/.test(lines[1].cls),
+      dump(lines)
+    )
+  }
+
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)
   app.exit(fail === 0 ? 0 : 1)
 }

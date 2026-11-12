@@ -567,11 +567,13 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
   if (sel.head !== line.from || !/\S/.test(line.text) || line.number <= 1) return false
   const kind = bodyLineKind(state, line)
   if (kind !== 'plain' && kind !== 'heading') return false
-  // ATX 标题的 `# ` 是块语法,并段时一起删掉;没有这种标记的标题行
-  // (setext 下划线等)不在这里处理。
+  // ATX 标题的 `#` / `# ` 是块语法,并段时一起删掉。`#` 后面还没有空格、
+  // 整行就是标记本身(光标停在 # 前面准备接着敲)时也是合法的空标题 ——
+  // 标记后面允许直接行尾,不能因为没空格就当成正文留下来。
+  // 没有这种标记的标题行(setext 下划线等)不在这里处理。
   let markerLen = 0
   if (kind === 'heading') {
-    const m = /^#{1,6}[ \t]+/.exec(line.text)
+    const m = /^#{1,6}(?:[ \t]+|$)/.exec(line.text)
     if (!m) return false
     markerLen = m[0].length
   }

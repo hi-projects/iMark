@@ -43,7 +43,7 @@ function check(label: string, ok: boolean, detail = ''): void {
   }
 }
 
-/** 用户实际文件的样子:两组代码块(中间隔空行 → 标签组),文末没有换行 */
+/** 用户实际文件的样子:两组代码块(中间隔空行,不合并),文末没有换行 */
 const USER_DOC = '\n\n\n\n```js title="a.js"\na \n```\n\n```xml\na \n```'
 
 async function main(): Promise<void> {

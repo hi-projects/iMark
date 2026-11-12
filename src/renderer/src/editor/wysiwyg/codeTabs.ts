@@ -20,9 +20,9 @@ import { touchesLines } from './selection'
 /**
  * 相邻代码块组成「文件标签页」(见 rules.ts 的 styleFencedCodeGroup)。
  *
- * 触发条件只看源码结构:两个(或更多)**围栏代码块**连在一起 —— 上一块的闭合
- * 围栏和下一块的开围栏之间只有空白(可以挨着,也可以隔空行;回车补出来的空行
- * 很常见,见 adjacentFence)。文件名的写法是围栏 info string 里的 `title=`:
+ * 触发条件只看源码结构:两个(或更多)**围栏代码块**严格相邻 —— 上一块的闭合
+ * 围栏下一行就是下一块的开围栏,中间不能有空行(空行是作者写下的分隔,见
+ * adjacentFence)。文件名的写法是围栏 info string 里的 `title=`:
  *
  *   ```js title="main.js"
  *   ...
@@ -104,12 +104,11 @@ function groupable(doc: Text, code: SyntaxNode, pending: number | null): boolean
 }
 
 /**
- * 上一个/下一个可以合组的围栏兄弟节点。
+ * 上一个/下一个可以合组的围栏兄弟节点,**严格相邻**才算。
  *
- * 两块之间只允许空白(换行、空行)。写完一块按回车再写下一块时,编辑器会在
- * 中间补一个段落空行;源码上虽然隔了一行,在用户眼里仍是「连在一起」的两块,
- * 不该因此拆散(否则正常输入根本凑不出标签组)。中间只要夹了正文(哪怕一个
- * 字符)就是两个独立的代码块,各自按普通代码块渲染。
+ * 两块之间只允许一个换行(闭合围栏行和下一块的开围栏行紧挨着;行尾 / 行首的
+ * 空格不算内容)。中间隔了空行就是两个独立的代码块,各自按普通代码块渲染 ——
+ * 空行是作者写下的分隔,不该被当成同一个文件组。夹了正文(哪怕一个字符)同理。
  */
 function adjacentFence(
   doc: Text,
@@ -123,7 +122,8 @@ function adjacentFence(
     direction === -1
       ? doc.sliceString(other.to, code.from)
       : doc.sliceString(code.to, other.from)
-  if (!/^\s*$/.test(gap)) return null
+  // 只允许「行尾空白 + 一个换行 + 下一行行首空白」;出现第二个换行就是空行
+  if (!/^[ \t]*\n[ \t]*$/.test(gap)) return null
   return groupable(doc, other, pending) ? other : null
 }
 

@@ -66,7 +66,14 @@ export const emptyParagraphsField = StateField.define<readonly number[]>({
         // 不记的话它会被当成结构空行收紧成块间距,点击又被重定向到上一块,
         // 新段看着在那儿却点不进去(见 rules 的 collapseBlankRuns /
         // markHeadingSpaceBefore 与 build 的 gapLineClickAnchor)。
-        else if (after.main.head === line.from && line.number > 1) {
+        // 前提是回车前光标就在行首:段中回车会把一行断成两行,光标同样落在
+        // 新一行的行首,但上面那条空行只是段落分隔 —— 记成空段落会把段间距
+        // 撑成整行(并段后在接缝处回车就能撞上)。
+        else if (
+          after.main.head === line.from &&
+          line.number > 1 &&
+          before.main.head === tr.startState.doc.lineAt(before.main.head).from
+        ) {
           const above = tr.state.doc.line(line.number - 1)
           if (!/\S/.test(above.text)) add(above.from)
         }

@@ -54,14 +54,21 @@ export function withExtension(name: string): string {
 }
 
 /**
- * withExtension 会补上的那一段(没有则空串)。
- * 新建/改名的输入框用它把 `.md` 用浅色挂在文字后面 —— 提示最终生成的名字,
- * 又不用真的写进输入值里。
+ * 改名输入框里该编辑的那一段:会被 withExtension 自动补回的后缀不写进输入值。
+ *
+ * 于是输入框只显示名字本身,默认选中也就只选名字 —— 一敲字不会连扩展名一起
+ * 覆盖掉,确认时再按原名补回来。
+ *
+ * 只有当去掉后缀再补回正好是原名时才去:`笔记.txt` 去掉后缀再补会变成 `.md`,
+ * 等于偷偷改了扩展名,所以那种情况整个名字都留在输入框里。
  */
-export function autoExtension(name: string): string {
-  const trimmed = name.trim()
-  if (!trimmed) return ''
-  return withExtension(trimmed).slice(trimmed.length)
+export function editableBaseName(name: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot > 0) {
+    const base = name.slice(0, dot)
+    if (withExtension(base) === name) return base
+  }
+  return name
 }
 
 function flatten(node: VaultNode, vaultPath: string, out: VaultFileRef[]): void {
