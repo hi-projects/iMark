@@ -199,8 +199,7 @@ async function main(): Promise<void> {
     await sleep(120)
   }
 
-  // 等仓库树出现。首层目录默认就是展开的 —— 再点一下只会收起来,
-  // 所以只在看不到文件时才去展开。
+  // 等仓库树出现。目录默认收起,只在看不到文件时才去展开。
   check('仓库树已加载', await waitFor(`document.querySelector('.explorer-list .explorer-name')`))
   const noteVisible = (ms = 8000): Promise<boolean> =>
     waitFor(

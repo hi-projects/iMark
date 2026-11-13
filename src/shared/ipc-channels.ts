@@ -86,6 +86,15 @@ export const IPC = {
   VaultList: 'vault:list',
   /** 渲染→主:批量确认最近仓库里哪些路径已经不是目录(已删掉的从列表里剔除) */
   VaultMissing: 'vault:missing',
+  /**
+   * 渲染→主:从 Git 远端克隆一个仓库,作为新项目(仓库)打开。
+   * 克隆成功后由主进程把远端写进「远程同步」扩展的按仓库配置,不必再手填一遍。
+   */
+  VaultClone: 'vault:clone',
+  /** 渲染→主:批量读这些仓库的 Git 远端(项目级管理用),缺失的项为 null */
+  VaultGitList: 'vault:git-list',
+  /** 渲染→主:写/清除某个仓库的 Git 远端;null 表示清除 */
+  VaultGitSet: 'vault:git-set',
   VaultCreateFile: 'vault:create-file',
   VaultCreateDir: 'vault:create-dir',
   VaultRename: 'vault:rename',

@@ -43,6 +43,7 @@ const DEFAULTS: Settings = {
   openFiles: [],
   ...EDITOR_DEFAULTS,
   vaults: [],
+  vaultExpandedDirs: {},
   skipVaultPicker: false,
   // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
   userStyle: null,
@@ -115,6 +116,19 @@ function normalize(raw: Partial<Settings>): Settings {
       }
     }
     merged.extensionHost = { mode, affinity }
+  }
+  // 目录展开状态:仓库路径 → 目录路径数组。手改坏时按「没有记录」处理,
+  // 打开仓库回到默认的收起状态,而不是让恢复流程炸在 Set 构造上。
+  if (!merged.vaultExpandedDirs || typeof merged.vaultExpandedDirs !== 'object' || Array.isArray(merged.vaultExpandedDirs)) {
+    merged.vaultExpandedDirs = {}
+  } else {
+    const clean: Record<string, string[]> = {}
+    for (const [vault, list] of Object.entries(merged.vaultExpandedDirs)) {
+      if (!Array.isArray(list)) continue
+      const dirs = list.filter((p): p is string => typeof p === 'string' && p.length > 0)
+      if (dirs.length) clean[vault] = dirs
+    }
+    merged.vaultExpandedDirs = clean
   }
   // 标签会话:只接受非空字符串。被手改成别的形状时当作「没有记住任何标签」,
   // 而不是让恢复流程拿着一串对象去读文件

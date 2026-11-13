@@ -1,5 +1,6 @@
 import type { ExtensionHostSettings, ExtensionPreference } from './extensions'
 import type { CodeIndentSize } from './editorSettings'
+import type { PluginAuthMode } from './plugins'
 
 /** light 亮色 / dark 深色(底色对齐 Obsidian Minimal,文字保持 iMark 默认) */
 export type Theme = 'light' | 'dark'
@@ -118,6 +119,13 @@ export interface Settings {
   quoteSpaceAfter: number
   /** 最近打开的仓库列表(最新的在前) */
   vaults: string[]
+  /**
+   * 每个仓库上次关闭时的目录展开状态:仓库根路径 → 已展开目录的绝对路径。
+   *
+   * 按仓库分开存,切仓库不会互相串。第一次打开的仓库没有记录,文件树默认
+   * 全部收起(只列第一层)。
+   */
+  vaultExpandedDirs: Record<string, string[]>
   /** 启动时跳过仓库选择界面,直接打开上次仓库 */
   skipVaultPicker: boolean
   /**
@@ -183,3 +191,55 @@ export interface LaunchIntent {
  * - `busy`      记录在,但联系不上那个窗口(端口没起来/超时),暂时不要打开。
  */
 export type VaultClaimResult = 'ok' | 'forwarded' | 'busy'
+
+/**
+ * 仓库(项目)的 Git 远端。
+ *
+ * 这是「远程同步」扩展那套远端配置在**项目**这一层的视图:同一个仓库在插件里
+ * 绑定的是一个 workspace 配置,而这里按仓库根路径把它暴露给仓库选择页 ——
+ * 克隆仓库、以及在选择页里查看/修改远端,都走这一份,不另存一份副本。
+ */
+export interface VaultGitRemote {
+  url: string
+  auth: PluginAuthMode
+  username: string
+  /** 本地分支(必填) */
+  localBranch: string
+  /** 远端分支;空串 = 与本地分支同名 */
+  remoteBranch: string
+  /** 是否已经存过访问令牌 / 密码(明文永远不离开主进程) */
+  hasSecret: boolean
+}
+
+/** 在选择页写回某个项目的 Git 远端 */
+export interface VaultGitRemoteInput {
+  url: string
+  auth: PluginAuthMode
+  username: string
+  localBranch: string
+  remoteBranch: string
+  /**
+   * 密钥:`undefined` = 保持已保存的;空串 = 清除;非空 = 写入新的。
+   * 这样只改分支/地址时不必重新输入令牌。
+   */
+  secret?: string
+}
+
+/** 从远端克隆一个仓库作为项目 */
+export interface CloneVaultRequest extends VaultGitRemoteInput {
+  /** 克隆到哪个目录下 */
+  parentDir: string
+  /** 新建文件夹名(空串 = 从仓库地址推导) */
+  name: string
+  /** 只克隆这一条分支;空串 = 远端默认分支 */
+  branch: string
+}
+
+export interface CloneVaultResult {
+  /** 克隆出来的仓库根目录 */
+  path: string
+  /** 克隆后检出的分支名(读不到时为空串) */
+  branch: string
+  /** 项目级 Git 远端是否已经写入「远程同步」扩展的配置 */
+  remoteSaved: boolean
+}

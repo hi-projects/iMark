@@ -808,6 +808,32 @@ export class ExtensionService {
     return this.getExtensionView(id)
   }
 
+  /**
+   * 读**任意**仓库的覆盖值(不要求该仓库当前打开,也不要求扩展已安装)。
+   *
+   * 设置页只编辑「当前仓库」,但仓库选择页要同时看到所有项目的配置 ——
+   * 比如每个项目绑定的是哪个 Git 远端。
+   */
+  async readWorkspaceField(id: string, root: string, key: string): Promise<unknown> {
+    const settings = await loadSettings()
+    return this.workspaceOverrides(settings.extensions?.[id], root)[key]
+  }
+
+  /**
+   * 写**任意**仓库的覆盖值;`undefined` 表示删掉这一项。
+   *
+   * 与 `setExtensionField` 共用同一个写盘路径,所以设置变更照常会广播给宿主 ——
+   * 给当前仓库写值时,运行中的扩展立即看到新配置。
+   */
+  async setWorkspaceField(
+    id: string,
+    root: string,
+    key: string,
+    value: unknown
+  ): Promise<void> {
+    await this.writeWorkspaceValue(id, root, key, value)
+  }
+
   /** 显式 target 优先;没给就按字段声明的范围。WorkspaceFolder 与 Workspace 同义 */
   private scopeForUpdate(field: PluginField, target?: number): 'global' | 'workspace' {
     if (target === 2 || target === 3) return 'workspace'

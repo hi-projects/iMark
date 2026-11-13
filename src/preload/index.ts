@@ -2,12 +2,16 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
 import type {
+  CloneVaultRequest,
+  CloneVaultResult,
   DefaultEditorStatus,
   LaunchIntent,
   SaveDialogOptions,
   Settings,
   Theme,
-  VaultClaimResult
+  VaultClaimResult,
+  VaultGitRemote,
+  VaultGitRemoteInput
 } from '@shared/types'
 import type { UserStyleImportResult, UserStyleState } from '@shared/userStyles'
 import type {
@@ -96,6 +100,12 @@ const api = {
   claimVault: (vaultPath: string, filePath?: string | null): Promise<VaultClaimResult> =>
     request(IPC.VaultClaim, { vaultPath, filePath: filePath ?? null }),
   releaseVault: (vaultPath: string): Promise<void> => request(IPC.VaultRelease, vaultPath),
+  cloneVault: (o: CloneVaultRequest): Promise<CloneVaultResult> =>
+    request(IPC.VaultClone, o),
+  vaultGitRemotes: (paths: string[]): Promise<Record<string, VaultGitRemote | null>> =>
+    request(IPC.VaultGitList, paths),
+  setVaultGitRemote: (path: string, remote: VaultGitRemoteInput | null): Promise<void> =>
+    request(IPC.VaultGitSet, { path, remote }),
   listVault: (path: string) => request(IPC.VaultList, path),
   missingVaults: (paths: string[]): Promise<string[]> => request(IPC.VaultMissing, paths),
   createFile: (path: string, content = ''): Promise<void> =>

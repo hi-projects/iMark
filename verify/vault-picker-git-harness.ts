@@ -1,0 +1,394 @@
+/**
+ * 仓库选择页：从 Git 克隆 + 项目级远端管理。
+ *
+ * 用户可见的两件事：
+ *   A 选择页是 Obsidian 式左右结构：左边「最近仓库」，右边三段动作；
+ *   B 右侧「从 Git 克隆仓库」能把远端克隆成本地仓库，打开它，并且**顺手**把
+ *     这一份远端写进「远程同步」扩展的按仓库配置（不另存副本）。
+ *
+ * 后半段验证「项目级管理」本身：左侧项目行的 Git 设置能读回刚写的远端、
+ * 改地址/分支时不清掉已保存的令牌、移除配置后设置页与列表标记一起消失。
+ *
+ * 真 git、真克隆 —— 远端是临时目录里的裸仓库。只断言磁盘/设置里的结果，
+ * 不看界面自说自话。
+ *
+ * 跑法（先 npm run build；Linux 无头用 xvfb-run）：
+ *   IMARK_VERIFY_HIDDEN=1 xvfb-run -a node verify/run.mjs vault-picker-git
+ */
+
+import { app, BrowserWindow, dialog, protocol } from 'electron'
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
+import { APP_VERSION } from './appVersion'
+import { registerIpc } from '../src/main/ipc'
+import { registerImarkProtocol } from '../src/main/protocol'
+import { getSettingsSync, loadSettings } from '../src/main/settings'
+import { getSecret } from '../src/main/secrets'
+import { initExtensions } from '../src/main/extensions/service'
+import { installExtensionPackage } from '../src/main/extensions/installer'
+import { readVaultGitRemotes, vaultTargetId } from '../src/main/vaultGit'
+import { createMainWindow } from '../src/main/window'
+import { IPC } from '../src/shared/ipc-channels'
+import type { VaultGitRemote } from '../src/shared/types'
+
+const run = promisify(execFile)
+const REPO = join(__dirname, '..', '..')
+const EXT_ID = 'imark.git-sync'
+const TARGETS_KEY = `${EXT_ID}.targets`
+
+// 特权 scheme 必须在 app ready 之前注册（与 src/main/index.ts 一致）
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'imark', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+])
+
+let pass = 0
+let fail = 0
+
+function check(label: string, ok: boolean, detail = ''): void {
+  if (ok) {
+    pass += 1
+    console.log(`  ✓ ${label}`)
+  } else {
+    fail += 1
+    console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+
+/** 验收窗口一律不显示：窗口照常创建与渲染，只是不出现在屏幕上 */
+const proto = BrowserWindow.prototype as unknown as Record<string, () => void>
+proto.show = () => {}
+proto.maximize = () => {}
+proto.unmaximize = () => {}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await run('git', ['-c', 'core.quotePath=false', ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'harness',
+      GIT_AUTHOR_EMAIL: 'harness@local',
+      GIT_COMMITTER_NAME: 'harness',
+      GIT_COMMITTER_EMAIL: 'harness@local'
+    }
+  })
+  return stdout
+}
+
+/** 与扩展服务 workspaceConfig 的键保持一致（Windows/macOS 折叠大小写） */
+function workspaceKey(root: string): string {
+  const absolute = resolve(root)
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? absolute.toLowerCase()
+    : absolute
+}
+
+interface StoredTarget {
+  id: string
+  url: string
+  auth: string
+  username: string
+  localBranch: string
+  remoteBranch: string
+}
+
+/** 直接读设置缓存里某个仓库的 targets：验证的是扩展真正会读的那份值 */
+function targetsOf(root: string): StoredTarget[] {
+  const preference = getSettingsSync()?.extensions?.[EXT_ID]
+  const bucket = preference?.workspaceConfig?.[workspaceKey(root)]
+  const value = bucket?.[TARGETS_KEY]
+  return Array.isArray(value) ? (value as StoredTarget[]) : []
+}
+
+async function main(): Promise<void> {
+  if (!app.commandLine.hasSwitch('user-data-dir')) {
+    console.error('拒绝运行：必须带 --user-data-dir（用 `node verify/run.mjs vault-picker-git` 跑会自动带上）')
+    app.exit(2)
+    return
+  }
+
+  app.on('window-all-closed', () => {})
+  await app.whenReady()
+
+  const ud = app.getPath('userData')
+  const source = join(ud, 'source-repo')
+  const remote = join(ud, 'source-remote.git')
+  const cloneParent = join(ud, 'clones')
+  const cloned = join(cloneParent, 'cloned-notes')
+  const cloneUrl = remote
+  const notePath = join(source, '笔记.md')
+  const noteBody = '# 第一篇\n\n从远端克隆下来的笔记。\n'
+
+  // 干净起步：内置包、扩展登记、密钥、旧克隆都不能影响断言
+  for (const dir of [source, remote, cloneParent, join(ud, 'plugins'), join(ud, 'logs')]) {
+    await rm(dir, { recursive: true, force: true })
+  }
+  await rm(join(ud, 'secrets.json'), { force: true })
+  await mkdir(source, { recursive: true })
+  await writeFile(notePath, noteBody, 'utf8')
+  await git(source, ['init', '--initial-branch=main'])
+  await git(source, ['add', '-A'])
+  await git(source, ['commit', '-m', 'first'])
+  // 裸仓库当远端；clone 用本地路径，不经过网络与凭据
+  await git(ud, ['clone', '--bare', source, remote])
+
+  await writeFile(
+    join(ud, 'settings.json'),
+    JSON.stringify(
+      {
+        skipVaultPicker: false,
+        vaultPath: null,
+        vaults: [],
+        lastFile: null,
+        openFiles: [],
+        autoSaveMode: 'off',
+        marketUrl: '',
+        marketAutoCheck: false,
+        extensions: {
+          [EXT_ID]: { enabled: true, config: {} }
+        }
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+
+  const envelope = JSON.parse(
+    await readFile(join(REPO, 'src/main/market/builtin/imark.git-sync.imkpkg.json'), 'utf8')
+  ) as unknown
+  await installExtensionPackage(envelope, { source: 'bundled', appVersion: APP_VERSION })
+
+  registerIpc()
+  registerImarkProtocol()
+  await initExtensions({ appVersion: APP_VERSION })
+
+  // 克隆位置由对话框选择：直接返回临时目录，不弹窗口
+  ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog = async () => ({
+    canceled: false,
+    filePaths: [cloneParent]
+  })
+
+  const settings = await loadSettings()
+  const win = createMainWindow(settings)
+  win.webContents.setBackgroundThrottling(false)
+  win.webContents.on('console-message', details => {
+    if (details.level === 'error') console.log(`     [渲染层错误] ${details.message}`)
+  })
+  await new Promise<void>(res =>
+    win.webContents.once('did-finish-load', () => res())
+  )
+
+  function evalJs<T>(code: string): Promise<T> {
+    return win.webContents.executeJavaScript(code, true) as Promise<T>
+  }
+
+  async function waitFor(code: string, ms = 10_000): Promise<boolean> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      try {
+        if (await evalJs<boolean>(`(() => { try { return !!(${code}) } catch { return false } })()`)) {
+          return true
+        }
+      } catch {
+        /* 页面还没就绪 */
+      }
+      await sleep(60)
+    }
+    return false
+  }
+
+  async function click(selector: string): Promise<boolean> {
+    return evalJs<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (!el) return false
+      el.click()
+      return true
+    })()`)
+  }
+
+  /** 给受控输入/下拉赋值：走原型 setter + input/change，v-model 才会收到 */
+  async function setField(selector: string, value: string): Promise<boolean> {
+    return evalJs<boolean>(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (!el) return false
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set
+      setter.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+  }
+
+  const textOf = (selector: string): Promise<string | null> =>
+    evalJs<string | null>(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      return el ? (el.textContent || '').trim() : null
+    })()`)
+
+  async function waitText(selector: string, expected: string, ms = 8000): Promise<boolean> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if ((await textOf(selector).catch(() => null)) === expected) return true
+      await sleep(60)
+    }
+    return false
+  }
+
+  async function remoteOf(path: string): Promise<VaultGitRemote | null> {
+    return (await readVaultGitRemotes([path]))[path] ?? null
+  }
+
+  // ---------- A. 左右结构 ----------
+
+  console.log('\n【A】选择页是左右结构，右侧有三段动作')
+  check('启动停在仓库选择页', await waitFor(`document.querySelector('.vault-picker')`))
+  check('左侧最近仓库列表存在', await waitFor(`document.querySelector('.vault-picker-sidebar .vault-picker-list')`))
+  check('右侧动作区存在', await waitFor(`document.querySelector('.vault-picker-main .vault-picker-actions')`))
+  const headings = await evalJs<string[]>(
+    `[...document.querySelectorAll('.vault-picker-action h2')].map(el => el.textContent.trim())`
+  )
+  check(
+    '三段动作：克隆 / 打开 / 新建',
+    JSON.stringify(headings) ===
+      JSON.stringify(['从 Git 克隆仓库', '打开文件夹作为仓库', '创建新仓库']),
+    JSON.stringify(headings)
+  )
+  check('还没有最近仓库时列表为空', await waitFor(`document.querySelector('.vault-picker-empty')`))
+
+  // ---------- B. 从 Git 克隆 ----------
+
+  console.log('\n【B】从 Git 克隆：真克隆 + 自动写入项目远端')
+  check('点击「克隆」进入表单', (await click('[data-action="start-clone"]')) && (await waitFor(`document.querySelector('[data-field="clone-url"]')`)))
+  check('填写仓库地址', await setField('[data-field="clone-url"]', cloneUrl))
+  check(
+    '文件夹名自动从地址推导（source-remote）',
+    await waitFor(`document.querySelector('[data-field="clone-name"]').value === 'source-remote'`),
+    String(await evalJs(`document.querySelector('[data-field="clone-name"]')?.value`))
+  )
+  check('改成自定义文件夹名', await setField('[data-field="clone-name"]', 'cloned-notes'))
+  check('填写分支', await setField('[data-field="clone-branch"]', 'main'))
+  check('认证方式保持访问令牌', await setField('[data-field="clone-auth"]', 'token'))
+  check('填写访问令牌', await setField('[data-field="clone-secret"]', 'fake-token'))
+  check('点击「克隆并打开」', await click('[data-action="clone-submit"]'))
+
+  const enteredEditor = await waitFor(`document.querySelector('.app-shell')`, 30_000)
+  check('克隆成功后进入编辑器', enteredEditor)
+  check('克隆出来的笔记在磁盘上', existsSync(join(cloned, '笔记.md')))
+  check(
+    '笔记内容与远端一致',
+    existsSync(join(cloned, '笔记.md')) &&
+      (await readFile(join(cloned, '笔记.md'), 'utf8')) === noteBody
+  )
+  check(
+    '克隆结果登记的仓库就是克隆目录',
+    (getSettingsSync()?.vaults ?? []).includes(cloned),
+    JSON.stringify(getSettingsSync()?.vaults)
+  )
+
+  const saved = targetsOf(cloned)
+  check('项目远端已写入「远程同步」的按仓库配置（一条）', saved.length === 1, JSON.stringify(saved))
+  check('远端地址就是克隆地址', saved[0]?.url === cloneUrl, JSON.stringify(saved[0]))
+  check('认证方式沿用表单里的 token', saved[0]?.auth === 'token', JSON.stringify(saved[0]))
+  check('本地分支是克隆后检出的 main', saved[0]?.localBranch === 'main', JSON.stringify(saved[0]))
+  check('远端 id 是稳定的 vault- 前缀', /^vault-[0-9a-f]{12}$/.test(saved[0]?.id ?? ''), String(saved[0]?.id))
+  const afterClone = await remoteOf(cloned)
+  check('令牌已保存（渲染层只看到 hasSecret）', afterClone?.hasSecret === true, JSON.stringify(afterClone))
+  check(
+    '令牌明文可以解出来，且写进了扩展约定的槽位',
+    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === 'fake-token'
+  )
+
+  // ---------- C. 回到选择页：列表显示项目远端 ----------
+
+  console.log('\n【C】回到选择页：项目行带 Git 标记与远端地址')
+  win.webContents.send(IPC.MenuCommand, 'file:open-vault')
+  check('回到仓库选择页', await waitFor(`document.querySelector('.vault-picker')`))
+  check('列表里出现刚克隆的项目', await waitFor(`document.querySelectorAll('.vault-row').length === 1`))
+  check('行的路径位置显示远端地址', await waitText('.vault-row-path', cloneUrl))
+  check('行上有 Git 标记', await waitFor(`document.querySelector('.vault-row-git')`))
+  check(
+    '已存令牌时标记不是「未完成」样式',
+    await evalJs<boolean>(`!document.querySelector('.vault-row-git')?.classList.contains('vault-row-git-missing')`)
+  )
+
+  // ---------- D. 项目 Git 设置：读回、修改、不清令牌 ----------
+
+  console.log('\n【D】项目 Git 设置：预填、修改地址与分支，令牌保持不变')
+  check('打开项目 Git 设置', (await click('[data-action="git-open"]')) && (await waitFor(`document.querySelector('[data-field="git-url"]')`)))
+  const prefilled = await evalJs<{ url: string; branch: string; auth: string; placeholder: string }>(`(() => ({
+    url: document.querySelector('[data-field="git-url"]').value,
+    branch: document.querySelector('[data-field="git-branch"]').value,
+    auth: document.querySelector('[data-field="git-auth"]').value,
+    placeholder: document.querySelector('[data-field="git-secret"]')?.placeholder ?? ''
+  }))()`)
+  check('地址已预填', prefilled.url === cloneUrl, JSON.stringify(prefilled))
+  check('分支已预填', prefilled.branch === 'main', JSON.stringify(prefilled))
+  check('认证方式已预填', prefilled.auth === 'token', JSON.stringify(prefilled))
+  check('令牌输入框提示「已保存」', prefilled.placeholder.includes('已保存'), prefilled.placeholder)
+
+  const newUrl = 'https://example.com/group/other.git'
+  check('修改远端地址', await setField('[data-field="git-url"]', newUrl))
+  check('修改本地分支', await setField('[data-field="git-branch"]', 'dev'))
+  check('令牌留空并保存', await click('[data-action="git-save"]'))
+  check(
+    '保存后配置里的地址/分支已更新',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        const t = targetsOf(cloned)[0]
+        if (t?.url === newUrl && t?.localBranch === 'dev') return true
+        await sleep(60)
+      }
+      return false
+    })(),
+    JSON.stringify(targetsOf(cloned))
+  )
+  const afterSave = await remoteOf(cloned)
+  check('只改地址/分支时令牌仍然在（留空 = 保持）', afterSave?.hasSecret === true, JSON.stringify(afterSave))
+  check(
+    '密钥槽位里仍是原来那把令牌',
+    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === 'fake-token'
+  )
+  check('保存后回到动作列表', await waitFor(`document.querySelector('.vault-picker-actions')`))
+  check('项目行上的地址跟着更新', await waitText('.vault-row-path', newUrl))
+
+  // ---------- E. 移除项目远端 ----------
+
+  console.log('\n【E】移除项目远端：配置、令牌、列表标记一起清掉')
+  check('再次打开 Git 设置', (await click('[data-action="git-open"]')) && (await waitFor(`document.querySelector('[data-action="git-clear"]')`)))
+  check('点击「移除远端配置」', await click('[data-action="git-clear"]'))
+  check(
+    '按仓库配置里的 targets 已删除',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        if (targetsOf(cloned).length === 0) return true
+        await sleep(60)
+      }
+      return false
+    })(),
+    JSON.stringify(targetsOf(cloned))
+  )
+  check('读取接口返回 null', (await remoteOf(cloned)) === null)
+  check(
+    '令牌也清掉了',
+    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === null
+  )
+  check('列表上的 Git 标记消失', await waitFor(`!document.querySelector('.vault-row-git')`))
+  check('项目行退回到显示本地路径', await waitText('.vault-row-path', cloned))
+
+  console.log(`\n结果：${pass} 通过，${fail} 失败`)
+  for (const w of BrowserWindow.getAllWindows()) w.destroy()
+  app.exit(fail === 0 ? 0 : 1)
+}
+
+main().catch(err => {
+  console.error('[vault-picker-git] 未捕获异常:', err)
+  app.exit(1)
+})

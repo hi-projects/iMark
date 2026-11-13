@@ -1,5 +1,11 @@
 import { nextTick } from 'vue'
-import type { Settings, VaultNode } from '@shared/types'
+import type {
+  CloneVaultRequest,
+  Settings,
+  VaultGitRemote,
+  VaultGitRemoteInput,
+  VaultNode
+} from '@shared/types'
 import { appStore, type SwitcherMode, type VaultFileRef } from '../stores/app'
 import { closeAllTabsForSwitch, openFileByPath, restoreSession } from './fileService'
 import { clearTabs, closeDeletedPath, renameTabPaths } from './tabs'
@@ -98,7 +104,7 @@ let vaultHandedOff = false
 
 /**
  * 打开仓库:先认领(多实例下同一个仓库只保留一个窗口),再列出文件树、
- * 记忆路径、自动展开第一层目录。
+ * 记忆路径、恢复这个仓库上次关闭时的目录展开状态(第一次打开则全部收起)。
  *
  * `filePath` 只在「系统递来一个文件」时传入:如果仓库已经在另一个窗口开着,
  * 主进程会把文件一起递过去,那个窗口直接打开它。
@@ -130,10 +136,12 @@ export async function loadVault(
     appStore.vaultPath = vaultPath
     appStore.vaultName = tree.name
     appStore.vaultTree = tree
-    appStore.expandedDirs = new Set<string>()
-    for (const c of tree.children ?? []) {
-      if (c.type === 'dir') appStore.expandedDirs.add(c.path)
-    }
+    // 恢复这个仓库上次关闭时的展开状态(见 rememberExpandedDirs)。第一次打开
+    // 没有记录 → 全部收起,只列第一层;以前无差别展开所有一级目录,仓库一大
+    // 侧栏就整屏铺满。保存的目录后来被删掉也无妨:Set 里多一个不存在的路径
+    // 不会让任何行出现。
+    const saved = await api.getSettings().catch(() => null)
+    appStore.expandedDirs = new Set(saved?.vaultExpandedDirs?.[vaultPath] ?? [])
     rebuildVaultFiles()
     await api.saveSettings({ vaultPath })
     await rememberVault(vaultPath)
@@ -358,6 +366,38 @@ export async function openFileFromSystem(path: string): Promise<void> {
   await openFileByPath(path)
 }
 
+/**
+ * 从 Git 克隆一个仓库作为项目,然后打开它。
+ *
+ * 远端会自动写进该项目的「远程同步」配置;写不进去(扩展被卸载等)不影响克隆,
+ * 只提示一句,之后仍可在项目的 Git 设置里补上。
+ */
+export async function cloneVaultAndOpen(req: CloneVaultRequest): Promise<boolean> {
+  const result = await api.cloneVault(req)
+  if (!result.remoteSaved) {
+    pushNotice('仓库已克隆,但没能写入项目 Git 配置(「远程同步」扩展可能未安装)', {
+      title: '克隆仓库',
+      level: 'warn'
+    })
+  }
+  return openVaultFromPicker(result.path)
+}
+
+/** 批量读项目 Git 远端(选择页左侧列表与 Git 设置面板用) */
+export function loadVaultGitRemotes(
+  paths: string[]
+): Promise<Record<string, VaultGitRemote | null>> {
+  return api.vaultGitRemotes(paths)
+}
+
+/** 写项目的 Git 远端;null = 清除(只清配置,不动本地仓库) */
+export async function saveVaultGitRemote(
+  path: string,
+  remote: VaultGitRemoteInput | null
+): Promise<void> {
+  await api.setVaultGitRemote(path, remote)
+}
+
 /** 新建仓库:在父目录下创建同名文件夹并打开 */
 export async function createVaultAt(parentDir: string, name: string): Promise<boolean> {
   if (!validName(name)) {
@@ -372,6 +412,31 @@ export async function createVaultAt(parentDir: string, name: string): Promise<bo
     return false
   }
   return openVaultFromPicker(target)
+}
+
+/**
+ * 记住当前仓库的目录展开状态(按仓库分开存,见 Settings.vaultExpandedDirs)。
+ *
+ * 展开 / 收起、新建时自动展开父目录、移动后展开落点目录之后调用。下一次打开
+ * 这个仓库就恢复成这次的样子;没调用过(新仓库)则保持默认的全部收起。
+ *
+ * 不阻塞界面:存盘失败只影响下次恢复,本次展开状态仍在 store 里。
+ * 先读一次设置再合并——多开时另一个窗口可能刚写过别的仓库的记录。
+ */
+export function rememberExpandedDirs(): void {
+  const vault = appStore.vaultPath
+  if (!vault) return
+  void (async () => {
+    try {
+      const settings = await api.getSettings()
+      const dirs = [...appStore.expandedDirs].sort()
+      await api.saveSettings({
+        vaultExpandedDirs: { ...settings.vaultExpandedDirs, [vault]: dirs }
+      })
+    } catch (err) {
+      console.error('[iMark] 保存目录展开状态失败', err)
+    }
+  })()
 }
 
 export async function refreshVault(): Promise<void> {
@@ -471,6 +536,7 @@ export async function moveNode(node: VaultNode, targetDir: string): Promise<bool
   // 落点目录展开,让用户直接看到移进去的东西
   expanded.add(targetDir)
   appStore.expandedDirs = expanded
+  rememberExpandedDirs()
   await refreshVault()
   renameTabPaths(node.path, to, node.type === 'dir')
   return true

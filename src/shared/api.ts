@@ -13,6 +13,8 @@ import type {
   PublishResult
 } from './market'
 import type {
+  CloneVaultRequest,
+  CloneVaultResult,
   DefaultEditorStatus,
   LaunchIntent,
   ReadResult,
@@ -20,6 +22,8 @@ import type {
   Settings,
   Theme,
   VaultClaimResult,
+  VaultGitRemote,
+  VaultGitRemoteInput,
   VaultNode
 } from './types'
 import type { UserStyleImportResult, UserStyleState } from './userStyles'
@@ -114,6 +118,17 @@ export interface WindowApi {
   claimVault(vaultPath: string, filePath?: string | null): Promise<VaultClaimResult>
   /** 打开失败/离开仓库时退掉认领,别让其他窗口也打不开 */
   releaseVault(vaultPath: string): Promise<void>
+  /**
+   * 从 Git 克隆一个仓库,作为项目(仓库)打开。
+   *
+   * 克隆本身用系统 git;`auth`/`secret` 只用于这一次克隆,以及随后写入
+   * 「远程同步」扩展的项目配置。失败时抛中文错误。
+   */
+  cloneVault(o: CloneVaultRequest): Promise<CloneVaultResult>
+  /** 批量读这些仓库的 Git 远端(项目级管理);没有配置的项为 null */
+  vaultGitRemotes(paths: string[]): Promise<Record<string, VaultGitRemote | null>>
+  /** 写一个仓库的 Git 远端;传 null 清除(只清配置,不删本地仓库) */
+  setVaultGitRemote(path: string, remote: VaultGitRemoteInput | null): Promise<void>
   listVault(path: string): Promise<VaultNode>
   /**
    * 这些路径里**确认已经不是目录**的那些(保持传入顺序):路径不存在,或被同名

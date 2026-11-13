@@ -45,8 +45,8 @@ let currentView: 'picker' | 'editor' = 'picker'
 
 function applyWindowChrome(w: BrowserWindow, theme: Theme, view: 'picker' | 'editor'): void {
   w.setBackgroundColor(WINDOW_BG[theme] ?? WINDOW_BG.light)
-  // 只有 Windows 用了 WCO;macOS 的交通灯 / Linux 的原生标题栏保持原样
-  if (process.platform !== 'win32') return
+  // Windows / Linux 用 WCO 自绘标题栏;macOS 的交通灯保持原生
+  if (process.platform === 'darwin') return
   const c = WINDOW_CHROME[theme] ?? WINDOW_CHROME.light
   w.setTitleBarOverlay({
     color: view === 'picker' ? c.editor : c.app,
@@ -55,8 +55,11 @@ function applyWindowChrome(w: BrowserWindow, theme: Theme, view: 'picker' | 'edi
   })
 }
 
-/** 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸 */
-const PICKER_SIZE = { width: 820, height: 550 }
+/**
+ * 仓库选择页的窗口尺寸。打开仓库后会最大化;取消最大化会回到这个尺寸。
+ * 左右结构:左侧项目列表 + 右侧动作/表单,比原来的单列卡片宽一档。
+ */
+const PICKER_SIZE = { width: 900, height: 640 }
 
 /**
  * 登记任务栏的「再启动一份」命令(Windows 专用)。
@@ -146,12 +149,13 @@ export function createMainWindow(
     // 按主题预设背景色,避免启动白闪
     backgroundColor: WINDOW_BG[settings.theme] ?? WINDOW_BG.light,
     /*
-     * Windows:藏掉原生标题栏。系统的最小化/最大化/关闭仍由 WCO 画在右上角,
-     * 颜色跟着主题走;顶部其余区域还是网页内容,由渲染层的拖拽区负责移动窗口。
-     * 其他平台保持原生标题栏 —— macOS 的交通灯位置、Linux 的 WCO 兼容性
-     * 都需要单独适配,不在这次改动里冒险。
+     * Windows / Linux:藏掉原生标题栏。系统的最小化/最大化/关闭仍由 WCO 画在
+     * 右上角,颜色跟着主题走;顶部其余区域还是网页内容,由渲染层的拖拽区负责
+     * 移动窗口。Linux 上这样才不会留一条跟应用主题无关的原生标题栏(系统是
+     * 浅色主题、应用是深色时尤其刺眼)。
+     * macOS 保持原生标题栏 —— 交通灯位置需要单独适配。
      */
-    ...(process.platform === 'win32'
+    ...(process.platform === 'win32' || process.platform === 'linux'
       ? {
           titleBarStyle: 'hidden' as const,
           titleBarOverlay: {

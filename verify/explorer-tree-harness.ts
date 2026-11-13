@@ -137,9 +137,27 @@ async function main(): Promise<void> {
       )`)
     )
 
-  // 仓库加载后会自动展开第一层目录
+  // 打开仓库后目录默认全部收起:只列第一层
   check(
-    '文件树:列出第一层与已展开的子项',
+    '文件树:打开仓库后只列第一层(目录默认收起)',
+    await waitFor(`[...document.querySelectorAll('.explorer-name')].some(e => e.textContent.trim() === '第一章')`)
+  )
+  check(
+    '文件树:收起时看不到目录里的文件',
+    !(await evalJs<boolean>(`[...document.querySelectorAll('.explorer-name')].some(e => e.textContent.trim() === '1.1.md')`))
+  )
+
+  // 展开第一层目录「第一章」
+  const opened = await evalJs<boolean>(`(() => {
+    const row = [...document.querySelectorAll('.explorer-item')]
+      .find(el => (el.querySelector('.explorer-name')?.textContent || '').trim() === '第一章')
+    if (!row) return false
+    row.click()
+    return true
+  })()`)
+  check('文件树:展开第一层目录', opened)
+  check(
+    '文件树:第一层目录的子项出现',
     await waitFor(`[...document.querySelectorAll('.explorer-name')].some(e => e.textContent.trim() === '1.1.md')`)
   )
   await sleep(300)

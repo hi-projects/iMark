@@ -299,12 +299,22 @@ async function main(): Promise<void> {
       return true
     })()`)
 
-  // 等仓库树出现(首层目录自动展开)
+  // 等仓库树出现(目录默认收起,只列第一层)
   const treeReady = await waitFor(`document.querySelector('.explorer-list .explorer-name')`)
   check('仓库树已加载', treeReady)
   await sleep(300)
+  {
+    const firstLevel = await rowNames()
+    check(
+      '目录默认收起:只看到第一层(ros2 / vla)',
+      firstLevel.length === 2 && firstLevel.includes('ros2') && firstLevel.includes('vla'),
+      JSON.stringify(firstLevel)
+    )
+  }
 
-  // 展开 ros2-moveit2(嵌套目录默认收起)
+  // 先展开 ros2,再展开 ros2-moveit2(嵌套目录默认收起)
+  await clickRow('ros2')
+  await sleep(300)
   await clickRow('ros2-moveit2')
   await sleep(300)
   check('ros2-moveit2 已展开(能看到 管线.md)', (await rowNames()).includes('管线.md'))

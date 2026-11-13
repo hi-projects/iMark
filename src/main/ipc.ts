@@ -3,7 +3,12 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type { SaveDialogOptions, Settings } from '@shared/types'
+import type {
+  CloneVaultRequest,
+  SaveDialogOptions,
+  Settings,
+  VaultGitRemoteInput
+} from '@shared/types'
 import {
   getMainWindow,
   handleSaveDone,
@@ -41,6 +46,8 @@ import {
   trashVaultPath
 } from './vault'
 import { claimVault, releaseVault } from './vaultHandoff'
+import { cloneRepository, folderNameFromUrl } from './git'
+import { readVaultGitRemotes, setVaultGitRemote } from './vaultGit'
 import { launchedForNewWindow } from './launchArgs'
 import {
   ensureUserStylesDir,
@@ -206,6 +213,67 @@ export function registerIpc(): void {
       Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p.length > 0) : []
     )
   )
+
+  ipcMain.handle(IPC.VaultClone, async (_e, raw: unknown) => {
+    const req = (raw && typeof raw === 'object' ? raw : {}) as Partial<CloneVaultRequest>
+    const url = typeof req.url === 'string' ? req.url.trim() : ''
+    if (!url) throw new Error('仓库地址不能为空')
+    const parentDir = typeof req.parentDir === 'string' ? req.parentDir : ''
+    if (!parentDir) throw new Error('请选择克隆到哪个位置')
+    const name =
+      (typeof req.name === 'string' && req.name.trim()) || folderNameFromUrl(url)
+    const auth =
+      req.auth === 'password' || req.auth === 'ssh' ? req.auth : ('token' as const)
+    const branch = typeof req.branch === 'string' ? req.branch.trim() : ''
+    const secret = typeof req.secret === 'string' ? req.secret : ''
+    const outcome = await cloneRepository({
+      url,
+      parentDir,
+      name,
+      branch,
+      username: typeof req.username === 'string' ? req.username : '',
+      secret
+    })
+    if (!outcome.ok) throw new Error(outcome.detail)
+
+    // 克隆出来的仓库自动登记为项目远端:打开它以后「远程同步」直接就有地址了。
+    // 写失败不影响克隆本身(比如扩展被卸掉了),如实告诉渲染层没写进去。
+    let remoteSaved = false
+    try {
+      await setVaultGitRemote(outcome.path, {
+        url,
+        auth,
+        username: typeof req.username === 'string' ? req.username : '',
+        localBranch: outcome.branch || branch || 'main',
+        remoteBranch: '',
+        secret
+      })
+      remoteSaved = true
+    } catch (err) {
+      console.warn('[iMark] 克隆成功,但写入项目 Git 远端失败:', err)
+    }
+    return {
+      path: outcome.path,
+      branch: outcome.branch || branch || 'main',
+      remoteSaved
+    }
+  })
+
+  ipcMain.handle(IPC.VaultGitList, (_e, paths: unknown) =>
+    readVaultGitRemotes(
+      Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p.length > 0) : []
+    )
+  )
+
+  ipcMain.handle(IPC.VaultGitSet, async (_e, raw: unknown) => {
+    const input = (raw && typeof raw === 'object' ? raw : {}) as {
+      path?: unknown
+      remote?: unknown
+    }
+    if (typeof input.path !== 'string' || !input.path) throw new Error('仓库路径无效')
+    const remote = input.remote as VaultGitRemoteInput | null | undefined
+    await setVaultGitRemote(input.path, remote ?? null)
+  })
 
   ipcMain.handle(IPC.VaultCreateFile, async (_e, o: { path: string; content?: string }) => {
     await createVaultFile(o.path, o.content ?? '')

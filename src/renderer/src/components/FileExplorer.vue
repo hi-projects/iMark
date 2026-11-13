@@ -23,6 +23,7 @@ import {
   moveNode,
   openVaultFile,
   refreshVault,
+  rememberExpandedDirs,
   renamePath,
   requestVaultSwitch
 } from '../services/vaultService'
@@ -64,6 +65,8 @@ function toggleDir(node: VaultNode): void {
   } else {
     appStore.expandedDirs.add(node.path)
   }
+  // 记下这次开合,下次打开这个仓库时恢复(按仓库分开存)
+  rememberExpandedDirs()
 }
 
 /**
@@ -137,7 +140,10 @@ function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, 
   // 改名文件时输入框只放名字(不带会自动补回的 `.md`)—— 自动选中(下面的
   // select)于是只选中名字部分,敲字不会把扩展名一起替换掉
   editing.value = mode === 'rename' && target?.type === 'file' ? editableBaseName(initial) : initial
-  if (mode !== 'rename' && parentPath) appStore.expandedDirs.add(parentPath)
+  if (mode !== 'rename' && parentPath) {
+    appStore.expandedDirs.add(parentPath)
+    rememberExpandedDirs()
+  }
   // 输入行可能在 v-for 里(v-for 的模板 ref 会被 Vue 收成数组),按类名取更稳
   void nextTick(() => {
     const el = document.querySelector<HTMLInputElement>('.explorer-editing input')
