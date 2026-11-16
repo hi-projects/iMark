@@ -11,7 +11,6 @@ import {
 } from 'lucide-vue-next'
 import type { PluginAuthMode } from '@shared/plugins'
 import { appStore } from '../stores/app'
-import { joinPath } from '../utils/paths'
 import { basename } from '../utils/text'
 import {
   cloneVaultAndOpen,
@@ -95,12 +94,6 @@ const cloning = ref(false)
 const cloneError = ref('')
 const cloneUrlInput = ref<HTMLInputElement | null>(null)
 
-/** 文件夹名和克隆位置都填了以后,实际会创建出来的仓库路径 */
-const cloneTargetPath = computed(() => {
-  const name = clone.name.trim()
-  return clone.parentDir && name ? joinPath(clone.parentDir, name) : ''
-})
-
 /** `https://host/组/笔记.git` → `笔记`(scp 风格的 `git@host:组/笔记.git` 也认) */
 function folderNameFromUrl(url: string): string {
   const trimmed = url.trim().replace(/[\\/]+$/, '')
@@ -132,7 +125,7 @@ async function confirmClone(): Promise<void> {
   cloneError.value = ''
   const url = clone.url.trim()
   if (!url) {
-    cloneError.value = '请填写仓库地址'
+    cloneError.value = '请填写远程地址'
     return
   }
   const name = clone.name.trim() || folderNameFromUrl(url)
@@ -248,7 +241,7 @@ async function saveGit(): Promise<void> {
   gitError.value = ''
   const url = gitForm.url.trim()
   if (!url) {
-    gitError.value = '请填写仓库地址'
+    gitError.value = '请填写远程地址'
     return
   }
   if (!gitForm.localBranch.trim()) {
@@ -364,9 +357,9 @@ async function onSkipChange(): Promise<void> {
           <section class="vault-picker-action">
             <div class="vault-picker-action-text">
               <h2>从 Git 克隆仓库</h2>
-              <p>拉取远端仓库到本地作为新项目,并自动为该仓库配置远程同步。</p>
+              <p>拉取远端仓库到本地作为新项目,并保存为项目的 Git 远端。</p>
             </div>
-            <button class="vault-btn vault-btn-primary" data-action="start-clone" @click="startClone">
+            <button class="vault-btn" data-action="start-clone" @click="startClone">
               <FolderGit2 :size="15" />
               克隆
             </button>
@@ -398,7 +391,7 @@ async function onSkipChange(): Promise<void> {
         <!-- 克隆表单 -->
         <div v-else-if="panel === 'clone'" class="vault-picker-form">
           <label class="vault-field">
-            <span>仓库地址</span>
+            <span>远程地址</span>
             <input
               ref="cloneUrlInput"
               v-model="clone.url"
@@ -412,7 +405,7 @@ async function onSkipChange(): Promise<void> {
 
           <div class="vault-field-row">
             <label class="vault-field">
-              <span>分支</span>
+              <span>远程分支</span>
               <input
                 v-model="clone.branch"
                 class="vault-input"
@@ -422,35 +415,6 @@ async function onSkipChange(): Promise<void> {
               />
             </label>
           </div>
-
-          <div class="vault-field-row">
-            <label class="vault-field">
-              <span>文件夹名</span>
-              <input
-                v-model="clone.name"
-                class="vault-input"
-                data-field="clone-name"
-                placeholder="仓库名称"
-                @input="nameEdited = true"
-                @keydown.enter.prevent="confirmClone"
-                @keydown.esc.prevent="cancelClone"
-              />
-            </label>
-            <label class="vault-field">
-              <span>克隆到</span>
-              <button
-                class="vault-input vault-input-button"
-                data-field="clone-parent"
-                @click="pickCloneParent"
-              >
-                {{ clone.parentDir ? basename(clone.parentDir) : '选择位置…' }}
-              </button>
-            </label>
-          </div>
-
-          <p v-if="cloneTargetPath" class="vault-picker-target-path" :title="cloneTargetPath">
-            {{ cloneTargetPath }}
-          </p>
 
           <div class="vault-field-row">
             <label class="vault-field">
@@ -491,11 +455,38 @@ async function onSkipChange(): Promise<void> {
                 />
               </label>
             </div>
-            <p class="vault-picker-hint">
-              令牌只用于本次克隆,并加密保存给「远程同步」使用;不会写进仓库。
-            </p>
           </template>
           <p v-else class="vault-picker-hint">SSH 使用本机密钥,无需填写令牌。</p>
+
+          <div class="vault-field-row">
+            <label class="vault-field">
+              <span>仓库名称</span>
+              <input
+                v-model="clone.name"
+                class="vault-input"
+                data-field="clone-name"
+                placeholder="仓库名称"
+                @input="nameEdited = true"
+                @keydown.enter.prevent="confirmClone"
+                @keydown.esc.prevent="cancelClone"
+              />
+            </label>
+            <label class="vault-field">
+              <span>克隆到</span>
+              <button
+                class="vault-input vault-input-button"
+                data-field="clone-parent"
+                @click="pickCloneParent"
+              >
+                {{ clone.parentDir ? basename(clone.parentDir) : '选择位置…' }}
+              </button>
+            </label>
+          </div>
+
+          <p class="vault-picker-hint">
+            将在 <code>{{ clone.parentDir || '克隆到' }}</code> 下创建
+            <code>{{ clone.name.trim() || '仓库名称' }}</code>文件夹作为仓库
+          </p>
 
           <p v-if="cloneError" class="vault-picker-error">{{ cloneError }}</p>
 
@@ -508,18 +499,14 @@ async function onSkipChange(): Promise<void> {
             >
               <Loader2 v-if="cloning" :size="15" class="vault-spin" />
               <FolderGit2 v-else :size="15" />
-              {{ cloning ? '正在克隆…' : '克隆并打开' }}
+              {{ cloning ? '正在克隆…' : '克隆' }}
             </button>
-            <button class="vault-btn" :disabled="cloning" @click="cancelClone">取消</button>
+            <button class="vault-btn" :disabled="cloning" @click="cancelClone">返回</button>
           </div>
         </div>
 
         <!-- 新建仓库表单 -->
         <div v-else-if="panel === 'create'" class="vault-picker-form">
-          <div class="vault-picker-form-head">
-            <h2>创建新仓库</h2>
-          </div>
-
           <div class="vault-field-row">
             <label class="vault-field">
               <span>仓库名称</span>
@@ -533,14 +520,15 @@ async function onSkipChange(): Promise<void> {
               />
             </label>
             <label class="vault-field">
-              <span>位置</span>
+              <span>仓库位置</span>
               <button class="vault-input vault-input-button" @click="pickParentDir">
                 {{ parentDir ? basename(parentDir) : '选择位置…' }}
               </button>
             </label>
           </div>
           <p class="vault-picker-hint">
-            将在 <code>{{ parentDir ?? '所选位置' }}</code> 下创建同名文件夹
+            将在 <code>{{ parentDir || '仓库位置' }}</code> 下创建
+            <code>{{ newName.trim() || '仓库名称' }}</code>文件夹作为仓库
           </p>
 
           <div class="vault-picker-form-actions">
@@ -548,7 +536,7 @@ async function onSkipChange(): Promise<void> {
               <FolderPlus :size="15" />
               创建并打开
             </button>
-            <button class="vault-btn" @click="cancelCreate">取消</button>
+            <button class="vault-btn" @click="cancelCreate">返回</button>
           </div>
         </div>
 
@@ -560,7 +548,7 @@ async function onSkipChange(): Promise<void> {
           </div>
 
           <label class="vault-field">
-            <span>仓库地址</span>
+            <span>远程地址</span>
             <input
               v-model="gitForm.url"
               class="vault-input"
@@ -581,7 +569,7 @@ async function onSkipChange(): Promise<void> {
               />
             </label>
             <label class="vault-field">
-              <span>远端分支</span>
+              <span>远程分支</span>
               <input
                 v-model="gitForm.remoteBranch"
                 class="vault-input"

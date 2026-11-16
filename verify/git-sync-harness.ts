@@ -37,6 +37,7 @@ import {
   shutdownExtensions,
   type ExtensionService
 } from '../src/main/extensions/service'
+import { setProjectGitRemote } from '../src/main/projectGit'
 import type { ExtensionView } from '../src/shared/extensions'
 import type { PluginStatus } from '../src/shared/plugins'
 
@@ -97,8 +98,8 @@ interface TargetConfig {
 /** 配置存的是**完整键**:`<扩展id>.<属性>` */
 const configKey = (key: string): string => `${EXT_ID}.${key}`
 
-const baseConfig = (targets: TargetConfig[]): Record<string, unknown> => ({
-  [configKey('targets')]: targets,
+/** 远端由项目级配置提供,扩展只保留同步参数 */
+const baseConfig = (): Record<string, unknown> => ({
   [configKey('intervalMinutes')]: 0,
   [configKey('syncOnStart')]: false,
   [configKey('commitMessage')]: 'sync: {time}',
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
   await git(remote, ['init', '--bare', '--initial-branch=main'])
   await writeFile(note, '# 第一篇\n\n同步我。\n', 'utf8')
 
-  const config = baseConfig([target1(remote)])
+  const config = baseConfig()
   await writeFile(
     join(ud, 'settings.json'),
     JSON.stringify(
@@ -180,12 +181,32 @@ async function main(): Promise<void> {
     source: 'bundled',
     appVersion: APP_VERSION
   })
-  check('内置包通过校验并安装', installed.manifest.version === '1.0.0')
+  check('内置包通过校验并安装', installed.manifest.version === '1.1.0')
 
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
+  // 远端在启动前写进项目级配置(ssh 不需要密钥)
+  await setProjectGitRemote(vault, {
+    url: remote,
+    auth: 'ssh',
+    username: '',
+    localBranch: 'main',
+    remoteBranch: 'main'
+  })
   const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
+  /** 改项目远端并像真正的选择页那样通知扩展 */
+  const setRemote = async (target: TargetConfig, secret?: string): Promise<void> => {
+    await setProjectGitRemote(vault, {
+      url: target.url,
+      auth: target.auth,
+      username: target.username,
+      localBranch: target.localBranch,
+      remoteBranch: target.remoteBranch,
+      ...(secret === undefined ? {} : { secret })
+    })
+    service.notifyProjectGitChanged()
+  }
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
@@ -247,15 +268,17 @@ async function main(): Promise<void> {
   const syncKey = keybindings.find(k => k.command === 'imark.git-sync.syncNow')
   check('声明了 ctrl+alt+s 快捷键且未被摘掉', syncKey?.key === 'ctrl+alt+s' && !syncKey.dropped, JSON.stringify(syncKey))
   const actions = service.getContributions().actions.filter(a => a.extensionId === EXT_ID)
-  check('声明了 5 个设置页动作', actions.length === 5, JSON.stringify(actions.map(a => a.command)))
+  check('声明了 4 个设置页动作', actions.length === 4, JSON.stringify(actions.map(a => a.command)))
   check(
-    '「测试连接」是每远端动作',
-    actions.some(a => a.command === 'imark.git-sync.testTarget' && a.scope === 'target')
+    '设置页不再有每远端动作',
+    !actions.some(a => a.command === 'imark.git-sync.testTarget' || a.scope === 'target')
   )
   const fields = v?.descriptor.settingsFields ?? []
-  const targetsField = fields.find(f => f.key === 'targets')
-  check('配置翻译成 targets 字段', targetsField?.kind === 'targets')
-  check('远端字段只允许一行', targetsField?.single === true, JSON.stringify(targetsField))
+  check(
+    '扩展设置里不再出现远端字段（已提升到项目级）',
+    !fields.some(f => f.key === 'targets'),
+    JSON.stringify(fields.map(f => f.key))
+  )
   check('代理模式是下拉选择', fields.some(f => f.key === 'proxyMode' && f.kind === 'select'))
   const proxyField = fields.find(f => f.key === 'proxyMode')
   check(
@@ -311,7 +334,7 @@ async function main(): Promise<void> {
   check('lastRunAt 有值', typeof afterFirst?.status.lastRunAt === 'number')
   const okItem = await waitFor(statusItem, x => x?.text === '$(check) 远程同步')
   check('状态栏切成成功图标', okItem?.text === '$(check) 远程同步', JSON.stringify(okItem?.text))
-  check('远端结果上报为 ok', afterFirst?.status.targetResults?.t1 === 'ok')
+  check('远端结果上报为 ok', afterFirst?.status.targetResults?.project === 'ok')
 
   // ---------- 4. 空同步与有改动 ----------
 
@@ -336,7 +359,7 @@ async function main(): Promise<void> {
   // ---------- 5. 测试连接 ----------
 
   console.log('\n【5】测试连接')
-  const testOne = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 't1' }])) as {
+  const testOne = (await service.executeCommand('imark.git-sync.testTarget')) as {
     ok: boolean
     message: string
   }
@@ -344,7 +367,7 @@ async function main(): Promise<void> {
   check('提示里说明远端已有分支', (testOne?.message ?? '').includes('连接测试通过'), testOne?.message)
   check(
     '状态卡记录连接成功',
-    (await waitStatus('ok'))?.status.targetResults?.t1 === 'ok',
+    (await waitStatus('ok'))?.status.targetResults?.project === 'ok',
     JSON.stringify((await view())?.status.targetResults)
   )
 
@@ -372,7 +395,7 @@ async function main(): Promise<void> {
     localBranch: 'main',
     remoteBranch: 'main'
   }
-  await service.setExtensionConfig(EXT_ID, baseConfig([tokenTarget]))
+  await setRemote(tokenTarget)
   const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
@@ -415,11 +438,11 @@ async function main(): Promise<void> {
   }
   await writeFile(join(vault, '第三篇.md'), '# 第三篇\n', 'utf8')
   const beforeBroken = await count()
-  // 配置变更会触发扩展内部的防抖补跑（3s），用它验证 onDidChangeConfiguration 链路
-  await service.setExtensionConfig(EXT_ID, baseConfig([broken]))
+  // 项目远端变更会触发扩展内部的防抖补跑（3s），用它验证项目级变更链路
+  await setRemote(broken)
   const failed = await waitStatus('error', 25_000)
   check('配置变更后自动跑了一轮并上报 error', failed?.status.status === 'error', JSON.stringify(failed?.status))
-  check('远端记为 error', failed?.status.targetResults?.bad === 'error', JSON.stringify(failed?.status.targetResults))
+  check('远端记为 error', failed?.status.targetResults?.project === 'error', JSON.stringify(failed?.status.targetResults))
   check('状态文本说明失败', (failed?.status.lastMessage ?? '').includes('同步失败'), failed?.status.lastMessage)
   check(
     '失败的详情里带分类提示',
@@ -439,12 +462,12 @@ async function main(): Promise<void> {
   const failItem = await waitFor(statusItem, x => x?.text === '$(alert) 远程同步')
   check('状态栏切成告警图标', failItem?.text === '$(alert) 远程同步', JSON.stringify(failItem?.text))
 
-  const testBad = (await service.executeCommand('imark.git-sync.testTarget', [{ targetId: 'bad' }])) as {
+  const testBad = (await service.executeCommand('imark.git-sync.testTarget')) as {
     ok: boolean
     message: string
   }
-  check('单测失败的远端返回失败', testBad?.ok === false, JSON.stringify(testBad))
-  check('失败结果也写进状态卡', (await waitStatus('error'))?.status.targetResults?.bad === 'error')
+  check('测试失败的远端返回失败', testBad?.ok === false, JSON.stringify(testBad))
+  check('失败结果也写进状态卡', (await waitStatus('error'))?.status.targetResults?.project === 'error')
 
   // ---------- 8. 检测代理（手动地址为空） ----------
 
@@ -461,7 +484,7 @@ async function main(): Promise<void> {
   console.log('\n【9】停用释放宿主，重新启用后可再次激活；卸载清理干净')
   // 回到可用远端：下一步的「重新启用后执行命令」不应再撞上故意填坏的那个远端。
   // 配置变更会触发 3 秒防抖补跑，等它跑完再停用，避免状态在断言之间跳变。
-  await service.setExtensionConfig(EXT_ID, baseConfig([target1(remote)]))
+  await setRemote(target1(remote))
   await sleep(4500)
   check('恢复单远端配置后自动补跑成功', (await view())?.status.status === 'ok', JSON.stringify((await view())?.status))
   await service.setEnabled(EXT_ID, false)

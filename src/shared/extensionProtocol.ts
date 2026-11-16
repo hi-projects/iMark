@@ -421,6 +421,16 @@ export type HostRequestMessage =
       key: string
     }
   | {
+      kind: 'project.gitRemote'
+      requestId: string
+      extensionId: string
+    }
+  | {
+      kind: 'project.gitSecret'
+      requestId: string
+      extensionId: string
+    }
+  | {
       kind: 'editor.applyEdits'
       requestId: string
       extensionId: string
@@ -626,6 +636,11 @@ export interface MainSecretsChangedMessage {
   key: string
 }
 
+/** 当前仓库的项目级 Git 远端在应用里被改了(地址/分支/认证方式/密钥) */
+export interface MainProjectGitChangedMessage {
+  kind: 'project.gitRemoteChanged'
+}
+
 export interface MainDocumentOpenedMessage {
   kind: 'document.opened'
   document: DocumentStateDto
@@ -716,6 +731,7 @@ export type MainToHostMessage =
   | MainCommandMessage
   | MainConfigurationChangedMessage
   | MainSecretsChangedMessage
+  | MainProjectGitChangedMessage
   | MainDocumentOpenedMessage
   | MainDocumentChangedMessage
   | MainDocumentClosedMessage

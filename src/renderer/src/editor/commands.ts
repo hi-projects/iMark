@@ -595,6 +595,68 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
 }
 
 /**
+ * 正文行尾 Delete = 收回下一段(与行首退格方向相反,效果对称)。
+ *
+ * 回车建出的新段在源码里是「段落分隔空行 + 新段」。光标停在上一段行尾按
+ * Delete,默认命令只删掉一条换行:段落分隔没了,空段落却仍紧贴着上一段,
+ * 屏幕上看起来像把分段改成了段内换行。这里一次删掉「段落分隔 + 下一段」:
+ *   - 下一段还空着(回车建出来的空段落):整条空段落收回,光标留在行尾;
+ *   - 下一段已经敲了字 / 是标题:文字接上来(标题的 `# ` 一起删掉),与行首
+ *     退格并段的结果一致。
+ *
+ * 只处理光标在当前行行尾、当前行是正文段落的情况。段内软换行 / 硬换行、
+ * 列表 / 引用 / 代码 / 表格、下一块不是正文或标题时都交给默认 Delete;
+ * 文件里手写的结尾空行也不当成段落,仍走默认命令。
+ */
+export function deleteParagraphBreakForward(view: EditorView): boolean {
+  const state = view.state
+  const sel = state.selection.main
+  if (state.selection.ranges.length > 1 || !sel.empty) return false
+  const line = state.doc.lineAt(sel.head)
+  if (sel.head !== line.to) return false
+  if (bodyLineKind(state, line) !== 'plain') return false
+
+  // 跳过段落分隔空行,找下一块
+  let n = line.number + 1
+  while (n <= state.doc.lines && !/\S/.test(state.doc.line(n).text)) n++
+
+  if (n <= state.doc.lines) {
+    const next = state.doc.line(n)
+    const kind = bodyLineKind(state, next)
+    if (kind !== 'plain' && kind !== 'heading') return false
+    // 紧挨着的一行且是正文 = 同一段里的软换行,不是分段;标题本身是块边界,
+    // 贴着上一段也照并(与行首退格并标题的结果一致)。
+    if (n === line.number + 1 && kind !== 'heading') return false
+    let markerLen = 0
+    if (kind === 'heading') {
+      const m = /^#{1,6}(?:[ \t]+|$)/.exec(next.text)
+      if (!m) return false
+      markerLen = m[0].length
+    }
+    view.dispatch({
+      changes: { from: line.to, to: next.from + markerLen },
+      selection: EditorSelection.cursor(line.to),
+      scrollIntoView: true,
+      userEvent: 'delete'
+    })
+    return true
+  }
+
+  // 文末只剩空行:只收回回车建出来的空段落(和行首退格的判断一致),
+  // 文件带进来的结尾空行不动
+  const targetPos = getEmptyParagraphs(state).find(p => p > line.to)
+  if (targetPos === undefined) return false
+  const target = state.doc.lineAt(targetPos)
+  view.dispatch({
+    changes: { from: line.to, to: target.to },
+    selection: EditorSelection.cursor(line.to),
+    scrollIntoView: true,
+    userEvent: 'delete'
+  })
+  return true
+}
+
+/**
  * Shift+回车 = 段内换行。源码写成硬换行(行尾反斜杠 + 换行),别的编辑器
  * 渲染成同一段里的一次换行;iMark 里两行仍是同一个段落(行间距,不是段间距)。
  * 不用「行尾两个空格」的写法:保存/格式化工具经常顺手把行尾空白删掉,

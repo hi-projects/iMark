@@ -48,6 +48,7 @@ const DEFAULTS: Settings = {
   // 默认不选:新用户开箱就自己挑一个样式,比替他把示例选上更合直觉
   userStyle: null,
   extensions: {},
+  projectGit: {},
   extensionHost: { mode: 'shared', affinity: {} },
   // 默认指向仓库里自带的那个自托管服务(`npm run market` 起的那个)
   marketUrl: 'http://127.0.0.1:8787',
@@ -100,6 +101,15 @@ function normalize(raw: Partial<Settings>): Settings {
   const merged = { ...DEFAULTS, ...raw } as Settings & Record<string, unknown>
   if (!merged.extensions || typeof merged.extensions !== 'object' || Array.isArray(merged.extensions)) {
     merged.extensions = {}
+  }
+  // 项目 Git 远端的字段级校验在 main/projectGit.ts 读取时做;这里只保证是对象,
+  // 免得手改坏的 settings.json 让选择页读项目列表时崩掉。
+  if (
+    !merged.projectGit ||
+    typeof merged.projectGit !== 'object' ||
+    Array.isArray(merged.projectGit)
+  ) {
+    merged.projectGit = {}
   }
   const host = merged.extensionHost
   if (!host || typeof host !== 'object' || Array.isArray(host)) {

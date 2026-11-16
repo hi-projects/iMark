@@ -269,16 +269,6 @@
   text-align: left;
 }
 
-/* 克隆表单里「文件夹名 + 克隆到」下方预览最终仓库路径 */
-.vault-picker-target-path {
-  margin: -4px 0 0;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 .vault-field {
   display: flex;
   flex: 1;

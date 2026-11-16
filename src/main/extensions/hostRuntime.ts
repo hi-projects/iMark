@@ -55,6 +55,7 @@ import type {
   Event,
   FileStat,
   MessageOptions,
+  ProjectGitRemote,
   QuickPickItem,
   QuickPickOptions,
   InputBoxOptions,
@@ -120,6 +121,7 @@ interface RuntimeEvents {
   themeChanged: EventEmitter<ColorTheme>
   workspaceFolders: EventEmitter<{ added: readonly WorkspaceFolder[]; removed: readonly WorkspaceFolder[] }>
   secretsChanged: EventEmitter<{ key: string }>
+  projectGitChanged: EventEmitter<void>
   webviewMessage: EventEmitter<unknown>
 }
 
@@ -1202,6 +1204,11 @@ export class ExtensionHostRuntime {
         target?.events.secretsChanged.fire({ key: message.key })
         return
       }
+      case 'project.gitRemoteChanged':
+        for (const ext of this.extensions.values()) {
+          ext.events.projectGitChanged.fire()
+        }
+        return
       case 'document.opened':
         this.onDocumentOpened(message.document)
         return
@@ -1331,6 +1338,7 @@ export class ExtensionHostRuntime {
       configChanged: new EventEmitter(),
       themeChanged: new EventEmitter(),
       workspaceFolders: new EventEmitter(),
+      projectGitChanged: new EventEmitter(),
       secretsChanged: new EventEmitter(),
       webviewMessage: new EventEmitter()
     }
@@ -2085,6 +2093,26 @@ export class ExtensionHostRuntime {
       }
     }
 
+    const projectApi = {
+      getGitRemote: (): Promise<ProjectGitRemote | null> =>
+        runtime.request<ProjectGitRemote | null>(r => ({
+          kind: 'project.gitRemote',
+          requestId: r,
+          extensionId: ext.id
+        })),
+      getGitSecret: (): Promise<string> =>
+        runtime.request<string>(
+          r => ({
+            kind: 'project.gitSecret',
+            requestId: r,
+            extensionId: ext.id
+          }),
+          15000
+        ),
+      onDidChangeGitRemote: (listener: () => unknown) =>
+        subscribe(ext.events.projectGitChanged, listener)
+    }
+
     const imarkApi = {
       reportStatus: (update: {
         status: string
@@ -2136,6 +2164,7 @@ export class ExtensionHostRuntime {
       window: windowApi,
       workspace: workspaceApi,
       extensions: extensionsApi,
+      project: projectApi,
       imark: imarkApi,
       env,
       Uri,

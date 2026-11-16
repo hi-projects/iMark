@@ -939,6 +939,42 @@ export interface ImarkApi {
   readonly onDidChangeTheme: Event<ColorTheme>
 }
 
+// ---------- 项目级 Git 远端 ----------
+
+export type ProjectGitAuth = 'token' | 'password' | 'ssh'
+
+/**
+ * 当前仓库在应用里配置的 Git 远端(不含密钥)。
+ *
+ * 克隆仓库与仓库选择页的「Git 设置」维护这一份;扩展只读。地址为空的项目不会
+ * 出现在这里 —— `getGitRemote()` 返回 null。
+ */
+export interface ProjectGitRemote {
+  readonly url: string
+  readonly auth: ProjectGitAuth
+  readonly username: string
+  /** 本地分支(必填) */
+  readonly localBranch: string
+  /** 远端分支;空串 = 与本地分支同名 */
+  readonly remoteBranch: string
+  readonly hasSecret: boolean
+}
+
+/**
+ * `imark.project`:由应用(而不是某个扩展)提供的项目级能力。
+ *
+ * 密钥与元数据分开取:绝大多数判断只需要 `getGitRemote()` 里的 `hasSecret`,
+ * 真正要跑 git 时再调用 `getGitSecret()`,明文不会出现在事件或配置快照里。
+ */
+export interface ProjectApi {
+  /** 当前仓库的项目级远端;没有打开仓库或未配置时返回 null */
+  getGitRemote(): Thenable<ProjectGitRemote | null>
+  /** 当前远端的密钥明文;未保存、认证方式为 SSH 或无法解密时返回空串 */
+  getGitSecret(): Thenable<string>
+  /** 应用里改了当前仓库的远端地址/认证方式/分支或密钥 */
+  readonly onDidChangeGitRemote: Event<void>
+}
+
 // ---------- 模块级命名空间 ----------
 //
 // 这些是**声明**:运行时由宿主进程按扩展归属构造并注入,扩展工程只拿它们做类型检查。
@@ -949,6 +985,7 @@ export declare const commands: CommandsApi
 export declare const window: WindowApi
 export declare const workspace: WorkspaceApi
 export declare const extensions: ExtensionsApi
+export declare const project: ProjectApi
 export declare const imark: ImarkApi
 export declare const env: {
   readonly appName: string

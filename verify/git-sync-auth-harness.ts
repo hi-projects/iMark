@@ -33,6 +33,8 @@ import {
   shutdownExtensions,
   type ExtensionService
 } from '../src/main/extensions/service'
+import { projectGitSecretKey, setProjectGitRemote } from '../src/main/projectGit'
+import { getSecret } from '../src/main/secrets'
 
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
@@ -121,8 +123,8 @@ interface TargetConfig {
 /** 配置存的是**完整键**:`<扩展id>.<属性>` */
 const configKey = (key: string): string => `${EXT_ID}.${key}`
 
-const configOf = (targets: TargetConfig[]): Record<string, unknown> => ({
-  [configKey('targets')]: targets,
+/** 远端现在由项目级配置提供,扩展只保留同步参数 */
+const configOf = (): Record<string, unknown> => ({
   [configKey('intervalMinutes')]: 0,
   [configKey('syncOnStart')]: false,
   [configKey('commitMessage')]: 'sync: {time}',
@@ -210,7 +212,7 @@ async function main(): Promise<void> {
         marketUrl: '',
         autoSaveMode: 'off',
         extensions: {
-          [EXT_ID]: { enabled: true, config: configOf([baseTarget]) }
+          [EXT_ID]: { enabled: true, config: configOf() }
         }
       },
       null,
@@ -227,11 +229,21 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
+
+  /** 项目级远端(含密钥)在扩展启动前写入 */
+  const applyTarget = async (target: TargetConfig, secret: string): Promise<void> => {
+    await setProjectGitRemote(vault, {
+      url: target.url,
+      auth: target.auth,
+      username: target.username,
+      localBranch: target.localBranch,
+      remoteBranch: target.remoteBranch,
+      secret
+    })
+  }
+  await applyTarget(baseTarget, TOKEN_LOCAL)
+
   const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
-  // 密钥在启动前写入（槽位与扩展自己的 key 一致）；写入失败会直接抛
-  await service.setExtensionSecret(EXT_ID, 'targets:t1', TOKEN_LOCAL)
-  await service.setExtensionSecret(EXT_ID, 'targets:t2', TOKEN_HTTP)
-  await service.setExtensionSecret(EXT_ID, 'targets:t3#password', PASS_HTTP)
 
   buildAppMenu()
   const win = createMainWindow(settings)
@@ -270,7 +282,7 @@ async function main(): Promise<void> {
   const author = (await gitSoft(remote, ['log', '-1', '--format=%an <%ae>', 'main'])).trim()
   check('仓库/全局没有身份时用扩展的兜底身份', author === 'iMark <imark@local>', author)
   await waitStatus('ok')
-  check('推送结果按目标记下（t1 = ok）', (await view())?.status.targetResults?.t1 === 'ok', JSON.stringify((await view())?.status.targetResults))
+  check('推送结果按目标记下（project = ok）', (await view())?.status.targetResults?.project === 'ok', JSON.stringify((await view())?.status.targetResults))
 
   check(
     '本地路径远端不因为带令牌参数而失败（凭据参数未破坏 git 调用）',
@@ -287,13 +299,14 @@ async function main(): Promise<void> {
   httpPasswordTarget.url = http.url
 
   console.log('\n【2】访问令牌 + 测试连接（远端要求 Basic 认证）')
-  // 插件只支持一个远端：把唯一一行换成 HTTP 令牌目标再测
-  await service.setExtensionConfig(EXT_ID, configOf([httpTokenTarget]))
+  // 项目只有一个远端：换成 HTTP 令牌目标再测
+  await applyTarget(httpTokenTarget, TOKEN_HTTP)
   await sleep(300)
   http.seen.length = 0
-  const probeToken = (await service.executeCommand('imark.git-sync.testTarget', [
-    { targetId: 't2' }
-  ])) as { ok: boolean; message: string }
+  const probeToken = (await service.executeCommand('imark.git-sync.testTarget')) as {
+    ok: boolean
+    message: string
+  }
   console.log(`      扩展自己说：${probeToken?.message}`)
   const expectedToken = `Basic ${Buffer.from(`oauth2:${TOKEN_HTTP}`).toString('base64')}`
   check(
@@ -309,17 +322,18 @@ async function main(): Promise<void> {
   )
   check(
     '测试结果写进状态卡',
-    (await view())?.status.targetResults?.t2 === 'ok',
+    (await view())?.status.targetResults?.project === 'ok',
     JSON.stringify((await view())?.status.targetResults)
   )
 
   console.log('\n【3】账号密码 + 测试连接')
-  await service.setExtensionConfig(EXT_ID, configOf([httpPasswordTarget]))
+  await applyTarget(httpPasswordTarget, PASS_HTTP)
   await sleep(300)
   http.seen.length = 0
-  const probePassword = (await service.executeCommand('imark.git-sync.testTarget', [
-    { targetId: 't3' }
-  ])) as { ok: boolean; message: string }
+  const probePassword = (await service.executeCommand('imark.git-sync.testTarget')) as {
+    ok: boolean
+    message: string
+  }
   const expectedPassword = `Basic ${Buffer.from(`alice:${PASS_HTTP}`).toString('base64')}`
   check(
     '服务端收到配置里的账号与密码',
@@ -330,14 +344,18 @@ async function main(): Promise<void> {
 
   // ---------- 四、密钥隔离 ----------
 
-  console.log('\n【4】密钥只留在主进程：界面只有掩码，日志不含明文')
+  console.log('\n【4】密钥只留在主进程：扩展视图不再暴露项目密钥，日志不含明文')
   const withSecrets = await service.getExtensionViewWithSecrets(EXT_ID)
   const hints = Object.entries(withSecrets?.secrets ?? {})
-  check('当前远端有一个密钥槽位掩码', hints.length === 1, JSON.stringify(hints))
+  check('项目密钥不再走扩展密钥槽位', hints.length === 0, JSON.stringify(hints))
   check(
-    '掩码不是明文（也不包含明文片段）',
-    hints.every(([, hint]) => hint.length > 0 && ![TOKEN_LOCAL, TOKEN_HTTP, PASS_HTTP].some(secret => hint.includes(secret))),
-    JSON.stringify(hints)
+    '项目级密钥库里存的就是刚才那把密码',
+    (await getSecret(projectGitSecretKey(vault, 'password'))) === PASS_HTTP
+  )
+  const settingsText = await readFile(join(ud, 'settings.json'), 'utf8')
+  check(
+    '所有明文密钥都不在 settings.json 里',
+    ![TOKEN_LOCAL, TOKEN_HTTP, PASS_HTTP].some(secret => settingsText.includes(secret))
   )
   check(
     '渲染层页面里没有明文密钥',

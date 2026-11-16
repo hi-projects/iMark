@@ -1,7 +1,9 @@
 /**
  * 「远程同步（Git）」扩展。
  *
- * 配置从 `workspace.getConfiguration()` 读，密钥从 `context.secrets` 取，状态用
+ * 同步参数(间隔/提交信息/代理等)从 `workspace.getConfiguration()` 读；远端地址、
+ * 认证方式与密钥来自**项目级**能力 `imark.project` —— 克隆仓库和仓库选择页的
+ * 「Git 设置」维护同一份配置,扩展不再自己声明 `targets`。状态用
  * `imark.reportStatus()` 上报，git 直接用 Node 的 `child_process` 跑。
  *
  * 同步是双向的：先把本地改动提交成一次提交，再从远端拉取配置的分支并
@@ -109,10 +111,11 @@ interface GitTarget {
   username: string
   localBranch: string
   remoteBranch: string
+  /** 本项目远端的密钥;由 `imark.project.getGitSecret()` 读入,不在配置里 */
+  secret?: string
 }
 
 interface GitSyncConfig {
-  targets: GitTarget[]
   intervalMinutes: number
   syncOnStart: boolean
   commitMessage: string
@@ -128,11 +131,6 @@ interface GitSyncConfig {
   proxyMode: ProxyMode
   /** 手动模式的代理地址（支持 http/https/socks5） */
   proxyUrl: string
-}
-
-interface TargetActionArgs {
-  targetId?: string
-  source?: 'action'
 }
 
 interface ActionResult {
@@ -167,39 +165,9 @@ interface FailureContext {
   remoteUrl: string
 }
 
-function text(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function normalizeTarget(raw: unknown): GitTarget | null {
-  if (!raw || typeof raw !== 'object') return null
-  const item = raw as Record<string, unknown>
-  const id = text(item.id)
-  if (!id) return null
-  const auth: TargetAuth =
-    item.auth === 'password' || item.auth === 'ssh' ? item.auth : 'token'
-  return {
-    id,
-    url: text(item.url),
-    auth,
-    username: text(item.username),
-    localBranch: text(item.localBranch),
-    remoteBranch: text(item.remoteBranch)
-  }
-}
-
 function readConfig(): GitSyncConfig {
   const config = imark.workspace.getConfiguration(SECTION)
-  const rawTargets = config.get<unknown>('targets', [])
-  const all = Array.isArray(rawTargets)
-    ? rawTargets.map(normalizeTarget).filter((item): item is GitTarget => item !== null)
-    : []
-  // 只支持一个远端。旧版本可能留下多行:优先取第一行填了地址的,否则取第一行;
-  // 设置页只显示一行,用户编辑任意字段时会把列表收敛成这一行。
-  const chosen = all.find(target => target.url.trim().length > 0) ?? all[0] ?? null
-  const targets = chosen ? [chosen] : []
   return {
-    targets,
     intervalMinutes: config.get<number>('intervalMinutes', 10),
     syncOnStart: config.get<boolean>('syncOnStart', true),
     commitMessage: config.get<string>('commitMessage', 'sync: {time}'),
@@ -223,14 +191,6 @@ function stamp(): string {
   const d = new Date()
   const p = (n: number): string => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
-/**
- * 远端密钥的「槽位」：访问令牌与密码分开存。
- * 扩展宿主会在 key 前加 `<扩展id>:`，所以这里只写 `targets:<槽位>`。
- */
-function secretSlot(target: Pick<GitTarget, 'id' | 'auth'>): string {
-  return target.auth === 'password' ? `${target.id}#password` : target.id
 }
 
 /** scp 风格的 SSH 地址（`git@host:path`）与 `ssh://` 都不经过 HTTP 代理 */
@@ -300,14 +260,14 @@ class GitSyncPlugin {
       imark.commands.registerCommand(CMD_DOWNLOAD_NOW, () => this.sync('manual', 'download')),
       imark.commands.registerCommand(CMD_RESOLVE_CONFLICTS, () => this.resolveConflicts()),
       imark.commands.registerCommand(CMD_DETECT_PROXY, () => this.detectProxy()),
-      imark.commands.registerCommand(CMD_TEST_TARGET, (args?: TargetActionArgs) =>
-        this.testConnection(args?.targetId)
-      ),
+      imark.commands.registerCommand(CMD_TEST_TARGET, () => this.testConnection()),
       imark.workspace.onDidChangeConfiguration(event => {
         if (!event.affectsConfiguration(SECTION)) return
         this.schedule()
         this.scheduleConfigSync()
-      })
+      }),
+      // 远端现在由项目级能力提供:选择页保存后主进程会推这条事件
+      imark.project.onDidChangeGitRemote(() => this.scheduleConfigSync())
     )
 
     this.statusItem = imark.window.createStatusBarItem(imark.StatusBarAlignment.Right, 90)
@@ -398,10 +358,31 @@ class GitSyncPlugin {
     this.configSyncTimer = setTimeout(() => {
       this.configSyncTimer = null
       if (this.disposed) return
-      const targets = readConfig().targets.filter(t => t.url.trim().length > 0)
-      if (targets.length === 0) return
-      void this.sync('config', 'sync')
+      void this.projectTarget().then(target => {
+        if (!this.disposed && target) void this.sync('config', 'sync')
+      }, () => undefined)
     }, 3000)
+  }
+
+  /**
+   * 取当前仓库的项目级远端(含密钥)。
+   *
+   * 元数据与密钥是两次 RPC:只有 `hasSecret` 时才会去要明文。没有项目远端
+   * (未配置/没打开仓库)时返回 null。
+   */
+  private async projectTarget(): Promise<GitTarget | null> {
+    const remote = await imark.project.getGitRemote()
+    if (!remote || !remote.url.trim()) return null
+    const secret = remote.hasSecret ? await imark.project.getGitSecret() : ''
+    return {
+      id: 'project',
+      url: remote.url,
+      auth: remote.auth,
+      username: remote.username,
+      localBranch: remote.localBranch,
+      remoteBranch: remote.remoteBranch,
+      secret
+    }
   }
 
   // ---------- 同步 ----------
@@ -425,9 +406,6 @@ class GitSyncPlugin {
     const signal = this.abort.signal
 
     const cfg = readConfig()
-    // readConfig 已经只保留一个远端；地址为空时走「配置未完成」提示
-    const allTargets = cfg.targets
-    const targets = allTargets.filter(t => t.url.trim().length > 0)
     const wantPull = mode !== 'upload'
     const wantPush = mode !== 'download'
     const action = mode === 'download' ? '下载' : mode === 'upload' ? '上传' : '同步'
@@ -447,9 +425,9 @@ class GitSyncPlugin {
     /**
      * 远端本身没填完整(缺分支/账号/密钥)。
      *
-     * 设置页顶部的黄色提示已经逐行列出还缺什么,这里**不写日志、也不覆盖状态卡** ——
-     * 否则用户刚点「添加远端」、还没填完,3 秒后的配置试跑就会在日志与最上方
-     * 留下一条看起来像「同步失败了」的错误。
+     * 项目 Git 设置页只显示字段,不逐项标红;这类问题仍按「未完成」处理 ——
+     * **不写错误日志**。否则用户刚填了地址、还没填令牌,3 秒后的配置试跑就会
+     * 在日志里留下一条看起来像「同步失败了」的错误。
      */
     const invalid = (message: string, detail?: string): ActionResult => ({
       ok: false,
@@ -459,10 +437,15 @@ class GitSyncPlugin {
     })
 
     try {
+      // 远端属于项目:没有配置时状态卡是唯一的说明
+      const target = await this.projectTarget()
+      const allTargets: GitTarget[] = target ? [target] : []
+      const targets = allTargets
       if (targets.length === 0) {
-        // 一行远端都没有时设置页里没有黄色提示可看,状态卡仍是唯一的说明;
-        // 有行但地址全空时,黄色提示已经覆盖,不再重复。
-        return cfg.targets.length > 0 ? invalid('远端配置尚未填写完整') : fail('尚未配置远端仓库')
+        return fail(
+          '尚未配置远端仓库',
+          '在仓库选择页左侧项目行的「Git 设置」里填写远端地址后再同步。'
+        )
       }
       const vaultPath = this.vaultPath()
       if (!vaultPath) return fail(`未打开仓库，无法${action}`)
@@ -489,7 +472,7 @@ class GitSyncPlugin {
         if (!(await this.secretFor(target))) {
           return invalid(
             `${targetLabel(allTargets, target)}选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
-            '在对应远端那一行填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
+            '在仓库选择页的项目「Git 设置」里填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
           )
         }
       }
@@ -1526,12 +1509,9 @@ class GitSyncPlugin {
     return { local, remote }
   }
 
-  private secretKey(target: GitTarget): string {
-    return `targets:${secretSlot(target)}`
-  }
-
+  /** 密钥随项目远端一起取回(见 projectTarget),这里不再直接读扩展密钥槽位 */
   private async secretFor(target: GitTarget): Promise<string> {
-    return (await this.context.secrets.get(this.secretKey(target))) ?? ''
+    return target.secret ?? ''
   }
 
   /**
@@ -1581,16 +1561,17 @@ class GitSyncPlugin {
     return { ok: false, detail: hint || raw || `退出码 ${push.code}` }
   }
 
-  /** 测试连接：界面上远端后面有自己的「测试连接」，带 targetId 时只测它 */
-  private async testConnection(targetId?: string): Promise<ActionResult> {
+  /** 测试当前项目的远端连接（项目只有一个远端） */
+  private async testConnection(): Promise<ActionResult> {
     const cfg = readConfig()
-    const allTargets = cfg.targets
-    const configured = allTargets.filter(t => t.url.trim().length > 0)
-    const targets = targetId ? configured.filter(t => t.id === targetId) : configured
+    const target = await this.projectTarget()
+    const allTargets: GitTarget[] = target ? [target] : []
+    const targets = allTargets
     if (targets.length === 0) {
       return {
         ok: false,
-        message: targetId ? '该远端已不存在（可能刚被删除）' : '尚未配置远端仓库'
+        message: '尚未配置远端仓库',
+        detail: '在仓库选择页左侧项目行的「Git 设置」里填写远端地址后再测试。'
       }
     }
     if (!(await isGitAvailable())) return { ok: false, message: '未找到 git，请先安装 Git' }

@@ -32,6 +32,7 @@ import {
   shutdownExtensions,
   type ExtensionService
 } from '../src/main/extensions/service'
+import { setProjectGitRemote } from '../src/main/projectGit'
 import type { PluginStatus } from '../src/shared/plugins'
 import { APP_VERSION } from './appVersion'
 
@@ -110,17 +111,8 @@ interface TargetConfig {
 
 const configKey = (key: string): string => `${EXT_ID}.${key}`
 
-const configOf = (remote: string): Record<string, unknown> => ({
-  [configKey('targets')]: [
-    {
-      id: 't1',
-      url: remote,
-      auth: 'ssh',
-      username: '',
-      localBranch: 'main',
-      remoteBranch: 'main'
-    } satisfies TargetConfig
-  ],
+/** 远端由项目级配置提供,扩展只保留同步参数 */
+const configOf = (): Record<string, unknown> => ({
   [configKey('intervalMinutes')]: 0,
   [configKey('syncOnStart')]: false,
   [configKey('commitMessage')]: 'sync: {time}',
@@ -194,7 +186,7 @@ async function main(): Promise<void> {
         marketUrl: '',
         autoSaveMode: 'off',
         extensions: {
-          [EXT_ID]: { enabled: true, config: configOf(remote) }
+          [EXT_ID]: { enabled: true, config: configOf() }
         }
       },
       null,
@@ -210,11 +202,18 @@ async function main(): Promise<void> {
     source: 'bundled',
     appVersion: APP_VERSION
   })
-  check('内置包通过校验并安装', installed.manifest.version === '1.0.0')
+  check('内置包通过校验并安装', installed.manifest.version === '1.1.0')
 
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
+  await setProjectGitRemote(vault, {
+    url: remote,
+    auth: 'ssh',
+    username: '',
+    localBranch: 'main',
+    remoteBranch: 'main'
+  })
   const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
   buildAppMenu()
   const win = createMainWindow(settings)

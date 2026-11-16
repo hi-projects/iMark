@@ -235,6 +235,20 @@ function createMathBlockParser(fence: MathFence): BlockParser {
       }
 
       /*
+       * `\[` 同时是 CommonMark 的转义左括号。同一行里已经有 `\]`、但收尾
+       * 后面还跟着正文(`\[lower, upper\] 限制`)时,这是转义写法而不是公式:
+       * 用户要的是屏幕上出现真实的方括号。导出侧 markdown-it 也只把「行尾
+       * 正好是 \]」的行首写法当公式。不拦住的话这里会启动一个跨行公式,
+       * 把后面的段落整段吞进去 —— 两边表现就不一致了。
+       */
+      if (
+        fence === BRACKET_FENCE &&
+        line.text.indexOf(fence.close, line.pos + openLen) >= 0
+      ) {
+        return false
+      }
+
+      /*
        * 跨行:逐行找收尾标记。每行单独产出一个 MathContent,而不是让整段
        * 公式共用一个连续区间 —— 引用块里的行首 `> `、列表项的缩进都在
        * 文档位置上夹在公式中间,整段切片会把它们混进 TeX 源码。

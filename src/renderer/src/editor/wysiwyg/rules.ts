@@ -1175,6 +1175,15 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       return
     }
 
+    // ----- 反斜线转义(CommonMark 写法) -----
+    // `\[` / `\]` / `\*` / `\#` / `\$` … 源码里的反斜线只是转义标记:离开选区
+    // 时藏起来,屏幕上只留被转义的字符本身;光标贴在它上面时仍按源码显示,
+    // 方便删改。导出侧 markdown-it 本来就是这套语义,这里只是让编辑器跟上。
+    case 'Escape': {
+      if (!touches(ctx.sel, node.from, node.to)) hide(ctx, node.from, node.from + 1)
+      return
+    }
+
     // ----- 行内代码 -----
     case 'InlineCode': {
       /*

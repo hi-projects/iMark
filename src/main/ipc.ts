@@ -47,7 +47,8 @@ import {
 } from './vault'
 import { claimVault, releaseVault } from './vaultHandoff'
 import { cloneRepository, folderNameFromUrl } from './git'
-import { readVaultGitRemotes, setVaultGitRemote } from './vaultGit'
+import { getExtensionService } from './extensions/service'
+import { readProjectGitRemotes, setProjectGitRemote } from './projectGit'
 import { launchedForNewWindow } from './launchArgs'
 import {
   ensureUserStylesDir,
@@ -240,7 +241,7 @@ export function registerIpc(): void {
     // 写失败不影响克隆本身(比如扩展被卸掉了),如实告诉渲染层没写进去。
     let remoteSaved = false
     try {
-      await setVaultGitRemote(outcome.path, {
+      await setProjectGitRemote(outcome.path, {
         url,
         auth,
         username: typeof req.username === 'string' ? req.username : '',
@@ -248,6 +249,7 @@ export function registerIpc(): void {
         remoteBranch: '',
         secret
       })
+      getExtensionService()?.notifyProjectGitChanged()
       remoteSaved = true
     } catch (err) {
       console.warn('[iMark] 克隆成功,但写入项目 Git 远端失败:', err)
@@ -260,7 +262,7 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.VaultGitList, (_e, paths: unknown) =>
-    readVaultGitRemotes(
+    readProjectGitRemotes(
       Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p.length > 0) : []
     )
   )
@@ -272,7 +274,8 @@ export function registerIpc(): void {
     }
     if (typeof input.path !== 'string' || !input.path) throw new Error('仓库路径无效')
     const remote = input.remote as VaultGitRemoteInput | null | undefined
-    await setVaultGitRemote(input.path, remote ?? null)
+    await setProjectGitRemote(input.path, remote ?? null)
+    getExtensionService()?.notifyProjectGitChanged()
   })
 
   ipcMain.handle(IPC.VaultCreateFile, async (_e, o: { path: string; content?: string }) => {

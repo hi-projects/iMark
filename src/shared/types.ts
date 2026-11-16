@@ -140,6 +140,14 @@ export interface Settings {
    * 密钥不在这里,只以掩码形式出现在视图层;明文由主进程 safeStorage 保管。
    */
   extensions: Record<string, ExtensionPreference>
+  /**
+   * 项目级 Git 远端:归一化后的仓库根路径 → 远端配置(不含密钥)。
+   *
+   * 以前这份配置属于「远程同步」扩展的 workspace 覆盖层。克隆仓库和项目切换都
+   * 已经是应用自身的能力,所以远端跟着项目走;扩展只读,不再自己声明一份。
+   * 密钥不进 settings.json,见 main/projectGit.ts 与 secrets.ts。
+   */
+  projectGit: Record<string, ProjectGitRemoteConfig>
   /** 宿主拓扑:shared(默认,所有扩展共用一个进程)或 isolated(每扩展一进程);affinity 按扩展 ID 分组 */
   extensionHost: ExtensionHostSettings
   /**
@@ -193,11 +201,25 @@ export interface LaunchIntent {
 export type VaultClaimResult = 'ok' | 'forwarded' | 'busy'
 
 /**
- * 仓库(项目)的 Git 远端。
+ * 项目级 Git 远端配置本身(不含密钥)。
  *
- * 这是「远程同步」扩展那套远端配置在**项目**这一层的视图:同一个仓库在插件里
- * 绑定的是一个 workspace 配置,而这里按仓库根路径把它暴露给仓库选择页 ——
- * 克隆仓库、以及在选择页里查看/修改远端,都走这一份,不另存一份副本。
+ * 按归一化后的仓库根路径保存在 settings.projectGit 里,由应用而非某个扩展拥有。
+ */
+export interface ProjectGitRemoteConfig {
+  url: string
+  auth: PluginAuthMode
+  username: string
+  /** 本地分支(必填) */
+  localBranch: string
+  /** 远端分支;空串 = 与本地分支同名 */
+  remoteBranch: string
+}
+
+/**
+ * 仓库(项目)的 Git 远端在界面上的视图。
+ *
+ * 数据源是 settings.projectGit 与主进程的密钥库 —— 仓库选择页、克隆流程和
+ * 「远程同步」扩展读的是同一份项目配置,不会出现两处不一致。
  */
 export interface VaultGitRemote {
   url: string
@@ -240,6 +262,6 @@ export interface CloneVaultResult {
   path: string
   /** 克隆后检出的分支名(读不到时为空串) */
   branch: string
-  /** 项目级 Git 远端是否已经写入「远程同步」扩展的配置 */
+  /** 项目级 Git 远端是否已经写入项目配置(供「远程同步」扩展读取) */
   remoteSaved: boolean
 }

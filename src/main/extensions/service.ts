@@ -67,6 +67,7 @@ import {
 } from '@shared/plugins'
 import { deleteSecretsByPrefix, getSecret, secretHints, setSecret } from '../secrets'
 import { getSettingsSync, loadSettings, onSettingsChanged, saveSettings } from '../settings'
+import { readProjectGitRemoteSecret } from '../projectGit'
 import { buildContributions, type ExtensionEntry, type RuntimeCommandRegistration } from './contributions'
 import { DocumentRegistry } from './documents'
 import { ExtensionHostProcess, type HostProcessState, type HostRequest } from './hostProcess'
@@ -869,6 +870,14 @@ export class ExtensionService {
     await setSecret(path, value)
     const shortKey = shortSecretKey(id, path)
     this.pushToExtensionHost(id, { kind: 'secrets.changed', extensionId: id, key: shortKey })
+  }
+
+  /**
+   * 应用里改了当前仓库的项目级 Git 远端(选择页、克隆流程)。
+   * 正在运行的扩展要立即看到新值,不用等配置事件或下次启动。
+   */
+  notifyProjectGitChanged(): void {
+    this.broadcastToHosts({ kind: 'project.gitRemoteChanged' })
   }
 
   async setHostSettings(patch: ExtensionHostSettingsPatch): Promise<void> {
@@ -1902,6 +1911,29 @@ export class ExtensionService {
           host.respond(requestId, true)
           return
         }
+        case 'project.gitRemote': {
+          const root = this.workspaceRootForProject()
+          const remote = root ? await readProjectGitRemoteSecret(root) : null
+          if (!remote) {
+            host.respond(requestId, true, null)
+            return
+          }
+          host.respond(requestId, true, {
+            url: remote.url,
+            auth: remote.auth,
+            username: remote.username,
+            localBranch: remote.localBranch,
+            remoteBranch: remote.remoteBranch,
+            hasSecret: remote.hasSecret
+          })
+          return
+        }
+        case 'project.gitSecret': {
+          const root = this.workspaceRootForProject()
+          const remote = root ? await readProjectGitRemoteSecret(root) : null
+          host.respond(requestId, true, remote?.secret ?? '')
+          return
+        }
         case 'editor.applyEdits': {
           const value = await this.requestRenderer(
             {
@@ -2535,6 +2567,14 @@ export class ExtensionService {
   }
 
   // ---------- 工作区 / 主题 ----------
+
+  /**
+   * 项目级能力(目前是 Git 远端)只针对当前仓库。
+   * `workspaceRoot` 在启动和切换仓库时刷新;兜底再读一次设置,避免第一帧为空。
+   */
+  private workspaceRootForProject(): string | null {
+    return this.workspaceRoot ?? this.options.getWorkspaceRoot?.() ?? getSettingsSync()?.vaultPath ?? null
+  }
 
   private refreshWorkspaceFolders(): void {
     const root = this.options.getWorkspaceRoot?.() ?? getSettingsSync()?.vaultPath ?? null

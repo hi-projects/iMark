@@ -35,6 +35,7 @@ import {
   shutdownExtensions,
   type ExtensionService
 } from '../src/main/extensions/service'
+import { setProjectGitRemote } from '../src/main/projectGit'
 import {
   normalizeProxyUrl,
   parseGnomeProxy,
@@ -138,8 +139,8 @@ interface TargetConfig {
 /** 配置存的是**完整键**:`<扩展id>.<属性>` */
 const configKey = (key: string): string => `${EXT_ID}.${key}`
 
-const configOf = (target: TargetConfig, mode: string, proxyUrl: string): Record<string, unknown> => ({
-  [configKey('targets')]: [target],
+/** 远端由项目级配置提供,扩展只保留同步/代理参数 */
+const configOf = (mode: string, proxyUrl: string): Record<string, unknown> => ({
   [configKey('intervalMinutes')]: 0,
   [configKey('syncOnStart')]: false,
   [configKey('commitMessage')]: 'sync: {time}',
@@ -400,7 +401,7 @@ async function main(): Promise<void> {
         marketUrl: '',
         autoSaveMode: 'off',
         extensions: {
-          [EXT_ID]: { enabled: true, config: configOf(target, 'manual', proxy.url) }
+          [EXT_ID]: { enabled: true, config: configOf('manual', proxy.url) }
         }
       },
       null,
@@ -417,8 +418,15 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
+  await setProjectGitRemote(vault, {
+    url: target.url,
+    auth: target.auth,
+    username: target.username,
+    localBranch: target.localBranch,
+    remoteBranch: target.remoteBranch,
+    secret: 'tok-proxy'
+  })
   const service: ExtensionService = await initExtensions({ appVersion: APP_VERSION })
-  await service.setExtensionSecret(EXT_ID, 'targets:p1', 'tok-proxy')
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents
@@ -459,9 +467,11 @@ async function main(): Promise<void> {
   // ---------- 一、手动代理：测试连接 ----------
 
   console.log('\n【1】手动代理 + 测试连接')
-  const probe = (await service.executeCommand('imark.git-sync.testTarget', [
-    { targetId: 'p1' }
-  ])) as { ok: boolean; message: string; detail?: string }
+  const probe = (await service.executeCommand('imark.git-sync.testTarget')) as {
+    ok: boolean
+    message: string
+    detail?: string
+  }
   console.log(`      扩展自己说：${probe.message}${probe.detail ? ` / ${probe.detail}` : ''}`)
   check('测试连接成功（远端域名本身解析不了，只能经代理）', probe?.ok === true, JSON.stringify(probe))
   check(
@@ -482,12 +492,13 @@ async function main(): Promise<void> {
   // ---------- 二、自动检测：环境变量 ----------
 
   console.log('\n【2】自动检测 + HTTP_PROXY 环境变量')
-  await service.setExtensionConfig(EXT_ID, configOf(target, 'auto', proxy.url))
+  await service.setExtensionConfig(EXT_ID, configOf('auto', proxy.url))
   await sleep(300)
   const beforeAuto = proxy.seen.length
-  const autoProbe = (await service.executeCommand('imark.git-sync.testTarget', [
-    { targetId: 'p1' }
-  ])) as { ok: boolean; message: string }
+  const autoProbe = (await service.executeCommand('imark.git-sync.testTarget')) as {
+    ok: boolean
+    message: string
+  }
   check('自动模式经环境变量代理连接成功', autoProbe?.ok === true, JSON.stringify(autoProbe))
   check('代理收到了自动模式的请求', proxy.seen.length > beforeAuto, `${beforeAuto} → ${proxy.seen.length}`)
   check(
@@ -517,12 +528,14 @@ async function main(): Promise<void> {
   // ---------- 三、找不到代理：直接连接，且压过环境变量 ----------
 
   console.log('\n【3】手动代理地址为空：直接连接（环境变量里的代理也不应生效）')
-  await service.setExtensionConfig(EXT_ID, configOf(target, 'manual', ''))
+  await service.setExtensionConfig(EXT_ID, configOf('manual', ''))
   await sleep(300)
   const beforeDirect = proxy.seen.length
-  const directProbe = (await service.executeCommand('imark.git-sync.testTarget', [
-    { targetId: 'p1' }
-  ])) as { ok: boolean; message: string; detail?: string }
+  const directProbe = (await service.executeCommand('imark.git-sync.testTarget')) as {
+    ok: boolean
+    message: string
+    detail?: string
+  }
   check('没有可用代理时连接失败（.invalid 解析不了）', directProbe?.ok === false, JSON.stringify(directProbe))
   check(
     '没有可用代理时没有向代理发请求',
@@ -547,7 +560,7 @@ async function main(): Promise<void> {
   // ---------- 四、推送路径也带代理 ----------
 
   console.log('\n【4】立即同步：推送也要经过代理')
-  await service.setExtensionConfig(EXT_ID, configOf(target, 'manual', proxy.url))
+  await service.setExtensionConfig(EXT_ID, configOf('manual', proxy.url))
   await sleep(300)
   const beforePush = proxy.seen.length
   const sync = (await service.executeCommand('imark.git-sync.syncNow')) as {

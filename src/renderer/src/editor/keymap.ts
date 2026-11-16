@@ -5,6 +5,7 @@ import {
   deleteEmptyListMarkup,
   deleteBlockStartBackward,
   deleteHardBreakBackward,
+  deleteParagraphBreakForward,
   deleteParagraphBreakBackward,
   exitListOnEmptyItem,
   insertCodeBlock,
@@ -45,6 +46,8 @@ export const editorKeymap: KeyBinding[] = [
   { key: 'Backspace', run: deleteBlockStartBackward },
   // 删除空列表项时别留下 CodeMirror 补的对齐空格(光标要顶格)
   { key: 'Backspace', run: deleteEmptyListMarkup },
+  // 正文行尾 Delete:把下一段连同段落分隔一起收回,别让分段变成段内换行
+  { key: 'Delete', run: deleteParagraphBreakForward },
   // 代码块里 Tab 插入空格(可在设置里选 2 / 4);其余位置不拦,Tab 仍用来切换焦点
   { key: 'Tab', run: insertCodeIndent },
   // 代码块 / 块级公式里 Ctrl+A 只选这一块(不扩到整篇;整篇全选在默认 keymap 里)

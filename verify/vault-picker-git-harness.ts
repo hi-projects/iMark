@@ -4,7 +4,7 @@
  * 用户可见的两件事：
  *   A 选择页是 Obsidian 式左右结构：左边「最近仓库」，右边三段动作；
  *   B 右侧「从 Git 克隆仓库」能把远端克隆成本地仓库，打开它，并且**顺手**把
- *     这一份远端写进「远程同步」扩展的按仓库配置（不另存副本）。
+ *     这一份远端写进项目级 Git 配置（不再写进「远程同步」扩展的 workspace 覆盖层）。
  *
  * 后半段验证「项目级管理」本身：左侧项目行的 Git 设置能读回刚写的远端、
  * 改地址/分支时不清掉已保存的令牌、移除配置后设置页与列表标记一起消失。
@@ -20,7 +20,7 @@ import { app, BrowserWindow, dialog, protocol } from 'electron'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { APP_VERSION } from './appVersion'
 import { registerIpc } from '../src/main/ipc'
@@ -29,15 +29,18 @@ import { getSettingsSync, loadSettings } from '../src/main/settings'
 import { getSecret } from '../src/main/secrets'
 import { initExtensions } from '../src/main/extensions/service'
 import { installExtensionPackage } from '../src/main/extensions/installer'
-import { readVaultGitRemotes, vaultTargetId } from '../src/main/vaultGit'
+import {
+  projectGitKey,
+  projectGitSecretKey,
+  readProjectGitRemotes
+} from '../src/main/projectGit'
 import { createMainWindow } from '../src/main/window'
 import { IPC } from '../src/shared/ipc-channels'
-import type { VaultGitRemote } from '../src/shared/types'
+import type { ProjectGitRemoteConfig, VaultGitRemote } from '../src/shared/types'
 
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
 const EXT_ID = 'imark.git-sync'
-const TARGETS_KEY = `${EXT_ID}.targets`
 
 // 特权 scheme 必须在 app ready 之前注册（与 src/main/index.ts 一致）
 protocol.registerSchemesAsPrivileged([
@@ -79,29 +82,9 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout
 }
 
-/** 与扩展服务 workspaceConfig 的键保持一致（Windows/macOS 折叠大小写） */
-function workspaceKey(root: string): string {
-  const absolute = resolve(root)
-  return process.platform === 'win32' || process.platform === 'darwin'
-    ? absolute.toLowerCase()
-    : absolute
-}
-
-interface StoredTarget {
-  id: string
-  url: string
-  auth: string
-  username: string
-  localBranch: string
-  remoteBranch: string
-}
-
-/** 直接读设置缓存里某个仓库的 targets：验证的是扩展真正会读的那份值 */
-function targetsOf(root: string): StoredTarget[] {
-  const preference = getSettingsSync()?.extensions?.[EXT_ID]
-  const bucket = preference?.workspaceConfig?.[workspaceKey(root)]
-  const value = bucket?.[TARGETS_KEY]
-  return Array.isArray(value) ? (value as StoredTarget[]) : []
+/** 直接读设置缓存里的项目级 Git 配置：验证的是扩展真正会读的那份值 */
+function projectConfigOf(root: string): ProjectGitRemoteConfig | null {
+  return getSettingsSync()?.projectGit?.[projectGitKey(root)] ?? null
 }
 
 async function main(): Promise<void> {
@@ -241,7 +224,7 @@ async function main(): Promise<void> {
   }
 
   async function remoteOf(path: string): Promise<VaultGitRemote | null> {
-    return (await readVaultGitRemotes([path]))[path] ?? null
+    return (await readProjectGitRemotes([path]))[path] ?? null
   }
 
   // ---------- A. 左右结构 ----------
@@ -291,17 +274,16 @@ async function main(): Promise<void> {
     JSON.stringify(getSettingsSync()?.vaults)
   )
 
-  const saved = targetsOf(cloned)
-  check('项目远端已写入「远程同步」的按仓库配置（一条）', saved.length === 1, JSON.stringify(saved))
-  check('远端地址就是克隆地址', saved[0]?.url === cloneUrl, JSON.stringify(saved[0]))
-  check('认证方式沿用表单里的 token', saved[0]?.auth === 'token', JSON.stringify(saved[0]))
-  check('本地分支是克隆后检出的 main', saved[0]?.localBranch === 'main', JSON.stringify(saved[0]))
-  check('远端 id 是稳定的 vault- 前缀', /^vault-[0-9a-f]{12}$/.test(saved[0]?.id ?? ''), String(saved[0]?.id))
+  const saved = projectConfigOf(cloned)
+  check('项目远端已写入项目级配置', !!saved, JSON.stringify(saved))
+  check('远端地址就是克隆地址', saved?.url === cloneUrl, JSON.stringify(saved))
+  check('认证方式沿用表单里的 token', saved?.auth === 'token', JSON.stringify(saved))
+  check('本地分支是克隆后检出的 main', saved?.localBranch === 'main', JSON.stringify(saved))
   const afterClone = await remoteOf(cloned)
   check('令牌已保存（渲染层只看到 hasSecret）', afterClone?.hasSecret === true, JSON.stringify(afterClone))
   check(
-    '令牌明文可以解出来，且写进了扩展约定的槽位',
-    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === 'fake-token'
+    '令牌明文可以解出来，且存在项目级密钥槽位',
+    (await getSecret(projectGitSecretKey(cloned, 'token'))) === 'fake-token'
   )
 
   // ---------- C. 回到选择页：列表显示项目远端 ----------
@@ -341,19 +323,19 @@ async function main(): Promise<void> {
     await (async () => {
       const until = Date.now() + 8000
       while (Date.now() < until) {
-        const t = targetsOf(cloned)[0]
+        const t = projectConfigOf(cloned)
         if (t?.url === newUrl && t?.localBranch === 'dev') return true
         await sleep(60)
       }
       return false
     })(),
-    JSON.stringify(targetsOf(cloned))
+    JSON.stringify(projectConfigOf(cloned))
   )
   const afterSave = await remoteOf(cloned)
   check('只改地址/分支时令牌仍然在（留空 = 保持）', afterSave?.hasSecret === true, JSON.stringify(afterSave))
   check(
     '密钥槽位里仍是原来那把令牌',
-    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === 'fake-token'
+    (await getSecret(projectGitSecretKey(cloned, 'token'))) === 'fake-token'
   )
   check('保存后回到动作列表', await waitFor(`document.querySelector('.vault-picker-actions')`))
   check('项目行上的地址跟着更新', await waitText('.vault-row-path', newUrl))
@@ -364,22 +346,19 @@ async function main(): Promise<void> {
   check('再次打开 Git 设置', (await click('[data-action="git-open"]')) && (await waitFor(`document.querySelector('[data-action="git-clear"]')`)))
   check('点击「移除远端配置」', await click('[data-action="git-clear"]'))
   check(
-    '按仓库配置里的 targets 已删除',
+    '项目级 Git 配置已删除',
     await (async () => {
       const until = Date.now() + 8000
       while (Date.now() < until) {
-        if (targetsOf(cloned).length === 0) return true
+        if (!projectConfigOf(cloned)) return true
         await sleep(60)
       }
       return false
     })(),
-    JSON.stringify(targetsOf(cloned))
+    JSON.stringify(projectConfigOf(cloned))
   )
   check('读取接口返回 null', (await remoteOf(cloned)) === null)
-  check(
-    '令牌也清掉了',
-    (await getSecret(`${EXT_ID}:targets:${vaultTargetId(cloned)}`)) === null
-  )
+  check('令牌也清掉了', (await getSecret(projectGitSecretKey(cloned, 'token'))) === null)
   check('列表上的 Git 标记消失', await waitFor(`!document.querySelector('.vault-row-git')`))
   check('项目行退回到显示本地路径', await waitText('.vault-row-path', cloned))
 
