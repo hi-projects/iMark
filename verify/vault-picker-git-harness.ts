@@ -288,11 +288,12 @@ async function main(): Promise<void> {
 
   // ---------- C. 回到选择页：列表显示项目远端 ----------
 
-  console.log('\n【C】回到选择页：项目行带 Git 标记与远端地址')
+  console.log('\n【C】回到选择页：项目行带 Git 标记，副标题仍是本地路径')
   win.webContents.send(IPC.MenuCommand, 'file:open-vault')
   check('回到仓库选择页', await waitFor(`document.querySelector('.vault-picker')`))
   check('列表里出现刚克隆的项目', await waitFor(`document.querySelectorAll('.vault-row').length === 1`))
-  check('行的路径位置显示远端地址', await waitText('.vault-row-path', cloneUrl))
+  // 列表副标题永远是本地路径；远端地址只出现在 Git 标记的悬停提示与设置面板里
+  check('行的路径位置显示本地路径', await waitText('.vault-row-path', cloned))
   check('行上有 Git 标记', await waitFor(`document.querySelector('.vault-row-git')`))
   check(
     '已存令牌时标记不是「未完成」样式',
@@ -338,7 +339,7 @@ async function main(): Promise<void> {
     (await getSecret(projectGitSecretKey(cloned, 'token'))) === 'fake-token'
   )
   check('保存后回到动作列表', await waitFor(`document.querySelector('.vault-picker-actions')`))
-  check('项目行上的地址跟着更新', await waitText('.vault-row-path', newUrl))
+  check('项目行的副标题不随远端地址变化', await waitText('.vault-row-path', cloned))
 
   // ---------- E. 移除项目远端 ----------
 
@@ -360,7 +361,7 @@ async function main(): Promise<void> {
   check('读取接口返回 null', (await remoteOf(cloned)) === null)
   check('令牌也清掉了', (await getSecret(projectGitSecretKey(cloned, 'token'))) === null)
   check('列表上的 Git 标记消失', await waitFor(`!document.querySelector('.vault-row-git')`))
-  check('项目行退回到显示本地路径', await waitText('.vault-row-path', cloned))
+  check('列表仍显示本地路径', await waitText('.vault-row-path', cloned))
 
   console.log(`\n结果：${pass} 通过，${fail} 失败`)
   for (const w of BrowserWindow.getAllWindows()) w.destroy()

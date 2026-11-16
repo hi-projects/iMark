@@ -308,7 +308,8 @@ async function onSkipChange(): Promise<void> {
           <FolderOpen :size="16" class="vault-row-icon" />
           <span class="vault-row-main">
             <span class="vault-row-name">{{ basename(v) }}</span>
-            <span class="vault-row-path"><bdi>{{ remoteOf(v)?.url || v }}</bdi></span>
+            <!-- 列表副标题始终是本地路径:Git 地址在右侧图标上,悬停可见 -->
+            <span class="vault-row-path"><bdi>{{ v }}</bdi></span>
           </span>
           <span
             v-if="remoteOf(v)"
