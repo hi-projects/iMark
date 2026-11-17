@@ -101,22 +101,26 @@ function inBlockquote(state: EditorState, pos: number): boolean {
   return false
 }
 
+/** 这些块里不画行首「+」:代码块,以及同样是原子块的块级公式 */
+const NO_PLUS_NODES = new Set(['FencedCode', 'CodeBlock', 'MathBlock'])
+
 /**
- * 这一行是否落在代码块里(围栏块或缩进块)。
+ * 这一行是否落在不该画「+」的块里(代码块 / 块级公式)。
  *
- * 代码块内不画「+」:菜单里全是 Markdown 块(表格 / 公式 / 引用…),插进代码里
+ * 代码块内不画:菜单里全是 Markdown 块(表格 / 公式 / 引用…),插进代码里
  * 只会变成一段源码;而且代码块左侧那 1.25em 留白正好是按钮的落点,按钮会压在代码上。
+ * 块级公式同理:公式是原子块,插入 Markdown 块会破坏公式,左侧留白也是按钮落点。
  *
  * 不能只拿行首 resolveInner:缩进代码块的节点从第 5 列才开始,行首落在节点外。
- * 用整行的范围去遍历,块内的每一行(包括空行)都会被 FencedCode / CodeBlock 覆盖到。
+ * 用整行的范围去遍历,块内的每一行(包括空行)都会被覆盖到。
  */
-function inCodeBlock(state: EditorState, from: number, to: number): boolean {
+function inNoPlusBlock(state: EditorState, from: number, to: number): boolean {
   let found = false
   syntaxTree(state).iterate({
     from,
     to,
     enter(node) {
-      if (node.name === 'FencedCode' || node.name === 'CodeBlock') {
+      if (NO_PLUS_NODES.has(node.name)) {
         found = true
         return false
       }
@@ -132,8 +136,8 @@ function buildDecorations(view: EditorView): DecorationSet {
   const line = view.state.doc.lineAt(view.state.selection.main.head)
   // 引用行不画:见 inBlockquote
   if (inBlockquote(view.state, line.from)) return Decoration.none
-  // 代码块内的行不画:见 inCodeBlock
-  if (inCodeBlock(view.state, line.from, line.to)) return Decoration.none
+  // 代码块 / 块级公式内的行不画:见 inNoPlusBlock
+  if (inNoPlusBlock(view.state, line.from, line.to)) return Decoration.none
   // side: -1 让它落在行首第一个字符之前;实际位置由 CSS 绝对定位到行内的空白里
   return Decoration.set([
     Decoration.widget({ widget: new LinePlusWidget(line.number), side: -1 }).range(line.from)

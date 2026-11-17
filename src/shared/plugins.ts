@@ -66,6 +66,11 @@ export interface PluginField {
   targetSecret?: { label: string; placeholder?: string }
   /** targets 字段只允许一行:隐藏「添加远端 / 删除」,空的列表也渲染一行可编辑的空表单 */
   single?: boolean
+  /**
+   * targets 字段编辑的是当前项目的 Git 远端(项目级配置),不是扩展自己的配置。
+   * 值由界面从项目配置读取并写回,不进扩展配置层。
+   */
+  projectGit?: boolean
   /** kind: 'external' 的文件位置与 JSON 指针 */
   external?: {
     /** 展开 `~` 后的绝对路径;与 dirEnv 同时存在时,dirEnv 优先 */

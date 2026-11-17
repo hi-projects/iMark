@@ -28,6 +28,7 @@ import {
 } from './dialogs'
 import {
   readFileContent,
+  restoreImageAssets,
   saveImageAsset,
   trashUnreferencedImageAssets,
   writeFileAtomic
@@ -95,14 +96,20 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     IPC.FileSaveImage,
-    (_e, o: { docPath: string; mime: string; data: Uint8Array }) =>
-      saveImageAsset(o.docPath, o.mime, o.data)
+    (_e, o: { docPath: string; vaultPath?: string | null; mime: string; data: Uint8Array }) =>
+      saveImageAsset(o.docPath, o.vaultPath ?? null, o.mime, o.data)
   )
 
   ipcMain.handle(
     IPC.FileTrashImages,
-    (_e, o: { docPath: string; names: string[] }) =>
-      trashUnreferencedImageAssets(o.docPath, o.names)
+    (_e, o: { docPath: string; vaultPath?: string | null; names: string[] }) =>
+      trashUnreferencedImageAssets(o.docPath, o.vaultPath ?? null, o.names)
+  )
+
+  ipcMain.handle(
+    IPC.FileRestoreImages,
+    (_e, o: { docPath: string; vaultPath?: string | null; names: string[] }) =>
+      restoreImageAssets(o.docPath, o.vaultPath ?? null, o.names)
   )
 
   ipcMain.handle(IPC.ConfirmDiscard, (_e, o: { fileName: string }) => {

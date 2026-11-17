@@ -1,4 +1,5 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
+import type { SyntaxNode } from '@lezer/common'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { Transaction, type ChangeDesc, type EditorState, type Line, type Range, type Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
@@ -15,6 +16,20 @@ import { appStore, getDocDir } from '../../stores/app'
 import { api } from '../../services/api'
 
 const MAX_RETRY = 20
+
+/** 光标/选区是否在块级公式里 —— 决定 wysiwyg 显示公式源码还是渲染块 */
+function selectionInMath(state: EditorState): boolean {
+  for (const range of state.selection.ranges) {
+    for (const bias of [1, -1] as const) {
+      let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, bias)
+      while (node) {
+        if (node.name === 'MathBlock' || node.name === 'DisplayMath') return true
+        node = node.parent
+      }
+    }
+  }
+  return false
+}
 
 /** 这一批变更是否全部由输入法组合产生(CM 给组合派发的输入打的标记是 input.type.compose) */
 function isCompositionChange(update: ViewUpdate): boolean {
@@ -164,8 +179,12 @@ export class WysiwygPlugin {
   private windowBlur = (): void => this.onEditorBlur()
   /** 点击文末空白临时补出来的空段落;用户没输入就撤掉(见 openTailParagraph) */
   private tailDraft: { from: number; to: number; text: string } | null = null
+  /** 选区是否在块级公式里(渲染块 ↔ 源码态);切态时要强制重绘一次 */
+  private mathSource: boolean
+  private mathRepaintScheduled = false
 
   constructor(readonly view: EditorView) {
+    this.mathSource = selectionInMath(view.state)
     this.rebuild()
     this.scheduleCaretGuard()
     /*
@@ -245,9 +264,66 @@ export class WysiwygPlugin {
       // 方向键落点是不是间距行,必须在 rebuild 之前判断(见 gapLineLanding)
       const gapLine = gapNav && !update.docChanged ? this.gapLineLanding(update.state) : null
       this.rebuild()
+      const mathSource = selectionInMath(update.state)
+      if (mathSource !== this.mathSource) {
+        this.mathSource = mathSource
+        // 公式块高度从「整块 widget」变成多行源码,先让 CM 立刻重测一次行高,
+        // 再排一帧强制重绘(见 scheduleMathRepaint)。
+        this.remeasureContent()
+        this.scheduleMathRepaint()
+      }
       this.scheduleCaretGuard(update.startState.selection.main.head, gapNav, gapLine)
       if (update.docChanged) this.scheduleAutoTitle(update)
     }
+  }
+
+  /** 让 CodeMirror 丢掉行高缓存、重新量一遍内容(公式态切换后整块高度会骤变) */
+  private remeasureContent(): void {
+    const view = this.view
+    const viewState = (view as unknown as { viewState?: { mustMeasureContent?: boolean } })
+      .viewState
+    if (viewState) viewState.mustMeasureContent = true
+    view.requestMeasure()
+  }
+
+  /**
+   * 公式在渲染块和源码态之间切换时整块高度会骤变。
+   *
+   * 可横向滚动的公式块在部分 GPU 合成状态下会把旧的绘制层留在原地 ——
+   * 看起来像凭空多了一个一模一样的公式块,点它又没有任何反应(它已经不在 DOM 里)。
+   * 这里让 CodeMirror 重新量一次内容,并给滚动容器一帧极小的不透明度变化,
+   * 强制整层重绘,把残留的旧绘制层清掉。
+   */
+  private scheduleMathRepaint(): void {
+    if (this.mathRepaintScheduled) return
+    this.mathRepaintScheduled = true
+    requestAnimationFrame(() => {
+      this.mathRepaintScheduled = false
+      const view = this.view
+      if (!view.dom.isConnected) return
+      this.remeasureContent()
+      /*
+       * 整份内容重画一次。
+       *
+       * 公式块从「渲染 widget」翻回源码时,行高、DOM 子树和合成层要同时换掉;
+       * 只 requestMeasure / 局部重绘在部分 GPU 合成状态下仍会留下旧公式块的
+       * DOM 高度和绘制层 —— 表现就是源码出现在旧公式下面、旧公式还杵在上面。
+       * setState(同一个 state) 会强制整份文档重画,把旧的 widget 子树、
+       * 高度缓存和合成层一起丢掉。光标/选区在 state 里,滚动位置手动还原。
+       */
+      const scroller = view.scrollDOM
+      const scrollTop = scroller.scrollTop
+      const scrollLeft = scroller.scrollLeft
+      const focused = view.hasFocus
+      try {
+        view.setState(view.state)
+        scroller.scrollTop = scrollTop
+        scroller.scrollLeft = scrollLeft
+        if (focused) view.focus()
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
   }
 
   /**

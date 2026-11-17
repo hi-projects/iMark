@@ -172,6 +172,8 @@ async function main(): Promise<void> {
   )
   check('源码态没有渲染 widget', src.widgets === 0, JSON.stringify(src.widgets))
   check('公式源码有底色标记', src.srcMarks > 0, String(src.srcMarks))
+  const plusInMath = await evalJs<number>(`document.querySelectorAll('.line-plus').length`)
+  check('公式内的行首不画「+」', plusInMath === 0, String(plusInMath))
 
   console.log('\n【2】光标移到文末(渲染态)')
   await key('End', ['control'])
@@ -180,6 +182,8 @@ async function main(): Promise<void> {
   check('整块渲染成一个公式 widget', rendered.widgets === 1, JSON.stringify(rendered.widgets))
   check('widget 里是真正的 KaTeX 输出', rendered.katex === 1, JSON.stringify(rendered.katex))
   check('渲染态也没有列表圆点', rendered.bullets === 0, JSON.stringify(rendered.bullets))
+  const plusOutsideMath = await evalJs<number>(`document.querySelectorAll('.line-plus').length`)
+  check('公式外的行首仍画「+」', plusOutsideMath === 1, String(plusOutsideMath))
   check(
     '公式源码行被折叠(9 行公式 → 8 行 cm-md-math-void)',
     rendered.voidLines === 8,

@@ -22,7 +22,7 @@
  *   xvfb-run -a node verify/run.mjs explorer-new-entry
  */
 
-import { app, BrowserWindow, protocol } from 'electron'
+import { app, BrowserWindow, protocol, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -235,11 +235,11 @@ async function main(): Promise<void> {
     i.inputBaseline !== null &&
     i.siblingBaseline !== null &&
     Math.abs(i.inputBaseline - i.siblingBaseline) <= 1
-  /** 框只画一条底线:上下左右没有边框,没有底色 */
+  /** 框只画一条底线:上下左右没有边框,没有底色。缩放后 1px 可能算成 0.8,不能卡死数值 */
   const underlineOnly = (i: EditInfo): boolean =>
     i.borderTop === 0 &&
     i.borderLeft === 0 &&
-    i.borderBottom === 1 &&
+    (i.borderBottom ?? 0) > 0 &&
     (i.background === 'rgba(0, 0, 0, 0)' || i.background === 'transparent')
   const rowNames = (): Promise<string[]> =>
     evalJs<string[]>(`[...document.querySelectorAll('.explorer-list .explorer-item .explorer-name')].map(e => e.textContent)`)
@@ -547,6 +547,34 @@ async function main(): Promise<void> {
   check('F2 也能重命名文件夹', (await editingValue()) === '新目录', String(await editingValue()))
   await escape()
   await sleep(200)
+
+  // ---------- H ----------
+  console.log('\n【H】工具栏「打开图像目录」:打开仓库根的 .assets')
+  let openedDir: string | null = null
+  ;(shell as unknown as { openPath: unknown }).openPath = async (dir: string) => {
+    openedDir = dir
+    return ''
+  }
+  const assetsDir = join(vault, '.assets')
+  check('点击前 .assets 还不存在', !existsSync(assetsDir))
+  check(
+    '工具栏有「打开图像目录」按钮',
+    await evalJs<boolean>(`(() => {
+      const btn = document.querySelector('.explorer-header button[title="打开图像目录"]')
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`)
+  )
+  const openedOk = await (async () => {
+    for (let i = 0; i < 100; i++) {
+      if (openedDir) return true
+      await sleep(60)
+    }
+    return false
+  })()
+  check('调用系统文件管理器打开 .assets', openedOk && openedDir === assetsDir, String(openedDir))
+  check('目录不存在时先创建出来', existsSync(assetsDir))
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)
   for (const w of BrowserWindow.getAllWindows()) w.destroy()

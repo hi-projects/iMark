@@ -43,17 +43,29 @@ export interface WindowApi {
   readFile(path: string): Promise<ReadResult>
   writeFile(path: string, content: string): Promise<void>
   /**
-   * 把剪贴板图片存到 `docPath` 旁的 `assets/` 目录,返回相对文档目录的引用路径
-   * (如 `assets/image-20261019-143012-ab12cd34.png`)。文档没有路径时调用方应先提示保存。
+   * 把剪贴板图片存进当前仓库根的 `.assets/` 目录,返回相对文档目录的引用路径
+   * (如 `.assets/image-20261019-143012-ab12cd34.png` 或 `../.assets/…`)。
+   * 文档不在仓库里时退回它自己目录下的 `.assets/`。文档没有路径时应先提示保存。
    */
-  saveImageAsset(docPath: string, mime: string, data: Uint8Array): Promise<string>
+  saveImageAsset(
+    docPath: string,
+    vaultPath: string | null,
+    mime: string,
+    data: Uint8Array
+  ): Promise<string>
   /**
-   * 回收 `docPath` 旁 `assets/` 里已经不再被正文引用的粘贴图片。
+   * 回收 `.assets/` 里已经不再被正文引用的粘贴图片(先移入应用回收区,撤销可恢复)。
    *
    * 只在保存成功后调用。`names` 是裸文件名(如 `image-20261019-143012-ab12cd34.png`),
-   * 主进程会复核命名规则、路径,并跳过仍被同目录其他笔记引用的文件。
+   * 主进程会复核命名规则、路径,并跳过仍被仓库里其他笔记引用的文件。
    */
-  trashImageAssets(docPath: string, names: string[]): Promise<void>
+  trashImageAssets(docPath: string, vaultPath: string | null, names: string[]): Promise<void>
+  /**
+   * 撤销删除后把图片从应用回收区搬回 `.assets/`。
+   *
+   * 正文里重新出现受管图片引用时调用;目标已存在时不覆盖。
+   */
+  restoreImageAssets(docPath: string, vaultPath: string | null, names: string[]): Promise<void>
   confirmDiscard(fileName: string): Promise<'save' | 'discard' | 'cancel'>
   getSettings(): Promise<Settings>
   saveSettings(s: Partial<Settings>): Promise<Settings>

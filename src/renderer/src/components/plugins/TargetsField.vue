@@ -34,6 +34,28 @@ const emit = defineEmits<{
 const isSingle = computed(() => props.field.single === true)
 
 /**
+ * 项目级 Git 远端的字段:分支只填一次。
+ *
+ * 本地分支跟随远程分支,不再单独给一个输入框;读取旧配置时远端分支为空,
+ * 那就显示本地分支(两者本来就同名)。
+ */
+const projectGit = computed(() => props.field.projectGit === true)
+
+function branchOf(target: PluginTarget): string {
+  const remote = target.remoteBranch.trim()
+  return remote || (projectGit.value ? target.localBranch.trim() : '')
+}
+
+function setBranch(index: number, value: string): void {
+  update(
+    index,
+    projectGit.value
+      ? { remoteBranch: value, localBranch: value }
+      : { remoteBranch: value }
+  )
+}
+
+/**
  * single 模式下配置可能还是空数组(旧版本删掉过所有行):
  * 合成一行稳定的默认目标,用户一编辑就会写回配置。id 固定为 default,
  * 密钥槽位也就固定下来。
@@ -136,7 +158,7 @@ function missingFields(target: PluginTarget): string[] {
   const url = target.url.trim()
   const missing: string[] = []
   if (!url) missing.push('远程仓库')
-  if (!target.localBranch.trim()) missing.push('本地分支')
+  if (!projectGit.value && !target.localBranch.trim()) missing.push('本地分支')
   if (target.auth === 'ssh') return missing
   if (url && !/^https?:\/\//i.test(url)) return missing
   if (target.auth === 'password' && !target.username.trim()) missing.push('账号')
@@ -197,7 +219,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
       </div>
 
       <div class="plugin-target-row">
-        <label class="plugin-target-cell">
+        <label v-if="!projectGit" class="plugin-target-cell">
           <span>本地分支</span>
           <input
             class="plugin-input"
@@ -212,9 +234,9 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
           <input
             class="plugin-input"
             type="text"
-            placeholder="选填（默认与本地分支同名）"
-            :value="target.remoteBranch"
-            @change="update(i, { remoteBranch: text($event) })"
+            :placeholder="projectGit ? '如 main（本地同名）' : '选填（默认与本地分支同名）'"
+            :value="branchOf(target)"
+            @change="setBranch(i, text($event))"
           />
         </label>
       </div>

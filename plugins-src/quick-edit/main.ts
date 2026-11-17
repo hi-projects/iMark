@@ -7,6 +7,7 @@
  * 插入点规则:
  * - 默认落在光标所在行的下一行;
  * - 光标停在表格里时,落到整张表的下方(在表格中间插内容会把表写坏);
+ * - 光标行是空行、上面已经是空行时,表格直接占用这一行,不再补前导空行;
  * - 下一行本来就是空行时,不再补第二个空行;
  * - 光标放进第一个表头单元格。
  */
@@ -84,7 +85,15 @@ async function insertTable(args: LineMenuArgs | undefined): Promise<void> {
   const at = document.lineAt(tableEnd === null ? lineIndex : tableEnd)
   const atOffset = document.offsetAt(at.range.end)
 
-  const lead = tableEnd === null ? '\n' : '\n\n'
+  // 光标行是空行、上面已经是空行(或已经是文首)时,表格直接占用这一行:
+  // 再补一条前导换行会多出一条空行,之后在上方正文行尾按 Delete 时,
+  // 表格会被当成「隔着一行空行」而不是紧贴的块,无法一次选中。
+  const atBlank = at.text.trim().length === 0
+  const prev = at.lineNumber > 0 ? document.lineAt(at.lineNumber - 1) : null
+  const prevBlank = prev === null || prev.text.trim().length === 0
+  // 上一行以段内硬换行结束:表格就落在这一段里,不插空行(距离按行间距)
+  const prevHardBreak = prev !== null && /(?: {2,}|\\)$/.test(prev.text)
+  const lead = tableEnd === null ? (atBlank && (prevBlank || prevHardBreak) ? '' : '\n') : '\n\n'
   // 下一行本来就是空行时不再补:补了表格与正文之间会多出一条空行
   const next = at.lineNumber + 1 < document.lineCount ? document.lineAt(at.lineNumber + 1) : null
   const tail = next && next.text === '' ? '' : '\n'

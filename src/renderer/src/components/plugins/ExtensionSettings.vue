@@ -31,6 +31,9 @@ import {
 } from '../../services/extensionService'
 import { settingsNav } from '../../services/settingsNav'
 import { notifyError } from '../../services/notice'
+import { appStore } from '../../stores/app'
+import { loadVaultGitRemotes, saveVaultGitRemote } from '../../services/vaultService'
+import type { VaultGitRemote } from '@shared/types'
 import {
   pluginStatusLabel,
   pluginStatusMessage,
@@ -42,6 +45,145 @@ import PluginField from './PluginField.vue'
 
 /** 选中哪个扩展由左侧导航决定(settingsNav.pluginId) */
 const selected = computed(() => extensionById(settingsNav.pluginId ?? ''))
+
+// ---------- 项目级 Git 远端 ----------
+
+/**
+ * `projectGit` 字段编辑的是当前仓库的项目远端,不是扩展配置。
+ *
+ * 数据源与仓库选择页的「Git 设置」、克隆流程完全相同(settings.projectGit +
+ * 项目级密钥库),这样三个入口不会各存一份、互相对不上。扩展端通过
+ * `imark.project.getGitRemote()` 读同一份配置。
+ */
+const PROJECT_TARGET_ID = 'project'
+
+const projectRemote = ref<VaultGitRemote | null>(null)
+
+/** 选中扩展的配置里有项目远端字段吗;没有就不必去读 */
+const projectGitField = computed(
+  () => selected.value?.descriptor.settingsFields.find(field => field.projectGit) ?? null
+)
+
+async function refreshProjectRemote(): Promise<void> {
+  const path = appStore.vaultPath
+  if (!path) {
+    projectRemote.value = null
+    return
+  }
+  try {
+    projectRemote.value = (await loadVaultGitRemotes([path]))[path] ?? null
+  } catch (err) {
+    // 读不到远端不该让整页设置打不开:表单按「未配置」显示
+    console.error('[iMark] 读取项目 Git 远端失败', err)
+    projectRemote.value = null
+  }
+}
+
+watch(
+  projectGitField,
+  field => {
+    if (field) void refreshProjectRemote()
+  },
+  { immediate: true }
+)
+watch(
+  () => appStore.vaultPath,
+  () => {
+    if (projectGitField.value) void refreshProjectRemote()
+  }
+)
+
+function projectTargets(): PluginTarget[] {
+  const remote = projectRemote.value
+  if (!remote) return []
+  return [
+    {
+      id: PROJECT_TARGET_ID,
+      url: remote.url,
+      auth: remote.auth,
+      username: remote.username,
+      localBranch: remote.localBranch,
+      remoteBranch: remote.remoteBranch
+    }
+  ]
+}
+
+/**
+ * 把字段提交上来的值先落到界面状态,再异步写项目配置。
+ *
+ * 不能写完再回读:配置每次失焦保存一次,回读是异步的,用户接着改下一格时
+ * 旧的回读结果会把刚输入的值覆盖掉(实测:改完本地分支立刻改远程分支,
+ * 本地分支又变回 main)。这里与主进程的归一规则保持一致。
+ */
+function applyProjectTarget(target: PluginTarget | undefined): void {
+  const url = target?.url.trim() ?? ''
+  if (!target || !url) {
+    projectRemote.value = null
+    return
+  }
+  // 分支只填一次:本地分支跟随远程分支,留空默认 main
+  const branch = target.remoteBranch.trim() || target.localBranch.trim() || 'main'
+  projectRemote.value = {
+    url,
+    auth: target.auth,
+    username: target.username.trim(),
+    localBranch: branch,
+    remoteBranch: branch,
+    hasSecret: projectRemote.value?.hasSecret ?? false
+  }
+}
+
+/** 把 targets 字段提交到项目配置;地址清空 = 移除该项目的远端配置 */
+async function commitProjectTarget(value: unknown): Promise<void> {
+  const path = appStore.vaultPath
+  if (!path) {
+    notifyError('保存远端配置', new Error('未打开仓库'))
+    return
+  }
+  const target = Array.isArray(value) ? (value as PluginTarget[])[0] : undefined
+  applyProjectTarget(target)
+  const remote = projectRemote.value
+  try {
+    if (!remote) {
+      await saveVaultGitRemote(path, null)
+      return
+    }
+    await saveVaultGitRemote(path, {
+      url: remote.url,
+      auth: remote.auth,
+      username: remote.username,
+      localBranch: remote.localBranch,
+      remoteBranch: remote.remoteBranch
+    })
+  } catch (err) {
+    notifyError('保存远端配置', err)
+    await refreshProjectRemote()
+  }
+}
+
+/** 项目远端的密钥写入项目级密钥库;null = 清除 */
+async function commitProjectSecret(value: string | null): Promise<void> {
+  const path = appStore.vaultPath
+  const remote = projectRemote.value
+  if (!path || !remote) {
+    notifyError('保存远端密钥', new Error('请先填写远程地址'))
+    return
+  }
+  try {
+    await saveVaultGitRemote(path, {
+      url: remote.url,
+      auth: remote.auth,
+      username: remote.username,
+      localBranch: remote.localBranch,
+      remoteBranch: remote.remoteBranch,
+      secret: value ?? ''
+    })
+    projectRemote.value = { ...remote, hasSecret: Boolean(value) }
+  } catch (err) {
+    notifyError('保存远端密钥', err)
+    await refreshProjectRemote()
+  }
+}
 
 // 日志与运行状态只存在主进程内存里:设置页每次打开、每次切换扩展都重新拉一次,
 // 否则「调试」看到的还是应用启动时的旧快照。
@@ -87,6 +229,7 @@ function fullKey(field: PluginFieldSpec): string {
 }
 
 function fieldValue(field: PluginFieldSpec): unknown {
+  if (field.projectGit) return projectTargets()
   return selected.value?.config[fullKey(field)] ?? field.default
 }
 
@@ -118,6 +261,10 @@ const fieldGroups = computed(() => {
 async function commit(field: PluginFieldSpec, value: unknown): Promise<void> {
   // 外部设置由字段组件直接写目标文件,不能进应用的配置存储
   if (field.kind === 'external') return
+  if (field.projectGit) {
+    await commitProjectTarget(value)
+    return
+  }
   const extension = selected.value
   if (!extension) return
   await saveExtensionField(extension.descriptor.id, fullKey(field), value)
@@ -150,7 +297,11 @@ function targetSecrets(extensionId: string, field: PluginFieldSpec): Record<stri
   if (!Array.isArray(value)) return out
   for (const target of value as PluginTarget[]) {
     const slot = targetSecretSlot(target)
-    out[slot] = selected.value?.secrets[secretKey(extensionId, field.key, slot)] ?? ''
+    out[slot] = field.projectGit
+      ? projectRemote.value?.hasSecret
+        ? '••••••••'
+        : ''
+      : (selected.value?.secrets[secretKey(extensionId, field.key, slot)] ?? '')
   }
   return out
 }
@@ -163,6 +314,16 @@ function saveSecret(field: PluginFieldSpec, targetId: string | null, value: stri
     secretKey(extension.descriptor.id, field.key, targetId ?? undefined),
     value
   )
+}
+
+/** targets 字段的逐行动作(密钥保存/清除)按字段来源分流:项目远端走项目密钥库 */
+function saveTargetSecret(
+  field: PluginFieldSpec,
+  targetId: string,
+  value: string | null
+): void {
+  if (field.projectGit) void commitProjectSecret(value)
+  else saveSecret(field, targetId, value)
 }
 
 // ---------- 动作 ----------
@@ -398,8 +559,8 @@ const busy = computed(() => extensionStore.busy !== null)
           @run-action="runTargetAction"
           @save-secret="v => saveSecret(field, null, v)"
           @clear-secret="saveSecret(field, null, null)"
-          @save-target-secret="(targetId, v) => saveSecret(field, targetId, v)"
-          @clear-target-secret="targetId => saveSecret(field, targetId, null)"
+          @save-target-secret="(targetId, v) => saveTargetSecret(field, targetId, v)"
+          @clear-target-secret="targetId => saveTargetSecret(field, targetId, null)"
         />
       </section>
 

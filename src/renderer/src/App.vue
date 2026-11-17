@@ -256,6 +256,9 @@ onMounted(async () => {
   // 启动意图已定:这时才允许选择页出现。恢复仓库的路径此时 view 已是 editor,
   // 选择页从来不会被渲染;停在选择页的路径则在这里一次性显示出来。
   appStore.booted = true
+  // 主进程可能按「恢复上次仓库」先以最大化开窗,但恢复失败后界面仍停在选择页。
+  // 选择页必须是启动尺寸且不可最大化,这里把窗口状态拉回来(正常启动是无操作)。
+  if (appStore.view === 'picker') api.setWindowView('picker')
   offMenu = api.onMenuCommand(id => void handleMenuCommand(id))
   api.onSaveBeforeClose(() => void saveBeforeClose())
   // 运行中主进程递来一个文件(另一个实例打开同一仓库时转交过来)

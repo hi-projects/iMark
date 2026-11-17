@@ -130,10 +130,6 @@ const configOf = (): Record<string, unknown> => ({
   [configKey('commitMessage')]: 'sync: {time}',
   [configKey('authorName')]: 'iMark',
   [configKey('authorEmail')]: 'imark@local',
-  [configKey('autoInitRepo')]: true,
-  [configKey('initBranch')]: 'main',
-  [configKey('writeGitignore')]: false,
-  [configKey('writeReadme')]: false,
   // 空的手动地址 = 直连，避免宿主机环境变量里的代理影响认证用例
   [configKey('proxyMode')]: 'manual',
   [configKey('proxyUrl')]: ''
@@ -168,6 +164,7 @@ async function main(): Promise<void> {
     await rm(dir, { recursive: true, force: true })
   }
   await mkdir(vault, { recursive: true })
+  await git(vault, ['init', '--initial-branch=main'])
   await mkdir(remote, { recursive: true })
   await git(remote, ['init', '--bare', '--initial-branch=main'])
   await writeFile(note, '# 第一篇\n\n同步我。\n', 'utf8')

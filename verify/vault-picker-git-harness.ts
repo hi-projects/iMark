@@ -1,9 +1,9 @@
 /**
- * 仓库选择页：从 Git 克隆 + 项目级远端管理。
+ * 仓库选择页：从远端克隆 + 项目级远端管理。
  *
  * 用户可见的两件事：
- *   A 选择页是 Obsidian 式左右结构：左边「最近仓库」，右边三段动作；
- *   B 右侧「从 Git 克隆仓库」能把远端克隆成本地仓库，打开它，并且**顺手**把
+ *   A 选择页是 Obsidian 式左右结构：左边「最近仓库」，右边三个动作图标；
+ *   B 右侧「从远端克隆仓库」能把远端克隆成本地仓库，打开它，并且**顺手**把
  *     这一份远端写进项目级 Git 配置（不再写进「远程同步」扩展的 workspace 覆盖层）。
  *
  * 后半段验证「项目级管理」本身：左侧项目行的 Git 设置能读回刚写的远端、
@@ -229,25 +229,49 @@ async function main(): Promise<void> {
 
   // ---------- A. 左右结构 ----------
 
-  console.log('\n【A】选择页是左右结构，右侧有三段动作')
+  console.log('\n【A】选择页是左右结构，右侧有三个动作图标')
   check('启动停在仓库选择页', await waitFor(`document.querySelector('.vault-picker')`))
   check('左侧最近仓库列表存在', await waitFor(`document.querySelector('.vault-picker-sidebar .vault-picker-list')`))
   check('右侧动作区存在', await waitFor(`document.querySelector('.vault-picker-main .vault-picker-actions')`))
-  const headings = await evalJs<string[]>(
-    `[...document.querySelectorAll('.vault-picker-action h2')].map(el => el.textContent.trim())`
+  const labels = await evalJs<string[]>(
+    `[...document.querySelectorAll('.vault-picker-actions button')].map(el => el.getAttribute('aria-label') || '')`
   )
   check(
-    '三段动作：克隆 / 打开 / 新建',
-    JSON.stringify(headings) ===
-      JSON.stringify(['从 Git 克隆仓库', '打开文件夹作为仓库', '创建新仓库']),
-    JSON.stringify(headings)
+    '三个动作图标：克隆 / 打开 / 新建',
+    JSON.stringify(labels) ===
+      JSON.stringify(['从远端克隆仓库', '打开文件夹作为仓库', '创建新仓库']),
+    JSON.stringify(labels)
   )
+  const actionLabels = await evalJs<string[]>(
+    `[...document.querySelectorAll('.vault-picker-actions button')].map(el => el.textContent.trim())`
+  )
+  check(
+    '三个图标带标注：克隆 / 打开 / 创建',
+    JSON.stringify(actionLabels) === JSON.stringify(['克隆', '打开', '创建']),
+    JSON.stringify(actionLabels)
+  )
+  const subtitle = await evalJs<string>(
+    `document.querySelector('.vault-picker-subtitle')?.textContent.trim() ?? ''`
+  )
+  check('副标题改成「克隆、打开、创建一个仓库」', subtitle === '克隆、打开、创建一个仓库', subtitle)
+  const skipCentered = await evalJs<boolean>(
+    `document.querySelector('.vault-picker-skip')
+      ? getComputedStyle(document.querySelector('.vault-picker-skip')).justifyContent === 'center'
+      : false`
+  )
+  check('启动选项居中', skipCentered)
   check('还没有最近仓库时列表为空', await waitFor(`document.querySelector('.vault-picker-empty')`))
 
-  // ---------- B. 从 Git 克隆 ----------
+  // ---------- B. 从远端克隆 ----------
 
-  console.log('\n【B】从 Git 克隆：真克隆 + 自动写入项目远端')
+  console.log('\n【B】从远端克隆：真克隆 + 自动写入项目远端')
   check('点击「克隆」进入表单', (await click('[data-action="start-clone"]')) && (await waitFor(`document.querySelector('[data-field="clone-url"]')`)))
+  check(
+    '克隆表单带滑入动画',
+    await evalJs<boolean>(
+      `document.querySelector('.vault-picker-form')?.classList.contains('vault-picker-pane-forward')`
+    )
+  )
   check('填写仓库地址', await setField('[data-field="clone-url"]', cloneUrl))
   check(
     '文件夹名自动从地址推导（source-remote）',
@@ -258,6 +282,10 @@ async function main(): Promise<void> {
   check('填写分支', await setField('[data-field="clone-branch"]', 'main'))
   check('认证方式保持访问令牌', await setField('[data-field="clone-auth"]', 'token'))
   check('填写访问令牌', await setField('[data-field="clone-secret"]', 'fake-token'))
+  const authAppearance = await evalJs<string>(
+    `getComputedStyle(document.querySelector('[data-field="clone-auth"]')).appearance`
+  )
+  check('认证方式下拉去掉原生外观（文字与 placeholder 对齐）', authAppearance === 'none', authAppearance)
   check('点击「克隆并打开」', await click('[data-action="clone-submit"]'))
 
   const enteredEditor = await waitFor(`document.querySelector('.app-shell')`, 30_000)
@@ -266,7 +294,8 @@ async function main(): Promise<void> {
   check(
     '笔记内容与远端一致',
     existsSync(join(cloned, '笔记.md')) &&
-      (await readFile(join(cloned, '笔记.md'), 'utf8')) === noteBody
+      // 检出时的换行随 core.autocrlf 走(Windows 默认转 CRLF),断言归一后再比
+      (await readFile(join(cloned, '笔记.md'), 'utf8')).replace(/\r\n/g, '\n') === noteBody
   )
   check(
     '克隆结果登记的仓库就是克隆目录',
@@ -362,6 +391,168 @@ async function main(): Promise<void> {
   check('令牌也清掉了', (await getSecret(projectGitSecretKey(cloned, 'token'))) === null)
   check('列表上的 Git 标记消失', await waitFor(`!document.querySelector('.vault-row-git')`))
   check('列表仍显示本地路径', await waitText('.vault-row-path', cloned))
+
+  // ---------- F. 扩展设置页：远端仓库字段读写同一份项目配置 ----------
+
+  console.log('\n【F】扩展设置的「远端仓库」直接读写项目级配置')
+
+  /** 打开设置页并切到「远程同步」;返回远端仓库字段是否就绪 */
+  async function openGitSyncSettings(): Promise<boolean> {
+    win.webContents.send(IPC.MenuCommand, 'view:settings')
+    const listed = await waitFor(
+      `[...document.querySelectorAll('.settings-nav-item')].some(x => x.textContent.includes('远程同步'))`
+    )
+    if (!listed) return false
+    const clicked = await evalJs<boolean>(`(() => {
+      const b = [...document.querySelectorAll('.settings-nav-item')]
+        .find(x => x.textContent.includes('远程同步'))
+      if (!b) return false
+      b.click()
+      return true
+    })()`)
+    return clicked && (await waitFor(`document.querySelector('.plugin-target')`))
+  }
+
+  check('重新打开克隆出来的仓库', (await click('.vault-row')) && (await waitFor(`document.querySelector('.app-shell')`, 30_000)))
+  check('打开设置页并切到「远程同步」', await openGitSyncSettings())
+  const sections = await evalJs<string[]>(
+    `[...document.querySelectorAll('.plugin-group-title')].map(el => el.textContent.trim())`
+  )
+  check('有「远端仓库」分组', sections.includes('远端仓库'), JSON.stringify(sections))
+  check(
+    '单远端：不显示添加/删除按钮',
+    await evalJs<boolean>(
+      `!document.querySelector('.plugin-btn-add') &&
+       !document.querySelector('.plugin-icon-btn[aria-label="删除远端"]')`
+    )
+  )
+  check(
+    '远端行有「测试连接」动作',
+    await evalJs<boolean>(
+      `[...document.querySelectorAll('.plugin-target-actions button')].some(b => b.title === '测试连接')`
+    )
+  )
+
+  /** 按格子上的标题给 targets 字段赋值(输入框/下拉都走原型 setter) */
+  const setTargetField = (label: string, value: string): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const cell = [...document.querySelectorAll('.plugin-target-cell')]
+        .find(c => (c.querySelector('span')?.textContent ?? '').trim() === ${JSON.stringify(label)})
+      const el = cell?.querySelector('input, select')
+      if (!el) return false
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+
+  const pluginUrl = 'https://example.com/settings/notes.git'
+  check('填写远程地址', await setTargetField('远程仓库', pluginUrl))
+  check(
+    '地址写进项目级配置（与选择页同一份）',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        const t = projectConfigOf(cloned)
+        if (t?.url === pluginUrl) return true
+        await sleep(60)
+      }
+      return false
+    })(),
+    JSON.stringify(projectConfigOf(cloned))
+  )
+  check(
+    '没有写进扩展自己的配置层',
+    getSettingsSync()?.extensions?.[EXT_ID]?.config?.[`${EXT_ID}.targets`] === undefined,
+    JSON.stringify(getSettingsSync()?.extensions?.[EXT_ID]?.config)
+  )
+
+  check(
+    '只保留远程分支输入框',
+    await evalJs<boolean>(
+      `![...document.querySelectorAll('.plugin-target-cell > span')]
+        .some(x => x.textContent.trim() === '本地分支')`
+    )
+  )
+  check('填写远程分支', await setTargetField('远程分支', 'dev'))
+  check(
+    '本地分支跟随远程分支写入项目级配置',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        const t = projectConfigOf(cloned)
+        if (t?.localBranch === 'dev' && t?.remoteBranch === 'dev') return true
+        await sleep(60)
+      }
+      return false
+    })(),
+    JSON.stringify(projectConfigOf(cloned))
+  )
+
+  check('填写访问令牌', await setTargetField('访问令牌', 'plugin-token'))
+  check(
+    '令牌写进项目级密钥槽位',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        if ((await getSecret(projectGitSecretKey(cloned, 'token'))) === 'plugin-token') return true
+        await sleep(80)
+      }
+      return false
+    })(),
+    String(await getSecret(projectGitSecretKey(cloned, 'token')))
+  )
+  check('界面显示已保存的密钥', await waitFor(`document.querySelector('.plugin-target .plugin-secret-on')`))
+
+  check(
+    '关闭设置页',
+    (await evalJs<boolean>(`(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      return true
+    })()`)) && (await waitFor(`!document.querySelector('.settings-mask')`))
+  )
+  check('重新打开设置页并切到「远程同步」', await openGitSyncSettings())
+  check(
+    '地址从项目配置回填',
+    await waitFor(`(() => {
+      const cell = [...document.querySelectorAll('.plugin-target-cell')]
+        .find(c => (c.querySelector('span')?.textContent ?? '').trim() === '远程仓库')
+      return cell?.querySelector('input')?.value === ${JSON.stringify(pluginUrl)}
+    })()`)
+  )
+  const reloaded = await evalJs<{ remote: string; mask: boolean }>(`(() => {
+    const cell = [...document.querySelectorAll('.plugin-target-cell')]
+      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === '远程分支')
+    return {
+      remote: cell?.querySelector('input')?.value ?? '',
+      mask: !!document.querySelector('.plugin-target .plugin-secret-on')
+    }
+  })()`)
+  check(
+    '回填远程分支与密钥状态',
+    reloaded.remote === 'dev' && reloaded.mask,
+    JSON.stringify(reloaded)
+  )
+
+  check(
+    '点击「清除」清掉项目级令牌',
+    (await evalJs<boolean>(`(() => {
+      const b = [...document.querySelectorAll('.plugin-target .plugin-btn')]
+        .find(x => x.textContent.trim() === '清除')
+      if (!b) return false
+      b.click()
+      return true
+    })()`)) &&
+      (await (async () => {
+        const until = Date.now() + 8000
+        while (Date.now() < until) {
+          if ((await getSecret(projectGitSecretKey(cloned, 'token'))) === null) return true
+          await sleep(80)
+        }
+        return false
+      })())
+  )
 
   console.log(`\n结果：${pass} 通过，${fail} 失败`)
   for (const w of BrowserWindow.getAllWindows()) w.destroy()

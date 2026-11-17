@@ -337,6 +337,7 @@ onDidChangeTheme: Event<ColorTheme>
 | `endpointModel` | `endpoints` 每行的模型输入说明 |
 | `targetSecret` | `targets` / `endpoints` 每行独立密钥的标签与占位 |
 | `single` | `targets` 只允许一行：隐藏「添加/删除」，空列表也显示一行可编辑的空表单 |
+| `projectGit` | `targets` + `single: true`：字段读写**当前仓库的项目 Git 远端**（与克隆、仓库选择页的「Git 设置」同一份配置），而不是扩展自己的配置层 |
 | `scope` | `global`（默认）或 `workspace` |
 | `file` / `dirEnv` / `pointer` / `secret` | 仅 `kind: "external"`，见 §5.3 |
 

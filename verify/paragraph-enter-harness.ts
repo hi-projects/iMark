@@ -12,7 +12,8 @@
  *     一条),否则标题后面一按回车就出现三条空行;标题后面只剩空行(文末)
  *     时只把光标挪到空行上,源码不动。
  *   - Shift+回车:硬换行(行尾反斜杠),两行仍是同一段;iMark 里是行间距,
- *     别的编辑器里是段内换行。列表 / 引用里把容器前缀带到下一行。
+ *     别的编辑器里是段内换行。列表 / 引用里把容器前缀带到下一行。块级公式
+ *     开头行同样补硬换行标记,不把普通换行塞进公式。
  *   - 新段里退格:把这次分段收回 —— 补出来的空行连同段落分隔一起删掉,光标
  *     回到上一段行尾(不是只退到空行上、要再按一次)。连按多次回车生成的多条
  *     空段落一次只收回一条。代码块里的空行是代码内容,仍按普通退格逐字符删。
@@ -25,6 +26,8 @@
  *     文档第一行行首回车只补一条换行:新段就是文件第一行,上面没有上一段要分隔,
  *     多补出来的那条纯结构空行在点击时会撑开、把下面的正文顶下去。
  *   - 列表项回车仍是下一项;代码块 / 引用 / 表格 / 公式里的回车保持原样。
+ *   - 块级公式的**开头行**例外:光标在 `$$` 前面回车时,在公式前起新段,而不是
+ *     把换行插进公式内容里(那只会让公式往下挪一点)。
  *
  * 跑法(在仓库根目录,改了 src/renderer/ 先 npx electron-vite build):
  *   node verify/run.mjs paragraph-enter
@@ -1165,6 +1168,249 @@ async function main(): Promise<void> {
       JSON.stringify({ before: topsBefore, after: after.map(l => l.top) })
     )
   }
+
+  console.log('\n【AD】段内硬换行后输入列表 —— 距离按行间距')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await type('- x')
+  {
+    const lines = await domLines()
+    const pitch = lines[1] ? lines[1].top - lines[0].top : -1
+    const listH = lines[1]?.height ?? 0
+    check(
+      '列表项与上一行按行间距排(没有列表块间距)',
+      Math.abs(pitch - listH) <= 1,
+      JSON.stringify({ pitch, listH, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.height}`) })
+    )
+  }
+
+  console.log('\n【AE】段内硬换行后插入代码块 —— 距离按行间距')
+  await loadDoc('')
+  await type('啊')
+  await key('Enter', ['shift'])
+  await type('```js')
+  await key('Enter')
+  {
+    const lines = await domLines()
+    check(
+      '代码块紧接硬换行时上一行没有块间距',
+      (lines[0]?.height ?? 999) < 44,
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}`))
+    )
+  }
+
+  console.log('\n【M1】块级公式行首回车 —— 在公式前起新段,不往公式里塞换行')
+  await loadDoc('啊\n\n$$\ndx = 1\n$$\n')
+  await setCaret(3) // 「$$」行首
+  await key('Enter')
+  {
+    const doc = await docText()
+    const lines = await domLines()
+    check('源码:公式前多出一条空段落', doc === '啊\n\n\n\n$$\ndx = 1\n$$\n', JSON.stringify(doc))
+    const para = lines[3]
+    check(
+      '公式上面的新段按整行留出(不收紧成结构空行)',
+      !!para && para.text === '' && !/cm-md-block-gap/.test(para.cls),
+      para?.cls ?? 'none'
+    )
+    const caret = await caretInfo()
+    check('光标落在新段里(不在 $$ 行首)', caret.line === 4 && caret.text === '', JSON.stringify(caret))
+  }
+
+  console.log('\n【M5】文档第一行就是块级公式 —— 行首回车,新段是第一行')
+  await loadDoc('$$\ndx = 1\n$$\n')
+  await setCaret(0)
+  await key('Enter')
+  {
+    const doc = await docText()
+    check('源码:新段在第一行,公式上面隔一条空行', doc === '\n\n$$\ndx = 1\n$$\n', JSON.stringify(doc))
+    const lines = await domLines()
+    check(
+      '第一行是新段,按整行留出',
+      lines.length > 0 && lines[0]?.text === '' && /cm-md-empty-paragraph/.test(lines[0].cls),
+      lines[0]?.cls ?? 'none'
+    )
+    const caret = await caretInfo()
+    check('光标落在第一行的新段里', caret.line === 1 && caret.text === '', JSON.stringify(caret))
+  }
+
+  console.log('\n【M7】Shift+回车在块级公式前 —— 补硬换行,不把换行塞进公式')
+  await loadDoc('啊\n\n$$\ndx = 1\n$$\n')
+  await setCaret(3)
+  await key('Enter', ['shift'])
+  {
+    const doc = await docText()
+    const lines = await domLines()
+    check('源码:公式前是硬换行行,不是普通空行', doc === '啊\n\n\\\n$$\ndx = 1\n$$\n', JSON.stringify(doc))
+    const para = lines[2]
+    check(
+      '公式上面的行按正文行留出(硬换行标记在源码里)',
+      !!para && para.text === '' && !/cm-md-block-gap/.test(para.cls),
+      para?.cls ?? 'none'
+    )
+    const caret = await caretInfo()
+    check(
+      '光标停在硬换行行、标记之前',
+      caret.line === 3 && caret.head === caret.from,
+      JSON.stringify(caret)
+    )
+  }
+  await type('X')
+  {
+    const doc = await docText()
+    const lines = await domLines()
+    check('新行输入后标记仍在行尾', doc === '啊\n\nX\\\n$$\ndx = 1\n$$\n', JSON.stringify(doc))
+    check(
+      '反斜杠不出现在可见正文里',
+      !lines.some(l => l.text.includes('\\')),
+      JSON.stringify(lines.map(l => l.text))
+    )
+  }
+  check('点击第一段', await clickDomLine(0))
+  await sleep(500)
+  {
+    const info = await evalJs<{ widgets: number; src: number; voidLines: number }>(`
+      (() => ({
+        widgets: document.querySelectorAll('.cm-md-math-display').length,
+        src: document.querySelectorAll('.cm-md-math-src').length,
+        voidLines: document.querySelectorAll('.cm-md-math-void').length
+      }))()`)
+    check('公式仍只有一个渲染块', info.widgets === 1 && info.src === 0, JSON.stringify(info))
+  }
+
+  console.log('\n【M8】正文行首 Shift+回车 —— 光标落在标记前,输入后反斜杠仍在行尾')
+  await loadDoc('甲\n\n乙\n')
+  await setCaret(3)
+  await key('Enter', ['shift'])
+  {
+    const caret = await caretInfo()
+    check('光标停在新行、标记之前', caret.line === 3 && caret.head === caret.from, JSON.stringify(caret))
+  }
+  await type('X')
+  {
+    const doc = await docText()
+    const lines = await domLines()
+    check('源码:输入的字在标记前', doc === '甲\n\nX\\\n乙\n', JSON.stringify(doc))
+    check(
+      '反斜杠不出现在可见正文里',
+      !lines.some(l => l.text.includes('\\')),
+      JSON.stringify(lines.map(l => l.text))
+    )
+  }
+
+  console.log('\n【M9】公式浮动预览离开公式后彻底隐藏 —— 不留点不动的“第二个公式”')
+  await loadDoc('啊\n\n$$\ndx = 1\n$$\n')
+  const widgetInfo = () =>
+    evalJs<{ widgets: number; src: number; voidLines: number }>(`
+      (() => ({
+        widgets: document.querySelectorAll('.cm-md-math-display').length,
+        src: document.querySelectorAll('.cm-md-math-src').length,
+        voidLines: document.querySelectorAll('.cm-md-math-void').length
+      }))()`)
+  const clickAt = async (selector: string, fx = 0.5, fy = 0.5): Promise<boolean> => {
+    const spot = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: Math.round(r.left + r.width * ${fx}), y: Math.round(r.top + r.height * ${fy}) }
+      })()`)
+    if (!spot) return false
+    wc.focus()
+    wc.sendInputEvent({ type: 'mouseDown', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: spot.x, y: spot.y, button: 'left', clickCount: 1 })
+    await sleep(350)
+    return true
+  }
+  const previewState = () =>
+    evalJs<{ display: string; visibility: string; pointerEvents: string } | null>(`(() => {
+      const el = document.querySelector('.cm-md-math-preview')
+      if (!el) return null
+      const s = getComputedStyle(el)
+      return { display: s.display, visibility: s.visibility, pointerEvents: s.pointerEvents }
+    })()`)
+  const beforeGeo = await evalJs<{ top: number; lineTop: number } | null>(`(() => {
+    const w = document.querySelector('.cm-md-math-display')
+    const line = w?.closest('.cm-line')
+    if (!w || !line) return null
+    const wr = w.getBoundingClientRect()
+    const lr = line.getBoundingClientRect()
+    return { top: wr.top, lineTop: lr.top }
+  })()`)
+  check('点到公式上', (await waitFor(`document.querySelector('.cm-md-math-display')`)) && (await clickAt('.cm-md-math-display')))
+  {
+    const preview = await previewState()
+    check(
+      '光标在公式里时浮动预览可见',
+      preview?.display === 'block' && preview.visibility === 'visible',
+      JSON.stringify(preview)
+    )
+    const srcTop = await evalJs<number | null>(
+      `document.querySelector('.cm-md-math-src-line')?.getBoundingClientRect().top ?? null`
+    )
+    check(
+      '源码块没有落到旧公式块下方(没有留下旧高度)',
+      !!beforeGeo && srcTop !== null && srcTop <= beforeGeo.top + 2,
+      JSON.stringify({ beforeGeo, srcTop })
+    )
+  }
+  check('点到公式外的正文', await clickDomLine(0))
+  {
+    const info = await widgetInfo()
+    const preview = await previewState()
+    check('公式恢复成一个渲染块', info.widgets === 1, JSON.stringify(info))
+    check(
+      '预览整体从绘制树里移除(不再留下幽灵公式)',
+      preview?.display === 'none',
+      JSON.stringify(preview)
+    )
+    check(
+      '公式态切换后的强制重绘没有留下临时样式',
+      await evalJs<boolean>(`(() => {
+        const content = document.querySelector('.cm-content')
+        const scroller = document.querySelector('.cm-scroller')
+        return content?.style.transform === '' && scroller?.style.opacity === ''
+      })()`)
+    )
+  }
+
+  console.log('\n【M10】公式前空段输入文字 —— 公式块不位移')
+  const gapFormula = String.raw`$$
+dy = |detJ_{g(x)}| dx \\
+\int_R f(y)dy = \int_{g^{-1}(R)} f(g(x)) \cdot |detJ_g(x)| dx
+$$
+`
+  const widgetTop = (): Promise<number | null> =>
+    evalJs<number | null>(
+      `document.querySelector('.cm-md-math-display')?.getBoundingClientRect().top ?? null`
+    )
+  await loadDoc(gapFormula)
+  await setCaret(0)
+  await key('Enter')
+  await waitFor(`document.querySelector('.cm-md-math-display')`)
+  const mathTopBefore = await widgetTop()
+  await type('啊')
+  await sleep(400)
+  const mathTopAfter = await widgetTop()
+  check(
+    '输入第一个字后公式位置不变',
+    mathTopBefore !== null &&
+      mathTopAfter !== null &&
+      Math.abs(mathTopAfter - mathTopBefore) <= 1,
+    JSON.stringify({ mathTopBefore, mathTopAfter })
+  )
+  const gapLine = await evalJs<{ cls: string; height: number } | null>(`(() => {
+    const w = document.querySelector('.cm-md-math-display')
+    const line = w?.closest('.cm-line')?.previousElementSibling
+    if (!line) return null
+    return { cls: line.className, height: Math.round(line.getBoundingClientRect().height) }
+  })()`)
+  check(
+    '公式上面的空行仍按段间距收紧',
+    !!gapLine && /cm-md-block-gap/.test(gapLine.cls),
+    JSON.stringify(gapLine)
+  )
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)
   app.exit(fail === 0 ? 0 : 1)

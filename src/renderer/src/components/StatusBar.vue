@@ -5,21 +5,16 @@ import {
   Bell,
   ChevronsUpDown,
   ListTree,
-  Moon,
   PanelLeft,
-  Settings,
-  Sun
+  Settings
 } from 'lucide-vue-next'
 import {
   activeTab,
   appStore,
   editorHolder,
   openSettings,
-  THEME_LABELS,
-  THEME_ORDER,
   toggleExplorerVisible,
-  toggleOutlineVisible,
-  toggleTheme
+  toggleOutlineVisible
 } from '../stores/app'
 import type { ExtensionStatusItemView } from '@shared/extensions'
 import { requestVaultSwitch } from '../services/vaultService'
@@ -54,11 +49,6 @@ function toggleOutline(): void {
 }
 
 const activeDoc = computed(() => activeTab())
-const isDark = computed(() => appStore.theme !== 'light')
-const nextTheme = computed(() => THEME_ORDER[(THEME_ORDER.indexOf(appStore.theme) + 1) % THEME_ORDER.length]!)
-const themeTitle = computed(
-  () => `${THEME_LABELS[appStore.theme]}主题 · 点击切换为${THEME_LABELS[nextTheme.value]}主题`
-)
 
 /**
  * 自动保存的即时反馈。自动保存是不声不响发生的,没点动静用户不会放心 ——
@@ -136,16 +126,12 @@ function gotoNextConflict(): void {
 <template>
   <div class="status-bar">
     <!--
-      左下角从左到右:设置 / 主题 → 目录、大纲 → 扩展图标。
+      左下角从左到右:设置 → 目录、大纲 → 扩展图标。
       两条竖线把它们分成三组,组内按钮只隔 2px,组与组之间靠状态栏的 gap 拉开。
     -->
     <span class="status-app-actions">
       <button title="设置 (Ctrl+,)" @click="openSettings()">
         <Settings :size="14" />
-      </button>
-      <button :title="themeTitle" @click="toggleTheme()">
-        <Sun v-if="isDark" :size="14" />
-        <Moon v-else :size="14" />
       </button>
     </span>
     <span class="status-sep" aria-hidden="true"></span>

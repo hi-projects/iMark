@@ -22,6 +22,7 @@
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -105,10 +106,6 @@ const baseConfig = (): Record<string, unknown> => ({
   [configKey('commitMessage')]: 'sync: {time}',
   [configKey('authorName')]: 'iMark',
   [configKey('authorEmail')]: 'imark@local',
-  [configKey('autoInitRepo')]: true,
-  [configKey('initBranch')]: 'main',
-  [configKey('writeGitignore')]: true,
-  [configKey('writeReadme')]: false,
   // 本地路径远端不需要代理；空的手动地址会直接连接，避免宿主机环境变量里的代理影响结果
   [configKey('proxyMode')]: 'manual',
   [configKey('proxyUrl')]: ''
@@ -152,6 +149,9 @@ async function main(): Promise<void> {
   await mkdir(remote, { recursive: true })
   await git(remote, ['init', '--bare', '--initial-branch=main'])
   await writeFile(note, '# 第一篇\n\n同步我。\n', 'utf8')
+  // 图片目录是隐藏目录(文件树不显示),但同步必须照常带上它
+  await mkdir(join(vault, '.assets'), { recursive: true })
+  await writeFile(join(vault, '.assets', 'keep-me.png'), 'png', 'utf8')
 
   const config = baseConfig()
   await writeFile(
@@ -268,17 +268,32 @@ async function main(): Promise<void> {
   const syncKey = keybindings.find(k => k.command === 'imark.git-sync.syncNow')
   check('声明了 ctrl+alt+s 快捷键且未被摘掉', syncKey?.key === 'ctrl+alt+s' && !syncKey.dropped, JSON.stringify(syncKey))
   const actions = service.getContributions().actions.filter(a => a.extensionId === EXT_ID)
-  check('声明了 4 个设置页动作', actions.length === 4, JSON.stringify(actions.map(a => a.command)))
+  check('声明了 5 个设置页动作', actions.length === 5, JSON.stringify(actions.map(a => a.command)))
+  const targetAction = actions.find(a => a.command === 'imark.git-sync.testTarget')
   check(
-    '设置页不再有每远端动作',
-    !actions.some(a => a.command === 'imark.git-sync.testTarget' || a.scope === 'target')
+    '「测试连接」挂到远端仓库字段上',
+    targetAction?.scope === 'target' && targetAction.targetSetting === `${EXT_ID}.targets`,
+    JSON.stringify(targetAction)
   )
   const fields = v?.descriptor.settingsFields ?? []
+  const remoteField = fields.find(f => f.key === 'targets')
   check(
-    '扩展设置里不再出现远端字段（已提升到项目级）',
-    !fields.some(f => f.key === 'targets'),
+    '扩展设置里有「远端仓库」字段，且绑定项目级 Git 配置',
+    remoteField?.kind === 'targets' &&
+      remoteField.single === true &&
+      remoteField.projectGit === true &&
+      remoteField.targetSecret !== undefined,
+    JSON.stringify(remoteField)
+  )
+  check(
+    '设置里不再有自动初始化仓库相关字段',
+    !fields.some(f =>
+      ['autoInitRepo', 'initBranch', 'writeGitignore', 'writeReadme'].includes(f.key)
+    ),
     JSON.stringify(fields.map(f => f.key))
   )
+  const startField = fields.find(f => f.key === 'syncOnStart')
+  check('启动后同步一次默认关闭', startField?.default === false, JSON.stringify(startField))
   check('代理模式是下拉选择', fields.some(f => f.key === 'proxyMode' && f.kind === 'select'))
   const proxyField = fields.find(f => f.key === 'proxyMode')
   check(
@@ -310,6 +325,19 @@ async function main(): Promise<void> {
     '远端此刻还没有 main 分支',
     (await git(remote, ['branch', '--list'])).trim() === ''
   )
+  // 扩展不再替用户初始化仓库:非 git 目录必须明确失败,而不是偷偷 git init
+  const noRepo = (await service.executeCommand('imark.git-sync.syncNow')) as {
+    ok: boolean
+    message: string
+  }
+  check(
+    '不是 git 仓库时同步明确失败',
+    noRepo?.ok === false && noRepo.message === '当前仓库还不是 git 仓库',
+    JSON.stringify(noRepo)
+  )
+  check('失败时没有建出 .git', !existsSync(join(vault, '.git')))
+  await git(vault, ['init', '--initial-branch=main'])
+
   const first = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
@@ -321,7 +349,8 @@ async function main(): Promise<void> {
   check('远端有了 main 分支', branches.trim() === 'main', branches.trim())
   const files = await git(remote, ['ls-tree', '-r', '--name-only', 'main'])
   check('笔记被推上去了', files.includes('笔记.md'), files.trim())
-  check('.gitignore 按配置写入', files.includes('.gitignore'), files.trim())
+  check('不自动写入 .gitignore', !files.includes('.gitignore'), files.trim())
+  check('隐藏的 .assets 目录也同步到远端', files.includes('.assets/keep-me.png'), files.trim())
   const blob = await git(remote, ['show', 'main:笔记.md'])
   check('远端内容与本地一致', blob === '# 第一篇\n\n同步我。\n', JSON.stringify(blob))
   const subject = (await git(remote, ['log', '-1', '--format=%s', 'main'])).trim()
@@ -396,6 +425,9 @@ async function main(): Promise<void> {
     remoteBranch: 'main'
   }
   await setRemote(tokenTarget)
+  const opsBeforeMissing = ((await view())?.logs ?? []).filter(
+    entry => entry.level === 'operation'
+  ).length
   const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
@@ -419,10 +451,11 @@ async function main(): Promise<void> {
     !missingLogs.some(entry => entry.level === 'error' && entry.message.includes('访问令牌')),
     JSON.stringify(missingLogs.slice(-3))
   )
+  const opsAfterMissing = missingLogs.filter(entry => entry.level === 'operation')
   check(
     '操作日志不记录这次失败（silent）',
-    !missingLogs.some(entry => entry.level === 'operation' && entry.message.includes('失败')),
-    JSON.stringify(missingLogs.filter(entry => entry.level === 'operation').slice(-2))
+    opsAfterMissing.length === opsBeforeMissing,
+    JSON.stringify(opsAfterMissing.slice(-2))
   )
 
   // ---------- 7. 单个远端不可用 ----------
@@ -483,10 +516,10 @@ async function main(): Promise<void> {
 
   console.log('\n【9】停用释放宿主，重新启用后可再次激活；卸载清理干净')
   // 回到可用远端：下一步的「重新启用后执行命令」不应再撞上故意填坏的那个远端。
-  // 配置变更会触发 3 秒防抖补跑，等它跑完再停用，避免状态在断言之间跳变。
+  // 配置变更会触发 3 秒防抖补跑；等到它真的跑完再停用，避免状态在断言之间跳变。
   await setRemote(target1(remote))
-  await sleep(4500)
-  check('恢复单远端配置后自动补跑成功', (await view())?.status.status === 'ok', JSON.stringify((await view())?.status))
+  const restored = await waitStatus('ok', 15_000)
+  check('恢复单远端配置后自动补跑成功', restored?.status.status === 'ok', JSON.stringify(restored?.status))
   await service.setEnabled(EXT_ID, false)
   check('扩展标为停用', (await view())?.enabled === false)
   check('宿主已释放', !service.isActivated(EXT_ID))

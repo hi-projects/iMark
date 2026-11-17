@@ -595,6 +595,11 @@
   line-height: normal;
 }
 
+/* 表格紧接在段内硬换行之后:行距本身就是间距,不再额外加 frame 顶部留白 */
+.cm-md-table-host.cm-md-table-tight-top .cm-md-table-frame {
+  padding-top: 0;
+}
+
 /*
  * 控件浮在表格四周,但**不占版式空间**:
  * 左右的 padding 用等量负 margin 抵消,表格与正文左对齐;
@@ -915,6 +920,9 @@
      几像素 —— 字号 ≥20px 时公式块右侧就会冒出一条竖向滚动条。
      竖向溢出全部来自 strut,不是可见笔画,直接压掉 */
   overflow-y: hidden;
+  /* 可横向滚动的公式块自己成一个合成层:从「渲染块」切回源码时,旧层会随
+     节点一起被合成器移除,而不是在滚动容器里留下一块画出来的公式残影 */
+  transform: translateZ(0);
 }
 
 /* KaTeX 自带 1em 上下外边距,编辑器内叠加上去留白过大 */

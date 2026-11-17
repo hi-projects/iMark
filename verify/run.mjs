@@ -87,6 +87,7 @@ if (!name) {
         'session-restore',
         'vault-prune',
         'vault-picker-git',
+        'picker-dblclick',
         'explorer-new-entry',
         'explorer-tree',
         'explorer-remember',

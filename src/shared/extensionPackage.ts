@@ -141,6 +141,8 @@ export interface ExtensionFieldMarkdown {
   targetSecret?: { label: string; placeholder?: string }
   /** targets 字段只允许一行 */
   single?: boolean
+  /** targets 字段绑定到当前项目的 Git 远端(项目级配置) */
+  projectGit?: boolean
   /** select 的显示名;标准 enum 只有值,标签需要单独给 */
   options?: { value: string; label: string }[]
   /** kind: 'external' 的文件与 JSON 指针 */
@@ -486,6 +488,15 @@ function validateConfigProperties(
     }
     if (meta.single !== undefined && typeof meta.single !== 'boolean') {
       errors.push(`${at}.imark.single 必须是布尔值`)
+    }
+    if (meta.projectGit !== undefined && typeof meta.projectGit !== 'boolean') {
+      errors.push(`${at}.imark.projectGit 必须是布尔值`)
+    }
+    if (meta.projectGit === true && meta.kind !== 'targets') {
+      errors.push(`${at}.imark.projectGit 只用于 kind: targets`)
+    }
+    if (meta.projectGit === true && meta.single !== true) {
+      errors.push(`${at} 绑定项目 Git 远端时必须声明 single: true`)
     }
     if (meta.options !== undefined) {
       if (!Array.isArray(meta.options)) errors.push(`${at}.imark.options 必须是数组`)
@@ -1331,6 +1342,7 @@ export function settingsFieldsOf(manifest: ExtensionManifest): PluginField[] {
     if (meta.endpointModel !== undefined) field.endpointModel = meta.endpointModel
     if (meta.targetSecret !== undefined) field.targetSecret = meta.targetSecret
     if (meta.single === true) field.single = true
+    if (meta.projectGit === true) field.projectGit = true
     if (
       meta.kind === 'external' &&
       typeof meta.file === 'string' &&

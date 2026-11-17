@@ -446,6 +446,17 @@ function endsWithHardBreak(line: Line): boolean {
 }
 
 /**
+ * 这个块是不是紧接在段内硬换行之后(上一行以 `\` / 两个空格结尾)。
+ *
+ * 是的话,块和上一行仍属于同一段:不再补块间距,距离就是行间距。
+ * 段落之间(有空行 / 回车分段)则正常补块间距。表格、列表、代码、引用共用。
+ */
+function afterHardBreak(ctx: RuleContext, pos: number): boolean {
+  const line = ctx.doc.lineAt(pos)
+  return line.number > 1 && endsWithHardBreak(ctx.doc.line(line.number - 1))
+}
+
+/**
  * 行尾的单个反斜杠是硬换行标记:**始终**藏起来。
  *
  * 它只决定两行属于同一段,不是正文内容;光标移到这一行时也不应该露出来
@@ -757,7 +768,9 @@ function codeLineClass(ctx: RuleContext, blockStart: number): string {
 function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
   addLineRange(ctx, code.from, code.to, codeLineClass(ctx, code.from))
   addCodeCopy(ctx, code)
-  addGapBefore(ctx, code.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+  if (!afterHardBreak(ctx, code.from)) {
+    addGapBefore(ctx, code.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+  }
   addGapAfter(ctx, code.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
   const first = code.firstChild
   const last = code.lastChild
@@ -1255,7 +1268,9 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'CodeBlock': {
       addLineRange(ctx, node.from, node.to, codeLineClass(ctx, node.from))
       addCodeCopy(ctx, node.node)
-      addGapBefore(ctx, node.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+      if (!afterHardBreak(ctx, node.from)) {
+        addGapBefore(ctx, node.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
+      }
       addGapAfter(ctx, node.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
       return false
     }
@@ -1268,7 +1283,9 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       if (!quoteOpened(ctx.doc, node.node)) return
       const lastQuoted = styleQuotedLines(ctx, node.node)
       if (!lastQuoted) return
-      addGapBefore(ctx, node.from, 'cm-md-gap-quote-before', 'cm-md-block-gap-quote-before')
+      if (!afterHardBreak(ctx, node.from)) {
+        addGapBefore(ctx, node.from, 'cm-md-gap-quote-before', 'cm-md-block-gap-quote-before')
+      }
       addGapAfter(ctx, lastQuoted.from, 'cm-md-gap-quote-after', 'cm-md-block-gap-quote-after')
       return
     }
@@ -1317,17 +1334,23 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       }
       if (!nested) {
         const firstMark = node.node.getChild('ListItem')?.getChild('ListMark') ?? null
+        // 紧接段内硬换行时,列表和上一行仍属于同一段:不补块间距(距离=行间距)
+        const tightTop = afterHardBreak(ctx, node.from)
         if (!markerComplete(ctx, firstMark)) {
           // 只敲了 `-` / `1.`(还没空格):整行按普通正文显示,不补列表间距。
           // 上下空行都按「两段正文之间」的段间距收起 —— 否则敲下短横线、
           // 或在新段里开始输入时,空行从段间距恢复成整行,光标行会跳一下。
-          addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+          if (!tightTop) {
+            addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+          }
           addGapAfter(ctx, node.to, 'cm-md-gap-body', 'cm-md-block-gap-body')
           return
         }
         const mark = lastListMark(node.node)
         if (mark) {
-          addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
+          if (!tightTop) {
+            addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
+          }
           if (markerComplete(ctx, mark)) {
             addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
           }
@@ -1389,6 +1412,20 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       }
       // 刚敲出来的 `$$` / `\[` 先按普通文本显示,回车补全后再当公式块
       if (node.name === 'MathBlock' && isPendingMathFence(ctx, node.node)) return false
+      /*
+       * 渲染态也要按同样的段间距压紧它上面那条空行。
+       *
+       * 少了这一条,公式前那条空行只在「上一行还是空段落」时被 collapseBlankRuns
+       * 收紧;一旦空段里输入了第一个字,空行就恢复整行高,下面的公式整体往下跳。
+       * 光标在公式里时由 styleBodyGap 处理,这里只补渲染态,两者间距一致。
+       */
+      if (
+        node.name === 'MathBlock' &&
+        node.node.parent?.name === 'Document' &&
+        !touches(ctx.sel, node.from, node.to)
+      ) {
+        addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+      }
       const content = mathContentRange(node.node)
       if (!content) return false
       if (touches(ctx.sel, node.from, node.to)) {
@@ -1504,11 +1541,19 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         return false
       }
       // 首行换成 widget(它自带整张表),其余行清空并折叠高度
-      // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行
+      // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行。
+      // 紧接段内硬换行时不再加 frame 顶部留白:距离就是行间距。
+      const tightTop = afterHardBreak(ctx, node.from)
       addLine(
         ctx,
         firstLine.from,
-        fullySelected ? 'cm-md-table-host cm-md-table-host-selected' : 'cm-md-table-host'
+        [
+          'cm-md-table-host',
+          fullySelected ? 'cm-md-table-host-selected' : '',
+          tightTop ? 'cm-md-table-tight-top' : ''
+        ]
+          .filter(Boolean)
+          .join(' ')
       )
       hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec))
       const lastLine = ctx.doc.lineAt(node.to)
@@ -1529,7 +1574,9 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         hide(ctx, spec.widthLine.textFrom, spec.widthLine.textTo)
       }
       if (spec.protectFrom < node.from && spec.protectFrom !== spec.widthLine?.from) {
-        addLine(ctx, spec.protectFrom, 'cm-md-table-gap')
+        // 表格前的结构空行是段落分隔:按段间距排(和两段正文之间一致),
+        // 表格自身的留白仍由 frame 提供。折成零高会让表格贴得太近。
+        addLine(ctx, spec.protectFrom, 'cm-md-block-gap cm-md-block-gap-body')
       }
       if (spec.protectTo > node.to) addLine(ctx, spec.protectTo, 'cm-md-table-gap')
       // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,

@@ -7,6 +7,7 @@
  *   ├── css/                  自定义样式
  *   ├── plugins/              扩展包 + installed.json + .staging/ + <id>.old/
  *   ├── logs/extensions/      扩展完整日志(操作结果 + 扩展自己 log() 的行,按扩展分文件)
+ *   ├── trash/images/         图片回收区(撤销删除可恢复;过期后转系统回收站)
  *   ├── settings.json
  *   ├── secrets.json          扩展令牌 + 市场令牌(加密后)
  *   └── profile/              Chromium 的 userData 整体搬进来

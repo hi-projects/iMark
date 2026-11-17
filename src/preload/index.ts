@@ -61,10 +61,17 @@ const api = {
   readFile: (path: string) => request(IPC.FileRead, path),
   writeFile: (path: string, content: string): Promise<void> =>
     request(IPC.FileWrite, { path, content }),
-  saveImageAsset: (docPath: string, mime: string, data: Uint8Array): Promise<string> =>
-    request(IPC.FileSaveImage, { docPath, mime, data }),
-  trashImageAssets: (docPath: string, names: string[]): Promise<void> =>
-    request(IPC.FileTrashImages, { docPath, names }),
+  saveImageAsset: (
+    docPath: string,
+    vaultPath: string | null,
+    mime: string,
+    data: Uint8Array
+  ): Promise<string> =>
+    request(IPC.FileSaveImage, { docPath, vaultPath, mime, data }),
+  trashImageAssets: (docPath: string, vaultPath: string | null, names: string[]): Promise<void> =>
+    request(IPC.FileTrashImages, { docPath, vaultPath, names }),
+  restoreImageAssets: (docPath: string, vaultPath: string | null, names: string[]): Promise<void> =>
+    request(IPC.FileRestoreImages, { docPath, vaultPath, names }),
   confirmDiscard: (fileName: string) => request(IPC.ConfirmDiscard, { fileName }),
   getSettings: (): Promise<Settings> => request(IPC.SettingsGet),
   saveSettings: (s: Partial<Settings>): Promise<Settings> => request(IPC.SettingsSet, s),

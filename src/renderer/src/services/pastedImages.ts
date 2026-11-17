@@ -1,7 +1,7 @@
 /**
  * 本次会话里由粘贴创建、还没有随着任何一次保存进入正文的图片资产。
  *
- * 为什么不能只比较保存前后的正文:粘贴是「先把文件写进 assets/,再往正文插图」。
+ * 为什么不能只比较保存前后的正文:粘贴是「先把文件写进 .assets/,再往正文插图」。
  * 用户在第一次保存前就把链接删掉时,这张图从未出现在任何一份「保存前正文」里,
  * 按前后对比永远发现不了,只能单独记账。
  *
@@ -9,7 +9,7 @@
  */
 const pending = new Map<string, Set<string>>()
 
-/** 记下一张刚写盘的粘贴图片(relPath 形如 `assets/image-…png`) */
+/** 记下一张刚写盘的粘贴图片(relPath 形如 `.assets/image-…png` 或 `../.assets/…`) */
 export function notePastedImage(docPath: string, relPath: string): void {
   const name = relPath.replace(/^.*[\\/]/, '')
   if (!name) return

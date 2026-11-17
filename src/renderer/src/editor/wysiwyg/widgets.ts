@@ -47,6 +47,16 @@ export class MathWidget extends WidgetType {
   ignoreEvent(): boolean {
     return false
   }
+
+  /**
+   * 移除前把 KaTeX 子树清空。
+   *
+   * 公式块是可横向滚动的独立盒子;直接连内容一起移除时,部分 GPU 合成状态会
+   * 把旧的绘制层留在原地(看起来多了一个点不动的公式)。先清空再让 CM 拆节点。
+   */
+  destroy(dom: HTMLElement): void {
+    dom.replaceChildren()
+  }
 }
 
 /**
@@ -109,6 +119,10 @@ export class CheckboxWidget extends WidgetType {
   }
 }
 
+/** 撤销恢复的文件由主进程异步搬回,本地图片加载失败时短暂重试几次再报错 */
+const IMAGE_RETRY_LIMIT = 10
+const IMAGE_RETRY_DELAY_MS = 200
+
 /** 图片:光标在节点内时显示原始语法,节点外渲染真图。点击交给 CM(映射到节点边缘 → 触发显形) */
 export class ImageWidget extends WidgetType {
   constructor(
@@ -131,8 +145,21 @@ export class ImageWidget extends WidgetType {
       img.alt = this.alt
       img.title = this.alt
     }
-    img.addEventListener('load', () => wrap.classList.add('cm-md-image-loaded'))
+    let retries = 0
+    img.addEventListener('load', () => {
+      wrap.classList.add('cm-md-image-loaded')
+      wrap.classList.remove('cm-md-image-error')
+    })
     img.addEventListener('error', () => {
+      // 撤销删除时文件是异步搬回来的:本地图片在最初两秒里重试,
+      // 而不是把第一次「文件还没到位」当成永久失败。加查询串是为了绕开失败缓存。
+      if (this.src.startsWith('imark://') && retries < IMAGE_RETRY_LIMIT) {
+        retries += 1
+        setTimeout(() => {
+          if (img.isConnected) img.src = `${this.src}?retry=${retries}`
+        }, IMAGE_RETRY_DELAY_MS)
+        return
+      }
       wrap.classList.add('cm-md-image-error')
       const label = document.createElement('span')
       label.textContent = this.alt || this.src

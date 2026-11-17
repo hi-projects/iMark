@@ -17,6 +17,7 @@ import { emptyParagraphsField } from './emptyParagraph'
 import { codeTabsField, codeTabsStripField } from './wysiwyg/codeTabs'
 import { emptyFenceDeleteFilter, emptyMathBlockDeleteFilter } from './fenceCleanup'
 import { imagePaste } from './imagePaste'
+import { imageRestore } from './imageRestore'
 import { outlineFollower, updateActiveOutline } from './outline'
 
 /**
@@ -132,6 +133,8 @@ export function buildExtensions(
     wysiwyg(),
     // 剪贴板图片:先于 CM 自带的 paste handler 拦下图片数据
     imagePaste(),
+    // 撤销删除时把图片文件从应用回收区搬回来
+    imageRestore(),
     // 光标进入公式后源码态旁边浮一块实时预览
     mathPreview(),
     lineMenu(),

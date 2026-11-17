@@ -189,43 +189,83 @@
   min-height: 16px;
 }
 
-/* Obsidian 右侧那张动作卡:一块圆角容器,行与行之间一条分隔线 */
+/* 三个动作图标:并排的方形按钮,图标下方是短标注 */
 .vault-picker-actions {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-app);
-  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  gap: 16px;
 }
 
 .vault-picker-action {
-  display: flex;
+  display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 16px;
-  padding: 15px 17px;
-  border-top: 1px solid var(--border);
+  justify-content: center;
+  gap: 7px;
+  width: 88px;
+  height: 78px;
+  padding: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 
-.vault-picker-action:first-child {
-  border-top: none;
+.vault-picker-action:hover {
+  background: var(--bg-toolbar-btn-hover);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
-.vault-picker-action-text {
-  flex: 1;
-  min-width: 0;
+.vault-picker-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.vault-picker-action-text h2 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
+/* 动作图标 ↔ 输入页:进入时从右侧滑入,返回时从左侧滑入 */
+.vault-picker-pane-forward {
+  animation: vault-pane-forward 0.2s ease-out;
 }
 
-.vault-picker-action-text p {
-  margin: 3px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-tertiary);
+.vault-picker-pane-back {
+  animation: vault-pane-back 0.2s ease-out;
+}
+
+@keyframes vault-pane-forward {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes vault-pane-back {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vault-picker-pane-forward,
+  .vault-picker-pane-back {
+    animation: none;
+  }
 }
 
 /* ---------- 表单(克隆 / 新建 / 项目 Git 设置) ---------- */
@@ -318,7 +358,15 @@
   color: var(--accent);
 }
 
+/* 原生 select 的文字有额外的内缩,和输入框的 placeholder 对不齐;
+   去掉原生外观、自己画箭头,文字起点就和输入框一致 */
 select.vault-input {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
   cursor: pointer;
 }
 
@@ -415,6 +463,7 @@ select.vault-input {
 .vault-picker-skip {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   margin-top: 18px;
   font-size: 12px;

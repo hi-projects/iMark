@@ -2,8 +2,8 @@
  * 「远程同步（Git）」扩展。
  *
  * 同步参数(间隔/提交信息/代理等)从 `workspace.getConfiguration()` 读；远端地址、
- * 认证方式与密钥来自**项目级**能力 `imark.project` —— 克隆仓库和仓库选择页的
- * 「Git 设置」维护同一份配置,扩展不再自己声明 `targets`。状态用
+ * 认证方式与密钥来自**项目级**能力 `imark.project` —— 扩展设置页的「远端仓库」、
+ * 仓库选择页的「Git 设置」与克隆仓库维护同一份配置。状态用
  * `imark.reportStatus()` 上报，git 直接用 Node 的 `child_process` 跑。
  *
  * 同步是双向的：先把本地改动提交成一次提交，再从远端拉取配置的分支并
@@ -15,8 +15,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import * as imark from 'imark'
 import {
   credentialArgs,
@@ -44,17 +43,6 @@ const CMD_DOWNLOAD_NOW = 'imark.git-sync.downloadNow'
 const CMD_RESOLVE_CONFLICTS = 'imark.git-sync.resolveConflicts'
 const CMD_DETECT_PROXY = 'imark.git-sync.detectProxy'
 const CMD_TEST_TARGET = 'imark.git-sync.testTarget'
-
-/** 新建仓库时写入的忽略项；已有仓库绝不改动用户的 .gitignore */
-const DEFAULT_GITIGNORE = `# iMark 远程同步默认忽略
-.obsidian/
-.trash/
-node_modules/
-*.imark-tmp
-.DS_Store
-Thumbs.db
-desktop.ini
-`
 
 type TargetAuth = 'token' | 'password' | 'ssh'
 type TargetResult = 'ok' | 'error'
@@ -121,12 +109,6 @@ interface GitSyncConfig {
   commitMessage: string
   authorName: string
   authorEmail: string
-  autoInitRepo: boolean
-  /** 初始化仓库时创建的分支名（git init -b）；默认 main */
-  initBranch: string
-  writeGitignore: boolean
-  /** 初始化仓库时是否创建一个 README.md（已存在则不覆盖） */
-  writeReadme: boolean
   /** 网络代理：auto = 自动探测环境变量 / 系统代理（Windows 注册表、Linux GNOME）；manual = 用下面填的地址；找不到代理时直接连接 */
   proxyMode: ProxyMode
   /** 手动模式的代理地址（支持 http/https/socks5） */
@@ -169,14 +151,10 @@ function readConfig(): GitSyncConfig {
   const config = imark.workspace.getConfiguration(SECTION)
   return {
     intervalMinutes: config.get<number>('intervalMinutes', 10),
-    syncOnStart: config.get<boolean>('syncOnStart', true),
+    syncOnStart: config.get<boolean>('syncOnStart', false),
     commitMessage: config.get<string>('commitMessage', 'sync: {time}'),
     authorName: config.get<string>('authorName', 'iMark'),
     authorEmail: config.get<string>('authorEmail', 'imark@local'),
-    autoInitRepo: config.get<boolean>('autoInitRepo', true),
-    initBranch: config.get<string>('initBranch', 'main'),
-    writeGitignore: config.get<boolean>('writeGitignore', true),
-    writeReadme: config.get<boolean>('writeReadme', false),
     proxyMode: config.get<ProxyMode>('proxyMode', 'auto'),
     proxyUrl: config.get<string>('proxyUrl', 'http://127.0.0.1:7890')
   }
@@ -444,13 +422,19 @@ class GitSyncPlugin {
       if (targets.length === 0) {
         return fail(
           '尚未配置远端仓库',
-          '在仓库选择页左侧项目行的「Git 设置」里填写远端地址后再同步。'
+          '在扩展设置的「远端仓库」里填写远端地址后再同步。'
         )
       }
       const vaultPath = this.vaultPath()
       if (!vaultPath) return fail(`未打开仓库，无法${action}`)
       if (!existsSync(vaultPath)) return fail('仓库目录不存在')
       if (!(await isGitAvailable())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
+      if (!existsSync(join(vaultPath, '.git'))) {
+        return fail(
+          '当前仓库还不是 git 仓库',
+          '请先在仓库目录执行 git init，或从远端克隆仓库后再同步。'
+        )
+      }
       const noLocalBranch = targets.find(t => !t.localBranch.trim())
       if (noLocalBranch) {
         return invalid(
@@ -472,7 +456,7 @@ class GitSyncPlugin {
         if (!(await this.secretFor(target))) {
           return invalid(
             `${targetLabel(allTargets, target)}选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
-            '在仓库选择页的项目「Git 设置」里填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
+            '在扩展设置的「远端仓库」里填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
           )
         }
       }
@@ -485,8 +469,6 @@ class GitSyncPlugin {
 
       // 先把编辑器里的脏文档落盘，否则刚敲的内容不会进这次提交
       await imark.workspace.saveAll(false)
-
-      const created = await this.ensureRepo(vaultPath, cfg, signal)
 
       // 上一次合并可能还没收尾：冲突标记已经由用户在编辑器里处理掉了，
       // 这里把合并补成一次提交；标记还在就停下，绝不把标记提交上去。
@@ -537,10 +519,7 @@ class GitSyncPlugin {
       }
 
       // 先固定本地改动，下载/合并才有干净的起点。
-      // 空仓库例外：先下载、采纳远端分支，再写脚手架提交 —— 否则首次连接一个
-      // 已有内容的远端时，本地根提交会与远端变成「历史无关」，平白多一次合并。
       if (wantPush && (hasHead || (await this.hasPendingFiles(vaultPath, signal)))) {
-        if (created) await this.writeScaffold(vaultPath, cfg)
         committed = (await this.commitLocal(vaultPath, cfg, signal)) || committed
         hasHead = await this.hasHead(vaultPath, signal)
       }
@@ -658,13 +637,6 @@ class GitSyncPlugin {
         // 文件已经被外部 git 改过:刷新文件树,并让未修改的打开文档重新读盘,
         // 否则编辑器里还是旧内容(下载了也看不见,冲突更没法处理)。
         await this.reloadDocuments()
-      }
-
-      // 空仓库先采纳远端，再补本地脚手架（wx：远端已有的文件不会被覆盖）
-      if (wantPush && created && !hasHead) {
-        await this.writeScaffold(vaultPath, cfg)
-        committed = (await this.commitLocal(vaultPath, cfg, signal)) || committed
-        hasHead = await this.hasHead(vaultPath, signal)
       }
 
       const pushes = new Map<string, PushOutcome>()
@@ -1438,48 +1410,6 @@ class GitSyncPlugin {
     return { ok: true, message: '已打开冲突处理窗口' }
   }
 
-  /**
-   * 不是 git 仓库时按配置初始化；返回是否由本次调用新建。
-   * 扩展**不改动仓库的 remote 配置** —— 拉取与推送都直接给 URL，凭据由每次现挂的
-   * credential helper 提供。
-   */
-  private async ensureRepo(
-    vaultPath: string,
-    cfg: GitSyncConfig,
-    signal: AbortSignal
-  ): Promise<boolean> {
-    if (existsSync(join(vaultPath, '.git'))) return false
-    if (!cfg.autoInitRepo) {
-      throw new Error('当前仓库还不是 git 仓库（可在扩展设置中开启自动初始化）')
-    }
-    const wantBranch = cfg.initBranch?.trim() || 'main'
-    const init = await runGit(['init', '-b', wantBranch], { cwd: vaultPath, signal })
-    if (!init.ok) throw new Error(`初始化仓库失败：${summarize(init.stderr, 3)}`)
-    return true
-  }
-
-  /**
-   * 新建仓库时写入推荐的 `.gitignore` / `README.md`（`wx`：已存在就不动）。
-   *
-   * 从 `ensureRepo` 里拆出来，是因为「空仓库连接已有远端」时顺序很重要：
-   * 先下载并采纳远端，再写脚手架，才不会用本地生成的 `.gitignore` 与远端撞冲突。
-   */
-  private async writeScaffold(vaultPath: string, cfg: GitSyncConfig): Promise<void> {
-    if (cfg.writeGitignore) {
-      await writeFile(join(vaultPath, '.gitignore'), DEFAULT_GITIGNORE, { flag: 'wx' }).catch(
-        () => {}
-      )
-    }
-    if (cfg.writeReadme) {
-      const name = basename(vaultPath) || 'Notes'
-      await writeFile(
-        join(vaultPath, 'README.md'),
-        `# ${name}\n\n> 由 iMark 的「远程同步」扩展在初始化仓库时创建。\n`,
-        { flag: 'wx' }
-      ).catch(() => {})
-    }
-  }
-
   /** 当前提交的短 SHA，用于把「到底同步到哪个版本」说清楚 */
   private async headShort(vaultPath: string, signal: AbortSignal): Promise<string> {
     const result = await runGit(['rev-parse', '--short', 'HEAD'], { cwd: vaultPath, signal })
@@ -1571,7 +1501,7 @@ class GitSyncPlugin {
       return {
         ok: false,
         message: '尚未配置远端仓库',
-        detail: '在仓库选择页左侧项目行的「Git 设置」里填写远端地址后再测试。'
+        detail: '在扩展设置的「远端仓库」里填写远端地址后再测试。'
       }
     }
     if (!(await isGitAvailable())) return { ok: false, message: '未找到 git，请先安装 Git' }

@@ -250,7 +250,7 @@ export async function setTheme(theme: Theme): Promise<void> {
   await api.saveSettings({ theme })
 }
 
-/** 状态栏快捷键:亮色 ↔ 深色 */
+/** 菜单「循环切换主题」(Ctrl+J):亮色 ↔ 深色 */
 export async function toggleTheme(): Promise<void> {
   const i = THEME_ORDER.indexOf(appStore.theme)
   await setTheme(THEME_ORDER[(i + 1) % THEME_ORDER.length]!)

@@ -33,14 +33,14 @@ function requireView(): EditorView | null {
 }
 
 /**
- * 保存成功后,回收正文里已经不再出现的粘贴图片(主进程负责移到系统回收站)。
+ * 保存成功后,回收正文里已经不再出现的粘贴图片(主进程负责移入应用回收区,撤销可恢复)。
  *
  * 两类来源:
  * 1. 上一次落盘时还在、这次不在了的引用(保存前后比较);
  * 2. 本会话刚粘贴、还没经过任何一次保存就被删掉的图片(见 pastedImages)——
  *    这类图从未出现在「保存前正文」里,只靠比较是发现不了的。
  *
- * 只传裸文件名,真正的校验与「同目录其他笔记是否还引用」由主进程复核。
+ * 只传裸文件名,真正的校验与「仓库里其他笔记是否还引用」由主进程复核。
  * 清理失败只记日志:一次已经成功的保存不能因此变成失败。
  */
 async function trashRemovedImages(
@@ -64,9 +64,27 @@ async function trashRemovedImages(
   }
   if (!names.size) return
   try {
-    await api.trashImageAssets(docPath, [...names])
+    await api.trashImageAssets(docPath, appStore.vaultPath, [...names])
   } catch (err) {
     console.error('[iMark] 回收已删除的图片失败', err)
+  }
+}
+
+/**
+ * 保存前把这轮**新出现**的图片引用从应用回收区搬回来。
+ *
+ * 撤销删除后编辑器里的引用恢复了,但文件可能已经被上一次保存移走;图片恢复
+ * 监听器会即时处理常见路径,这里兜住「撤销后保存」以及监听器没赶上的情况。
+ */
+async function restoreAddedImages(docPath: string, before: string, after: string): Promise<void> {
+  if (!after.includes('assets/')) return
+  const beforeRefs = managedImageRefs(before)
+  const added = [...managedImageRefs(after)].filter(name => !beforeRefs.has(name))
+  if (added.length === 0) return
+  try {
+    await api.restoreImageAssets(docPath, appStore.vaultPath, added)
+  } catch (err) {
+    console.error('[iMark] 恢复图片失败', err)
   }
 }
 
@@ -232,6 +250,7 @@ export async function writeTabInPlace(tabId: string, path: string): Promise<void
   // 这一轮写盘之前的「已保存正文」:保存成功后拿它和 text 比,找出被删掉的图片引用。
   // 取目标标签自己的基准 —— 自动保存/关闭流程可能正在后台保存别人
   const before = tab.savedContent
+  await restoreAddedImages(path, before, text)
   await api.writeFile(path, toEol(text, tab.eol))
   // markTabSaved 会在写盘这一小会儿里用户又改过/切走时保留脏标记
   // (只有内容仍是刚写的那份才清);两个判断都以目标标签为准
@@ -288,9 +307,10 @@ export async function saveTabAs(tabId: string): Promise<boolean> {
   })
   if (!target) return false
 
-  // 另存为之前的那份文档:旧路径旁的 assets/ 里可能已有被删掉的图片,清理要按它算
+  // 另存为之前的那份文档:仓库 `.assets/` 里可能已有被删掉的图片,清理要按旧路径算
   const previousPath = tab.filePath
   const before = tab.savedContent
+  await restoreAddedImages(target, before, text)
   try {
     await api.writeFile(target, toEol(text, 'LF'))
   } catch (err) {
@@ -299,8 +319,8 @@ export async function saveTabAs(tabId: string): Promise<boolean> {
   }
   setTabPath(tab.id, target, 'LF')
   markTabSaved(tab.id, text)
-  // 旧文件如果还在原地,它自己的正文仍可能引用着这些图片 —— 主进程会扫描同目录
-  // 笔记,那种情况自然保留
+  // 旧文件如果还在原地,它自己的正文仍可能引用着这些图片 —— 主进程会扫描仓库里
+  // 的笔记,那种情况自然保留
   await trashRemovedImages(previousPath, before, text)
   return true
 }

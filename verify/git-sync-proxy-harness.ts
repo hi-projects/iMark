@@ -146,10 +146,6 @@ const configOf = (mode: string, proxyUrl: string): Record<string, unknown> => ({
   [configKey('commitMessage')]: 'sync: {time}',
   [configKey('authorName')]: 'iMark',
   [configKey('authorEmail')]: 'imark@local',
-  [configKey('autoInitRepo')]: true,
-  [configKey('initBranch')]: 'main',
-  [configKey('writeGitignore')]: false,
-  [configKey('writeReadme')]: false,
   [configKey('proxyMode')]: mode,
   [configKey('proxyUrl')]: proxyUrl
 })
@@ -354,6 +350,7 @@ async function main(): Promise<void> {
     await rm(dir, { recursive: true, force: true })
   }
   await mkdir(vault, { recursive: true })
+  await git(vault, ['init', '--initial-branch=main'])
   await mkdir(remote, { recursive: true })
   await git(remote, ['init', '--bare', '--initial-branch=main'])
   await writeFile(note, '# 代理验收\n\n经代理上传。\n', 'utf8')

@@ -374,8 +374,10 @@ const HEADING_NODES = new Set([
  *
  * 标题行尾回车也按新段,但标题本身就是块边界,新段不需要再和它隔空行 ——
  * 比正文少补一条,否则标题后面一按回车同样会连出三条空行。
- * 代码 / 表格 / 公式 / 引用 / 列表标记行 / 缩进行返回 false,交给原有命令
+ * 代码 / 表格 / 引用 / 列表标记行 / 缩进行返回 false,交给原有命令
  * (继续列表、继续引用、代码里换行等),那个方向上的语义不变。
+ * 块级公式的开头行是例外:光标在 `$$` 前面回车时,要在公式**前面**起新段,
+ * 而不是把换行插进公式内容里(那只会把公式往下挪一点)。
  */
 export function insertParagraph(view: EditorView): boolean {
   const state = view.state
@@ -384,9 +386,14 @@ export function insertParagraph(view: EditorView): boolean {
   if (sel.ranges.length > 1 || !sel.main.empty) return false
   const pos = sel.main.head
   const line = state.doc.lineAt(pos)
+  const lb = state.lineBreak
+  if (atMathBlockStart(state, line, pos)) {
+    // 光标落到公式上面的新段里(不是在 $$ 行首):停在开标记前继续输入会把
+    // `$$` 变成普通文本。文档最前面没有上一段要分隔,新段就是第一行。
+    return breakAt(view, pos, lb + lb, pos === 0 ? 0 : lb.length)
+  }
   const kind = bodyLineKind(state, line)
   if (kind === 'other') return false
-  const lb = state.lineBreak
 
   // 空行上回车也是新段(见上面的说明)
   if (kind === 'blank') {
@@ -668,6 +675,9 @@ export function deleteParagraphBreakForward(view: EditorView): boolean {
  * 代码块 / 标题行没有「段内」可言,只插普通换行;正文空行上则什么都不做 ——
  * 空行没有内容可断,再补一条换行只会多出一条空行,之后输入的字被推下去,
  * 看起来像另起了一段。
+ *
+ * 块级公式的开头行例外:光标在 `$$` 前面时还没进入公式内容,按正文行首处理,
+ * 补硬换行标记而不是把普通换行塞进公式里(否则只会把公式整体往下挪)。
  */
 export function insertHardBreak(view: EditorView): boolean {
   const state = view.state
@@ -676,15 +686,20 @@ export function insertHardBreak(view: EditorView): boolean {
   const pos = sel.main.head
   const line = state.doc.lineAt(pos)
   const node = nodeAtLineStart(state, line)
+  const atMathStart = atMathBlockStart(state, line, pos)
   const plainBlock =
     hasAncestor(node, HEADING_NODES) ||
-    hasAncestor(node, ATOMIC_BLOCKS) ||
+    (hasAncestor(node, ATOMIC_BLOCKS) && !atMathStart) ||
     codeBlockCovering(state, pos) !== null
   if (!plainBlock && !/\S/.test(line.text)) return true
   const insert = plainBlock ? state.lineBreak : '\\' + state.lineBreak + continuationPrefix(line.text)
+  // 行首 Shift+回车:硬换行标记要留在新行的**行尾**,光标放在标记之前。
+  // 否则用户上移/回落新行一输入,字符就接在反斜杠后面,标记变成正文里可见的
+  // `\啊`(它不是行尾了,藏标记的规则也就管不到)。
+  const caret = pos === line.from && !plainBlock ? pos : pos + insert.length
   view.dispatch({
     changes: { from: pos, insert },
-    selection: EditorSelection.cursor(pos + insert.length),
+    selection: EditorSelection.cursor(caret),
     scrollIntoView: true,
     userEvent: 'input'
   })
@@ -698,6 +713,20 @@ export function insertHardBreak(view: EditorView): boolean {
  * blank 是段落之间的空行;代码 / 表格 / 公式 / HTML 块 / 分隔线、引用里的人
  * 任何一行、列表标记行、缩进行都算 other,回车交给原有命令。
  */
+/**
+ * 光标是否在块级公式的开头行、且停在开标记之前?
+ *
+ * MathBlock 是原子块,普通回车会被当成「公式内换行」;但光标在 `$$` 前面时
+ * 其实还没进入公式内容,应该像普通段落行首一样在公式上面起一个新段。
+ */
+function atMathBlockStart(state: EditorState, line: Line, pos: number): boolean {
+  if (pos !== line.from) return false
+  let node: SyntaxNode | null = nodeAtLineStart(state, line)
+  while (node && node.name !== 'MathBlock') node = node.parent
+  // MathBlock 从这一行开始(而不是光标落在公式中间的某一行)
+  return !!node && node.from >= line.from && node.from <= line.to
+}
+
 function bodyLineKind(state: EditorState, line: Line): 'plain' | 'heading' | 'blank' | 'other' {
   const node = nodeAtLineStart(state, line)
   if (hasAncestor(node, ATOMIC_BLOCKS) || codeBlockCovering(state, line.from)) return 'other'

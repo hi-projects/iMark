@@ -3,13 +3,15 @@
  *
  * 起因:iMark 的编辑器只处理文本粘贴(CodeMirror 内置 paste 只读 text/plain),
  * 截图后 Ctrl+V 看起来毫无反应。这个 harness 钉住七件事:
- *   A 已保存文档粘贴图片 → 存进文档旁 assets/,正文插入相对路径,并且立刻渲染;
+ *   A 已保存文档粘贴图片 → 存进仓库根 .assets/,正文插入相对路径,并且立刻渲染;
  *   B 有选区时粘贴 → 图片替换选区,而不是被内置 paste 空替换掉;
- *   C 删除正文里的图片链接并保存 → 对应文件移入回收站;
+ *   C 删除正文里的图片链接并保存 → 对应文件移入应用回收区;
+ *   C2 撤销删除 → 图片文件从应用回收区恢复并重新渲染;
  *   D 粘贴后还没保存就删掉链接 → 首次保存时也要回收(会话记账);
  *   E 未保存文档粘贴 → 提示先保存,不写资产、不崩溃;
  *   F 对照组:纯文本粘贴仍然走 CodeMirror 原逻辑;
- *   G 同目录其他笔记仍引用着这张图 → 不回收。
+ *   G 仓库里其他笔记仍引用着这张图 → 不回收;
+ *   H 子目录文档拿到 `../.assets/…` 相对路径,文件仍落在仓库根。
  *
  * 跑法(在仓库根目录):
  *   node verify/run.mjs image-paste
@@ -22,7 +24,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../src/shared/ipc-channels'
 import { registerIpc } from '../src/main/ipc'
-import { trashUnreferencedImageAssets } from '../src/main/files'
+import { saveImageAsset, trashUnreferencedImageAssets } from '../src/main/files'
+import { listVault } from '../src/main/vault'
 import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
@@ -122,13 +125,23 @@ async function main(): Promise<void> {
   }
 
   const assets = async (): Promise<string[]> =>
-    readdir(join(vault, 'assets')).catch(() => [] as string[])
+    readdir(join(vault, '.assets')).catch(() => [] as string[])
 
-  /** 轮询等待某个文件消失(回收站是异步的,trashItem 返回时文件可能还没从目录里消失) */
+  /** 轮询等待某个文件消失(回收是异步的,返回时文件可能还没从目录里消失) */
   async function waitForFileGone(target: string, ms = 5000): Promise<boolean> {
     const until = Date.now() + ms
     while (Date.now() < until) {
       if (!existsSync(target)) return true
+      await sleep(100)
+    }
+    return false
+  }
+
+  /** 轮询等待某个文件重新出现(撤销恢复是异步的) */
+  async function waitForFileBack(target: string, ms = 5000): Promise<boolean> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (existsSync(target)) return true
       await sleep(100)
     }
     return false
@@ -139,7 +152,7 @@ async function main(): Promise<void> {
     while (Date.now() < until) {
       const now = await assets()
       const added = now.find(name => !before.includes(name) && /^image-.*\.png$/.test(name))
-      if (added) return join(vault, 'assets', added)
+      if (added) return join(vault, '.assets', added)
       await sleep(100)
     }
     return null
@@ -194,13 +207,13 @@ async function main(): Promise<void> {
     return readFile(note, 'utf8')
   }
 
-  console.log('\n【A】已保存文档:粘贴图片 → 落盘 assets/ + 插入相对路径 + 立刻渲染')
+  console.log('\n【A】已保存文档:粘贴图片 → 落盘 .assets/ + 插入相对路径 + 立刻渲染')
   await focusEditor()
   const beforeA = await assets()
   const preventedA = await pasteImage()
   check('paste 事件被宿主拦下(defaultPrevented)', preventedA)
   const assetPath = await waitForNewAsset(beforeA)
-  check('图片写进文档旁的 assets/', Boolean(assetPath), assetPath ?? '(没等到文件)')
+  check('图片写进仓库根的 .assets/', Boolean(assetPath), assetPath ?? '(没等到文件)')
   if (assetPath) {
     const written = await readFile(assetPath)
     check('落盘字节与剪贴板图片完全一致', written.equals(PNG), `${written.length} vs ${PNG.length} 字节`)
@@ -213,11 +226,19 @@ async function main(): Promise<void> {
   {
     const saved = await saveNote()
     check(
-      'Markdown 里是相对路径 ![图片](assets/image-…png)',
-      /!\[图片\]\(assets\/image-\d{8}-\d{6}-[0-9a-f]{8}\.png\)/.test(saved),
+      'Markdown 里是相对路径 ![图片](.assets/image-…png)',
+      /!\[图片\]\(\.assets\/image-\d{8}-\d{6}-[0-9a-f]{8}\.png\)/.test(saved),
       JSON.stringify(saved.split('\n')[0])
     )
     check('图片之外的原有内容没被动过', saved.includes('# 标题') && saved.includes('正文段落'))
+  }
+  {
+    const tree = await listVault(vault)
+    check(
+      '左侧文件树不显示 .assets 目录',
+      !(tree.children ?? []).some(node => node.name === '.assets'),
+      JSON.stringify((tree.children ?? []).map(node => node.name))
+    )
   }
 
   console.log('\n【B】有选区时粘贴:图片替换选区,而不是被内置 paste 清空')
@@ -227,13 +248,13 @@ async function main(): Promise<void> {
   const preventedB = await pasteImage()
   check('paste 事件被宿主拦下', preventedB)
   const assetPathB = await waitForNewAsset(beforeB)
-  check('第二张图片也写进了 assets/', Boolean(assetPathB), assetPathB ?? '(没等到文件)')
+  check('第二张图片也写进了 .assets/', Boolean(assetPathB), assetPathB ?? '(没等到文件)')
   {
     const saved = await saveNote()
     const body = saved.trim()
     check(
       '正文只剩新图片,旧内容被选区替换',
-      !body.includes('标题') && !body.includes('正文段落') && /^!\[图片\]\(assets\/image-.*\.png\)$/.test(body),
+      !body.includes('标题') && !body.includes('正文段落') && /^!\[图片\]\(\.assets\/image-.*\.png\)$/.test(body),
       JSON.stringify(body.slice(0, 120))
     )
     const oldGone = assetPath ? await waitForFileGone(assetPath) : false
@@ -251,12 +272,32 @@ async function main(): Promise<void> {
     check('图片文件随链接一起被回收', gone, assetPathB ?? '(没有第二张图)')
   }
 
+  console.log('\n【C2】撤销删除:图片文件从应用回收区恢复并重新渲染')
+  await focusEditor()
+  await key('Z', ['control'])
+  {
+    const back = assetPathB ? await waitForFileBack(assetPathB) : false
+    check('撤销后图片文件回到 .assets/', back, assetPathB ?? '(没有第二张图)')
+    if (assetPathB && back) {
+      const written = await readFile(assetPathB)
+      check('恢复的图片字节与原来一致', written.equals(PNG), `${written.length} vs ${PNG.length} 字节`)
+    }
+    // 撤销恢复的选区仍压在图片节点上,所见即所得按光标规则显示源码;
+    // 把光标移到行尾空格之后再看渲染(真实使用中用户点一下别处也是这个结果)
+    await key('End')
+    const renderedAgain = await waitFor(
+      `document.querySelector('.cm-md-image-loaded img')?.naturalWidth > 0`,
+      6000
+    )
+    check('撤销后图片立即重新渲染', renderedAgain)
+  }
+
   console.log('\n【D】粘贴后还没保存就删掉链接 → 首次保存时回收(靠会话记账)')
   await focusEditor()
   const beforeD = await assets()
   await pasteImage()
   const assetPathD = await waitForNewAsset(beforeD)
-  check('第三张图片写进 assets/', Boolean(assetPathD), assetPathD ?? '(没等到文件)')
+  check('第三张图片写进 .assets/', Boolean(assetPathD), assetPathD ?? '(没等到文件)')
   await key('A', ['control'])
   await key('Delete')
   // 不经过一次「正文里带着这张图」的保存:保存前后比较发现不了它
@@ -291,18 +332,34 @@ async function main(): Promise<void> {
     check('纯文本被正常插入', text.includes('普通粘贴'), JSON.stringify(text.slice(0, 80)))
   }
 
-  console.log('\n【G】同目录其他笔记仍引用着这张图 → 不回收')
+  console.log('\n【G】仓库里其他笔记仍引用着这张图 → 不回收')
   {
     const name = 'image-20261019-120000-deadbeef.png'
-    const target = join(vault, 'assets', name)
-    await mkdir(join(vault, 'assets'), { recursive: true })
+    const target = join(vault, '.assets', name)
+    await mkdir(join(vault, '.assets'), { recursive: true })
     await writeFile(target, PNG)
-    await writeFile(join(vault, '共享.md'), `![图片](assets/${name})\n`, 'utf8')
-    await trashUnreferencedImageAssets(note, [name])
+    await writeFile(join(vault, '共享.md'), `![图片](.assets/${name})\n`, 'utf8')
+    await trashUnreferencedImageAssets(note, vault, [name])
     check('共享图片被其他笔记引用 → 保留', existsSync(target))
     await rm(join(vault, '共享.md'), { force: true })
-    await trashUnreferencedImageAssets(note, [name])
+    await trashUnreferencedImageAssets(note, vault, [name])
     check('最后一个引用也消失后 → 回收', await waitForFileGone(target))
+  }
+
+  console.log('\n【H】子目录文档:文件仍在仓库根 .assets/,链接写成 ../.assets/…')
+  {
+    const subNote = join(vault, '子目录', '子笔记.md')
+    await mkdir(join(vault, '子目录'), { recursive: true })
+    await writeFile(subNote, '# 子目录笔记\n', 'utf8')
+    const rel = await saveImageAsset(subNote, vault, 'image/png', PNG)
+    check(
+      '返回 ../.assets/ 开头的相对路径',
+      /^\.\.\/\.assets\/image-\d{8}-\d{6}-[0-9a-f]{8}\.png$/.test(rel),
+      rel
+    )
+    const written = join(vault, '.assets', rel.split('/').pop() ?? '')
+    check('文件仍写在仓库根 .assets/', existsSync(written), written)
+    check('子目录文档自己的目录下没有 .assets/', !existsSync(join(vault, '子目录', '.assets')))
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

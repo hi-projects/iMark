@@ -2,7 +2,8 @@
  * 验收:状态栏右下角的通知中心。
  *
  * 这一轮改了两件事,必须一起钉住:
- *   1. 主题切换 / 设置按钮移到状态栏**左边**(侧栏开关旁边);
+ *   1. 设置按钮在状态栏**左边**(侧栏开关旁边;主题切换已从状态栏移除,
+ *      只保留 `Ctrl+J` 与设置面板);
  *   2. 状态栏最右侧新增通知铃铛,点开在右下角弹一个小框,列出扩展与浏览器
  *      (`new Notification(...)`)发过的通知;未读数走铃铛角标,打开即已读。
  *
@@ -243,7 +244,7 @@ async function main(): Promise<void> {
   }
   await sleep(400)
 
-  console.log('\n[A] 状态栏布局:主题 / 设置在左,通知铃铛在最右')
+  console.log('\n[A] 状态栏布局:设置在左,通知铃铛在最右')
 
   interface LayoutMetrics {
     bar: { left: number; right: number; top: number; bottom: number }
@@ -296,18 +297,16 @@ async function main(): Promise<void> {
     })()`)
 
   check(
-    '设置与主题切换在状态栏最左边',
+    '设置在状态栏最左边（主题切换已移除）',
     layout.hasSettingsInLeft &&
-      layout.hasThemeInLeft &&
+      !layout.hasThemeInLeft &&
       layout.appActions !== null &&
       layout.appActions.left <= layout.bar.left + 14,
     JSON.stringify({ appActions: layout.appActions, bar: layout.bar })
   )
   check(
-    '顺序是设置、主题切换',
-    layout.appButtons.length === 2 &&
-      layout.appButtons[0]?.startsWith('设置') === true &&
-      layout.appButtons[1]?.includes('主题') === true,
+    '左侧应用组只有设置按钮',
+    layout.appButtons.length === 1 && layout.appButtons[0]?.startsWith('设置') === true,
     JSON.stringify(layout.appButtons)
   )
   check(
@@ -316,12 +315,21 @@ async function main(): Promise<void> {
     JSON.stringify(layout.seps)
   )
   check(
-    '第一条竖线在设置 / 主题与目录 / 大纲之间',
+    '第一条竖线在设置与目录 / 大纲之间',
     layout.seps.length >= 1 &&
       layout.appActions !== null &&
       layout.toggles !== null &&
       layout.seps[0]!.left >= layout.appActions.right &&
       layout.seps[0]!.right <= layout.toggles.left,
+    JSON.stringify({ sep: layout.seps[0], appActions: layout.appActions, toggles: layout.toggles })
+  )
+  check(
+    '左下角三个图标紧凑（竖线两侧留白 8px）',
+    layout.seps.length >= 1 &&
+      layout.appActions !== null &&
+      layout.toggles !== null &&
+      layout.seps[0]!.left - layout.appActions.right <= 9 &&
+      layout.toggles.left - layout.seps[0]!.right <= 9,
     JSON.stringify({ sep: layout.seps[0], appActions: layout.appActions, toggles: layout.toggles })
   )
   check(

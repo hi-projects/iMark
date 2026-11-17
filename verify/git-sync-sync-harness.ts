@@ -7,12 +7,12 @@
  * 设备，钉住：
  *
  *   1. 空仓库首次同步：直接采纳已有远端的内容，不造本地根提交；
- *   2. 本地改动 →「上传文件」提交并推送到远端；
+ *   2. 本地改动 →「推送」提交并推送到远端；
  *   3. 远端改动 → 完整同步快进到本地；
  *   4. 两边都有新提交 → 完整同步自动合并并推送；
- *   5. 「拉取文件」+ 不重叠的本地未提交改动 → 拉取后自动恢复本地改动；
- *   6. 「拉取文件」+ 同一文件的本地改动 → stash 恢复时冲突，进入冲突界面；
- *   7. 「拉取文件」时远端合并本身冲突 → 本地改动留在 stash，完成合并后自动恢复；
+ *   5. 「拉取」+ 不重叠的本地未提交改动 → 拉取后自动恢复本地改动；
+ *   6. 「拉取」+ 同一文件的本地改动 → stash 恢复时冲突，进入冲突界面；
+ *   7. 「拉取」时远端合并本身冲突 → 本地改动留在 stash，完成合并后自动恢复；
  *   8. 同一文件两边都改（提交级）→ 保留合并状态，处理完再同步完成合并。
  *
  * 跑法（在仓库根目录）：node verify/run.mjs git-sync-sync
@@ -121,10 +121,6 @@ const baseConfig = (): Record<string, unknown> => ({
   [configKey('commitMessage')]: 'sync: {time}',
   [configKey('authorName')]: 'iMark',
   [configKey('authorEmail')]: 'imark@local',
-  [configKey('autoInitRepo')]: true,
-  [configKey('initBranch')]: 'main',
-  [configKey('writeGitignore')]: true,
-  [configKey('writeReadme')]: false,
   [configKey('proxyMode')]: 'manual',
   [configKey('proxyUrl')]: ''
 })
@@ -182,6 +178,7 @@ async function main(): Promise<void> {
   await git(seed, ['push', 'origin', 'main'])
 
   await mkdir(vault, { recursive: true })
+  await git(vault, ['init', '--initial-branch=main'])
   await writeFile(
     join(ud, 'settings.json'),
     JSON.stringify(
@@ -275,13 +272,13 @@ async function main(): Promise<void> {
   check('远端 HEAD 没有被这次同步改写', (await remoteHead()) === (await localHead()))
   await waitStatus('ok')
 
-  // ---------- 2. 本地改动 → 上传文件 ----------
+  // ---------- 2. 本地改动 → 推送 ----------
 
-  console.log('\n【2】本地改动：上传文件把它推到远端')
+  console.log('\n【2】本地改动：推送把它推到远端')
   await writeFile(join(vault, '本地笔记.md'), '# 本地笔记\n', 'utf8')
   const pushedLocal = await uploadNow()
   console.log(`      扩展自己说：${pushedLocal?.message}`)
-  check('上传成功', pushedLocal?.ok === true, JSON.stringify(pushedLocal))
+  check('推送成功', pushedLocal?.ok === true, JSON.stringify(pushedLocal))
   check(
     '远端收到本地笔记',
     (await gitSoft(remote, ['ls-tree', '-r', '--name-only', 'main'])).includes('本地笔记.md')
@@ -322,9 +319,9 @@ async function main(): Promise<void> {
   )
   check('产生了合并提交（HEAD 有两个父提交）', (await git(vault, ['rev-list', '--parents', '-1', 'HEAD'])).trim().split(/\s+/).length === 3)
 
-  // ---------- 5. 拉取文件：本地改动不重叠 → 拉取后恢复 ----------
+  // ---------- 5. 拉取：本地改动不重叠 → 拉取后恢复 ----------
 
-  console.log('\n【5】拉取文件：本地未提交改动在拉取后恢复')
+  console.log('\n【5】拉取：本地未提交改动在拉取后恢复')
   await git(deviceB, ['pull', '--rebase', 'origin', 'main'])
   await writeFile(join(vault, '下载本地.md'), '本地未提交\n', 'utf8')
   await writeFile(join(deviceB, '下载远端.md'), '远端新增\n', 'utf8')
@@ -334,7 +331,7 @@ async function main(): Promise<void> {
 
   const downloaded = await downloadNow()
   console.log(`      扩展自己说：${downloaded?.message}`)
-  check('下载成功', downloaded?.ok === true, JSON.stringify(downloaded))
+  check('拉取成功', downloaded?.ok === true, JSON.stringify(downloaded))
   check('提示说明本地改动已恢复', (downloaded?.message ?? '').includes('本地未提交改动已恢复'), downloaded?.message)
   check('远端新增文件出现在本地', await exists(join(vault, '下载远端.md')))
   check('本地未提交文件仍然存在', (await textOf(join(vault, '下载本地.md'))) === '本地未提交\n')
@@ -350,9 +347,9 @@ async function main(): Promise<void> {
   const commitDownloaded = await syncNow()
   check('随后同步把本地改动提交并推送', commitDownloaded?.ok === true, JSON.stringify(commitDownloaded))
 
-  // ---------- 6. 拉取文件：同一文件冲突 → 冲突标记 ----------
+  // ---------- 6. 拉取：同一文件冲突 → 冲突标记 ----------
 
-  console.log('\n【6】拉取文件：本地改动与远端改同一文件 → 冲突界面')
+  console.log('\n【6】拉取：本地改动与远端改同一文件 → 冲突界面')
   await writeFile(join(vault, '下载冲突.md'), '基础\n', 'utf8')
   const basePushed = await syncNow()
   check('先同步一个基础版本', basePushed?.ok === true, JSON.stringify(basePushed))
@@ -387,9 +384,9 @@ async function main(): Promise<void> {
   await wc.executeJavaScript(`document.querySelector('.conflict-dialog-close')?.click()`, true)
   await sleep(200)
 
-  // ---------- 7. 拉取文件：远端合并冲突 + 待恢复 stash ----------
+  // ---------- 7. 拉取：远端合并冲突 + 待恢复 stash ----------
 
-  console.log('\n【7】拉取文件：合并冲突时保留 stash，完成合并后自动恢复')
+  console.log('\n【7】拉取：合并冲突时保留 stash，完成合并后自动恢复')
   await git(deviceB, ['pull', '--rebase', 'origin', 'main'])
   // 本地先提交一个远端没有的文件版本(故意不推送)
   await writeFile(join(vault, '下载合并冲突.md'), '本地提交\n', 'utf8')

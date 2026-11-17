@@ -118,10 +118,6 @@ const configOf = (): Record<string, unknown> => ({
   [configKey('commitMessage')]: 'sync: {time}',
   [configKey('authorName')]: 'iMark',
   [configKey('authorEmail')]: 'imark@local',
-  [configKey('autoInitRepo')]: true,
-  [configKey('initBranch')]: 'main',
-  [configKey('writeGitignore')]: true,
-  [configKey('writeReadme')]: false,
   [configKey('proxyMode')]: 'manual',
   [configKey('proxyUrl')]: ''
 })

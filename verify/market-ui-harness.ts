@@ -493,10 +493,10 @@ async function main(): Promise<void> {
   })()`)
   const xBefore = await actionX()
   check(
-    '点得到全局「上传文件」',
+    '点得到全局「推送」',
     await evalJs<boolean>(`(() => {
       const b = [...document.querySelectorAll('.plugin-global-actions button')]
-        .find(x => x.textContent.trim() === '上传文件')
+        .find(x => x.textContent.trim() === '推送')
       if (!b) return false
       b.click()
       return true
@@ -517,7 +517,7 @@ async function main(): Promise<void> {
   )
   const xAfter = await actionX()
   check(
-    '上传文件按钮位置不漂移',
+    '推送按钮位置不漂移',
     xBefore >= 0 && Math.abs(xAfter - xBefore) <= 1,
     `before=${xBefore}, after=${xAfter}`
   )

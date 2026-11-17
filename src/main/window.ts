@@ -43,6 +43,19 @@ const TITLE_BAR_HEIGHT = 36
 /** 当前视图决定顶部底色;由 setWindowView(渲染层切换视图时调用)更新 */
 let currentView: 'picker' | 'editor' = 'picker'
 
+/**
+ * 选择页是固定尺寸的启动视图,不允许最大化。
+ *
+ * 拖拽区(`-webkit-app-region: drag`)在 Windows 上就是非客户区的标题栏:
+ * 双击它、Aero Snap 拖到屏幕顶、系统菜单里的「最大化」都会把窗口放大。
+ * `hookWindowMessage` 只能观察、不能吞消息,拦不住这些路径;直接把窗口设为
+ * 不可最大化才是可靠的做法(右上角的最大化按钮会随之变灰,这是预期效果)。
+ * 进入编辑器前必须先恢复,否则 setWindowView 里的 maximize() 会被忽略。
+ */
+function applyMaximizable(win: BrowserWindow, value: boolean): void {
+  if (win.isMaximizable() !== value) win.setMaximizable(value)
+}
+
 function applyWindowChrome(w: BrowserWindow, theme: Theme, view: 'picker' | 'editor'): void {
   w.setBackgroundColor(WINDOW_BG[theme] ?? WINDOW_BG.light)
   // Windows / Linux 用 WCO 自绘标题栏;macOS 的交通灯保持原生
@@ -184,6 +197,8 @@ export function createMainWindow(
 
   // show 之前就最大化,避免窗口先以小尺寸露一下
   if (!startAtPicker) mainWindow.maximize()
+  // 选择页是固定尺寸的启动视图:双击拖拽区不该把它放大(见 setWindowView)
+  else applyMaximizable(mainWindow, false)
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -293,9 +308,14 @@ export function setWindowView(view: 'picker' | 'editor'): void {
     applyWindowChrome(mainWindow, getSettingsSync()?.theme ?? 'light', view)
   }
   if (view === 'editor') {
+    // 选择页把最大化关了,这里必须先打开,否则下面的 maximize() 不生效
+    applyMaximizable(mainWindow, true)
     if (!mainWindow.isMaximized()) mainWindow.maximize()
-  } else if (mainWindow.isMaximized()) {
-    mainWindow.unmaximize()
+  } else {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    // 仓库选择页不允许放大:双击拖拽区(Windows 的标题栏双击)、系统菜单、
+    // Aero Snap 都会被这一条挡住
+    applyMaximizable(mainWindow, false)
   }
 }
 

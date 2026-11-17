@@ -3,8 +3,8 @@
  * 共用同一份,避免「写文件的地方」与「清文件的地方」对不上。
  *
  * `saveImageAsset` 只写 `image-YYYYMMDD-HHMMSS-xxxxxxxx.<ext>` 这种名字;自动
- * 清理也只认它:`assets/` 是文档目录里的普通文件夹,用户自己放进去的文件不能
- * 因为正文里恰好没有同名引用就被回收。
+ * 清理也只认它:`.assets/` 里可能有用户自己放的文件,不能因为正文里恰好没有
+ * 同名引用就被回收。
  */
 
 /**
@@ -19,15 +19,15 @@ export function isManagedImageName(name: string): boolean {
 }
 
 /**
- * 从文档内容里取出指向 `assets/` 的受管图片文件名。
+ * 从文档内容里取出指向 `.assets/` 的受管图片文件名。
  *
  * 按文件名而不是完整 Markdown 语法来扫:文件名自带 8 位随机后缀,足以唯一定位;
  * 这样引用式图片、HTML `<img>` 等写法也能一并覆盖。返回集合用于比较保存前后
  * 的差异。
  */
 export function managedImageRefs(text: string): Set<string> {
-  // `\bassets` 挡住 `xassets/` 这类前缀;目录分隔符两种都认(正文里统一写 `/`,
-  // 但用户手改时可能留下 `\`)
+  // `\bassets` 挡住 `xassets/` 这类前缀,同时兼容旧笔记里的 `assets/`;
+  // 目录分隔符两种都认(正文里统一写 `/`,但用户手改时可能留下 `\`)
   const re = new RegExp(String.raw`\bassets[\\/](${ASSET_NAME})\b`, 'g')
   const refs = new Set<string>()
   for (const match of text.matchAll(re)) {

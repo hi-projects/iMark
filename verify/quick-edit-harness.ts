@@ -336,7 +336,8 @@ async function main(): Promise<void> {
   check('全文档只有这一个按钮', (await evalJs<number>(`document.querySelectorAll('.line-plus').length`)) === 1)
 
   await key('ArrowDown')
-  check('光标移到第 2 行后按钮跟过去', (await plusLine()) === 2, `按钮在第 ${await plusLine()} 行`)
+  // 第 2 行是两段之间的结构空行;方向键会跳过它,光标和按钮落到下一行正文上
+  check('光标跳过段间距落在第 3 行,按钮跟过去', (await plusLine()) === 3, `按钮在第 ${await plusLine()} 行`)
   await key('ArrowUp')
 
   // ---------- 3. 菜单 + 对话框 ----------
@@ -432,9 +433,95 @@ async function main(): Promise<void> {
     JSON.stringify(afterCancel)
   )
 
-  // ---------- 6. 停用 / 重新启用 ----------
+  // ---------- 6. 新段空行上插入 ----------
 
-  console.log('\n【6】停用 → 菜单与按钮消失、宿主释放；重新启用 → 恢复')
+  console.log('\n【6】新段空行上插入表格 —— 不多空行,正文行尾 Delete 一次选中整表')
+  check('重新载入干净文档', await loadDoc(START))
+  await key('End')
+  await key('Enter')
+  check('新段空行上有「+」', await waitFor(`document.querySelector('.line-plus')`, 4000))
+  check('打开「表格」对话框', await openMenuAndPick('表格'))
+  check('填 3 行 2 列', await setNumbers(3, 2))
+  check('点「插入」', await click('.line-dialog-primary'))
+  check('对话框关掉了', await waitFor(`!document.querySelector('.line-dialog')`, 4000))
+  await sleep(900)
+  const tableGap = await evalJs<{ cls: string; h: number; frameTop: number; firstBottom: number }>(`
+    (() => {
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+      const gap = lines[1]
+      const first = lines[0]
+      const frame = document.querySelector('.cm-md-table-frame')
+      const fr = first?.getBoundingClientRect()
+      return {
+        cls: gap?.className ?? '',
+        h: gap ? Math.round(gap.getBoundingClientRect().height) : -1,
+        frameTop: frame ? Math.round(frame.getBoundingClientRect().top) : -1,
+        firstBottom: fr ? Math.round(fr.bottom) : -1
+      }
+    })()`)
+  check(
+    '正文与表格之间按段间距留白(结构空行不再压成零高)',
+    /cm-md-block-gap-body/.test(tableGap.cls) && tableGap.h > 0,
+    JSON.stringify(tableGap)
+  )
+  const afterInsert = await readSource()
+  check(
+    '正文和表格之间只有一条空行(没有多补前导空行)',
+    afterInsert[0] === '第一行' && afterInsert[1] === '' && (afterInsert[2] ?? '').startsWith('|'),
+    JSON.stringify(afterInsert)
+  )
+  await evalJs(`(() => {
+    const view = document.querySelector('.cm-content').cmTile.root.view
+    const line = view.state.doc.line(1)
+    view.dispatch({ selection: { anchor: line.to } })
+    view.focus()
+    return true
+  })()`)
+  await key('Delete')
+  check(
+    '第一次 Delete 选中整张表(表格没有上移)',
+    await waitFor(`document.querySelector('.cm-md-table-frame.is-selected')`, 3000)
+  )
+  const afterDelete = await readSource()
+  check(
+    '文档没有被删改(表格没有上移)',
+    JSON.stringify(afterDelete) === JSON.stringify(afterInsert),
+    `${JSON.stringify(afterInsert)} → ${JSON.stringify(afterDelete)}`
+  )
+
+  console.log('\n【6b】段内硬换行后插入表格 —— 距离按行间距,不再加块间距')
+  check('重新载入干净文档', await loadDoc(START))
+  await key('End')
+  await key('Enter', ['shift'])
+  check('硬换行续行上有「+」', await waitFor(`document.querySelector('.line-plus')`, 4000))
+  check('打开「表格」对话框', await openMenuAndPick('表格'))
+  check('填 3 行 2 列', await setNumbers(3, 2))
+  check('点「插入」', await click('.line-dialog-primary'))
+  check('对话框关掉了', await waitFor(`!document.querySelector('.line-dialog')`, 4000))
+  await sleep(900)
+  {
+    const src = await readSource()
+    check(
+      '表格直接落在硬换行的续行上,没有多出空行',
+      src[0] === '第一行\\' && (src[1] ?? '').startsWith('|'),
+      JSON.stringify(src)
+    )
+    const info = await evalJs<{ cls: string; padTop: string }>(`
+      (() => {
+        const host = document.querySelector('.cm-md-table-host')
+        const frame = document.querySelector('.cm-md-table-frame')
+        return { cls: host?.className ?? '', padTop: frame ? getComputedStyle(frame).paddingTop : '' }
+      })()`)
+    check(
+      '紧接硬换行的表格不加块间距(padding-top 为 0)',
+      /cm-md-table-tight-top/.test(info.cls) && info.padTop === '0px',
+      JSON.stringify(info)
+    )
+  }
+
+  // ---------- 7. 停用 / 重新启用 ----------
+
+  console.log('\n【7】停用 → 菜单与按钮消失、宿主释放；重新启用 → 恢复')
   await service.setEnabled(QUICK_EDIT_ID, false)
   check('停用后扩展不在启用列表', service.listExtensions().find(v => v.descriptor.id === QUICK_EDIT_ID)?.enabled === false)
   check('贡献点里没有这条菜单', !service.getContributions().lineMenu.some(i => i.command === 'imark.quick-edit.insertTable'))
@@ -448,9 +535,9 @@ async function main(): Promise<void> {
     service.getContributions().lineMenu.some(i => i.command === 'imark.quick-edit.insertTable')
   )
 
-  // ---------- 7. 卸载 ----------
+  // ---------- 8. 卸载 ----------
 
-  console.log('\n【7】卸载扩展：目录、贡献点、按钮一起消失')
+  console.log('\n【8】卸载扩展：目录、贡献点、按钮一起消失')
   await service.uninstallExtension(QUICK_EDIT_ID)
   check('扩展列表里不再有它', !service.listExtensions().some(v => v.descriptor.id === QUICK_EDIT_ID))
   check('贡献点快照清空', service.getContributions().lineMenu.length === 0)

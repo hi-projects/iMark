@@ -955,7 +955,8 @@ export type ProjectGitAuth = 'token' | 'password' | 'ssh'
 /**
  * 当前仓库在应用里配置的 Git 远端(不含密钥)。
  *
- * 克隆仓库与仓库选择页的「Git 设置」维护这一份;扩展只读。地址为空的项目不会
+ * 扩展设置页的「远端仓库」、仓库选择页的「Git 设置」与克隆仓库维护这一份;
+ * 扩展只读。地址为空的项目不会
  * 出现在这里 —— `getGitRemote()` 返回 null。
  */
 export interface ProjectGitRemote {

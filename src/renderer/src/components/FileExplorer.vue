@@ -9,6 +9,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Images,
   Pencil,
   RefreshCw,
   Shapes,
@@ -30,6 +31,8 @@ import {
 } from '../services/vaultService'
 import { exportHtmlForPath } from '../services/fileService'
 import { extensionById, runExtensionCommand } from '../services/extensionService'
+import { api } from '../services/api'
+import { notifyError } from '../services/notice'
 import { isInside, joinPath } from '../utils/paths'
 
 interface Row {
@@ -69,6 +72,14 @@ const idrawAvailable = computed(() => {
 
 function createCanvas(): void {
   void runExtensionCommand('idraw.canvas.new', [], 'action')
+}
+
+/** 在系统文件管理器里打开仓库的图片目录;目录不存在时由主进程先建出来 */
+async function openAssetsDir(): Promise<void> {
+  const vaultPath = appStore.vaultPath
+  if (!vaultPath) return
+  const error = await api.openDirectory(joinPath(vaultPath, '.assets'))
+  if (error) notifyError('打开图像目录', new Error(error))
 }
 
 function toggleDir(node: VaultNode): void {
@@ -421,6 +432,14 @@ function guideLeft(level: number): string {
             @click="createCanvas()"
           >
             <Shapes :size="13" />
+          </button>
+          <button
+            v-if="appStore.vaultTree"
+            title="打开图像目录"
+            aria-label="打开图像目录"
+            @click="openAssetsDir()"
+          >
+            <Images :size="13" />
           </button>
           <button v-if="appStore.vaultTree" title="刷新" @click="refreshVault()">
             <RefreshCw :size="13" />

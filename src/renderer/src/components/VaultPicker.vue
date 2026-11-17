@@ -33,6 +33,16 @@ type Panel = 'actions' | 'clone' | 'create' | 'git'
 
 const panel = ref<Panel>('actions')
 
+/**
+ * 面板切换的滑入方向:动作图标 → 输入页从右滑入,返回时从左滑入。
+ * `none` = 当前面板不做动画(首次打开、从项目 Git 设置返回)。
+ */
+const paneAnimation = ref<'none' | 'forward' | 'back'>('none')
+const paneClass = computed(() => ({
+  'vault-picker-pane-forward': paneAnimation.value === 'forward',
+  'vault-picker-pane-back': paneAnimation.value === 'back'
+}))
+
 // 直接绑定 store,便于启动时已由 settings 初始化
 const skipPicker = computed({
   get: () => appStore.skipVaultPicker,
@@ -77,7 +87,7 @@ async function openVault(path: string): Promise<void> {
   await openVaultFromPicker(path)
 }
 
-// ---------- 从 Git 克隆 ----------
+// ---------- 从远端克隆 ----------
 
 const clone = reactive({
   url: '',
@@ -110,6 +120,7 @@ watch(
 )
 
 function startClone(): void {
+  paneAnimation.value = 'forward'
   panel.value = 'clone'
   cloneError.value = ''
   void nextTick(() => cloneUrlInput.value?.focus())
@@ -166,6 +177,7 @@ async function confirmClone(): Promise<void> {
 }
 
 function cancelClone(): void {
+  paneAnimation.value = 'back'
   panel.value = 'actions'
   cloneError.value = ''
 }
@@ -177,6 +189,7 @@ const parentDir = ref<string | null>(null)
 const createNameInput = ref<HTMLInputElement | null>(null)
 
 async function startCreate(): Promise<void> {
+  paneAnimation.value = 'forward'
   panel.value = 'create'
   parentDir.value = null
   newName.value = ''
@@ -202,6 +215,7 @@ async function confirmCreate(): Promise<void> {
 }
 
 function cancelCreate(): void {
+  paneAnimation.value = 'back'
   newName.value = ''
   parentDir.value = null
   panel.value = 'actions'
@@ -224,6 +238,7 @@ const gitError = ref('')
 
 function openGitEditor(path: string): void {
   const remote = remoteOf(path)
+  paneAnimation.value = 'none'
   gitPath.value = path
   gitForm.url = remote?.url ?? ''
   gitForm.auth = remote?.auth ?? 'token'
@@ -261,6 +276,7 @@ async function saveGit(): Promise<void> {
     })
     await refreshGitRemotes()
     pushNotice('项目 Git 设置已保存', { title: 'Git 远端' })
+    paneAnimation.value = 'none'
     panel.value = 'actions'
   } catch (err) {
     gitError.value = err instanceof Error ? err.message : String(err)
@@ -278,6 +294,7 @@ async function clearGit(): Promise<void> {
     pushNotice('已移除该项目的 Git 远端配置(本地仓库与远端内容不受影响)', {
       title: 'Git 远端'
     })
+    paneAnimation.value = 'none'
     panel.value = 'actions'
   } catch (err) {
     gitError.value = err instanceof Error ? err.message : String(err)
@@ -349,48 +366,44 @@ async function onSkipChange(): Promise<void> {
           <span class="vault-picker-logo" v-html="iconSvg"></span>
           <h1 class="vault-picker-title">iMark</h1>
           <p v-if="panel === 'actions'" class="vault-picker-subtitle">
-            选择一个仓库开始,或新建一个
+            克隆、打开、创建一个仓库
           </p>
         </header>
 
-        <!-- 动作列表(Obsidian 的左右结构里右侧那三行) -->
-        <div v-if="panel === 'actions'" class="vault-picker-actions">
-          <section class="vault-picker-action">
-            <div class="vault-picker-action-text">
-              <h2>从 Git 克隆仓库</h2>
-              <p>拉取远端仓库到本地作为新项目,并保存为项目的 Git 远端。</p>
-            </div>
-            <button class="vault-btn" data-action="start-clone" @click="startClone">
-              <FolderGit2 :size="15" />
-              克隆
-            </button>
-          </section>
-
-          <section class="vault-picker-action">
-            <div class="vault-picker-action-text">
-              <h2>打开文件夹作为仓库</h2>
-              <p>选择一个已有 Markdown 笔记的文件夹。</p>
-            </div>
-            <button class="vault-btn" @click="openVaultViaDialog()">
-              <FolderOpen :size="15" />
-              打开
-            </button>
-          </section>
-
-          <section class="vault-picker-action">
-            <div class="vault-picker-action-text">
-              <h2>创建新仓库</h2>
-              <p>在一个位置下新建空文件夹,并作为仓库打开。</p>
-            </div>
-            <button class="vault-btn" @click="startCreate">
-              <FolderPlus :size="15" />
-              创建
-            </button>
-          </section>
+        <!-- 三个动作图标:名称放在 title / aria-label 里,悬停可见 -->
+        <div v-if="panel === 'actions'" class="vault-picker-actions" :class="paneClass">
+          <button
+            class="vault-picker-action"
+            data-action="start-clone"
+            title="从远端克隆仓库"
+            aria-label="从远端克隆仓库"
+            @click="startClone"
+          >
+            <FolderGit2 :size="24" />
+            <span>克隆</span>
+          </button>
+          <button
+            class="vault-picker-action"
+            title="打开文件夹作为仓库"
+            aria-label="打开文件夹作为仓库"
+            @click="openVaultViaDialog()"
+          >
+            <FolderOpen :size="24" />
+            <span>打开</span>
+          </button>
+          <button
+            class="vault-picker-action"
+            title="创建新仓库"
+            aria-label="创建新仓库"
+            @click="startCreate"
+          >
+            <FolderPlus :size="24" />
+            <span>创建</span>
+          </button>
         </div>
 
         <!-- 克隆表单 -->
-        <div v-else-if="panel === 'clone'" class="vault-picker-form">
+        <div v-else-if="panel === 'clone'" class="vault-picker-form" :class="paneClass">
           <label class="vault-field">
             <span>远程地址</span>
             <input
@@ -507,7 +520,7 @@ async function onSkipChange(): Promise<void> {
         </div>
 
         <!-- 新建仓库表单 -->
-        <div v-else-if="panel === 'create'" class="vault-picker-form">
+        <div v-else-if="panel === 'create'" class="vault-picker-form" :class="paneClass">
           <div class="vault-field-row">
             <label class="vault-field">
               <span>仓库名称</span>

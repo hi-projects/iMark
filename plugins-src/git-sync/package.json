@@ -35,13 +35,13 @@
       },
       {
         "command": "imark.git-sync.uploadNow",
-        "title": "上传文件",
+        "title": "推送",
         "category": "远程同步",
         "detail": "只提交本地改动并推送到远端，不拉取远端改动"
       },
       {
         "command": "imark.git-sync.downloadNow",
-        "title": "拉取文件",
+        "title": "拉取",
         "category": "远程同步",
         "detail": "拉取远端改动并合并到当前分支；本地未提交改动会先暂存，拉取后自动恢复，冲突时进入冲突界面"
       },
@@ -71,6 +71,22 @@
     ],
     "configuration": {
       "properties": {
+        "imark.git-sync.targets": {
+          "type": "array",
+          "default": [],
+          "title": "远端仓库",
+          "description": "同步用的远端地址、分支与凭据。这里的改动直接写入当前仓库的项目 Git 设置，与仓库选择页的「Git 设置」、从 Git 克隆仓库使用的是同一份配置。",
+          "imark": {
+            "kind": "targets",
+            "single": true,
+            "projectGit": true,
+            "section": "远端仓库",
+            "targetSecret": {
+              "label": "访问令牌",
+              "placeholder": "必填（私有仓库需要访问令牌）"
+            }
+          }
+        },
         "imark.git-sync.intervalMinutes": {
           "type": "number",
           "default": 10,
@@ -85,9 +101,9 @@
         },
         "imark.git-sync.syncOnStart": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "title": "启动后同步一次",
-          "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补做一轮完整同步。",
+          "description": "应用关闭期间定时器不会运行，开启它可在下次启动时补做一轮完整同步（默认关闭）。",
           "imark": {
             "kind": "boolean",
             "section": "同步设置"
@@ -156,58 +172,6 @@
             "kind": "text",
             "section": "同步信息设置"
           }
-        },
-        "imark.git-sync.autoInitRepo": {
-          "type": "boolean",
-          "default": true,
-          "title": "自动初始化仓库",
-          "description": "仓库还不是 git 仓库时自动执行 git init。",
-          "imark": {
-            "kind": "boolean",
-            "section": "本地仓库自动初始化"
-          }
-        },
-        "imark.git-sync.initBranch": {
-          "type": "string",
-          "default": "main",
-          "title": "自动创建的分支名",
-          "description": "初始化仓库时创建的分支名（git init -b）。建议与项目「Git 设置」里的「本地分支」保持一致，否则推送时会找不到分支。",
-          "imark": {
-            "kind": "text",
-            "section": "本地仓库自动初始化",
-            "showWhen": {
-              "key": "autoInitRepo",
-              "value": true
-            }
-          }
-        },
-        "imark.git-sync.writeGitignore": {
-          "type": "boolean",
-          "default": true,
-          "title": "初始化时创建 .gitignore",
-          "description": "仅新建仓库时写入推荐忽略项；已有仓库、或已存在 .gitignore 时都不会改动。",
-          "imark": {
-            "kind": "boolean",
-            "section": "本地仓库自动初始化",
-            "showWhen": {
-              "key": "autoInitRepo",
-              "value": true
-            }
-          }
-        },
-        "imark.git-sync.writeReadme": {
-          "type": "boolean",
-          "default": false,
-          "title": "初始化时创建 README.md",
-          "description": "仅新建仓库时创建一个 README.md（标题取仓库文件夹名）；已存在则不覆盖。",
-          "imark": {
-            "kind": "boolean",
-            "section": "本地仓库自动初始化",
-            "showWhen": {
-              "key": "autoInitRepo",
-              "value": true
-            }
-          }
         }
       }
     },
@@ -220,18 +184,24 @@
       },
       {
         "command": "imark.git-sync.uploadNow",
-        "label": "上传文件",
+        "label": "推送",
         "scope": "global"
       },
       {
         "command": "imark.git-sync.downloadNow",
-        "label": "拉取文件",
+        "label": "拉取",
         "scope": "global"
       },
       {
         "command": "imark.git-sync.detectProxy",
         "label": "检测代理",
         "scope": "global"
+      },
+      {
+        "command": "imark.git-sync.testTarget",
+        "label": "测试连接",
+        "scope": "target",
+        "targetSetting": "imark.git-sync.targets"
       }
     ]
   }

@@ -178,7 +178,13 @@ const mathPreviewPlugin = ViewPlugin.fromClass(
       const hit = this.view.hasFocus ? mathAtCursor(this.view) : null
       this.hit = hit
       this.el.style.visibility = 'hidden'
-      if (!hit) return
+      if (!hit) {
+        // 只藏 visibility 在某些合成层上会留下「幽灵」副本(看起来像多了一个
+        // 公式块、点它却没反应)。整块从绘制树里拿掉才稳。
+        this.el.style.display = 'none'
+        return
+      }
+      this.el.style.display = 'block'
       if (this.rendered?.tex !== hit.tex || this.rendered.display !== hit.display) {
         this.render(hit)
       }
@@ -189,7 +195,12 @@ const mathPreviewPlugin = ViewPlugin.fromClass(
     private reposition(): void {
       const hit = this.hit
       this.el.style.visibility = 'hidden'
-      if (hit) this.place(hit)
+      if (!hit) {
+        this.el.style.display = 'none'
+        return
+      }
+      this.el.style.display = 'block'
+      this.place(hit)
     }
 
     private render(hit: MathHit): void {

@@ -128,6 +128,17 @@ async function main(): Promise<void> {
     idrawView?.source === 'bundled' && idrawView.enabled === true,
     idrawView ? `source=${idrawView.source} enabled=${idrawView.enabled}` : '未安装'
   )
+  const contribs = service.getContributions()
+  check(
+    '插件设置页没有「打开画布 / 新建画布」动作按钮',
+    contribs.actions.every(action => action.extensionId !== EXT_ID),
+    JSON.stringify(contribs.actions.filter(action => action.extensionId === EXT_ID))
+  )
+  check(
+    '命令面板里的画布命令仍然保留',
+    contribs.commands.some(item => item.command === 'idraw.canvas.open') &&
+      contribs.commands.some(item => item.command === 'idraw.canvas.new')
+  )
   buildAppMenu()
   const win: BrowserWindow = createMainWindow(settings)
   const wc = win.webContents
@@ -271,7 +282,7 @@ async function main(): Promise<void> {
     await waitFor("document.querySelector('.tab-active .tab-title')?.textContent === 'flow.svg'")
   )
   // 新建即落盘:与「新建文件」一致,名字确认的那一刻文件就存在
-  const created = join(vault, 'flow.svg')
+  const created = join(vault, '.assets', 'flow.svg')
   const createdOk = await (async () => {
     const until = Date.now() + 8000
     while (Date.now() < until) {
@@ -290,7 +301,57 @@ async function main(): Promise<void> {
     )
   )
   check('iDraw 应用挂载完成', mounted)
-  check('空画布模板卡片可见', await waitForInFrame("document.querySelector('.canvas-empty')"))
+  check('空画布模板卡片可见', await waitForInFrame("document.querySelector('.canvas-welcome')"))
+
+  console.log('\n【1b】工具栏精简为「插入」,分组形状浮层在上方展开')
+  const toolbar = await inFrame<{
+    insert: boolean
+    file: number
+    tools: number
+    undo: number
+    exportIcon: number
+  }>(`(() => {
+    const bar = document.querySelector('.canvas-toolbar')
+    if (!bar) return { insert: false, file: -1, tools: -1, undo: -1, exportIcon: -1 }
+    return {
+      insert: [...bar.querySelectorAll('button')].some(b => b.textContent.trim() === '插入'),
+      file: bar.querySelectorAll(
+        'button[title^="新建 (Ctrl+N)"], button[title^="打开 (Ctrl+O)"], button[title^="保存 (Ctrl+S)"]'
+      ).length,
+      tools: bar.querySelectorAll(
+        'button[title^="选择 (V)"], button[title^="平移 (H"], button[title^="连接线 (L)"], button[title^="文本 (T)"]'
+      ).length,
+      undo: bar.querySelectorAll('button[title^="撤销"], button[title^="重做"]').length,
+      exportIcon: bar.querySelectorAll('button[title^="导出"]').length
+    }
+  })()`)
+  check('工具栏仍有「插入」', toolbar.insert, JSON.stringify(toolbar))
+  check('去掉新建 / 打开 / 保存图标', toolbar.file === 0, String(toolbar.file))
+  check('去掉选择 / 平移 / 连线 / 文本图标', toolbar.tools === 0, String(toolbar.tools))
+  check('去掉撤销 / 重做图标', toolbar.undo === 0, String(toolbar.undo))
+  check('去掉导出图标', toolbar.exportIcon === 0, String(toolbar.exportIcon))
+  await inFrame(
+    `[...document.querySelectorAll('.canvas-toolbar button')].find(b => b.textContent.trim() === '插入')?.click()`
+  )
+  check('插入浮层出现', await waitForInFrame(`document.querySelector('.canvas-insert-panel')`))
+  const shapeGroups = await inFrame<string[]>(
+    `[...document.querySelectorAll('.canvas-insert-panel .shape-group-title')].map(el => el.textContent.trim())`
+  )
+  check(
+    '分组:文本 / 基本形状 / 其它',
+    JSON.stringify(shapeGroups) === JSON.stringify(['文本', '基本形状', '其它']),
+    JSON.stringify(shapeGroups)
+  )
+  const shapeLabels = await inFrame<string[]>(
+    `[...document.querySelectorAll('.canvas-insert-panel .shape-item > span:last-child')].map(el => el.textContent.trim())`
+  )
+  check(
+    '包含三角形 / 星形 / 箭头 / 十字',
+    ['文本', '矩形', '三角形', '星形', '箭头', '十字'].every(label => shapeLabels.includes(label)),
+    JSON.stringify(shapeLabels)
+  )
+  await inFrame(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+  check('Esc 收起插入浮层', await waitForInFrame(`!document.querySelector('.canvas-insert-panel')`))
 
   console.log('\n【2】插入流程图模板')
   await inFrame("document.querySelector('.canvas-template-item.is-flow')?.click()")
@@ -303,7 +364,7 @@ async function main(): Promise<void> {
 
   console.log('\n【3】保存直接写回创建时的 SVG')
   await service.executeCommand('idraw.canvas.save')
-  const saved = join(vault, 'flow.svg')
+  const saved = join(vault, '.assets', 'flow.svg')
   const savedOk = await (async () => {
     const until = Date.now() + 8000
     while (Date.now() < until) {
@@ -344,7 +405,7 @@ async function main(): Promise<void> {
     '标签标题换成新名字',
     await waitFor("document.querySelector('.tab-active .tab-title')?.textContent === 'scratch.svg'")
   )
-  const scratch = join(vault, 'scratch.svg')
+  const scratch = join(vault, '.assets', 'scratch.svg')
   check(
     '第二个文件也立刻落盘',
     await (async () => {
@@ -359,7 +420,7 @@ async function main(): Promise<void> {
   // 打开命令要等用户选完才返回;不能 await,否则测不了快速选择
   void service.executeCommand('idraw.canvas.open').catch(() => undefined)
   check('打开画布弹出快速选择', await waitFor("document.querySelector('.ext-dialog-list')"))
-  check('选择 flow.svg', await pickPath('flow.svg'))
+  check('选择 flow.svg', await pickPath('.assets/flow.svg'))
   check(
     '重新打开恢复 5 个节点',
     await waitForInFrame("document.querySelectorAll('[data-idraw-node]').length === 5")
@@ -412,7 +473,8 @@ async function main(): Promise<void> {
   const lightBg = await inFrame<string>(
     "getComputedStyle(document.documentElement).getPropertyValue('--bg-app').trim()"
   )
-  await evalJs("document.querySelector('.status-bar button[title*=\"主题\"]')?.click()")
+  // 状态栏的主题按钮已移除:走菜单命令(与 Ctrl+J 同一条渲染层处理路径)
+  win.webContents.send(IPC.MenuCommand, 'view:toggle-theme')
   check(
     '插件根节点切到深色',
     await waitForInFrame("document.documentElement.dataset.theme === 'dark'")
@@ -421,7 +483,7 @@ async function main(): Promise<void> {
     "getComputedStyle(document.documentElement).getPropertyValue('--bg-app').trim()"
   )
   check('插件使用 iMark 的深色变量', darkBg !== lightBg && darkBg.length > 0, `${lightBg} → ${darkBg}`)
-  await evalJs("document.querySelector('.status-bar button[title*=\"主题\"]')?.click()")
+  win.webContents.send(IPC.MenuCommand, 'view:toggle-theme')
   check(
     '切回亮色',
     await waitForInFrame("document.documentElement.dataset.theme === 'light'")

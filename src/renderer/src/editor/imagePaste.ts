@@ -1,12 +1,12 @@
 import { EditorSelection, type Extension, type Text } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
-import { activeTab } from '../stores/app'
+import { activeTab, appStore } from '../stores/app'
 import { api } from '../services/api'
 import { notePastedImage } from '../services/pastedImages'
 import { notifyError, pushNotice } from '../services/notice'
 
 /**
- * 剪贴板图片粘贴:截图/复制的图片 → 存进文档旁 `assets/` → 在光标处写 Markdown。
+ * 剪贴板图片粘贴:截图/复制的图片 → 存进仓库根的 `.assets/` → 在光标处写 Markdown。
  *
  * CodeMirror 自带的 paste 只读 `text/plain` / `text/uri-list`;剪贴板里只有图片时,
  * 它会执行一次空替换(有选区时还会把选区删掉),所以必须在扩展 handler 里先拦下来。
@@ -54,7 +54,7 @@ async function completePaste(item: PendingPaste): Promise<void> {
   for (const file of item.files) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const rel = await api.saveImageAsset(item.docPath, file.type, bytes)
+      const rel = await api.saveImageAsset(item.docPath, appStore.vaultPath, file.type, bytes)
       // 从写盘这一刻起就记账:即使这张图最终没进正文(编辑期间切走了文档),
       // 保存时也能把它算进「没有引用」的候选
       notePastedImage(item.docPath, rel)
@@ -98,7 +98,7 @@ export function imagePaste(): Extension {
 
         const docPath = activeTab()?.filePath ?? null
         if (!docPath) {
-          // 没有落盘位置就没有 assets/ 目录;提示比静默失败好
+          // 没有落盘位置就没有 .assets/ 目录;提示比静默失败好
           pushNotice('请先保存文档，再粘贴图片', { level: 'warn' })
           return true
         }

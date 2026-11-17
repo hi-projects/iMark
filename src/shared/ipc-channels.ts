@@ -5,19 +5,25 @@ export const IPC = {
   FileRead: 'file:read',
   FileWrite: 'file:write',
   /**
-   * 渲染→主:把剪贴板图片保存到当前文档旁的 `assets/` 目录。
+   * 渲染→主:把剪贴板图片保存到当前仓库根的 `.assets/` 目录。
    *
    * 图片字节走 IPC 的结构化克隆(Uint8Array),不转 base64;主进程负责生成不与现有
    * 文件冲突的名字,并返回**相对文档目录**的引用路径(见 main/files.ts)。
    */
   FileSaveImage: 'file:save-image',
   /**
-   * 渲染→主:回收正文里已经不再引用的粘贴图片(移到系统回收站)。
+   * 渲染→主:回收正文里已经不再引用的粘贴图片(移到应用回收区,撤销可恢复)。
    *
    * 渲染层只负责比较保存前后的正文、给出候选文件名;真正的路径校验与
-   * 「同目录其他笔记是否还引用」的判断都在主进程做(见 main/files.ts)。
+   * 「仓库里其他笔记是否还引用」的判断都在主进程做(见 main/files.ts)。
    */
   FileTrashImages: 'file:trash-images',
+  /**
+   * 渲染→主:撤销删除后把图片从应用回收区搬回 `.assets/`。
+   *
+   * 文件名与路径校验同回收;目标已存在时保持原文件不动。
+   */
+  FileRestoreImages: 'file:restore-images',
   ConfirmDiscard: 'dialog:confirm-discard',
   SettingsGet: 'settings:get',
   SettingsSet: 'settings:set',
