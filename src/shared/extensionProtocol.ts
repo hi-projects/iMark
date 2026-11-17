@@ -173,7 +173,13 @@ export interface StatusBarItemDto {
 
 // ---------- webview ----------
 
-export type WebviewPresentationDto = 'sidebar' | 'overlay' | 'floating'
+/**
+ * 面板呈现方式：
+ *   - sidebar / overlay / floating：编辑器外围的侧栏、覆盖层、浮动窗；
+ *   - tab：编辑区标签页，与文件标签并列在标签栏里（标题跟随 `title`，
+ *     `dirty` 显示未保存圆点，关闭标签即销毁面板）。
+ */
+export type WebviewPresentationDto = 'sidebar' | 'overlay' | 'floating' | 'tab'
 export type WebviewAnchorDto = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 /** 面板状态:标题栏上的小圆点。idle = 绿点,busy = 蓝点脉冲 */
 export type WebviewPanelStatusDto = 'idle' | 'busy'
@@ -224,6 +230,8 @@ export interface WebviewPanelStateDto {
   anchor: WebviewAnchorDto
   visible: boolean
   active: boolean
+  /** 扩展自己维护的未保存标记；tab 呈现时画在标签标题右侧 */
+  dirty: boolean
 }
 
 // ---------- 宿主 → main ----------
@@ -535,6 +543,12 @@ export type HostRequestMessage =
       extensionId: string
       panelId: string
       status: WebviewPanelStatusDto
+    }
+  | {
+      kind: 'webview.setDirty'
+      extensionId: string
+      panelId: string
+      dirty: boolean
     }
   | {
       kind: 'webview.setPresentation'
@@ -934,6 +948,8 @@ export type MainToRendererMessage =
     }
   | {
       type: 'webview.create'
+      /** true = 上个会话留下的面板恢复（不抢当前焦点） */
+      restored?: boolean
       panel: WebviewPanelStateDto & {
         extensionId: string
         html: string

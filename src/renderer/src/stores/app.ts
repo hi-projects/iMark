@@ -35,6 +35,14 @@ export type AppView = 'picker' | 'editor'
 
 interface AppState {
   view: AppView
+  /**
+   * 启动意图是否已经确定(读设置/研判恢复仓库/取启动文件之后)。
+   *
+   * 启动那一刻 `view` 还是默认的 `picker`,但勾了「直接打开上次仓库」的人接下来
+   * 会进编辑器。如果选择页照常先渲染,就会一闪而过;所以它要等 `booted` 为真
+   * 才允许出现。设置读不到等异常路径也一样在末尾置真,不会卡空白。
+   */
+  booted: boolean
   /** 最近打开的仓库列表(最新的在前),来自 settings */
   vaults: string[]
   theme: Theme
@@ -114,6 +122,7 @@ export type SwitcherMode = 'file' | 'command'
 
 export const appStore = reactive<AppState>({
   view: 'picker',
+  booted: false,
   vaults: [],
   theme: 'light',
   tabs: [],

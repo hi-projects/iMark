@@ -904,6 +904,17 @@ class HostWebviewPanel implements WebviewPanel {
           status
         })
       })
+    },
+    setDirty: (dirty: boolean): void => {
+      // 与 setStatus 一样是瞬时状态：main 转给 renderer 画在标签上，不持久化
+      this.whenReady(() => {
+        this.runtime.send({
+          kind: 'webview.setDirty',
+          extensionId: this.ext.id,
+          panelId: this.panelId!,
+          dirty
+        })
+      })
     }
   }
 

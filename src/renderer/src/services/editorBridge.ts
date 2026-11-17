@@ -245,6 +245,8 @@ function sendActive(): void {
 function primeTabs(): void {
   const seen = new Set<string>()
   for (const tab of appStore.tabs) {
+    // 扩展标签不是文本文档，不能出现在扩展的文档镜像里
+    if (tab.kind !== 'markdown') continue
     seen.add(tab.id)
     const uri = uriOfTab(tab)
     uriByTab.set(tab.id, uri)
@@ -273,7 +275,9 @@ export function notifyEditorReady(): void {
   send({
     type: 'editor.ready',
     payload: {
-      documents: appStore.tabs.map(tabItem => documentState(tabItem)),
+      documents: appStore.tabs
+        .filter(tabItem => tabItem.kind === 'markdown')
+        .map(tabItem => documentState(tabItem)),
       activeDocumentUri: activeUri,
       visibleDocumentUris: activeUri ? [activeUri] : [],
       context: buildContext(),
@@ -293,6 +297,7 @@ export function notifyEditorReady(): void {
 function syncTabs(): void {
   const seen = new Set<string>()
   for (const tab of appStore.tabs) {
+    if (tab.kind !== 'markdown') continue
     seen.add(tab.id)
     const uri = uriOfTab(tab)
     const previous = uriByTab.get(tab.id)

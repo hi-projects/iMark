@@ -218,8 +218,9 @@ function gotoNextConflict(): void {
       <AlertTriangle :size="13" />
       <span>{{ appStore.activeConflicts }} 处冲突</span>
     </button>
-    <!-- 没有打开页面时,0 字 0 行不是「统计结果」,是空状态;不显示反而诚实 -->
-    <template v-if="activeDoc">
+    <!-- 没有打开页面时,0 字 0 行不是「统计结果」,是空状态;不显示反而诚实。
+         扩展标签同理:统计的是扩展自己的内容,iMark 不知道字数 -->
+    <template v-if="activeDoc && activeDoc.kind === 'markdown'">
       <span>字数 {{ activeDoc.words }}</span>
       <span>字符 {{ activeDoc.chars }}</span>
       <span>行数 {{ activeDoc.lines }}</span>

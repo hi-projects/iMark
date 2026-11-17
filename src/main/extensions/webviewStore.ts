@@ -41,7 +41,12 @@ interface StoreFile {
   panels: PersistedWebviewPanel[]
 }
 
-const PRESENTATIONS = new Set<WebviewPresentationDto>(['sidebar', 'overlay', 'floating'])
+const PRESENTATIONS = new Set<WebviewPresentationDto>([
+  'sidebar',
+  'overlay',
+  'floating',
+  'tab'
+])
 const ANCHORS = new Set<WebviewAnchorDto>([
   'top-left',
   'top-right',

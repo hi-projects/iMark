@@ -145,16 +145,30 @@ async function main(): Promise<void> {
   }
 
   /**
+   * 启动一瞬间是否已经画出了仓库选择页。
+   *
+   * 渲染层的入口是 defer 的 module script,在 DOMContentLoaded 之前就完成首帧挂载;
+   * 所以在 `dom-ready` 这一刻查 DOM,看到的就是用户启动时看到的第一帧。勾了
+   * 「直接打开上次仓库」时这一帧不该是选择页(否则它会一闪而过)。
+   */
+  const firstFramePicker = new Map<number, boolean | null>()
+
+  /**
    * 开一个窗口并等界面**稳定下来**。
    *
-   * 不能只等「出现了 picker 或 app-shell」:自动恢复仓库时视图先经过一次 picker
-   * (初始值)才切到编辑器,早一步返回就会对着选择界面做后续断言。
+   * 必须等视图稳定,否则自动恢复仓库的过程中可能还停在更早的状态。
    */
   async function openWindow(expect: 'editor' | 'picker' = 'editor'): Promise<Win> {
     const win = createMainWindow(await loadSettings())
     // 隐藏窗口默认会被 Chromium 降频,定时器/渲染变慢会让等待变得不可预测
     win.webContents.setBackgroundThrottling(false)
     const wc = win.webContents
+    wc.once('dom-ready', () => {
+      void wc
+        .executeJavaScript("!!document.querySelector('.vault-picker')", true)
+        .then(seen => firstFramePicker.set(win.id, seen))
+        .catch(() => firstFramePicker.set(win.id, null))
+    })
     await new Promise<void>(resolve => wc.once('did-finish-load', () => resolve()))
     if (expect === 'picker') {
       await waitFor(win, `document.querySelector('.vault-picker')`)
@@ -181,6 +195,13 @@ async function main(): Promise<void> {
       `     [窗口] title=${JSON.stringify(win.getTitle())} 仓库=${JSON.stringify(diag.vault)} picker=${diag.picker} 空仓库按钮=${diag.openVaultButton} 文件行=${JSON.stringify(diag.files)}`
     )
     return win
+  }
+
+  /** 等启动第一帧的记录落地并返回它(true = 那一眼看到的是选择页) */
+  async function firstFrameWasPicker(win: Win): Promise<boolean | null> {
+    const until = Date.now() + 1000
+    while (Date.now() < until && !firstFramePicker.has(win.id)) await sleep(20)
+    return firstFramePicker.get(win.id) ?? null
   }
 
   async function closeWindow(win: Win): Promise<void> {
@@ -238,6 +259,7 @@ async function main(): Promise<void> {
     const win = await openWindow()
     const ready = await waitFor(win, `document.querySelector('.editor-empty-hint')`)
     check('进入编辑器且显示空状态提示', ready)
+    check('自动恢复仓库时第一帧不是选择页', (await firstFrameWasPicker(win)) === false)
     const state = await noDocumentState(win)
     check('编辑区没有内容', state.content.trim() === '', JSON.stringify(state.content))
     check('空状态没有标签、界面不写「未命名」', state.tabCount === 0 && !state.statusText.includes('未命名'), JSON.stringify(state))
@@ -269,6 +291,7 @@ async function main(): Promise<void> {
   }
   {
     const win = await openWindow()
+    check('恢复文件时第一帧也不是选择页', (await firstFrameWasPicker(win)) === false)
     check('重启后恢复打开的页面', await contentHas(win, '关闭前打开的那一页'))
     check('没有空状态提示', !(await evalJs<boolean>(win, `!!document.querySelector('.editor-empty-hint')`)))
     check('窗口标题写着文件名', await waitTitle(win, '笔记.md'))

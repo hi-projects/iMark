@@ -11,6 +11,7 @@ import {
   FolderPlus,
   Pencil,
   RefreshCw,
+  Shapes,
   Trash2
 } from 'lucide-vue-next'
 import type { VaultNode } from '@shared/types'
@@ -28,6 +29,7 @@ import {
   requestVaultSwitch
 } from '../services/vaultService'
 import { exportHtmlForPath } from '../services/fileService'
+import { extensionById, runExtensionCommand } from '../services/extensionService'
 import { isInside, joinPath } from '../utils/paths'
 
 interface Row {
@@ -58,6 +60,16 @@ const rows = computed<Row[]>(() => {
   for (const c of appStore.vaultTree?.children ?? []) walk(c, 1)
   return out
 })
+
+/** iDraw 插件启用后,文件树左上角多一个直接创建画布的入口 */
+const idrawAvailable = computed(() => {
+  const ext = extensionById('idraw.canvas')
+  return !!ext && ext.enabled && !ext.loadError
+})
+
+function createCanvas(): void {
+  void runExtensionCommand('idraw.canvas.new', [], 'action')
+}
 
 function toggleDir(node: VaultNode): void {
   if (appStore.expandedDirs.has(node.path)) {
@@ -402,6 +414,13 @@ function guideLeft(level: number): string {
             @click="startEdit('new-dir', appStore.vaultPath!, null)"
           >
             <FolderPlus :size="13" />
+          </button>
+          <button
+            v-if="appStore.vaultTree && idrawAvailable"
+            title="新建画布"
+            @click="createCanvas()"
+          >
+            <Shapes :size="13" />
           </button>
           <button v-if="appStore.vaultTree" title="刷新" @click="refreshVault()">
             <RefreshCw :size="13" />

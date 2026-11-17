@@ -65,6 +65,25 @@ let offMenu: (() => void) | null = null
 let offOpenFile: (() => void) | null = null
 let offFontWheelZoom: (() => void) | null = null
 
+/**
+ * 扩展标签激活时，这些菜单命令属于扩展自己的文档，应该转发给面板而不是
+ * 落到画布背后那个看不见的 Markdown 上。原生菜单加速键（Ctrl+S 等）会在
+ * 渲染层 keydown 之前拦下事件，所以扩展页面里自己的快捷键接不到。
+ */
+const WEBVIEW_TAB_COMMANDS = new Set<MenuCommandId>([
+  'file:save',
+  'file:save-as',
+  'edit:select-all'
+])
+
+function forwardToWebview(panelId: string, id: MenuCommandId): void {
+  api.sendExtensionMessage({
+    type: 'webview.message',
+    panelId,
+    message: { type: 'imark:command', command: id }
+  })
+}
+
 async function handleMenuCommand(id: MenuCommandId): Promise<void> {
   // 仓库选择界面下没有编辑器实例,文件/格式类命令忽略(与 Obsidian 无仓库时一致)
   if (appStore.view === 'picker') {
@@ -89,6 +108,16 @@ async function handleMenuCommand(id: MenuCommandId): Promise<void> {
       return
     }
     return
+  }
+  const current = activeTab()
+  if (current?.kind === 'webview') {
+    if (current.panelId && WEBVIEW_TAB_COMMANDS.has(id)) {
+      forwardToWebview(current.panelId, id)
+      return
+    }
+    // 格式化 / 导出 HTML 只对 Markdown 有意义：扩展标签激活时静默忽略，
+    // 不能把命令应用到后面那个隐藏的编辑器上
+    if (id.startsWith('format:') || id === 'file:export-html') return
   }
   switch (id) {
     case 'file:new':
@@ -224,6 +253,9 @@ onMounted(async () => {
       console.error('[iMark] 启动恢复失败:', err)
     }
   }
+  // 启动意图已定:这时才允许选择页出现。恢复仓库的路径此时 view 已是 editor,
+  // 选择页从来不会被渲染;停在选择页的路径则在这里一次性显示出来。
+  appStore.booted = true
   offMenu = api.onMenuCommand(id => void handleMenuCommand(id))
   api.onSaveBeforeClose(() => void saveBeforeClose())
   // 运行中主进程递来一个文件(另一个实例打开同一仓库时转交过来)
@@ -238,8 +270,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <VaultPicker v-if="appStore.view === 'picker'" />
-  <div v-else class="app-shell">
+  <!-- 启动意图确定前不画选择页:勾了「直接打开上次仓库」时它会一闪而过 -->
+  <VaultPicker v-if="appStore.booted && appStore.view === 'picker'" />
+  <div v-else-if="appStore.view === 'editor'" class="app-shell">
     <div
       class="app-body"
       :style="{
@@ -277,4 +310,6 @@ onBeforeUnmount(() => {
     <!-- 右下角通知:层级最高,扩展在用户翻设置时报的错也要看得见 -->
     <ToastHost />
   </div>
+  <!-- 启动的一小段:只留窗口背景色,等 booted 定下来再画选择页或编辑器 -->
+  <div v-else class="app-boot"></div>
 </template>

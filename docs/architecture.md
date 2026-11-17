@@ -70,6 +70,7 @@ src/
     └── styles/             样式模块与运行时样式注册表
 
 plugins-src/                官方扩展源码（构建后进 src/main/market/builtin/）
+                            iDraw 插件由独立的 iDraw 仓库构建后同步进 builtin/
 server/                     自托管扩展市场（零依赖 Node）
 scripts/                    dev 启动壳、扩展打包脚本
 verify/                     端到端验收 harness 与 fixtures
@@ -136,7 +137,7 @@ docs/                       本文档
    只有勾选“直接打开上次仓库”才恢复。随后 `claimVault()` 认领；若仓库已在另一个窗口打开且
    联系得上，本实例把文件转交过去并退出。
 5. `initExtensions()`：加载扩展登记表、清理中断安装、恢复 webview 记录。
-6. `ensureBundledProvisioned()`：补装四款官方内置包（quick-edit / git-sync / agent / claude-code）。
+6. `ensureBundledProvisioned()`：补装五款官方内置包（quick-edit / idraw.canvas / git-sync / agent / claude-code）。
 7. `buildAppMenu()`：扩展快捷键必须在此之前进入原生菜单。
 8. `setPendingOpenFile()`、`prepareTaskbarIcon()`（Windows 任务栏按钮图标）、`createMainWindow()`。
 9. `ready-to-show` 后补做暂存的聚焦/文件投递；`did-finish-load` 后 `service.startup()`
@@ -254,13 +255,13 @@ docs/                       本文档
 | 服务 | 职责 |
 |---|---|
 | `fileService` | 新建/打开/保存/另存为/导出、脏标记、保存后回收无引用图片 |
-| `tabs` | 标签模型、`EditorState` 生命周期、撤销历史、会话恢复 |
+| `tabs` | 标签模型（Markdown 与扩展 webview 两种 `kind`）、`EditorState` 生命周期、撤销历史、会话恢复 |
 | `autoSave` | 四种自动保存模式；未落盘文件、无改动、上一轮未完成时跳过 |
 | `vaultService` | 仓库加载/认领/恢复、文件树刷新、拖拽移动、外部文件打开 |
 | `editorBridge` | 渲染层 ↔ 主进程的文档/选区/装饰/主题桥，版本号唯一来源 |
 | `extensionService` | 扩展视图缓存与 IPC 往返（无乐观更新） |
 | `extensionUiHost` | 扩展的模态消息/输入框/QuickPick 队列 |
-| `webviews` | webview 面板状态、iframe 挂载、消息路由与排队 |
+| `webviews` | webview 面板状态、iframe 挂载、消息路由与排队；`presentation: 'tab'` 的面板与标签栏双向同步 |
 | `marketService` | 市场浏览、安装预览、进度、发布 |
 | `notice` / `notificationCapture` | 右下角气泡、通知中心历史、浏览器通知接管 |
 | `userStyleService` | 把选中的自定义样式注入/卸载 |
@@ -328,6 +329,7 @@ RangeSet + EditorView.atomicRanges
 ```bash
 npm run dev             # 开发模式（先构建插件）
 npm run plugins:build   # plugins-src → src/main/market/builtin/*.imkpkg.json
+npm run idraw:builtin   # 从同级 iDraw 仓库同步画布插件包（可用 IDRAW_ROOT 指定路径）
 npm run typecheck       # node + web + plugins
 npm run build           # electron-vite build
 npm run dist[:win|:linux]

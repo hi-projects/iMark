@@ -549,10 +549,15 @@ panel.webview.postMessage({ type: 'hello' })
 - 应用会发送 `imark:bootstrap`（含 `panelId`、`extensionId`、`theme`）与 `imark:theme`
   （主题变量）；主题变量的 `colors` 是一组 `--*` CSS 自定义属性，页面可自行注入到
   `document.documentElement`。
-- `presentation` 支持 `sidebar` / `overlay` / `floating`：`sidebar` 占据编辑器右侧的
-  布局宽度（编辑器让位，不遮挡正文），`overlay` / `floating` 浮在编辑区上；运行时可用
+- `presentation` 支持 `sidebar` / `overlay` / `floating` / `tab`：`sidebar` 占据编辑器右侧的
+  布局宽度（编辑器让位，不遮挡正文），`overlay` / `floating` 浮在编辑区上；`tab` 让
+  面板成为标签栏里与文件等同的标签，切走只隐藏、关标签才销毁。运行时可用
   `panel.imark.setPresentation/setSize/setPosition` 调整，`setStatus('idle' | 'busy')`
   控制标题栏状态点。
+- `panel.imark.setDirty(true)` 在 `tab` 标签上画未保存圆点（由扩展自己判定脏状态）。
+- 原生菜单会先吞掉 `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+A`，所以激活 `tab` 面板时宿主
+  改为向页面投递 `{ type: 'imark:command', command }`；扩展需把它转给自己的 webview。
+  示例见 iDraw 的 `imark-plugin/main.ts`。
 - `panel.imark.setVisible(false)` 收起面板但保留 iframe 与页面状态（配合
   `retainContextWhenHidden`），`panel.reveal()` 重新显示；`dispose()` 才会销毁。
   侧栏宽度可在渲染层拖动左边缘调整。
@@ -647,7 +652,12 @@ npm run plugins:build
 npm run typecheck:plugins
 ```
 
-产物是 `src/main/market/builtin/<publisher>.<name>.imkpkg.json`，应用启动时补装。构建脚本会：
+产物是 `src/main/market/builtin/<publisher>.<name>.imkpkg.json`，应用启动时补装。
+
+`idraw.canvas` 不在 `plugins-src/` 里，它的画布应用在独立 iDraw 仓库用 Vite 构建；
+在 iDraw 里跑 `npm run plugin:build` 后，到 iMark 跑 `npm run idraw:builtin` 同步内置包。
+
+构建脚本会：
 
 - 用与应用相同的校验器校验清单；
 - 把 `main.ts` 打成 CommonJS，`webview/*.ts` 打成 IIFE；

@@ -246,6 +246,8 @@ export async function writeTabInPlace(tabId: string, path: string): Promise<void
 export async function saveTab(tabId: string): Promise<boolean> {
   const tab = tabById(tabId)
   if (!tab) return false
+  // 扩展标签的保存由扩展自己负责（画布走 iDraw 的保存对话框），iMark 不代劳
+  if (tab.kind === 'webview') return false
   if (!tab.filePath) return saveTabAs(tabId)
   try {
     await writeTabInPlace(tabId, tab.filePath)
@@ -271,7 +273,7 @@ export async function saveFileAs(): Promise<boolean> {
 
 export async function saveTabAs(tabId: string): Promise<boolean> {
   const tab = tabById(tabId)
-  if (!tab) return false
+  if (!tab || tab.kind !== 'markdown') return false
   const view = requireView()
   if (!view) return false
   // 正在编辑的表格单元格里可能还有没提交的字
@@ -307,6 +309,9 @@ export async function saveTabAs(tabId: string): Promise<boolean> {
 export async function saveAllDirtyTabs(): Promise<boolean> {
   for (const tab of [...appStore.tabs]) {
     if (!tab.dirty) continue
+    // 扩展标签的未保存内容由扩展处理（iDraw 关闭面板时会写恢复文件），
+    // 这里既没有可写的 iMark 文件，也不能因此中止“关闭所有/退出”流程
+    if (tab.kind === 'webview') continue
     if (!(await saveTab(tab.id))) return false
   }
   return true
@@ -356,7 +361,7 @@ async function saveMarkdownAsHtml(markdown: string, fileName: string): Promise<v
 
 export async function exportHtmlFile(): Promise<void> {
   const tab = activeTab()
-  if (!tab) return
+  if (!tab || tab.kind !== 'markdown') return
   const markdown = tabText(tab.id)
   if (markdown === null) return
   await saveMarkdownAsHtml(markdown, tab.fileName)
@@ -390,7 +395,9 @@ export async function exportHtmlForPath(path: string, fileName: string): Promise
 
 /** 脏标签关闭前的确认;返回 false = 用户取消(或保存失败) */
 async function confirmDiscardTab(tab: DocTab): Promise<boolean> {
-  if (!tab.dirty) return true
+  // 扩展标签的脏标记由扩展维护，关闭确认也由扩展在“面板被 dispose”时处理
+  // （iDraw 会把未保存画布写成恢复文件），iMark 不弹自己的另存为
+  if (tab.kind === 'webview' || !tab.dirty) return true
   const choice = await api.confirmDiscard(tab.fileName)
   if (choice === 'cancel') return false
   if (choice === 'save') return saveTab(tab.id)

@@ -42,6 +42,7 @@ if (!name) {
         'extensions-editor',
         'extensions-webview',
         'quick-edit',
+        'idraw-plugin',
         'git-sync',
         'git-sync-auth',
         'git-sync-proxy',

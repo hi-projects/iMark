@@ -66,6 +66,23 @@
   border: none;
 }
 
+/*
+ * 标签页呈现：占满编辑区，标签栏已经承担了标题与关闭按钮，
+ * 面板自己的标题栏就不要再画一遍。隐藏时整块 display: none（iframe 保留）。
+ */
+.webview-panel-tab {
+  position: absolute;
+  inset: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.webview-panel-tab .webview-titlebar,
+.webview-panel-tab .webview-resize {
+  display: none;
+}
+
 .webview-panel-floating {
   position: absolute;
   border-radius: 8px;

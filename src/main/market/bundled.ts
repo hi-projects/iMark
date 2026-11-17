@@ -3,6 +3,8 @@
  *
  * 官方扩展都随应用带一份包(由 `npm run plugins:build` 生成):
  *   - quick-edit:开箱即用(行首「+」菜单);
+ *   - idraw.canvas(iDraw):不需要配置,装上即启用;画布本身在独立仓库构建,
+ *     这里只同步构建好的扩展包;
  *   - git-sync:要填仓库地址才有意义,装上但默认关着;
  *   - agent(Agent Core)与 claude-code(Claude Code):要配置本机 CLI,装上但默认关着。
  *     Claude Code 依赖 Agent Core,所以 Core 必须排在前面,安装依赖检查才能通过。
@@ -21,6 +23,9 @@ import { peekIdentity } from './verify'
 import agentPackage from './builtin/imark.agent.imkpkg.json?raw'
 import claudeCodePackage from './builtin/imark.claude-code.imkpkg.json?raw'
 import gitSyncPackage from './builtin/imark.git-sync.imkpkg.json?raw'
+// 不在 plugins-src 里构建:由 iDraw 仓库 npm run plugin:build 生成后,
+// 在 iMark 仓库用 npm run idraw:builtin 同步过来
+import idrawPackage from './builtin/idraw.canvas.imkpkg.json?raw'
 import quickEditPackage from './builtin/imark.quick-edit.imkpkg.json?raw'
 
 interface BundledPackage {
@@ -41,6 +46,8 @@ interface BundledPackage {
 const BUNDLED: BundledPackage[] = [
   // 全新用户也开箱就有「+」:它不配置也能用
   { raw: quickEditPackage, enable: true },
+  // 画布同样不需要配置;只有执行命令时才创建 overlay 面板,不占启动时间
+  { raw: idrawPackage, enable: true },
   // git-sync 要填仓库地址与令牌,装上但默认关着
   { raw: gitSyncPackage, enable: false },
   // Agent Core 与 Claude Code 需要本机 CLI,装上但默认关着;

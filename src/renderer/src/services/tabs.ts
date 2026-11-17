@@ -29,8 +29,21 @@ import { basename, computeStats, stripMarkdownExt } from '../utils/text'
 import { isInside } from '../utils/paths'
 import { api } from './api'
 
+/**
+ * 标签的两类来源：
+ *   - markdown：应用自己的文件/未命名文档，正文活在 EditorState 里；
+ *   - webview：扩展申请的编辑区标签（presentation: 'tab'），正文活在同一 iframe 里。
+ *
+ * webview 标签只参与标签栏、窗口标题与关闭流程；不建 EditorState，也不进
+ * 扩展的文档镜像（见 editorBridge 的 kind 守卫）。
+ */
+export type TabKind = 'markdown' | 'webview'
+
 export interface DocTab {
   id: string
+  kind: TabKind
+  /** kind=webview 时对应的扩展面板 id */
+  panelId?: string
   /** 绝对路径;未命名文档为 null */
   filePath: string | null
   /** 文件本名(含扩展名);未命名文档为「未命名」 */
@@ -113,6 +126,10 @@ export function tabByPath(path: string): DocTab | null {
 
 /** 标签的 EditorState;当前标签要读视图里的那一份(它比 Map 里的新) */
 export function tabState(id: string): EditorState | null {
+  const tab = tabById(id)
+  // webview 标签没有 EditorState。必须在回落到视图之前判断:当前标签是画布时,
+  // 视图里装的是上一个 Markdown 标签的 state,错认会给扩展/保存流程送去别人的正文
+  if (!tab || tab.kind !== 'markdown') return null
   if (id === appStore.activeTabId && editorHolder.view) return editorHolder.view.state
   return runtime.get(id)?.state ?? null
 }
@@ -156,6 +173,7 @@ export function addTab(input: NewTabInput, opts?: AddTabOptions): DocTab {
   const savedContent = input.savedContent ?? input.content
   const tab: DocTab = {
     id: freshId(),
+    kind: 'markdown',
     filePath: input.filePath,
     fileName: input.fileName,
     eol: input.eol,
@@ -181,11 +199,112 @@ export function addTab(input: NewTabInput, opts?: AddTabOptions): DocTab {
   return tab
 }
 
+// ---------- 扩展 webview 标签 ----------
+
+export interface WebviewTabInput {
+  panelId: string
+  title: string
+  dirty?: boolean
+  /** 默认激活;恢复上次会话时传 false,不抢当前页 */
+  activate?: boolean
+}
+
+/**
+ * 扩展 webview 与标签系统的双向钩子。由 `services/webviews.ts` 注册：
+ *   - onActive：当前激活的扩展标签变化（null = Markdown 或空编辑器）；
+ *   - onClose：用户关闭扩展标签，需要 dispose 面板。
+ *
+ * tabs 不直接 import webviews：webviews 依赖 editorBridge，而 editorBridge 依赖
+ * tabs，直接引用会成环。
+ */
+export interface WebviewTabHooks {
+  onActive: (panelId: string | null) => void
+  onClose: (panelId: string) => void
+}
+
+let webviewHooks: WebviewTabHooks | null = null
+
+export function setWebviewTabHooks(hooks: WebviewTabHooks | null): void {
+  webviewHooks = hooks
+}
+
+function notifyWebviewActive(panelId: string | null): void {
+  try {
+    webviewHooks?.onActive(panelId)
+  } catch (err) {
+    console.error('[iMark] 扩展标签状态同步失败', err)
+  }
+}
+
+function notifyWebviewClose(panelId: string): void {
+  try {
+    webviewHooks?.onClose(panelId)
+  } catch (err) {
+    console.error('[iMark] 关闭扩展标签失败', err)
+  }
+}
+
+export function webviewTabByPanel(panelId: string): DocTab | null {
+  return (
+    appStore.tabs.find(tab => tab.kind === 'webview' && tab.panelId === panelId) ?? null
+  )
+}
+
+/** 创建/更新一个扩展标签。同一面板永远只有一个标签 */
+export function addWebviewTab(input: WebviewTabInput): DocTab {
+  const existing = webviewTabByPanel(input.panelId)
+  if (existing) {
+    updateWebviewTab(input.panelId, input)
+    if (input.activate !== false && appStore.activeTabId !== existing.id) {
+      activateTab(existing.id)
+    }
+    return existing
+  }
+  const tab: DocTab = {
+    id: freshId(),
+    kind: 'webview',
+    panelId: input.panelId,
+    filePath: null,
+    fileName: input.title,
+    eol: 'LF',
+    savedContent: '',
+    dirty: input.dirty === true,
+    words: 0,
+    chars: 0,
+    lines: 0,
+    outline: []
+  }
+  // 与「新建文件」一致：插在当前标签右边；面板是刚打开的，默认就该激活
+  const current = activeTab()
+  const at =
+    current ? appStore.tabs.findIndex(t => t.id === current.id) + 1 : appStore.tabs.length
+  appStore.tabs.splice(at, 0, tab)
+  if (input.activate !== false) activateTab(tab.id)
+  persistSession()
+  return tab
+}
+
+export function updateWebviewTab(
+  panelId: string,
+  patch: { title?: string; dirty?: boolean }
+): void {
+  const tab = webviewTabByPanel(panelId)
+  if (!tab) return
+  if (patch.title !== undefined && patch.title !== tab.fileName) tab.fileName = patch.title
+  if (patch.dirty !== undefined && patch.dirty !== tab.dirty) tab.dirty = patch.dirty
+}
+
+/** 面板已经不存在了：只移除标签，不再回调 dispose */
+export function removeWebviewTab(panelId: string): void {
+  const tab = webviewTabByPanel(panelId)
+  if (tab) closeTabNow(tab.id, { disposePanel: false })
+}
+
 /** 离开当前标签前,把视图里的一切(未提交的表格输入、滚动位置)收进它的 runtime */
 export function captureActiveTab(): void {
   const tab = activeTab()
   const view = editorHolder.view
-  if (!tab || !view) return
+  if (!tab || tab.kind !== 'markdown' || !view) return
   // 表格单元格里最后几个字还只在 contenteditable 里;setState 会换掉整块 DOM,
   // 不先刷回文档就会静默丢掉
   flushTableEdits()
@@ -220,12 +339,19 @@ export function activateTab(id: string, opts?: { focus?: boolean; persist?: bool
     appStore.activeTabId = id
 
     const view = editorHolder.view
-    if (view) mountTabState(id, view)
-    if (view) updateActiveOutline(view)
+    if (tab.kind === 'markdown') {
+      if (view) mountTabState(id, view)
+      if (view) updateActiveOutline(view)
+    } else if (view) {
+      // 画布标签盖住了编辑器。不主动 blur 的话焦点还留在画布背后的正文里，
+      // 方向键、退格这些没被菜单拦下的按键会继续改 Markdown。
+      view.contentDOM.blur()
+    }
+    notifyWebviewActive(tab.kind === 'webview' ? (tab.panelId ?? null) : null)
     if (opts?.persist !== false) persistSession()
   }
 
-  if (opts?.focus !== false) editorHolder.view?.focus()
+  if (opts?.focus !== false && tab.kind === 'markdown') editorHolder.view?.focus()
 }
 
 /**
@@ -249,9 +375,11 @@ export function attachActiveTab(): void {
  * 关掉当前标签时先激活邻居:captureActiveTab 要把即将消失的标签里的
  * 表格输入与滚动位置收好,视图也得先切走,最后才移除数据。
  */
-export function closeTabNow(id: string): void {
+export function closeTabNow(id: string, opts?: { disposePanel?: boolean }): void {
   const index = appStore.tabs.findIndex(t => t.id === id)
   if (index < 0) return
+  const tab = appStore.tabs[index]
+  if (!tab) return
   const wasActive = appStore.activeTabId === id
 
   if (wasActive) {
@@ -262,6 +390,10 @@ export function closeTabNow(id: string): void {
 
   appStore.tabs.splice(index, 1)
   runtime.delete(id)
+  // 关闭标签 = 关闭面板。面板自己 dispose（扩展主动关）时传 false，避免回声
+  if (tab.kind === 'webview' && tab.panelId && opts?.disposePanel !== false) {
+    notifyWebviewClose(tab.panelId)
+  }
   persistSession()
 }
 
@@ -274,14 +406,22 @@ export function deactivateToEmpty(): void {
     view.setState(buildDocumentState('', v => editorHolder.onDocChange?.(v), { editable: false }))
     view.contentDOM.blur()
   }
+  notifyWebviewActive(null)
   // 没有页面就没有可恢复的页面;openFiles 仍可能为空或由 clearTabs 处理
   persistSession()
 }
 
-/** 清空全部标签(调用方负责先处理脏文档);切仓库、恢复失败时用 */
+/**
+ * 清空所有 Markdown 标签(调用方负责先处理脏文档);切仓库、恢复会话时用。
+ *
+ * 扩展标签不是仓库里的文件，也不参与会话文件列表，因此保留：画布开着时切仓库，
+ * 用户仍能看到它（与之前 overlay 面板跨仓库存在的行为一致）。真正要全部关掉
+ * 走的是 `fileService.closeAllTabs`，那里会逐个 dispose 面板。
+ */
 export function clearTabs(): void {
   clearTimers()
-  appStore.tabs = []
+  const keep = appStore.tabs.filter(tab => tab.kind === 'webview')
+  appStore.tabs = keep
   appStore.activeTabId = null
   runtime.clear()
   const view = editorHolder.view
@@ -289,6 +429,8 @@ export function clearTabs(): void {
     view.setState(buildDocumentState('', v => editorHolder.onDocChange?.(v), { editable: false }))
     view.contentDOM.blur()
   }
+  if (keep[0]) activateTab(keep[0].id)
+  else notifyWebviewActive(null)
   persistSession()
 }
 
@@ -413,6 +555,8 @@ function clearTimers(): void {
  */
 export function handleEditorDocChange(_view: EditorView): void {
   const tab = activeTab()
+  // 扩展标签激活时编辑器只是被盖住，仍有可能是扩展在改视图；那些改动不该记到画布标签上
+  if (tab && tab.kind !== 'markdown') return
   if (!tab) {
     // 没有当前标签却有人改了文档:只可能是扩展直接写视图。把它收编成一个
     // 未命名标签,而不是让内容停在一个「没有文档」的视图里。
@@ -464,7 +608,7 @@ export function setTabPath(id: string, path: string, eol: 'LF' | 'CRLF'): void {
  */
 export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRLF'): void {
   const tab = tabById(id)
-  if (!tab) return
+  if (!tab || tab.kind !== 'markdown') return
   const state = buildDocumentState(content, v => editorHolder.onDocChange?.(v), { editable: true })
   tab.eol = eol
   tab.savedContent = content
@@ -544,12 +688,16 @@ export function setSessionPersistSuspended(suspended: boolean): void {
 
 /** 标签上显示的名字:去掉 .md 后缀;多个未命名按出现顺序编号 */
 export function tabLabel(tab: DocTab): string {
+  // 扩展标签的标题由扩展自己决定（画布这边是“未命名.svg”“diagram.svg”），
+  // 不像文件标签那样去后缀；它也不是“未命名文档”，不参与编号
+  if (tab.kind === 'webview') return tab.fileName || '扩展面板'
   if (tab.filePath) return stripMarkdownExt(tab.fileName)
-  const untitled = appStore.tabs.filter(t => !t.filePath)
+  const untitled = appStore.tabs.filter(t => t.kind === 'markdown' && !t.filePath)
   const i = untitled.findIndex(t => t.id === tab.id)
   return i <= 0 ? '未命名' : `未命名 ${i + 1}`
 }
 
 export function tabTooltip(tab: DocTab): string {
+  if (tab.kind === 'webview') return '扩展提供的编辑区标签页'
   return tab.filePath ?? '未保存到磁盘'
 }

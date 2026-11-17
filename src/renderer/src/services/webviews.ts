@@ -16,6 +16,15 @@ import { EXTENSION_WEBVIEW_SCHEME } from '@shared/extensionProtocol'
 import type { MainToRendererMessage, WebviewPanelStateDto } from '@shared/extensionProtocol'
 import { api } from './api'
 import { readTheme } from './editorBridge'
+import {
+  activateTab,
+  addWebviewTab,
+  removeWebviewTab,
+  setWebviewTabHooks,
+  updateWebviewTab,
+  webviewTabByPanel
+} from './tabs'
+import { activeTab, appStore } from '../stores/app'
 
 export interface RendererWebviewPanel extends WebviewPanelStateDto {
   extensionId: string
@@ -68,6 +77,67 @@ function upsertPanel(
   webviewStore.panels[panel.panelId] = next
 }
 
+// ---------- 扩展标签（presentation: 'tab'） ----------
+
+/**
+ * 让标签栏与面板列表保持一致。
+ *
+ * `activate` 表示“可以把这个标签切到前台”（只有面板本来就可见时才真的切）。
+ * 恢复上次会话时传 false：画布标签建出来，但当前页仍由 Markdown 会话恢复决定。
+ */
+function syncTabPanel(
+  panel: RendererWebviewPanel,
+  opts: { activate: boolean; restored?: boolean }
+): void {
+  if (panel.presentation !== 'tab') {
+    // 扩展把面板改回了侧栏/浮层：不再占用标签
+    if (webviewTabByPanel(panel.panelId)) removeWebviewTab(panel.panelId)
+    return
+  }
+  const existing = webviewTabByPanel(panel.panelId)
+  if (!existing) {
+    addWebviewTab({
+      panelId: panel.panelId,
+      title: panel.title,
+      dirty: panel.dirty,
+      activate: opts.activate
+    })
+    // 恢复出来的标签默认不显示；扩展收到的 viewState 也应据此收敛
+    if (opts.restored) setTabPanelVisible(panel.panelId, false)
+    return
+  }
+  updateWebviewTab(panel.panelId, { title: panel.title, dirty: panel.dirty })
+  if (opts.activate && panel.visible && activeTab()?.panelId !== panel.panelId) {
+    activateTab(existing.id)
+  }
+}
+
+/** 标签切换时同步面板可见性；main 会把它转给扩展（onDidChangeViewState） */
+function setTabPanelVisible(panelId: string, visible: boolean): void {
+  const panel = panelOf(panelId)
+  if (!panel || panel.presentation !== 'tab') return
+  if (panel.visible === visible && panel.active === visible) return
+  webviewStore.panels[panelId] = { ...panel, visible, active: visible }
+  api.sendExtensionMessage({
+    type: 'webview.viewState',
+    panelId,
+    visible,
+    active: visible
+  })
+}
+
+/** 快照/更新之后清理已经没有主的面板标签，并补齐新面板的标签 */
+function reconcileTabPanels(): void {
+  for (const tab of appStore.tabs) {
+    if (tab.kind !== 'webview' || !tab.panelId) continue
+    const panel = panelOf(tab.panelId)
+    if (!panel || panel.presentation !== 'tab') removeWebviewTab(tab.panelId)
+  }
+  for (const panel of allPanels()) {
+    if (panel.presentation === 'tab') syncTabPanel(panel, { activate: false, restored: true })
+  }
+}
+
 function applyMainMessage(message: MainToRendererMessage): void {
   switch (message.type) {
     case 'extensions.webviewPanels': {
@@ -80,15 +150,29 @@ function applyMainMessage(message: MainToRendererMessage): void {
       for (const panelId of Object.keys(webviewStore.panels)) {
         if (!seen.has(panelId)) removePanel(panelId)
       }
+      reconcileTabPanels()
       return
     }
-    case 'webview.create':
+    case 'webview.create': {
       upsertPanel(message.panel)
+      const panel = panelOf(message.panel.panelId)
+      if (panel) syncTabPanel(panel, { activate: !message.restored, restored: message.restored })
       return
+    }
     case 'webview.update': {
       const current = panelOf(message.panel.panelId)
       if (!current) return
+      const becameTab = current.presentation !== 'tab'
+      const revealed = !current.visible && message.panel.visible
       webviewStore.panels[message.panel.panelId] = { ...current, ...message.panel }
+      const next = panelOf(message.panel.panelId)
+      if (!next) return
+      if (next.presentation === 'tab') {
+        // 面板刚变成标签，或扩展主动 reveal 了收起的面板：把标签切过去
+        syncTabPanel(next, { activate: becameTab || revealed })
+      } else if (webviewTabByPanel(next.panelId)) {
+        removeWebviewTab(next.panelId)
+      }
       return
     }
     case 'webview.html': {
@@ -107,6 +191,7 @@ function applyMainMessage(message: MainToRendererMessage): void {
       return
     case 'webview.dispose':
       removePanel(message.panelId)
+      removeWebviewTab(message.panelId)
       return
     case 'webview.injectTheme':
       sendToFrame(message.panelId, {
@@ -286,8 +371,18 @@ function onWindowMessage(event: MessageEvent): void {
 export function initWebviews(): () => void {
   const off = api.onExtensionMessage(applyMainMessage)
   window.addEventListener('message', onWindowMessage)
+  setWebviewTabHooks({
+    onActive: panelId => {
+      // 编辑区一次只显示一个标签：其余扩展标签的面板都算收起（iframe 仍保留）
+      for (const panel of allPanels()) {
+        if (panel.presentation === 'tab') setTabPanelVisible(panel.panelId, panel.panelId === panelId)
+      }
+    },
+    onClose: panelId => closePanel(panelId)
+  })
   return () => {
     off()
+    setWebviewTabHooks(null)
     window.removeEventListener('message', onWindowMessage)
   }
 }

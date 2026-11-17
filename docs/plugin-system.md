@@ -269,18 +269,29 @@ key =
   `localResourceRoots` 路径范围。
 - `webview.asWebviewUri()` 把包内文件变成带 token 的协议 URL；`webview.cspSource` 用于拼 CSP。
 - 主题变量与 bootstrap 只能用 `postMessage` 送进去，渲染层不碰 iframe DOM。
-- `presentation` 支持 `sidebar` / `overlay` / `floating`：`sidebar` 是编辑器右侧的
-  flex 子项，占布局宽度（编辑器变窄），另两种绝对定位浮在编辑区上；运行时可用
+- `presentation` 支持 `sidebar` / `overlay` / `floating` / `tab`：`sidebar` 是编辑器右侧的
+  flex 子项，占布局宽度（编辑器变窄），`overlay` / `floating` 绝对定位浮在编辑区上；
+  `tab` 把面板变成标签栏里与文件等同的标签（不画面板标题栏），切走只隐藏 iframe、
+  不销毁页面，关标签即销毁面板。运行时可用
   `panel.imark.setPresentation/setSize/setPosition/setStatus` 调整，
   `setVisible(false)` 收起而不销毁（`reveal()` 重新显示）。
+- `panel.imark.setDirty(boolean)` 给 `tab` 面板的标签画未保存圆点；扩展自己维护
+  脏标记，宿主不猜标题前缀。
+- 菜单快捷键（`Ctrl+S`、`Ctrl+Shift+S`、`Ctrl+A`）在原生菜单层被拦截，不会传进
+  iframe；激活的是 `tab` 面板时，宿主把它们转成
+  `{ type: 'imark:command', command: 'file:save' | 'file:save-as' | 'edit:select-all' }`
+  发进 webview。
 
 ## 8. 内置官方扩展
 
-`src/main/market/bundled.ts` 在启动时补装四款官方扩展（包由 `npm run plugins:build` 生成）：
+`src/main/market/bundled.ts` 在启动时补装五款官方扩展。前四款由 `npm run plugins:build` 从
+`plugins-src/` 生成；`idraw.canvas` 的画布代码在独立 iDraw 仓库构建，包同步进
+`src/main/market/builtin/`（`npm run idraw:builtin`），再走完全相同的校验、安装与补装流程：
 
 | 扩展 | 默认 | 说明 |
 |---|---|---|
 | `imark.quick-edit` | 启用 | 行首“+”菜单插入表格 |
+| `idraw.canvas` | 启用 | iDraw：流程图 / 示意图，保存为标准 SVG |
 | `imark.git-sync` | 关闭 | 与 Git 远端双向同步：拉取、合并、commit + push |
 | `imark.agent` | 关闭 | Agent Core：会话、附件、提示词、provider 注册表 |
 | `imark.claude-code` | 关闭 | Claude Code 后端，依赖 Agent Core |

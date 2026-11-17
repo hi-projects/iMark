@@ -536,9 +536,10 @@ export class ExtensionService {
     })
   }
 
-  private postWebviewCreate(record: WebviewRecord): void {
+  private postWebviewCreate(record: WebviewRecord, restored = false): void {
     this.postToRenderer({
       type: 'webview.create',
+      restored,
       panel: {
         ...this.webviews.stateOf(record),
         extensionId: record.extensionId,
@@ -593,7 +594,7 @@ export class ExtensionService {
         continue
       }
       const record = this.webviews.restore(saved, entry.root)
-      this.postWebviewCreate(record)
+      this.postWebviewCreate(record, true)
       this.pushWebviewMessage(saved.extensionId, {
         kind: 'webview.restore',
         panelId: record.panelId,
@@ -1507,6 +1508,7 @@ export class ExtensionService {
       case 'webview.postMessage':
       case 'webview.setTitle':
       case 'webview.setStatus':
+      case 'webview.setDirty':
       case 'webview.setPresentation':
       case 'webview.setState':
       case 'webview.dispose':
@@ -1545,6 +1547,7 @@ export class ExtensionService {
           | 'webview.postMessage'
           | 'webview.setTitle'
           | 'webview.setStatus'
+          | 'webview.setDirty'
           | 'webview.setPresentation'
           | 'webview.setState'
           | 'webview.dispose'
@@ -1584,6 +1587,13 @@ export class ExtensionService {
         const record = this.webviews.getOwned(message.panelId, message.extensionId)
         if (!record) return
         this.webviews.setStatus(record, message.status)
+        this.postToRenderer({ type: 'webview.update', panel: this.webviews.stateOf(record) })
+        return
+      }
+      case 'webview.setDirty': {
+        const record = this.webviews.getOwned(message.panelId, message.extensionId)
+        if (!record) return
+        this.webviews.setDirty(record, message.dirty)
         this.postToRenderer({ type: 'webview.update', panel: this.webviews.stateOf(record) })
         return
       }

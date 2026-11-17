@@ -42,6 +42,8 @@ export interface WebviewRecord {
   anchor: WebviewAnchorDto
   visible: boolean
   active: boolean
+  /** 扩展上报的未保存标记;tab 呈现时显示在标签上 */
+  dirty: boolean
   html: string
   token: string
   retainContextWhenHidden: boolean
@@ -90,6 +92,7 @@ export class WebviewRegistry {
       anchor: options.anchor ?? 'bottom-right',
       visible: true,
       active: true,
+      dirty: false,
       html: options.html,
       token,
       retainContextWhenHidden: options.retainContextWhenHidden === true,
@@ -138,6 +141,8 @@ export class WebviewRegistry {
       anchor: saved.anchor,
       visible: saved.visible,
       active: saved.active,
+      // 脏标记是瞬时状态：恢复后由扩展重新上报（iDraw 在装载完画布后就会报）
+      dirty: false,
       html: '',
       token,
       retainContextWhenHidden: saved.retainContextWhenHidden,
@@ -208,6 +213,11 @@ export class WebviewRegistry {
     record.status = status
   }
 
+  /** 扩展上报的未保存标记；同样不进持久化记录 */
+  setDirty(record: WebviewRecord, dirty: boolean): void {
+    record.dirty = dirty
+  }
+
   setState(record: WebviewRecord, state: unknown): void {
     record.state = state
   }
@@ -262,7 +272,8 @@ export class WebviewRegistry {
       transparent: record.transparent,
       anchor: record.anchor,
       visible: record.visible,
-      active: record.active
+      active: record.active,
+      dirty: record.dirty
     }
   }
 
@@ -278,7 +289,8 @@ export class WebviewRegistry {
       transparent: record.transparent,
       anchor: record.anchor,
       visible: record.visible,
-      active: record.active
+      active: record.active,
+      dirty: record.dirty
     }
   }
 }

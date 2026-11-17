@@ -298,13 +298,14 @@ export interface ExtensionWebviewPanelView {
   extensionId: string
   viewType: string
   title: string
-  presentation: 'sidebar' | 'overlay' | 'floating'
+  presentation: 'sidebar' | 'overlay' | 'floating' | 'tab'
   width: number
   height: number
   transparent: boolean
   anchor: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
   visible: boolean
   active: boolean
+  dirty: boolean
 }
 
 /** 扩展的安装记录(installed.json 的一行,不含配置) */

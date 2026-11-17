@@ -12,6 +12,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "plugins:build": "node scripts/build-plugins.mjs",
+    "idraw:builtin": "node scripts/sync-idraw-builtin.mjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck:plugins": "tsc --noEmit -p plugins-src/tsconfig.json",

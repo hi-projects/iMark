@@ -28,8 +28,28 @@ import {
   type PanelDragEvent,
   type RendererWebviewPanel
 } from '../services/webviews'
+import { activeTab } from '../stores/app'
 
 const panels = computed(() => allPanels())
+
+/**
+ * tab 呈现的面板由标签栏决定显示与否：标签激活才显示。
+ * 其余呈现方式仍看扩展自己的 visible。
+ */
+const activePanelId = computed(() => {
+  const tab = activeTab()
+  return tab?.kind === 'webview' ? (tab.panelId ?? null) : null
+})
+
+function shown(panel: RendererWebviewPanel): boolean {
+  return panel.presentation === 'tab'
+    ? panel.panelId === activePanelId.value
+    : panel.visible
+}
+
+function kept(panel: RendererWebviewPanel): boolean {
+  return shown(panel) || panel.retainContextWhenHidden
+}
 
 /** 用户拖动后的尺寸（会话内）；扩展自己 setSize 时以面板状态为准 */
 const sizes = reactive<Record<string, { width?: number; height?: number }>>({})
@@ -245,13 +265,13 @@ function onClose(panelId: string): void {
     <div v-if="moving?.active" class="webview-drag-shield"></div>
     <template v-for="panel in panels" :key="panel.panelId">
       <section
-        v-if="panel.visible || panel.retainContextWhenHidden"
+        v-if="kept(panel)"
         class="webview-panel"
         :class="[
           `webview-panel-${panel.presentation}`,
           `webview-anchor-${panel.anchor}`,
           {
-            'webview-panel-hidden': !panel.visible,
+            'webview-panel-hidden': !shown(panel),
             'webview-panel-transparent': panel.transparent
           }
         ]"

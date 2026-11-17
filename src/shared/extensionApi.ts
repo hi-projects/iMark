@@ -671,7 +671,11 @@ export interface ColorTheme {
   readonly kind: ColorThemeKind
 }
 
-export type WebviewPresentation = 'sidebar' | 'overlay' | 'floating'
+/**
+ * 面板呈现方式。`tab` = 编辑区标签页：与文件标签并列，标题即 `panel.title`，
+ * 关闭标签会销毁面板；`retainContextWhenHidden` 仍然生效（切走时只隐藏）。
+ */
+export type WebviewPresentation = 'sidebar' | 'overlay' | 'floating' | 'tab'
 /** 面板状态:显示在宿主标题栏上的小圆点。idle = 绿点,busy = 蓝点脉冲 */
 export type WebviewPanelStatus = 'idle' | 'busy'
 
@@ -729,6 +733,11 @@ export interface WebviewPanel extends Disposable {
     setVisible(visible: boolean): void
     /** 标题栏状态点:扩展在忙/闲之间切换 */
     setStatus(status: WebviewPanelStatus): void
+    /**
+     * 未保存标记。tab 呈现时显示在标签标题右侧（与文件标签的脏点一致），
+     * 同时参与窗口关闭前的「有未保存内容」判断。内容是否真的落盘由扩展负责。
+     */
+    setDirty(dirty: boolean): void
   }
 }
 
