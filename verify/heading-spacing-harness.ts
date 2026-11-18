@@ -227,6 +227,40 @@ async function main(): Promise<void> {
     await sleep(1000)
   }
 
+  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  async function resetRing(): Promise<void> {
+    for (let i = 0; i < 3; i += 1) {
+      const state = await evalJs<string>(
+        `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
+      )
+      if (state === 'empty') return
+      await evalJs(
+        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+      )
+      await sleep(100)
+    }
+  }
+
+  /** 圆环:选中心 + 第二个块,等配对面板出现 */
+  async function selectPair(center: string, target: string): Promise<boolean> {
+    await resetRing()
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
+    await sleep(100)
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
+    await sleep(100)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
+  }
+
+  /** 圆环:选中心 + 中心旁的「自身」 */
+  async function selectSelf(kind: string): Promise<boolean> {
+    await resetRing()
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+    await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
+    await sleep(100)
+    return waitFor(`document.querySelector('[data-pair-mode="self"]')`, 3000)
+  }
+
   /**
    * 量各级标题的视觉间距:与上一段正文、与下一段正文。
    *
@@ -509,13 +543,14 @@ async function main(): Promise<void> {
   }
 
   /*
-   * 【D】设置 → 外观 → 标题间距
+   * 【D】设置 → 外观 → 样式圆环 → 标题间距
    *
-   * 三根滑块(上方 / 下方 / 之间)分别落到 --md-heading-space-*;拖动即时生效、
-   * 松手写盘;重新加载后按磁盘值还原。把三个值设成互不相同,才能看出哪根
-   * 滑块管哪一侧(2 / 1.5 / 0.5 档,正文字号 16px → 32 / 24 / 8px)。
+   * 三根滑块分在两个配对里:正文 ↔ 标题给「标题上方 / 下方」,标题自身给
+   * 「标题之间」;分别落到 --md-heading-space-*。拖动即时生效、松手写盘;
+   * 重新加载后按磁盘值还原。把三个值设成互不相同,才能看出哪根滑块管哪一侧
+   * (2 / 1.5 / 0.5 档,正文字号 16px → 32 / 24 / 8px)。
    */
-  console.log('\n【D】设置 → 外观 → 标题间距:滑块即时生效、落盘、重载后保留')
+  console.log('\n【D】设置 → 外观 → 样式圆环:标题三档即时生效、落盘、重载后保留')
   await loadDoc(LOOSE)
   await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
   await waitFor(`document.querySelector('.settings-nav-item')`)
@@ -523,11 +558,7 @@ async function main(): Promise<void> {
     [...document.querySelectorAll('.settings-nav-item')]
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
-  check(
-    '「样式」区里有三根标题间距滑块',
-    await waitFor(`document.querySelectorAll('input[data-heading-space]').length === 3`),
-    '找不到 data-heading-space 滑块'
-  )
+  await waitFor(`document.querySelector('[data-spacing-ring]')`)
 
   async function setHeadingSlider(side: string, value: number): Promise<boolean> {
     return evalJs<boolean>(`
@@ -541,11 +572,37 @@ async function main(): Promise<void> {
       })()`)
   }
 
-  const sliderOk =
-    (await setHeadingSlider('before', 2)) &&
-    (await setHeadingSlider('after', 1.5)) &&
-    (await setHeadingSlider('between', 0.5))
+  /** 当前配对面板里可见的标题滑块读数 */
+  const headingReadouts = (): Promise<
+    { side: 'before' | 'after' | 'between'; value: number; text: string }[]
+  > =>
+    evalJs(`
+      [...document.querySelectorAll('input[data-heading-space]')].map(input => ({
+        side: input.dataset.headingSpace,
+        value: Number(input.value),
+        text: input.closest('.settings-control')?.querySelector('.settings-readout')?.textContent?.trim() ?? ''
+      }))`)
+
+  const bodyPair = await selectPair('body', 'heading')
+  check(
+    '圆环上选「正文 ↔ 标题」后有两根滑块(标题上方 / 下方)',
+    bodyPair && (await waitFor(`document.querySelectorAll('input[data-heading-space]').length === 2`)),
+    '正文 ↔ 标题配对没有出现两根滑块'
+  )
+  const pairSliderOk =
+    (await setHeadingSlider('before', 2)) && (await setHeadingSlider('after', 1.5))
+  await sleep(300)
+  const pairReadouts = await headingReadouts()
+
+  const selfSelected = await selectSelf('heading')
+  check(
+    '圆环上「标题 · 自身」里有一根「标题之间」滑块',
+    selfSelected && (await waitFor(`document.querySelector('input[data-heading-space="between"]')`)),
+    '标题自身配对没有出现 data-heading-space="between"'
+  )
+  const betweenOk = await setHeadingSlider('between', 0.5)
   await sleep(400)
+  const selfReadouts = await headingReadouts()
 
   const ui = await evalJs<{
     vars: Record<string, string>
@@ -563,19 +620,17 @@ async function main(): Promise<void> {
           after: root.getPropertyValue('--md-heading-space-after').trim(),
           between: root.getPropertyValue('--md-heading-space-between').trim()
         },
-        readouts: [...document.querySelectorAll('input[data-heading-space]')].map(input => ({
-          side: input.dataset.headingSpace,
-          value: Number(input.value),
-          text: input.parentElement?.querySelector('.settings-readout')?.textContent?.trim() ?? ''
-        })),
+        readouts: [],
         padTop: cs ? parseFloat(cs.paddingTop) : -1,
         padBottom: cs ? parseFloat(cs.paddingBottom) : -1
       }
     })()`)
+  ui.readouts = [...pairReadouts, ...selfReadouts]
   console.log(`     [实测] ${JSON.stringify(ui)}`)
   check(
     '三根滑块拖动后根变量与读数同步',
-    sliderOk &&
+    pairSliderOk &&
+      betweenOk &&
       ui.vars.before === '2' &&
       ui.vars.after === '1.5' &&
       ui.vars.between === '0.5' &&

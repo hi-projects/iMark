@@ -371,6 +371,8 @@ export type HostRequestMessage =
       options: {
         title?: string
         prompt?: string
+        /** prompt 只作为说明：界面画成标题旁的小问号，完整文字放悬停提示 */
+        promptAsHelp?: boolean
         placeHolder?: string
         value?: string
         password?: boolean
@@ -730,6 +732,20 @@ export interface MainShutdownMessage {
   kind: 'shutdown'
 }
 
+/**
+ * main → 宿主：跑一次扩展输入框的 validateInput。
+ *
+ * 输入框显示在渲染层，而校验回调在宿主进程里，只能由 main 转一趟。
+ * `inputRequestId` 是当初 `inputBox.show` 的 requestId（宿主用它找回回调），
+ * `requestId` 是这次校验请求自己的 ID（宿主用 `response` 回结果）。
+ */
+export interface MainInputBoxValidateMessage {
+  kind: 'inputBox.validate'
+  requestId: string
+  inputRequestId: string
+  value: string
+}
+
 export interface HostResponseMessage {
   kind: 'response'
   requestId: string
@@ -759,6 +775,7 @@ export type MainToHostMessage =
   | MainWebviewDisposedMessage
   | MainWebviewRestoreMessage
   | MainShutdownMessage
+  | MainInputBoxValidateMessage
   | HostResponseMessage
 
 // ---------- renderer ↔ main ----------
@@ -849,10 +866,17 @@ export interface UiMessageRequestDto {
 export interface UiInputBoxRequestDto {
   title?: string
   prompt?: string
+  /** prompt 画成标题旁的小问号，而不是输入框上方的正文 */
+  promptAsHelp?: boolean
   placeHolder?: string
   value?: string
   password?: boolean
   ignoreFocusOut?: boolean
+  /**
+   * 扩展提供了 validateInput 回调。界面据此在输入时（以及按确定时）向宿主
+   * 回问校验结果，错误直接画在输入框下方，而不是关掉对话框再弹通知。
+   */
+  validateInput?: boolean
 }
 
 export interface UiQuickPickItemDto {
@@ -916,6 +940,14 @@ export type RendererToMainMessage =
       type: 'ui.response'
       requestId: string
       value: string | string[] | null
+    }
+  | {
+      type: 'ui.validateInput'
+      /** 对应的输入框请求 ID（即 ui.showInputBox 的 requestId） */
+      requestId: string
+      /** 每次校验的值；结果回来时界面据此丢弃过期应答 */
+      validationId: string
+      value: string
     }
   | { type: 'extensions.requestReload'; extensionId: string }
   | { type: 'extensions.setEnabled'; extensionId: string; enabled: boolean }
@@ -999,4 +1031,11 @@ export type MainToRendererMessage =
       requestId: string
       extensionId?: string
       options: UiQuickPickRequestDto
+    }
+  | {
+      type: 'ui.validateInputResult'
+      requestId: string
+      validationId: string
+      /** 校验错误；null 表示通过（校验本身失败也按通过处理） */
+      error: string | null
     }

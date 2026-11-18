@@ -460,8 +460,8 @@ async function main(): Promise<void> {
       }
     })()`)
   check(
-    '正文与表格之间按段间距留白(结构空行不再压成零高)',
-    /cm-md-block-gap-body/.test(tableGap.cls) && tableGap.h > 0,
+    '正文与表格之间按「表格上方」留白(结构空行不再压成零高)',
+    /cm-md-block-gap-table-before/.test(tableGap.cls) && tableGap.h > 0,
     JSON.stringify(tableGap)
   )
   const afterInsert = await readSource()

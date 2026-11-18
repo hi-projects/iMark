@@ -462,7 +462,8 @@
 .plugin-help-tip {
   position: fixed;
   z-index: 150;
-  padding: 6px 9px;
+  /* 中文字形在行框里整体偏上:上多 1px、下少 1px,文字才在框内视觉居中 */
+  padding: 7px 9px 5px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-editor);
@@ -962,6 +963,28 @@
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 输入框的提示是标注：比消息正文小一号，并且不允许鼠标拖选 */
+.ext-dialog-prompt {
+  font-size: 11px;
+  line-height: 1.55;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* validateInput 返回的错误，画在输入框正下方 */
+.ext-dialog-error {
+  margin-top: -2px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.ext-dialog-input-invalid,
+.ext-dialog-input-invalid:focus {
+  border-color: var(--danger);
 }
 
 .ext-dialog-detail {

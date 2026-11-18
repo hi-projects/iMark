@@ -265,6 +265,122 @@ async function main(): Promise<void> {
   )
   await evalJs("document.querySelector('.explorer-actions button[title=\"新建画布\"]')?.click()")
   check('先弹出名称输入框', await waitFor("document.querySelector('.ext-dialog-input')", 8000))
+  check(
+    '输入框占位文字是「输入画布名称」',
+    await evalJs<boolean>(
+      "document.querySelector('.ext-dialog-input')?.placeholder === '输入画布名称'"
+    )
+  )
+  check(
+    '标注收进标题旁的小问号,说明在 aria-label 里',
+    await evalJs<boolean>(`(() => {
+      const el = document.querySelector('.ext-dialog-head .ext-dialog-help')
+      if (!el || !el.querySelector('svg')) return false
+      // 空 title 压住原生提示,说明改由主题化浮层展示
+      if (el.getAttribute('title') !== '') return false
+      return el.getAttribute('aria-label') === '画布会保存到仓库的 .assets 目录'
+    })()`)
+  )
+  check(
+    '标注不再作为正文占一行',
+    await evalJs<boolean>("document.querySelector('.ext-dialog-prompt') === null")
+  )
+  await evalJs(
+    "document.querySelector('.ext-dialog-head .ext-dialog-help')?.dispatchEvent(new MouseEvent('mouseenter'))"
+  )
+  check(
+    '悬停弹出主题化说明浮层',
+    await waitFor(
+      "document.querySelector('.plugin-help-tip')?.textContent?.trim() === '画布会保存到仓库的 .assets 目录'",
+      4000
+    )
+  )
+  check(
+    '说明浮层用应用样式而不是原生白框',
+    await evalJs<boolean>(`(() => {
+      const el = document.querySelector('.plugin-help-tip')
+      if (!el) return false
+      const style = getComputedStyle(el)
+      return style.position === 'fixed' && style.fontSize === '11.5px' && style.zIndex === '150'
+    })()`)
+  )
+  // 字形在行框里的位置由字体度量决定,没有 DOM API 能直接拿到墨迹边界,
+  // 所以截一张浮层的位图,按亮度加权量字形落点是不是真的居中
+  const tipBox = await evalJs<{
+    x: number
+    y: number
+    width: number
+    height: number
+    bg: string
+  } | null>(`(() => {
+      const el = document.querySelector('.plugin-help-tip')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return {
+        x: r.left,
+        y: r.top,
+        width: r.width,
+        height: r.height,
+        bg: getComputedStyle(el).backgroundColor
+      }
+    })()`)
+  let tipOffset: number | null = null
+  if (tipBox) {
+    try {
+      const shot = await wc.capturePage({
+        x: Math.round(tipBox.x),
+        y: Math.round(tipBox.y),
+        width: Math.round(tipBox.width),
+        height: Math.round(tipBox.height)
+      })
+      const size = shot.getSize()
+      const bmp = shot.toBitmap()
+      const rgb = tipBox.bg.match(/\d+/g)?.map(Number) ?? []
+      const bgLum = rgb.length >= 3 ? 0.114 * rgb[2] + 0.587 * rgb[1] + 0.299 * rgb[0] : 128
+      let weight = 0
+      let weightedY = 0
+      // 裁掉最外几行:边框和圆角的抗锯齿不属于文字
+      for (let y = 3; y < size.height - 3; y++) {
+        let row = 0
+        for (let x = 3; x < size.width - 3; x++) {
+          const i = (y * size.width + x) * 4
+          const lum = 0.114 * bmp[i] + 0.587 * bmp[i + 1] + 0.299 * bmp[i + 2]
+          const diff = Math.abs(lum - bgLum)
+          if (diff > 12) row += diff
+        }
+        weight += row
+        weightedY += row * (y + 0.5)
+      }
+      if (weight > 0) {
+        const scale = size.height / tipBox.height
+        tipOffset = Math.round(((weightedY / weight - size.height / 2) / scale) * 10) / 10
+      }
+    } catch {
+      /* 无头环境偶尔截不到,不影响断言 */
+    }
+  }
+  check(
+    '说明文字在浮层内垂直居中',
+    tipOffset !== null && Math.abs(tipOffset) <= 1,
+    `字形中心相对盒中心偏移 ${tipOffset}px`
+  )
+  await evalJs(
+    "document.querySelector('.ext-dialog-head .ext-dialog-help')?.dispatchEvent(new MouseEvent('mouseleave'))"
+  )
+  await sleep(80)
+  check(
+    '移出问号后说明浮层收起',
+    await evalJs<boolean>("document.querySelector('.plugin-help-tip') === null")
+  )
+  // 人盯着输入框想久一点是正常的；旧实现 20 秒就判「宿主请求 inputBox.show 超时」
+  await sleep(21000)
+  check(
+    '输入框停留 21 秒不会报宿主请求超时',
+    await evalJs<boolean>(
+      "![...document.querySelectorAll('.toast-message')].some(el => el.textContent?.includes('超时'))"
+    )
+  )
+  check('停留后输入框仍在', await evalJs<boolean>("document.querySelector('.ext-dialog-input') !== null"))
   check('输入画布名称', await fillInput('flow.svg'))
   await confirmDialog()
   check('webview iframe 出现', await waitFor("document.querySelector('iframe.webview-frame')", 8000))
@@ -302,6 +418,32 @@ async function main(): Promise<void> {
   )
   check('iDraw 应用挂载完成', mounted)
   check('空画布模板卡片可见', await waitForInFrame("document.querySelector('.canvas-welcome')"))
+
+  console.log('\n【1a】同名画布在名称输入框内报错,不再弹通知')
+  await evalJs("document.querySelector('.explorer-actions button[title=\"新建画布\"]')?.click()")
+  check('再次弹出名称输入框', await waitFor("document.querySelector('.ext-dialog-input')", 8000))
+  check('输入已存在的名称', await fillInput('flow.svg'))
+  check(
+    '输入框下方出现同名错误',
+    await waitFor("document.querySelector('.ext-dialog-error')?.textContent?.includes('已存在')", 8000)
+  )
+  check(
+    '没有弹出同名通知气泡',
+    await evalJs<boolean>(
+      "![...document.querySelectorAll('.toast-message')].some(el => el.textContent?.includes('已存在'))"
+    )
+  )
+  await confirmDialog()
+  await sleep(300)
+  check(
+    '有错误时按确定不会关闭对话框,也不会新建',
+    await evalJs<boolean>(
+      "document.querySelector('.ext-dialog-input') !== null && document.querySelector('.ext-dialog-error')?.textContent?.includes('已存在') === true"
+    )
+  )
+  await evalJs("document.querySelector('.ext-dialog .line-dialog-btn:not(.line-dialog-primary)')?.click()")
+  await sleep(200)
+  check('取消后对话框关闭', await evalJs<boolean>("document.querySelector('.ext-dialog-input') === null"))
 
   console.log('\n【1b】工具栏精简为「插入」,分组形状浮层在上方展开')
   const toolbar = await inFrame<{

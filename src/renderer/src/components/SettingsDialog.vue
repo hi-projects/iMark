@@ -6,37 +6,20 @@ import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
 import {
   AUTO_SAVE_DELAY_MIN,
-  BLOCK_SPACE_MAX,
-  BLOCK_SPACE_MIN,
-  BLOCK_SPACE_STEP,
   CODE_INDENT_OPTIONS,
   delayLabel,
   EDITOR_FONT_SIZE_MAX,
-  EDITOR_FONT_SIZE_MIN,
-  HEADING_SPACE_MAX,
-  HEADING_SPACE_MIN,
-  HEADING_SPACE_STEP,
-  LINE_SPACE_MAX,
-  LINE_SPACE_MIN,
-  LINE_SPACE_STEP,
-  type BlockSpaceSide,
-  type HeadingSpaceSide
+  EDITOR_FONT_SIZE_MIN
 } from '@shared/editorSettings'
 import { appStore, closeSettings, setTheme, THEME_LABELS, THEME_ORDER } from '../stores/app'
 import {
-  previewBlockSpace,
   previewFontSize,
-  previewHeadingSpace,
-  previewLineSpace,
   resetEditorSettings,
   resetSpacingSettings,
   setAutoSaveDelay,
   setAutoSaveMode,
-  setBlockSpace,
   setCodeIndentSize,
   setEditorFontSize,
-  setHeadingSpace,
-  setLineSpace,
   setLineWrapping
 } from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
@@ -47,6 +30,7 @@ import PluginIcon from './plugins/PluginIcon.vue'
 import ExtensionSettings from './plugins/ExtensionSettings.vue'
 import SystemSettings from './SystemSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
+import SpacingSettings from './SpacingSettings.vue'
 import MarketPage from './market/MarketPage.vue'
 import MarketHosts from './market/MarketHosts.vue'
 import MarketInstalled from './market/MarketInstalled.vue'
@@ -140,100 +124,9 @@ function onFontSizeCommit(e: Event): void {
 }
 
 /**
- * 「外观 → 标题间距」的三行控件。
- *
- * field 直接指向 appStore 上的设置项,模板里读写同一份状态;side 是 services
- * 里的档位名(保存时据此挑 settings.json 的字段)。
+ * 行间距 / 标题 / 块 / 图片间距的滑块都搬进了 SpacingSettings 的圆环:
+ * 选一个中心块,再选第二个块,面板里才出现这一对真正生效的字段。
  */
-const HEADING_SPACE_ROWS: {
-  side: HeadingSpaceSide
-  field: 'headingSpaceBefore' | 'headingSpaceAfter' | 'headingSpaceBetween'
-  label: string
-  desc: string
-}[] = [
-  { side: 'before', field: 'headingSpaceBefore', label: '标题上方', desc: '标题前面是正文时的留白。' },
-  { side: 'after', field: 'headingSpaceAfter', label: '标题下方', desc: '标题后面是正文时的留白。' },
-  {
-    side: 'between',
-    field: 'headingSpaceBetween',
-    label: '标题之间',
-    desc: '两个标题紧挨着（中间没有空行）时的留白。'
-  }
-]
-
-/** 读数:档数 + 当前字号下的实际 px,改字号后自动跟着变 */
-function headingSpaceLabel(row: (typeof HEADING_SPACE_ROWS)[number]): string {
-  const value = appStore[row.field]
-  return `${value.toFixed(1)} 档 · ${Math.round(value * appStore.editorFontSize)} px`
-}
-
-function onHeadingSpaceInput(side: HeadingSpaceSide, e: Event): void {
-  previewHeadingSpace(side, Number((e.target as HTMLInputElement).value))
-}
-
-function onHeadingSpaceCommit(side: HeadingSpaceSide, e: Event): void {
-  void setHeadingSpace(side, Number((e.target as HTMLInputElement).value))
-}
-
-/**
- * 行间距(档):同一段里行与行之间额外留出的空白(含折行),1 档 = 1 个正文字号。
- * 与「段间距」分开:一段内的换行看这里,两段之间(空一行)看下面那组。
- */
-function lineSpaceLabel(): string {
-  return `${appStore.lineSpace.toFixed(1)} 档 · ${Math.round(appStore.lineSpace * appStore.editorFontSize)} px`
-}
-
-function onLineSpaceInput(e: Event): void {
-  previewLineSpace(Number((e.target as HTMLInputElement).value))
-}
-
-function onLineSpaceCommit(e: Event): void {
-  void setLineSpace(Number((e.target as HTMLInputElement).value))
-}
-
-/**
- * 「外观 → 块间距」的控件:段间距,以及代码块 / 列表 / 引用各自与前后正文的距离。
- * side 与 CSS 变量名一致(--md-code-space-before 等)。
- */
-const BLOCK_SPACE_ROWS: {
-  side: BlockSpaceSide
-  field:
-    | 'bodySpaceBetween'
-    | 'codeSpaceBefore'
-    | 'codeSpaceAfter'
-    | 'listSpaceBefore'
-    | 'listSpaceAfter'
-    | 'quoteSpaceBefore'
-    | 'quoteSpaceAfter'
-  label: string
-  desc: string
-}[] = [
-  {
-    side: 'bodyBetween',
-    field: 'bodySpaceBetween',
-    label: '段间距',
-    desc: '两段正文之间（空一行）的留白。没有空行时两行属于同一段，行与行的距离由上面的「行间距」决定。'
-  },
-  { side: 'codeBefore', field: 'codeSpaceBefore', label: '代码块上方', desc: '代码块前面是正文时的留白。' },
-  { side: 'codeAfter', field: 'codeSpaceAfter', label: '代码块下方', desc: '代码块后面是正文时的留白。' },
-  { side: 'listBefore', field: 'listSpaceBefore', label: '列表上方', desc: '列表前面是正文时的留白。' },
-  { side: 'listAfter', field: 'listSpaceAfter', label: '列表下方', desc: '列表后面是正文时的留白。' },
-  { side: 'quoteBefore', field: 'quoteSpaceBefore', label: '引用上方', desc: '引用前面是正文时的留白。' },
-  { side: 'quoteAfter', field: 'quoteSpaceAfter', label: '引用下方', desc: '引用后面是正文时的留白。' }
-]
-
-function blockSpaceLabel(row: (typeof BLOCK_SPACE_ROWS)[number]): string {
-  const value = appStore[row.field]
-  return `${value.toFixed(1)} 档 · ${Math.round(value * appStore.editorFontSize)} px`
-}
-
-function onBlockSpaceInput(side: BlockSpaceSide, e: Event): void {
-  previewBlockSpace(side, Number((e.target as HTMLInputElement).value))
-}
-
-function onBlockSpaceCommit(side: BlockSpaceSide, e: Event): void {
-  void setBlockSpace(side, Number((e.target as HTMLInputElement).value))
-}
 
 /** 市场入口在左栏「扩展」分组里排第一项(与 Obsidian 的心智一致) */
 function openMarket(): void {
@@ -776,7 +669,7 @@ onBeforeUnmount(() => {
             <div class="settings-section-head">
               <div class="settings-section-title">样式</div>
               <div class="settings-section-desc">
-                正文的行间距、段与段之间的留白，以及标题 / 代码块 / 列表 / 引用与正文的距离。全部按正文字号计档，1 档 = 1 个正文字号；改正文字号时同比例缩放，拖动后立即生效。
+                先用圆环选两个块：点一个块把它放到中心，再点另一个块，调它们之间的距离。中心块旁的「自身」调同类块之间（正文自身里还有行间距）。全部按正文字号计档，1 档 = 1 个正文字号；改正文字号时同比例缩放，拖动后立即生效。
               </div>
             </div>
 
@@ -800,68 +693,10 @@ onBeforeUnmount(() => {
                   <span class="settings-readout">{{ bodyFontLabel }}</span>
                 </div>
               </div>
-              <div v-for="row in HEADING_SPACE_ROWS" :key="row.side" class="settings-row">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">{{ row.label }}</div>
-                  <div class="settings-row-desc">{{ row.desc }}</div>
-                </div>
-                <div class="settings-control">
-                  <input
-                    class="settings-range"
-                    type="range"
-                    :data-heading-space="row.side"
-                    :min="HEADING_SPACE_MIN"
-                    :max="HEADING_SPACE_MAX"
-                    :step="HEADING_SPACE_STEP"
-                    :value="appStore[row.field]"
-                    @input="onHeadingSpaceInput(row.side, $event)"
-                    @change="onHeadingSpaceCommit(row.side, $event)"
-                  />
-                  <span class="settings-readout">{{ headingSpaceLabel(row) }}</span>
-                </div>
-              </div>
-              <div class="settings-row">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">行间距</div>
-                  <div class="settings-row-desc">
-                    同一段正文里行与行之间额外留出的空白（折行也按它算）。段与段之间空一行的留白用下面的「段间距」。
-                  </div>
-                </div>
-                <div class="settings-control">
-                  <input
-                    class="settings-range"
-                    type="range"
-                    data-line-space="lineSpace"
-                    :min="LINE_SPACE_MIN"
-                    :max="LINE_SPACE_MAX"
-                    :step="LINE_SPACE_STEP"
-                    :value="appStore.lineSpace"
-                    @input="onLineSpaceInput"
-                    @change="onLineSpaceCommit"
-                  />
-                  <span class="settings-readout">{{ lineSpaceLabel() }}</span>
-                </div>
-              </div>
-              <div v-for="row in BLOCK_SPACE_ROWS" :key="row.side" class="settings-row">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">{{ row.label }}</div>
-                  <div class="settings-row-desc">{{ row.desc }}</div>
-                </div>
-                <div class="settings-control">
-                  <input
-                    class="settings-range"
-                    type="range"
-                    :data-block-space="row.side"
-                    :min="BLOCK_SPACE_MIN"
-                    :max="BLOCK_SPACE_MAX"
-                    :step="BLOCK_SPACE_STEP"
-                    :value="appStore[row.field]"
-                    @input="onBlockSpaceInput(row.side, $event)"
-                    @change="onBlockSpaceCommit(row.side, $event)"
-                  />
-                  <span class="settings-readout">{{ blockSpaceLabel(row) }}</span>
-                </div>
-              </div>
+            </div>
+
+            <div class="settings-card settings-card-ring">
+              <SpacingSettings />
             </div>
           </div>
 

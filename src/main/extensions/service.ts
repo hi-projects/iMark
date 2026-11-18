@@ -157,7 +157,8 @@ interface PendingRendererRequest {
 
 interface PendingUiRequest {
   resolve(value: string | string[] | null): void
-  timer: NodeJS.Timeout
+  /** 没有超时的请求（等人操作）不带定时器 */
+  timer?: NodeJS.Timeout
 }
 
 const PLUGIN_STATUSES: readonly PluginStatus[] = ['idle', 'running', 'ok', 'partial', 'error']
@@ -440,6 +441,16 @@ export class ExtensionService {
 
   private readonly pendingRenderer = new Map<string, PendingRendererRequest>()
   private readonly pendingUi = new Map<string, PendingUiRequest>()
+  /**
+   * 还开着的扩展输入框：渲染层请求校验时靠它找回宿主进程与
+   * inputBox.show 的 requestId（只有带 validateInput 的输入框才登记）。
+   */
+  private readonly inputBoxOwners = new Map<
+    string,
+    { host: ExtensionHostProcess; hostRequestId: string }
+  >()
+  /** hostId → 当前挂着、等用户操作（输入框 / 快速选择 / 模态框）的请求数 */
+  private readonly awaitingUser = new Map<number, number>()
   private rendererSender: ((message: MainToRendererMessage) => void) | null
   private rendererSeq = 0
   private uiSeq = 0
@@ -1229,7 +1240,9 @@ export class ExtensionService {
     const process = new ExtensionHostProcess(hostId, ids, {
       onMessage: (host, message) => this.onHostMessage(current, host, message),
       onExit: (host, code, killed) => this.onHostExit(current, host, code, killed),
-      onStdio: (host, level, line) => this.onHostStdio(current, host, level, line)
+      onStdio: (host, level, line) => this.onHostStdio(current, host, level, line),
+      // 用户在对话框里想多久都正常：命令超时因此顺延，不判失败
+      isAwaitingUser: id => (this.awaitingUser.get(id) ?? 0) > 0
     })
     current.process = process
     current.state = 'starting'
@@ -1431,11 +1444,7 @@ export class ExtensionService {
       pending.reject(error)
     }
     this.pendingRenderer.clear()
-    for (const pending of this.pendingUi.values()) {
-      clearTimeout(pending.timer)
-      pending.resolve(null)
-    }
-    this.pendingUi.clear()
+    this.cancelPendingUi()
   }
 
   private onHostStdio(
@@ -1792,82 +1801,112 @@ export class ExtensionService {
           return
         }
         case 'message.show': {
-          const value = await this.requestUi(id => ({
-            type: 'ui.showMessage',
-            requestId: id,
-            ...(message.extensionId ? { extensionId: message.extensionId } : {}),
-            options: {
-              level: message.level,
-              message: message.message,
-              ...(message.detail !== undefined ? { detail: message.detail } : {}),
-              items: message.items,
-              modal: message.modal
-            }
-          }))
-          host.respond(requestId, true, Array.isArray(value) ? null : value)
+          this.beginAwaitingUser(rec.hostId)
+          try {
+            const value = await this.requestUi(id => ({
+              type: 'ui.showMessage',
+              requestId: id,
+              ...(message.extensionId ? { extensionId: message.extensionId } : {}),
+              options: {
+                level: message.level,
+                message: message.message,
+                ...(message.detail !== undefined ? { detail: message.detail } : {}),
+                items: message.items,
+                modal: message.modal
+              }
+            }))
+            host.respond(requestId, true, Array.isArray(value) ? null : value)
+          } finally {
+            this.endAwaitingUser(rec.hostId)
+          }
           return
         }
         case 'inputBox.show': {
-          const value = await this.requestUi(id => ({
-            type: 'ui.showInputBox',
-            requestId: id,
-            ...(message.extensionId ? { extensionId: message.extensionId } : {}),
-            options: {
-              ...(message.options.title !== undefined ? { title: message.options.title } : {}),
-              ...(message.options.prompt !== undefined ? { prompt: message.options.prompt } : {}),
-              ...(message.options.placeHolder !== undefined
-                ? { placeHolder: message.options.placeHolder }
-                : {}),
-              ...(message.options.value !== undefined ? { value: message.options.value } : {}),
-              ...(message.options.password !== undefined ? { password: message.options.password } : {}),
-              ...(message.options.ignoreFocusOut !== undefined
-                ? { ignoreFocusOut: message.options.ignoreFocusOut }
-                : {})
-            }
-          }))
-          host.respond(requestId, true, Array.isArray(value) ? null : value)
+          let uiRequestId = ''
+          this.beginAwaitingUser(rec.hostId)
+          try {
+            const value = await this.requestUi(id => {
+              uiRequestId = id
+              if (message.options.validateInput) {
+                this.inputBoxOwners.set(id, { host, hostRequestId: requestId })
+              }
+              return {
+                type: 'ui.showInputBox',
+                requestId: id,
+                ...(message.extensionId ? { extensionId: message.extensionId } : {}),
+                options: {
+                  ...(message.options.title !== undefined ? { title: message.options.title } : {}),
+                  ...(message.options.prompt !== undefined
+                    ? { prompt: message.options.prompt }
+                    : {}),
+                  ...(message.options.promptAsHelp ? { promptAsHelp: true } : {}),
+                  ...(message.options.placeHolder !== undefined
+                    ? { placeHolder: message.options.placeHolder }
+                    : {}),
+                  ...(message.options.value !== undefined ? { value: message.options.value } : {}),
+                  ...(message.options.password !== undefined
+                    ? { password: message.options.password }
+                    : {}),
+                  ...(message.options.ignoreFocusOut !== undefined
+                    ? { ignoreFocusOut: message.options.ignoreFocusOut }
+                    : {}),
+                  ...(message.options.validateInput ? { validateInput: true } : {})
+                }
+              }
+            })
+            host.respond(requestId, true, Array.isArray(value) ? null : value)
+          } finally {
+            // 对话框已经关掉：之后迟到的校验请求一律当作失败/通过均可，不必再转发
+            if (uiRequestId) this.inputBoxOwners.delete(uiRequestId)
+            this.endAwaitingUser(rec.hostId)
+          }
           return
         }
         case 'quickPick.show': {
-          const value = await this.requestUi(id => ({
-            type: 'ui.showQuickPick',
-            requestId: id,
-            ...(message.extensionId ? { extensionId: message.extensionId } : {}),
-            options: {
-              ...(message.options.title !== undefined ? { title: message.options.title } : {}),
-              ...(message.options.placeHolder !== undefined
-                ? { placeHolder: message.options.placeHolder }
-                : {}),
-              ...(message.options.canPickMany !== undefined
-                ? { canPickMany: message.options.canPickMany }
-                : {}),
-              ...(message.options.ignoreFocusOut !== undefined
-                ? { ignoreFocusOut: message.options.ignoreFocusOut }
-                : {}),
-              ...(message.options.matchOnDescription !== undefined
-                ? { matchOnDescription: message.options.matchOnDescription }
-                : {}),
-              ...(message.options.matchOnDetail !== undefined
-                ? { matchOnDetail: message.options.matchOnDetail }
-                : {}),
-              items: message.items.map(item => ({
-                label: item.label,
-                ...(item.description !== undefined ? { description: item.description } : {}),
-                ...(item.detail !== undefined ? { detail: item.detail } : {}),
-                ...(item.picked !== undefined ? { picked: item.picked } : {})
-              }))
-            }
-          }))
-          const picked = message.options.canPickMany
-            ? Array.isArray(value)
-              ? value
-              : value
-                ? [value]
-                : null
-            : Array.isArray(value)
-              ? (value[0] ?? null)
-              : value
-          host.respond(requestId, true, picked)
+          this.beginAwaitingUser(rec.hostId)
+          try {
+            const value = await this.requestUi(id => ({
+              type: 'ui.showQuickPick',
+              requestId: id,
+              ...(message.extensionId ? { extensionId: message.extensionId } : {}),
+              options: {
+                ...(message.options.title !== undefined ? { title: message.options.title } : {}),
+                ...(message.options.placeHolder !== undefined
+                  ? { placeHolder: message.options.placeHolder }
+                  : {}),
+                ...(message.options.canPickMany !== undefined
+                  ? { canPickMany: message.options.canPickMany }
+                  : {}),
+                ...(message.options.ignoreFocusOut !== undefined
+                  ? { ignoreFocusOut: message.options.ignoreFocusOut }
+                  : {}),
+                ...(message.options.matchOnDescription !== undefined
+                  ? { matchOnDescription: message.options.matchOnDescription }
+                  : {}),
+                ...(message.options.matchOnDetail !== undefined
+                  ? { matchOnDetail: message.options.matchOnDetail }
+                  : {}),
+                items: message.items.map(item => ({
+                  label: item.label,
+                  ...(item.description !== undefined ? { description: item.description } : {}),
+                  ...(item.detail !== undefined ? { detail: item.detail } : {}),
+                  ...(item.picked !== undefined ? { picked: item.picked } : {})
+                }))
+              }
+            }))
+            const picked = message.options.canPickMany
+              ? Array.isArray(value)
+                ? value
+                : value
+                  ? [value]
+                  : null
+              : Array.isArray(value)
+                ? (value[0] ?? null)
+                : value
+            host.respond(requestId, true, picked)
+          } finally {
+            this.endAwaitingUser(rec.hostId)
+          }
           return
         }
         case 'configuration.update': {
@@ -2397,6 +2436,9 @@ export class ExtensionService {
       case 'ui.response':
         this.settleUi(message.requestId, message.value)
         return
+      case 'ui.validateInput':
+        void this.forwardInputValidation(message.requestId, message.validationId, message.value)
+        return
       case 'extensions.requestReload':
         void this.reloadExtension(message.extensionId).catch(err => {
           this.postUiError(`重新加载 ${message.extensionId} 失败：${errorMessage(err)}`)
@@ -2417,6 +2459,8 @@ export class ExtensionService {
     context: ExtensionContextKeys
     theme: ThemeDto
   }): void {
+    // 渲染层刚（重新）加载：上一轮的模态框已经不存在了，等不到回答就先按取消收尾
+    this.cancelPendingUi()
     this.rendererReady = true
     this.documents.resetFromRenderer(
       payload.documents.slice(0, MAX_OPEN_DOCUMENTS),
@@ -2475,8 +2519,55 @@ export class ExtensionService {
     const pending = this.pendingUi.get(requestId)
     if (!pending) return
     this.pendingUi.delete(requestId)
-    clearTimeout(pending.timer)
+    if (pending.timer) clearTimeout(pending.timer)
     pending.resolve(value ?? null)
+  }
+
+  /**
+   * 渲染层换了/关了：还挂着的模态框不可能再有回答，一律按取消收尾。
+   * 否则宿主那边的 `showInputBox` 会一直等一个永远不回来的响应。
+   */
+  private cancelPendingUi(): void {
+    for (const pending of this.pendingUi.values()) {
+      if (pending.timer) clearTimeout(pending.timer)
+      pending.resolve(null)
+    }
+    this.pendingUi.clear()
+    this.inputBoxOwners.clear()
+  }
+
+  private beginAwaitingUser(hostId: number): void {
+    this.awaitingUser.set(hostId, (this.awaitingUser.get(hostId) ?? 0) + 1)
+  }
+
+  private endAwaitingUser(hostId: number): void {
+    const next = (this.awaitingUser.get(hostId) ?? 1) - 1
+    if (next > 0) this.awaitingUser.set(hostId, next)
+    else this.awaitingUser.delete(hostId)
+  }
+
+  /**
+   * 把渲染层的输入校验请求转给宿主进程里的 validateInput 回调。
+   *
+   * 任何一步失败（宿主已重启、回调超时）都回 `error: null` 放行：输入框不能
+   * 因为基础设施问题卡住；扩展在真正动手前仍有自己的兜底检查。
+   */
+  private async forwardInputValidation(
+    requestId: string,
+    validationId: string,
+    value: string
+  ): Promise<void> {
+    const owner = this.inputBoxOwners.get(requestId)
+    let error: string | null = null
+    if (owner) {
+      try {
+        const result = await owner.host.requestInputValidation(owner.hostRequestId, value)
+        error = typeof result === 'string' && result.trim() ? result : null
+      } catch {
+        error = null
+      }
+    }
+    this.postToRenderer({ type: 'ui.validateInputResult', requestId, validationId, error })
   }
 
   private requestRenderer(request: EditorRequestDto, timeoutMs = 20000): Promise<unknown> {
@@ -2495,16 +2586,20 @@ export class ExtensionService {
 
   private requestUi(
     build: (requestId: string) => MainToRendererMessage,
-    timeoutMs = 300000
+    /** 0 = 不超时：等人操作没有合理上限（渲染层重载/关闭时由 cancelPendingUi 收尾） */
+    timeoutMs = 0
   ): Promise<string | string[] | null> {
     if (!this.rendererSender) return Promise.resolve(null)
     const requestId = `ui-${++this.uiSeq}`
     return new Promise<string | string[] | null>(resolvePromise => {
-      const timer = setTimeout(() => {
-        this.pendingUi.delete(requestId)
-        resolvePromise(null)
-      }, timeoutMs)
-      timer.unref?.()
+      let timer: NodeJS.Timeout | undefined
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.pendingUi.delete(requestId)
+          resolvePromise(null)
+        }, timeoutMs)
+        timer.unref?.()
+      }
       this.pendingUi.set(requestId, { resolve: resolvePromise, timer })
       this.postToRenderer(build(requestId))
     })

@@ -379,29 +379,58 @@ async function main(): Promise<void> {
   )
   check('删除整表用的是垃圾桶图标', ctlInfo.trash, JSON.stringify(ctlInfo))
 
-  // 留白必须被等量负外边距抵消:图标浮在四周,但不把表格往右下顶
+  // 留白必须被等量负外边距抵消:图标浮在四周,但不把表格往右下顶。
+  // 上下间距改由结构空行 / 标题留白承担后,frame 的上下 padding 在有结构空行
+  // 或紧贴标题时归零 —— 否则同一道缝会算两次。
   const spacing = await evalJs<{
     padLeft: number
     padTop: number
+    padBottom: number
     marginLeft: number
     marginTop: number
+    hostCls: string
+    gapBelowCls: string
+    gapBelowH: number
   } | null>(`
     (() => {
       const f = document.querySelector('.cm-md-table-frame')
       if (!f) return null
       const s = getComputedStyle(f)
+      const host = f.closest('.cm-md-table-host')
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+      const gap = lines.find(l => l.classList.contains('cm-md-block-gap-table-after'))
       return {
         padLeft: parseFloat(s.paddingLeft), padTop: parseFloat(s.paddingTop),
-        marginLeft: parseFloat(s.marginLeft), marginTop: parseFloat(s.marginTop)
+        padBottom: parseFloat(s.paddingBottom),
+        marginLeft: parseFloat(s.marginLeft), marginTop: parseFloat(s.marginTop),
+        hostCls: host?.className ?? '',
+        gapBelowCls: gap?.className ?? '',
+        gapBelowH: gap ? Math.round(gap.getBoundingClientRect().height * 10) / 10 : -1
       }
     })()`)
   check(
-    '左右留白被负外边距抵消;上下留白(--md-table-gap)就是表格间距',
+    '左右留白被负外边距抵消,表格与正文左对齐',
     !!spacing &&
       spacing.padLeft === -spacing.marginLeft &&
       spacing.padLeft > 0 &&
-      spacing.padTop > 0 &&
       spacing.marginTop === 0,
+    JSON.stringify(spacing)
+  )
+  check(
+    '表格紧贴标题:frame 顶部归零,标题自己的留白管这一侧',
+    !!spacing &&
+      /cm-md-table-tight-heading-top/.test(spacing.hostCls) &&
+      spacing.padTop === 0,
+    JSON.stringify(spacing)
+  )
+  check(
+    '表格下方的结构空行按表格下方档排,frame 底部同时归零',
+    !!spacing &&
+      /cm-md-table-gap-line-bottom/.test(spacing.hostCls) &&
+      spacing.padBottom === 0 &&
+      /cm-md-block-gap-table-after/.test(spacing.gapBelowCls) &&
+      spacing.gapBelowH > 0 &&
+      spacing.gapBelowH < 30,
     JSON.stringify(spacing)
   )
 

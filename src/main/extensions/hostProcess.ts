@@ -32,12 +32,17 @@ export interface HostProcessHooks {
   onMessage(host: ExtensionHostProcess, message: HostToMainMessage): void
   onExit(host: ExtensionHostProcess, code: number, killedByMain: boolean): void
   onStdio(host: ExtensionHostProcess, level: 'info' | 'error', line: string): void
+  /**
+   * 这个宿主是不是正等着用户操作（弹着输入框 / 快速选择 / 模态框）。
+   * 是的话，命令超时先顺延 —— 用户盯着对话框想多久都不该算命令执行失败。
+   */
+  isAwaitingUser?(hostId: number): boolean
 }
 
 interface PendingRequest {
   resolve(value: unknown): void
   reject(error: Error): void
-  timer: NodeJS.Timeout
+  timer?: NodeJS.Timeout
 }
 
 type ReadyPhase = 'process' | 'initialized'
@@ -156,7 +161,7 @@ export class ExtensionHostProcess {
     const pending = this.pending.get(message.requestId)
     if (!pending) return
     this.pending.delete(message.requestId)
-    clearTimeout(pending.timer)
+    if (pending.timer) clearTimeout(pending.timer)
     if (message.ok) pending.resolve(message.value)
     else pending.reject(new Error(message.error?.message ?? '宿主请求失败'))
   }
@@ -192,7 +197,7 @@ export class ExtensionHostProcess {
 
   private rejectAll(error: Error): void {
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
+      if (pending.timer) clearTimeout(pending.timer)
       pending.reject(error)
     }
     this.pending.clear()
@@ -215,18 +220,57 @@ export class ExtensionHostProcess {
     this.send({ kind: 'response', requestId, ok, value, error })
   }
 
-  /** main → 宿主的一次请求（目前只有命令执行），等待宿主响应 */
-  requestCommand(command: string, args: unknown[], timeoutMs = 20000): Promise<unknown> {
+  /** main → 宿主的一次请求，等待宿主响应 */
+  private requestHost(
+    build: (requestId: string) => MainToHostMessage,
+    label: string,
+    timeoutMs: number,
+    /** 宿主正弹着模态框时把超时顺延，而不是判命令失败 */
+    deferWhileAwaitingUser = false
+  ): Promise<unknown> {
     const requestId = `main-${this.hostId}-${++this.requestSeq}`
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new Error(`扩展命令「${command}」执行超时`))
-      }, timeoutMs)
-      timer.unref?.()
-      this.pending.set(requestId, { resolve, reject, timer })
-      this.send({ kind: 'command.execute', requestId, command, args })
+      const entry: PendingRequest = { resolve, reject }
+      const arm = (): void => {
+        const timer = setTimeout(() => {
+          if (deferWhileAwaitingUser && this.hooks.isAwaitingUser?.(this.hostId)) {
+            arm()
+            return
+          }
+          this.pending.delete(requestId)
+          reject(new Error(`${label}超时`))
+        }, timeoutMs)
+        timer.unref?.()
+        entry.timer = timer
+      }
+      this.pending.set(requestId, entry)
+      arm()
+      this.send(build(requestId))
     })
+  }
+
+  /** 执行扩展命令，等待宿主响应 */
+  requestCommand(command: string, args: unknown[], timeoutMs = 20000): Promise<unknown> {
+    return this.requestHost(
+      requestId => ({ kind: 'command.execute', requestId, command, args }),
+      `扩展命令「${command}」执行`,
+      timeoutMs,
+      true
+    )
+  }
+
+  /**
+   * 跑一次扩展输入框的 validateInput。
+   *
+   * 校验是本地的（例如查文件是否存在），给短一点的超时就够了；超时由调用方
+   * 决定怎么降级，不要让输入框一直停在「校验中」。
+   */
+  requestInputValidation(inputRequestId: string, value: string, timeoutMs = 8000): Promise<unknown> {
+    return this.requestHost(
+      requestId => ({ kind: 'inputBox.validate', requestId, inputRequestId, value }),
+      '扩展输入校验',
+      timeoutMs
+    )
   }
 
   /** 宿主发来的需要 main 处理的请求 */

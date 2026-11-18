@@ -87,6 +87,7 @@ import type {
   HostExtensionInit,
   HostRequestMessage,
   HostToMainMessage,
+  MainInputBoxValidateMessage,
   MainToHostMessage,
   RendererApplyEditsResult,
   StatusBarItemDto,
@@ -97,6 +98,15 @@ import type {
   WebviewPanelStatusDto,
   WebviewPresentationDto
 } from '@shared/extensionProtocol'
+
+/**
+ * 等人操作的宿主请求（输入框 / 快速选择 / 模态框）不设超时。
+ *
+ * 用户盯着输入框想两分钟都算正常；20 秒的上限会把「宿主请求 inputBox.show
+ * 超时」弹到用户脸上，命令也随之失败。渲染层重载/关闭时 main 会把还挂着的
+ * 请求按取消收尾（见 ExtensionService.cancelPendingUi），不会留下死等待。
+ */
+const NO_TIMEOUT = 0
 
 // ---------- 传输层 ----------
 
@@ -1062,7 +1072,15 @@ export class ExtensionHostRuntime {
   private readonly editorCache = new Map<string, HostTextEditor>()
   private readonly pending = new Map<
     string,
-    { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }
+    { resolve(value: unknown): void; reject(error: Error): void; timer?: NodeJS.Timeout }
+  >()
+  /**
+   * 还开着的输入框的 validateInput 回调，键是 inputBox.show 的 requestId。
+   * main 的反向校验请求靠它找到回调；对话框关掉（请求返回）就删掉。
+   */
+  private readonly inputValidators = new Map<
+    string,
+    NonNullable<InputBoxOptions['validateInput']>
   >()
   private readonly workspaces: WorkspaceFolder[] = []
   private activeUri: string | null = null
@@ -1098,16 +1116,20 @@ export class ExtensionHostRuntime {
 
   request<T>(
     build: (requestId: string) => HostRequestMessage,
+    /** 0 表示不设超时（等人操作的请求）；其余按毫秒计 */
     timeoutMs = 20000
   ): Promise<T> {
     const requestId = `host-${++this.requestSeq}`
     const message = build(requestId)
     return new Promise<T>((resolvePromise, reject) => {
-      const timer = rawSetTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new Error(`宿主请求 ${message.kind} 超时`))
-      }, timeoutMs)
-      timer.unref?.()
+      let timer: NodeJS.Timeout | undefined
+      if (timeoutMs > 0) {
+        timer = rawSetTimeout(() => {
+          this.pending.delete(requestId)
+          reject(new Error(`宿主请求 ${message.kind} 超时`))
+        }, timeoutMs)
+        timer.unref?.()
+      }
       this.pending.set(requestId, {
         resolve: value => resolvePromise(value as T),
         reject,
@@ -1126,7 +1148,7 @@ export class ExtensionHostRuntime {
     const pending = this.pending.get(message.requestId)
     if (!pending) return
     this.pending.delete(message.requestId)
-    clearTimeout(pending.timer)
+    if (pending.timer) clearTimeout(pending.timer)
     if (message.ok) pending.resolve(message.value)
     else pending.reject(new Error(message.error?.message ?? 'main 请求失败'))
   }
@@ -1274,12 +1296,31 @@ export class ExtensionHostRuntime {
           message.token
         )
         return
+      case 'inputBox.validate':
+        void this.validateInput(message)
+        return
       case 'shutdown':
         void this.shutdown()
         return
       default:
         return
     }
+  }
+
+  /** 界面每次要校验时来一趟；回调缺失（对话框已关）按通过处理 */
+  private async validateInput(message: MainInputBoxValidateMessage): Promise<void> {
+    const validate = this.inputValidators.get(message.inputRequestId)
+    let error: string | null = null
+    if (validate) {
+      try {
+        const result = await Promise.resolve(validate(message.value))
+        error = typeof result === 'string' && result.trim() ? result : null
+      } catch (err) {
+        // 回调自己抛错也要让用户看见，否则输入框会一直停在「看起来没问题」的状态
+        error = err instanceof Error ? err.message : String(err)
+      }
+    }
+    this.send({ kind: 'response', requestId: message.requestId, ok: true, value: error })
   }
 
   private async initialize(payload: ExtensionHostInitPayload): Promise<void> {
@@ -2233,26 +2274,37 @@ export class ExtensionHostRuntime {
       detail: options.detail,
       items: strings,
       modal: options.modal ?? false
-    }))
+    }), NO_TIMEOUT)
     return value ?? undefined
   }
 
   private async showInputBox(ext: RuntimeExtension, options?: InputBoxOptions): Promise<string | undefined> {
-    const value = await this.request<string | null>(r => ({
-      kind: 'inputBox.show',
-      requestId: r,
-      extensionId: ext.id,
-      options: {
-        title: options?.title,
-        prompt: options?.prompt,
-        placeHolder: options?.placeHolder,
-        value: options?.value,
-        password: options?.password,
-        ignoreFocusOut: options?.ignoreFocusOut,
-        validateInput: typeof options?.validateInput === 'function'
-      }
-    }))
-    return value ?? undefined
+    const validate = options?.validateInput
+    let requestId = ''
+    try {
+      const value = await this.request<string | null>(r => {
+        requestId = r
+        if (typeof validate === 'function') this.inputValidators.set(r, validate)
+        return {
+          kind: 'inputBox.show',
+          requestId: r,
+          extensionId: ext.id,
+          options: {
+            title: options?.title,
+            prompt: options?.prompt,
+            promptAsHelp: options?.promptAsHelp === true,
+            placeHolder: options?.placeHolder,
+            value: options?.value,
+            password: options?.password,
+            ignoreFocusOut: options?.ignoreFocusOut,
+            validateInput: typeof validate === 'function'
+          }
+        }
+      }, NO_TIMEOUT)
+      return value ?? undefined
+    } finally {
+      if (requestId) this.inputValidators.delete(requestId)
+    }
   }
 
   private async showQuickPick(
@@ -2284,7 +2336,7 @@ export class ExtensionHostRuntime {
         matchOnDescription: options?.matchOnDescription,
         matchOnDetail: options?.matchOnDetail
       }
-    }))
+    }), NO_TIMEOUT)
     if (value === null || value === undefined) return undefined
     const label = Array.isArray(value) ? value[0] : value
     return list.find(item => (typeof item === 'string' ? item === label : item.label === label))

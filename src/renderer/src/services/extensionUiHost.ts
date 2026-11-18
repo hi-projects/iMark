@@ -30,9 +30,13 @@ export interface ExtensionUiInputRequest {
   kind: 'input'
   title: string
   prompt?: string
+  /** prompt 画成标题旁的小问号（完整文字在悬停提示里） */
+  promptAsHelp: boolean
   placeHolder?: string
   value: string
   password: boolean
+  /** 扩展提供了 validateInput：输入时向宿主回问，错误直接画在输入框下方 */
+  validateInput: boolean
 }
 
 export interface ExtensionUiPickItem {
@@ -57,6 +61,52 @@ export type ExtensionUiRequest =
   | ExtensionUiPickRequest
 
 export const extensionUiStore = reactive<{ queue: ExtensionUiRequest[] }>({ queue: [] })
+
+interface PendingInputValidation {
+  resolve(error: string | null): void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingInputValidations = new Map<string, PendingInputValidation>()
+let validationSeq = 0
+
+/**
+ * 请宿主跑一次扩展的 validateInput。
+ *
+ * 只对带 `validateInput` 的输入框有意义。校验要绕 main → 宿主一个来回，
+ * 8 秒不回按通过处理 —— 对话框不能因为校验超时变成死框，扩展在真正动手前
+ * 本来也还有自己的兜底检查。
+ */
+export function validateExtensionUiInput(
+  requestId: string,
+  value: string
+): Promise<string | null> {
+  const validationId = `val-${++validationSeq}`
+  return new Promise<string | null>(resolve => {
+    const timer = setTimeout(() => {
+      pendingInputValidations.delete(validationId)
+      resolve(null)
+    }, 8000)
+    pendingInputValidations.set(validationId, { resolve, timer })
+    try {
+      api.sendExtensionMessage({ type: 'ui.validateInput', requestId, validationId, value })
+    } catch (err) {
+      // 窗口正在关闭：与 ui.response 一样，随它去
+      pendingInputValidations.delete(validationId)
+      clearTimeout(timer)
+      console.error('[iMark] 扩展输入校验请求失败', err)
+      resolve(null)
+    }
+  })
+}
+
+function settleInputValidation(validationId: string, error: string | null): void {
+  const pending = pendingInputValidations.get(validationId)
+  if (!pending) return
+  pendingInputValidations.delete(validationId)
+  clearTimeout(pending.timer)
+  pending.resolve(error)
+}
 
 /** 请求本身不带显示名（主进程只传 ID）；查不到就退回一个中性称呼 */
 function titleFor(extensionId: string | undefined): string {
@@ -120,11 +170,13 @@ export function handleExtensionUiMessage(message: MainToRendererMessage): boolea
         kind: 'input',
         title: message.options.title || titleFor(message.extensionId),
         ...(message.options.prompt !== undefined ? { prompt: message.options.prompt } : {}),
+        promptAsHelp: message.options.promptAsHelp === true,
         ...(message.options.placeHolder !== undefined
           ? { placeHolder: message.options.placeHolder }
           : {}),
         value: message.options.value ?? '',
-        password: message.options.password === true
+        password: message.options.password === true,
+        validateInput: message.options.validateInput === true
       })
       return true
     }
@@ -146,6 +198,9 @@ export function handleExtensionUiMessage(message: MainToRendererMessage): boolea
       })
       return true
     }
+    case 'ui.validateInputResult':
+      settleInputValidation(message.validationId, message.error)
+      return true
     default:
       return false
   }

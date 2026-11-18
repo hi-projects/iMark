@@ -13,9 +13,9 @@
  *   A 有空行:引用前后两条结构空行各按 1 档(16px)收紧,竖线只画在引用行
  *   B 紧贴正文(没有空行):间距落在相邻正文行的 padding 上,引用后那段
  *     懒续行按正文渲染(无竖线、无缩进),引用行本身照常有竖线
- *   C 设置里有「引用上方 / 引用下方」两根滑块,拖动即时生效、读数正确;
- *     值写进 settings.json,重载后按磁盘值还原
- *   D 「恢复默认设置」把引用间距也带回 1 档
+ *   C 圆环上选「正文 ↔ 引用」后有两根滑块(引用上方 / 引用下方),拖动
+ *     即时生效、读数正确;值写进 settings.json,重载后按磁盘值还原
+ *   D 「恢复默认设置」把引用间距也带回 1 档(表格回到 1.7 / 0.7 档)
  *
  * 跑法(先 `npm run build`,再在仓库根目录):
  *   xvfb-run -a node verify/run.mjs quote-spacing
@@ -166,6 +166,30 @@ async function main(): Promise<void> {
     return false
   }
 
+  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  async function resetRing(): Promise<void> {
+    for (let i = 0; i < 3; i += 1) {
+      const state = await evalJs<string>(
+        `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
+      )
+      if (state === 'empty') return
+      await evalJs(
+        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+      )
+      await sleep(100)
+    }
+  }
+
+  /** 圆环:选中心 + 第二个块,等配对面板出现 */
+  async function selectPair(center: string, target: string): Promise<boolean> {
+    await resetRing()
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
+    await sleep(100)
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
+    await sleep(100)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
+  }
+
   const near = (a: number, b: number, tol = 0.6): boolean => Math.abs(a - b) <= tol
   const looks = (l: LineInfo): string => `${JSON.stringify(l.text)} [${l.cls}] margin=${l.marginLeft} pad=${l.paddingTop}/${l.paddingBottom}`
 
@@ -204,7 +228,7 @@ async function main(): Promise<void> {
   }
 
   // ---------- C ----------
-  console.log('\n【C】设置 → 外观 → 块间距:引用上下两根滑块即时生效、写盘、重载还原')
+  console.log('\n【C】设置 → 外观 → 样式圆环:正文 ↔ 引用配对里两根滑块即时生效、写盘、重载还原')
   await loadDoc(BLANK)
   await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
   await waitFor(`document.querySelector('.settings-nav-item')`)
@@ -212,11 +236,13 @@ async function main(): Promise<void> {
     [...document.querySelectorAll('.settings-nav-item')]
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
+  await waitFor(`document.querySelector('[data-spacing-ring]')`)
   check(
-    '「样式」区里有引用上下两根滑块',
-    await waitFor(
-      `document.querySelector('input[data-block-space="quoteBefore"]') && document.querySelector('input[data-block-space="quoteAfter"]')`
-    ),
+    '圆环上选「正文 ↔ 引用」后有引用上下两根滑块',
+    (await selectPair('body', 'quote')) &&
+      (await waitFor(
+        `document.querySelector('input[data-block-space="quoteBefore"]') && document.querySelector('input[data-block-space="quoteAfter"]')`
+      )),
     '找不到 data-block-space="quoteBefore / quoteAfter"'
   )
 
@@ -302,24 +328,47 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
   await sleep(700)
-  const reset = await evalJs<{ before: string; after: string; sliders: number[] }>(`
+  const reset = await evalJs<{ vars: Record<string, string>; nodes: number }>(`
     (() => {
       const root = getComputedStyle(document.documentElement)
       return {
-        before: root.getPropertyValue('--md-quote-space-before').trim(),
-        after: root.getPropertyValue('--md-quote-space-after').trim(),
-        sliders: [...document.querySelectorAll('input[data-block-space]')].map(i => Number(i.value))
+        vars: {
+          quoteBefore: root.getPropertyValue('--md-quote-space-before').trim(),
+          quoteAfter: root.getPropertyValue('--md-quote-space-after').trim(),
+          bodyBetween: root.getPropertyValue('--md-body-space-between').trim(),
+          lineSpace: root.getPropertyValue('--editor-line-space').trim(),
+          tableBefore: root.getPropertyValue('--md-table-space-before').trim(),
+          tableAfter: root.getPropertyValue('--md-table-space-after').trim()
+        },
+        nodes: document.querySelectorAll('[data-block-node]').length
       }
     })()`)
   console.log(`     [实测] ${JSON.stringify(reset)}`)
-  check('根变量回到 1 档', reset.before === '1' && reset.after === '1', JSON.stringify(reset))
-  check('七根块间距滑块都回到 1', reset.sliders.length === 7 && reset.sliders.every(v => v === 1), JSON.stringify(reset.sliders))
+  check(
+    '根变量回到默认(引用 1 档,表格 1.7 / 0.7 档)',
+    reset.vars.quoteBefore === '1' &&
+      reset.vars.quoteAfter === '1' &&
+      reset.vars.bodyBetween === '1' &&
+      reset.vars.lineSpace === '1' &&
+      reset.vars.tableBefore === '1.7' &&
+      reset.vars.tableAfter === '0.7',
+    JSON.stringify(reset)
+  )
+  check('重置后圆环仍在,七个块都在', reset.nodes === 7, JSON.stringify(reset.nodes))
   await sleep(400)
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(
     '恢复默认也写回了 settings.json',
-    resetSaved.quoteSpaceBefore === 1 && resetSaved.quoteSpaceAfter === 1,
-    JSON.stringify({ before: resetSaved.quoteSpaceBefore, after: resetSaved.quoteSpaceAfter })
+    resetSaved.quoteSpaceBefore === 1 &&
+      resetSaved.quoteSpaceAfter === 1 &&
+      resetSaved.tableSpaceBefore === 1.7 &&
+      resetSaved.tableSpaceAfter === 0.7,
+    JSON.stringify({
+      before: resetSaved.quoteSpaceBefore,
+      after: resetSaved.quoteSpaceAfter,
+      tableBefore: resetSaved.tableSpaceBefore,
+      tableAfter: resetSaved.tableSpaceAfter
+    })
   )
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

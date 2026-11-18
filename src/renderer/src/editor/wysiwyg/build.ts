@@ -115,8 +115,17 @@ function gapLineClickAnchor(view: EditorView, plugin: WysiwygPlugin, pos: number
   if (kept.has(line.from)) return null
   const classes = lineClasses(plugin, line)
   if (!classes.includes('cm-md-block-gap')) return null
+  // 间距属于哪一侧:正文 / 表格空行是 `cm-md-block-gap-…-before|after`;
+  // 独占一行的图片上下,空行挂的是 `cm-md-image-gap-blank-before-body`
+  // 这类样式(见 rules 的 styleImageGaps),同样要按结构空行改道 —— 否则
+  // 点一下图片与上一段之间的留白,光标停上去把空行撑成整行,图像被推下去,
+  // 看起来像凭空多出一行。
   const isSide = (side: 'before' | 'after'): boolean =>
-    classes.some(c => c.startsWith('cm-md-block-gap-') && c.endsWith(`-${side}`))
+    classes.some(
+      c =>
+        (c.startsWith('cm-md-block-gap-') || c.startsWith('cm-md-image-gap-blank-')) &&
+        (c.endsWith(`-${side}`) || c.includes(`-${side}-`))
+    )
   const isKept = (l: Line): boolean => kept.has(l.from)
   const above = (): number | null => {
     for (let n = line.number - 1; n >= 1; n--) {
@@ -638,6 +647,7 @@ export class WysiwygPlugin {
           })
         }
       }
+      const tree = syntaxTree(state)
       const ctx: RuleContext = {
         sel: state.selection,
         doc: state.doc,
@@ -650,7 +660,13 @@ export class WysiwygPlugin {
         decos,
         atomic,
         links,
-        decorated: new Set()
+        decorated: new Set(),
+        blockAt: pos => {
+          const safe = Math.min(Math.max(pos, 0), tree.length)
+          let node = tree.resolveInner(safe, 1)
+          while (node.parent && node.parent.name !== 'Document') node = node.parent
+          return node.parent ? node.name : null
+        }
       }
       syntaxTree(state).iterate({
         from,

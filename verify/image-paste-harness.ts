@@ -224,6 +224,25 @@ async function main(): Promise<void> {
   )
   check('插入后立刻按 imark:// 渲染成真图', renderedA)
   {
+    // 用户报告:在新段粘贴图片,图片却从下一行才开始显示,与上一段凭空多出一行。
+    // 根因是图片 widget 的 span 里放了块级 img(块级子元素拆出行内盒,上面多出
+    // 一条整行高的空行盒)。图片顶边应当贴着它所在行的顶边(只差 img 的 margin)。
+    const geom = await evalJs<{ lineTop: number; imgTop: number; lineH: number; imgH: number } | null>(`
+      (() => {
+        const img = document.querySelector('.cm-md-image img')
+        const line = img?.closest('.cm-line')
+        if (!img || !line) return null
+        const lr = line.getBoundingClientRect()
+        const ir = img.getBoundingClientRect()
+        return { lineTop: lr.top, imgTop: ir.top, lineH: lr.height, imgH: ir.height }
+      })()`)
+    check(
+      '图片从所在行开始渲染,没有被挤到下一行',
+      !!geom && geom.imgTop - geom.lineTop <= 8,
+      JSON.stringify(geom)
+    )
+  }
+  {
     const saved = await saveNote()
     check(
       'Markdown 里是相对路径 ![图片](.assets/image-…png)',

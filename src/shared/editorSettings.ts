@@ -80,8 +80,11 @@ export function clampHeadingSpace(value: unknown, fallback: number): number {
  *   · bodyBetween —— 两段正文之间那条空行的留白(设置里的「段间距」);
  *   · codeBefore / codeAfter —— 代码块前面 / 后面是正文时的留白;
  *   · listBefore / listAfter —— 列表前面 / 后面是正文时的留白;
- *   · quoteBefore / quoteAfter —— 引用前面 / 后面是正文时的留白。
+ *   · quoteBefore / quoteAfter —— 引用前面 / 后面是正文时的留白;
+ *   · tableBefore / tableAfter —— 表格上方 / 下方是正文(或其他块)时的留白。
  *
+ * 表格默认不是 1 档:它此前没有独立档位,上方靠一条段间距空行、下方靠
+ * frame 的 12px 留白。取 1.7 / 0.7 是为了让升级后的观感与旧版一致。
  * 默认 1 档(一个正文字号):与标题间距、正文行距用同一把尺子,块与正文
  * 之间的留白和段落之间看起来一致。刻度与标题间距相同(0–3 档,0.1 一档)。
  */
@@ -95,11 +98,40 @@ export const BLOCK_SPACE_DEFAULTS = {
   listBefore: 1,
   listAfter: 1,
   quoteBefore: 1,
-  quoteAfter: 1
+  quoteAfter: 1,
+  tableBefore: 1.7,
+  tableAfter: 0.7
 } as const
 export type BlockSpaceSide = keyof typeof BLOCK_SPACE_DEFAULTS
 
 export function clampBlockSpace(value: unknown, fallback: number): number {
+  return clampHeadingSpace(value, fallback)
+}
+
+/**
+ * 图片(独占一行时)与相邻标题 / 正文之间的留白(设置面板「外观 → 块间距」),
+ * 单位同样是「档」。
+ *
+ *   · beforeHeading —— 图片上方紧挨标题(也就是标题下方与图片);
+ *   · beforeBody    —— 图片上方紧挨正文(也就是正文下方与图片);
+ *   · afterHeading  —— 图片下方紧挨标题(也就是标题上方与图片);
+ *   · afterBody     —— 图片下方紧挨正文(也就是正文上方与图片)。
+ *
+ * 有这类设置时,图片那一侧的标题留白 / 段间距由图片自己这一档说了算 ——
+ * 同一个缝隙只调一个值,不会两处叠加。默认 1 档,与块间距一致。
+ */
+export const IMAGE_SPACE_MIN = HEADING_SPACE_MIN
+export const IMAGE_SPACE_MAX = HEADING_SPACE_MAX
+export const IMAGE_SPACE_STEP = HEADING_SPACE_STEP
+export const IMAGE_SPACE_DEFAULTS = {
+  beforeHeading: 1,
+  beforeBody: 1,
+  afterHeading: 1,
+  afterBody: 1
+} as const
+export type ImageSpaceSide = keyof typeof IMAGE_SPACE_DEFAULTS
+
+export function clampImageSpace(value: unknown, fallback: number): number {
   return clampHeadingSpace(value, fallback)
 }
 
@@ -149,7 +181,19 @@ export const EDITOR_DEFAULTS = {
   /** 引用上方留白(档,× 正文字号) */
   quoteSpaceBefore: BLOCK_SPACE_DEFAULTS.quoteBefore,
   /** 引用下方留白(档,× 正文字号) */
-  quoteSpaceAfter: BLOCK_SPACE_DEFAULTS.quoteAfter
+  quoteSpaceAfter: BLOCK_SPACE_DEFAULTS.quoteAfter,
+  /** 表格上方留白(档,× 正文字号) */
+  tableSpaceBefore: BLOCK_SPACE_DEFAULTS.tableBefore,
+  /** 表格下方留白(档,× 正文字号) */
+  tableSpaceAfter: BLOCK_SPACE_DEFAULTS.tableAfter,
+  /** 图片上方紧挨标题时的留白(档,× 正文字号) */
+  imageSpaceBeforeHeading: IMAGE_SPACE_DEFAULTS.beforeHeading,
+  /** 图片上方紧挨正文时的留白(档,× 正文字号) */
+  imageSpaceBeforeBody: IMAGE_SPACE_DEFAULTS.beforeBody,
+  /** 图片下方紧挨标题时的留白(档,× 正文字号) */
+  imageSpaceAfterHeading: IMAGE_SPACE_DEFAULTS.afterHeading,
+  /** 图片下方紧挨正文时的留白(档,× 正文字号) */
+  imageSpaceAfterBody: IMAGE_SPACE_DEFAULTS.afterBody
 } as const
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {

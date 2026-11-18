@@ -228,6 +228,40 @@ async function main(): Promise<void> {
     await sleep(1000)
   }
 
+  /** 圆环:清掉当前配对 / 中心,回到七个块的初始状态 */
+  async function resetRing(): Promise<void> {
+    for (let i = 0; i < 3; i += 1) {
+      const state = await evalJs<string>(
+        `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
+      )
+      if (state === 'empty') return
+      await evalJs(
+        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+      )
+      await sleep(100)
+    }
+  }
+
+  /** 圆环:选中心 + 第二个块,等配对面板出现 */
+  async function selectPair(center: string, target: string): Promise<boolean> {
+    await resetRing()
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
+    await sleep(100)
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
+    await sleep(100)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
+  }
+
+  /** 圆环:选中心 + 中心旁的「自身」 */
+  async function selectSelf(kind: string): Promise<boolean> {
+    await resetRing()
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+    await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
+    await sleep(100)
+    return waitFor(`document.querySelector('[data-pair-mode="self"]')`, 3000)
+  }
+
   const blankMetrics = (): Promise<BlankMetrics> =>
     evalJs<BlankMetrics>(`
       (() => {
@@ -350,9 +384,11 @@ async function main(): Promise<void> {
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
   check(
-    '「样式」区里有七根块间距滑块(段间距 + 代码 / 列表 / 引用各上下两根)',
-    await waitFor(`document.querySelectorAll('input[data-block-space]').length === 7`),
-    '找不到 data-block-space 滑块'
+    '「样式」区里是七个块的圆环,初始没有中心',
+    await waitFor(
+      `document.querySelectorAll('[data-block-node]').length === 7 && document.querySelector('[data-ring-state="empty"]')`
+    ),
+    '找不到七块圆环'
   )
 
   async function setBlockSlider(side: string, value: number): Promise<boolean> {
@@ -367,12 +403,38 @@ async function main(): Promise<void> {
       })()`)
   }
 
-  const sliderOk =
-    (await setBlockSlider('codeBefore', 2)) &&
-    (await setBlockSlider('codeAfter', 1.5)) &&
-    (await setBlockSlider('listBefore', 0.5)) &&
-    (await setBlockSlider('listAfter', 2.5))
+  const readBlockReadouts = (): Promise<
+    { side: string; value: number; text: string }[]
+  > =>
+    evalJs(`
+      [...document.querySelectorAll('input[data-block-space]')].map(input => ({
+        side: input.dataset.blockSpace,
+        value: Number(input.value),
+        text: input.parentElement?.querySelector('.settings-readout')?.textContent?.trim() ?? ''
+      }))`)
+
+  const codeSelected = await selectPair('body', 'code')
+  check(
+    '正文 ↔ 代码块:面板只列这两根上下滑块',
+    codeSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 2`)),
+    '代码块配对没有出现两根滑块'
+  )
+  const codeSliderOk =
+    (await setBlockSlider('codeBefore', 2)) && (await setBlockSlider('codeAfter', 1.5))
+  await sleep(200)
+  const codeReadouts = await readBlockReadouts()
+
+  const listSelected = await selectPair('body', 'list')
+  check(
+    '正文 ↔ 列表:面板只列这两根上下滑块',
+    listSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 2`)),
+    '列表配对没有出现两根滑块'
+  )
+  const listSliderOk =
+    (await setBlockSlider('listBefore', 0.5)) && (await setBlockSlider('listAfter', 2.5))
   await sleep(400)
+  const listReadouts = await readBlockReadouts()
+  const sliderOk = codeSliderOk && listSliderOk
 
   const ui = await evalJs<{
     vars: Record<string, string>
@@ -387,13 +449,10 @@ async function main(): Promise<void> {
           listBefore: root.getPropertyValue('--md-list-space-before').trim(),
           listAfter: root.getPropertyValue('--md-list-space-after').trim()
         },
-        readouts: [...document.querySelectorAll('input[data-block-space]')].map(input => ({
-          side: input.dataset.blockSpace,
-          value: Number(input.value),
-          text: input.parentElement?.querySelector('.settings-readout')?.textContent?.trim() ?? ''
-        }))
+        readouts: []
       }
     })()`)
+  ui.readouts = [...codeReadouts, ...listReadouts]
   console.log(`     [实测] ${JSON.stringify(ui)}`)
   const expectedVars = { codeBefore: '2', codeAfter: '1.5', listBefore: '0.5', listAfter: '2.5' }
   check(
@@ -508,9 +567,7 @@ async function main(): Promise<void> {
 
   const afterReset = await evalJs<{
     vars: Record<string, string>
-    heading: number[]
-    blocks: number[]
-    line: number[]
+    nodes: number
   }>(`
     (() => {
       const root = getComputedStyle(document.documentElement)
@@ -526,22 +583,17 @@ async function main(): Promise<void> {
           listAfter: root.getPropertyValue('--md-list-space-after').trim(),
           quoteBefore: root.getPropertyValue('--md-quote-space-before').trim(),
           quoteAfter: root.getPropertyValue('--md-quote-space-after').trim(),
-          bodyBetween: root.getPropertyValue('--md-body-space-between').trim()
+          bodyBetween: root.getPropertyValue('--md-body-space-between').trim(),
+          tableBefore: root.getPropertyValue('--md-table-space-before').trim(),
+          tableAfter: root.getPropertyValue('--md-table-space-after').trim()
         },
-        heading: [...document.querySelectorAll('input[data-heading-space]')].map(i => Number(i.value)),
-        blocks: [...document.querySelectorAll('input[data-block-space]')].map(i => Number(i.value)),
-        line: [...document.querySelectorAll('input[data-line-space]')].map(i => Number(i.value))
+        nodes: document.querySelectorAll('[data-block-node]').length
       }
     })()`)
   console.log(`     [实测] ${JSON.stringify(afterReset)}`)
   check(
-    '十一根滑块与根变量都回到默认(行间距 1 档,标题 / 块 1 档)',
-    afterReset.line.length === 1 &&
-      afterReset.line[0] === 1 &&
-      afterReset.vars.lineSpace === '1' &&
-      afterReset.heading.every(v => v === 1) &&
-      afterReset.blocks.length === 7 &&
-      afterReset.blocks.every(v => v === 1) &&
+    '根变量都回到默认(行间距 / 标题 / 块 1 档,表格 1.7 / 0.7 档)',
+    afterReset.vars.lineSpace === '1' &&
       afterReset.vars.headingBefore === '1' &&
       afterReset.vars.headingAfter === '1' &&
       afterReset.vars.headingBetween === '1' &&
@@ -551,9 +603,12 @@ async function main(): Promise<void> {
       afterReset.vars.listBefore === '1' &&
       afterReset.vars.listAfter === '1' &&
       afterReset.vars.quoteBefore === '1' &&
-      afterReset.vars.quoteAfter === '1',
+      afterReset.vars.quoteAfter === '1' &&
+      afterReset.vars.tableBefore === '1.7' &&
+      afterReset.vars.tableAfter === '0.7',
     JSON.stringify(afterReset)
   )
+  check('恢复默认后圆环仍在(七块选择器不受影响)', afterReset.nodes === 7, String(afterReset.nodes))
 
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(
@@ -566,7 +621,9 @@ async function main(): Promise<void> {
       resetSaved.codeSpaceBefore === 1 &&
       resetSaved.codeSpaceAfter === 1 &&
       resetSaved.listSpaceBefore === 1 &&
-      resetSaved.listSpaceAfter === 1,
+      resetSaved.listSpaceAfter === 1 &&
+      resetSaved.tableSpaceBefore === 1.7 &&
+      resetSaved.tableSpaceAfter === 0.7,
     JSON.stringify(resetSaved)
   )
 
@@ -872,8 +929,9 @@ async function main(): Promise<void> {
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
   check(
-    '「样式」区里有「段间距」滑块',
-    await waitFor(`document.querySelector('input[data-block-space="bodyBetween"]')`),
+    '「样式」区里:正文自身配对里有「段间距」滑块',
+    (await selectSelf('body')) &&
+      (await waitFor(`document.querySelector('input[data-block-space="bodyBetween"]')`)),
     '找不到 data-block-space="bodyBetween"'
   )
   const bodySlider = await evalJs<boolean>(`
@@ -978,8 +1036,9 @@ async function main(): Promise<void> {
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
   check(
-    '「样式」区里有「行间距」滑块',
-    await waitFor(`document.querySelector('input[data-line-space="lineSpace"]')`),
+    '「样式」区里:正文自身配对里有「行间距」滑块',
+    (await selectSelf('body')) &&
+      (await waitFor(`document.querySelector('input[data-line-space="lineSpace"]')`)),
     '找不到 data-line-space="lineSpace"'
   )
 
@@ -989,8 +1048,8 @@ async function main(): Promise<void> {
     [...document.querySelectorAll(${JSON.stringify(SPACING_SLIDERS)})]
       .map(i => Math.round(i.getBoundingClientRect().width * 10) / 10)`)
   check(
-    '行间距与标题 / 段间距 / 块间距十一根滑块等宽',
-    spacingWidths.length === 11 && spacingWidths.every(w => Math.abs(w - spacingWidths[0]) <= 0.5),
+    '段间距与行间距两根滑块等宽',
+    spacingWidths.length === 2 && spacingWidths.every(w => Math.abs(w - spacingWidths[0]) <= 0.5),
     JSON.stringify(spacingWidths)
   )
 

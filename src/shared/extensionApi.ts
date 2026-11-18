@@ -617,6 +617,11 @@ export interface MessageOptions {
 export interface InputBoxOptions {
   title?: string
   prompt?: string
+  /**
+   * 把 `prompt` 当作说明而不是正文：标题旁显示一个小问号，完整文字在悬停时给出。
+   * 省略时 `prompt` 照常显示在输入框上方（与 VS Code 一致）。
+   */
+  promptAsHelp?: boolean
   placeHolder?: string
   value?: string
   password?: boolean

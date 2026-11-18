@@ -61,6 +61,14 @@ export interface RuleContext {
   links: LinkInfo[]
   /** 已经有行装饰的行首(collapseBlankRuns 用它跳过代码行等特殊空行) */
   decorated: Set<number>
+  /**
+   * 某一位置所在的最外层块节点名(Document 的直接子节点,如 Paragraph /
+   * ATXHeading2 / FencedCode);取不到时为 null。
+   *
+   * 图片间距要知道邻居是标题还是正文,但规则是按语法树节点分发的 ——
+   * 邻居行不一定是正在处理的节点,只能回问一次树。
+   */
+  blockAt(pos: number): string | null
 }
 
 // ---------- 基础 emit 工具 ----------
@@ -375,12 +383,125 @@ function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
  */
 function styleBodyGap(ctx: RuleContext, para: SyntaxNode): void {
   if (para.parent?.name !== 'Document') return
+  // 段落以独占一行的图片开头 / 前一段以图片结尾:那条空行的留白由「图片间距」
+  // 管(见 styleImageGaps),这里不要再叠一份段间距。
+  if (isImageOnlyLineText(ctx.doc.lineAt(para.from).text)) return
   const prev = para.prevSibling
   if (!prev) return
   if (prev.name !== 'Paragraph' && !listEndsWithLazyText(ctx, prev)) return
+  if (prev.name === 'Paragraph' && isImageOnlyLineText(ctx.doc.lineAt(prev.to).text)) return
   const line = ctx.doc.lineAt(para.from)
   if (line.number <= 1 || !isBlankLine(ctx.doc.line(line.number - 1).text)) return
   addGapBefore(ctx, para.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+}
+
+/** 整行只有一张图片(图片独占一行) —— 只有这种图片参与块间距 */
+const IMAGE_ONLY_LINE = /^\s*!\[[^\]]*\]\([^)]*\)\s*$/
+
+function isImageOnlyLineText(text: string): boolean {
+  return IMAGE_ONLY_LINE.test(text)
+}
+
+/**
+ * 图片的邻居算「标题」还是「正文」。
+ *
+ * 只认这两种:代码块 / 列表 / 引用 / 表格等邻居各有自己的间距设置,图片不插一脚。
+ * 邻居本身也是一张独占一行的图片时也返回 null —— 图片之间没有专门的档位,
+ * 保持默认行距与段间距。
+ */
+function imageNeighborKind(ctx: RuleContext, line: Line): 'heading' | 'body' | null {
+  if (isImageOnlyLineText(line.text)) return null
+  const name = ctx.blockAt(line.from)
+  if (!name) return null
+  if (name.startsWith('ATXHeading') || name.startsWith('SetextHeading')) return 'heading'
+  if (name === 'Paragraph') return 'body'
+  return null
+}
+
+/** 从某一行往回 / 往后找第一条非空行(跳过结构空行);找不到返回 null */
+function neighborLine(
+  ctx: RuleContext,
+  from: number,
+  step: 1 | -1
+): Line | null {
+  for (let n = from; n >= 1 && n <= ctx.doc.lines; n += step) {
+    const line = ctx.doc.line(n)
+    if (!isBlankLine(line.text)) return line
+  }
+  return null
+}
+
+/**
+ * 图片独占一行时,它与上方 / 下方标题或正文之间的留白(设置「外观 → 块间距」,
+ * 四根滑块各管一个方向 × 邻居类型)。
+ *
+ * 两种写法都要照顾,和块间距同一套排法:
+ *   · 中间有空行:把那条空行压到该档高度;
+ *   · 紧贴在一起:把留白做在图片行自己的 padding 上。
+ *
+ * 图片这一档是**权威值**:紧挨标题时,标题那一侧原本的留白被清零
+ * (cm-md-h-tight-image-*),不与图片档叠加 —— 否则滑块拉到 0 档还留着标题的间距。
+ * 标题 / 正文两侧都带 `cm-md-h-space-before` 之类的行也由 CSS 放在后面的规则覆盖。
+ *
+ * 列表 / 引用 / 表格里的图片由容器自己的间距管,这里整块跳过。
+ */
+function styleImageGaps(ctx: RuleContext, image: SyntaxNode): void {
+  const line = ctx.doc.lineAt(image.from)
+  if (!isImageOnlyLineText(line.text)) return
+  for (let p = image.parent; p; p = p.parent) {
+    if (p.name === 'ListItem' || p.name === 'Blockquote' || p.name === 'Table') return
+  }
+
+  if (line.number > 1) {
+    const prev = ctx.doc.line(line.number - 1)
+    if (isBlankLine(prev.text)) {
+      const above = neighborLine(ctx, line.number - 2, -1)
+      const kind = above ? imageNeighborKind(ctx, above) : null
+      if (above && kind) {
+        if (
+          !caretOnGapLine(ctx, prev.from, prev.to) &&
+          !keptEmptyParagraph(ctx, prev.from)
+        ) {
+          addLine(ctx, prev.from, `cm-md-block-gap cm-md-image-gap-blank-before-${kind}`)
+        } else {
+          // 光标停在这条空行上:空行保持整行,留白改做在图片行上
+          addLine(ctx, line.from, `cm-md-image-gap-before-${kind}`)
+        }
+        if (kind === 'heading') addLine(ctx, above.from, 'cm-md-h-tight-image-bottom')
+      }
+    } else {
+      const kind = imageNeighborKind(ctx, prev)
+      if (kind) {
+        addLine(ctx, line.from, `cm-md-image-gap-before-${kind}`)
+        if (kind === 'heading') addLine(ctx, prev.from, 'cm-md-h-tight-image-bottom')
+      }
+    }
+  }
+
+  if (line.number < ctx.doc.lines) {
+    const next = ctx.doc.line(line.number + 1)
+    if (isBlankLine(next.text)) {
+      const below = neighborLine(ctx, line.number + 2, 1)
+      const kind = below ? imageNeighborKind(ctx, below) : null
+      if (below && kind) {
+        if (
+          !caretOnGapLine(ctx, next.from, next.to) &&
+          !keptEmptyParagraph(ctx, next.from)
+        ) {
+          addLine(ctx, next.from, `cm-md-block-gap cm-md-image-gap-blank-after-${kind}`)
+        } else {
+          addLine(ctx, line.from, `cm-md-image-gap-after-${kind}`)
+        }
+        if (kind === 'heading') addLine(ctx, below.from, 'cm-md-h-tight-image-top')
+      }
+    } else {
+      const kind = imageNeighborKind(ctx, next)
+      if (kind) {
+        addLine(ctx, line.from, `cm-md-image-gap-after-${kind}`)
+        if (kind === 'heading') addLine(ctx, next.from, 'cm-md-h-tight-image-top')
+      }
+    }
+  }
 }
 
 /**
@@ -595,6 +716,18 @@ function readWidthLine(line: Line): { line: TableWidthLine; widths: number[] } |
     },
     widths: parsed.widths
   }
+}
+
+/**
+ * 这一行所在的最外层块是不是标题(ATX / Setext)。
+ *
+ * 只用于表格紧贴标题时把 frame 那一侧的留白归零 —— 紧贴时标题自己的
+ * 上 / 下留白说了算,不叠表格的 padding。
+ */
+function isHeadingLine(ctx: RuleContext, line: Line | null): boolean {
+  if (!line) return false
+  const name = ctx.blockAt(line.from)
+  return !!name && (name.startsWith('ATXHeading') || name.startsWith('SetextHeading'))
 }
 
 function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
@@ -1468,6 +1601,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
 
     // ----- 图片 -----
     case 'Image': {
+      // 图片独占一行时,上下与标题 / 正文的留白按「图片间距」四档排
+      styleImageGaps(ctx, node.node)
       if (!touches(ctx.sel, node.from, node.to)) {
         const text = ctx.doc.sliceString(node.from, node.to)
         const m = /^!\[([^\]]*)\]\(\s*([^)\s]+)[^)]*\)/.exec(text)
@@ -1540,6 +1675,28 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         addLineRange(ctx, node.from, node.to, 'cm-md-table')
         return false
       }
+      const lastLine = ctx.doc.lineAt(node.to)
+      /*
+       * 表格上下各有一条"结构空行"(见 readTable 的 protectFrom/protectTo)。
+       * 有这条空行时,间距由空行承担、frame 该侧归零;没有空行时:
+       *   · 紧贴标题 —— 标题自己的留白为准,frame 该侧也归零;
+       *   · 紧贴其它块 —— frame 的 padding 提供间距(见 editor.css)。
+       */
+      const hasBlankAbove =
+        spec.protectFrom < node.from && spec.protectFrom !== spec.widthLine?.from
+      const hasBlankBelow = spec.protectTo > node.to
+      // 列宽指令行也是表格的一部分,判断"上一行是不是标题"时要越过它
+      let aboveNumber = firstLine.number - 1
+      if (spec.widthLine) {
+        const widthLine = ctx.doc.lineAt(spec.widthLine.from)
+        if (widthLine.number === aboveNumber) aboveNumber -= 1
+      }
+      const tightHeadingAbove =
+        !hasBlankAbove && aboveNumber >= 1 && isHeadingLine(ctx, ctx.doc.line(aboveNumber))
+      const tightHeadingBelow =
+        !hasBlankBelow &&
+        lastLine.number < ctx.doc.lines &&
+        isHeadingLine(ctx, ctx.doc.line(lastLine.number + 1))
       // 首行换成 widget(它自带整张表),其余行清空并折叠高度
       // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行。
       // 紧接段内硬换行时不再加 frame 顶部留白:距离就是行间距。
@@ -1550,13 +1707,16 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         [
           'cm-md-table-host',
           fullySelected ? 'cm-md-table-host-selected' : '',
-          tightTop ? 'cm-md-table-tight-top' : ''
+          tightTop ? 'cm-md-table-tight-top' : '',
+          hasBlankAbove ? 'cm-md-table-gap-line-top' : '',
+          hasBlankBelow ? 'cm-md-table-gap-line-bottom' : '',
+          tightHeadingAbove ? 'cm-md-table-tight-heading-top' : '',
+          tightHeadingBelow ? 'cm-md-table-tight-heading-bottom' : ''
         ]
           .filter(Boolean)
           .join(' ')
       )
       hideWithWidget(ctx, firstLine.from, firstLine.to, new TableWidget(spec))
-      const lastLine = ctx.doc.lineAt(node.to)
       for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
         const line = ctx.doc.line(n)
         hide(ctx, line.from, line.to)
@@ -1573,12 +1733,14 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         addLine(ctx, spec.widthLine.from, 'cm-md-table-widths')
         hide(ctx, spec.widthLine.textFrom, spec.widthLine.textTo)
       }
-      if (spec.protectFrom < node.from && spec.protectFrom !== spec.widthLine?.from) {
-        // 表格前的结构空行是段落分隔:按段间距排(和两段正文之间一致),
-        // 表格自身的留白仍由 frame 提供。折成零高会让表格贴得太近。
-        addLine(ctx, spec.protectFrom, 'cm-md-block-gap cm-md-block-gap-body')
+      // 结构空行按表格的上 / 下档排;它可能同时贴着别的块(代码块 / 列表 /
+      // 引用),CSS 的 max() 会取两者较大值,frame 那一侧已经归零。
+      if (hasBlankAbove) {
+        addLine(ctx, spec.protectFrom, 'cm-md-block-gap cm-md-block-gap-table-before')
       }
-      if (spec.protectTo > node.to) addLine(ctx, spec.protectTo, 'cm-md-table-gap')
+      if (hasBlankBelow) {
+        addLine(ctx, spec.protectTo, 'cm-md-block-gap cm-md-block-gap-table-after')
+      }
       // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
       // 行内高亮由 widget 内部的 renderInline 负责
       return false

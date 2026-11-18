@@ -373,6 +373,25 @@
   --md-list-gap-after: calc(var(--editor-body-size) * var(--md-list-space-after, 1));
   --md-quote-gap-before: calc(var(--editor-body-size) * var(--md-quote-space-before, 1));
   --md-quote-gap-after: calc(var(--editor-body-size) * var(--md-quote-space-after, 1));
+  /* 图片独占一行时,上 / 下紧挨标题或正文的留白 */
+  --md-image-gap-before-heading: calc(
+    var(--editor-body-size) * var(--md-image-space-before-heading, 1)
+  );
+  --md-image-gap-before-body: calc(var(--editor-body-size) * var(--md-image-space-before-body, 1));
+  --md-image-gap-after-heading: calc(
+    var(--editor-body-size) * var(--md-image-space-after-heading, 1)
+  );
+  --md-image-gap-after-body: calc(var(--editor-body-size) * var(--md-image-space-after-body, 1));
+  /*
+   * 表格上下间距:有结构空行时由那条空行承担,没有空行时由表格 frame 的
+   * padding 承担。--md-table-gap 是旧版的整体覆盖入口,设了就两边都用它。
+   */
+  --md-table-gap-before: var(--md-table-gap, calc(
+    var(--editor-body-size) * var(--md-table-space-before, 1.7)
+  ));
+  --md-table-gap-after: var(--md-table-gap, calc(
+    var(--editor-body-size) * var(--md-table-space-after, 0.7)
+  ));
 }
 
 /*
@@ -392,7 +411,9 @@
     var(--md-block-gap-list-before, 0px),
     var(--md-block-gap-list-after, 0px),
     var(--md-block-gap-quote-before, 0px),
-    var(--md-block-gap-quote-after, 0px)
+    var(--md-block-gap-quote-after, 0px),
+    var(--md-block-gap-table-before, 0px),
+    var(--md-block-gap-table-after, 0px)
   );
 }
 
@@ -424,11 +445,29 @@
   --md-block-gap-quote-after: var(--md-quote-gap-after);
 }
 
+.cm-editor .cm-line.cm-md-block-gap-table-before {
+  --md-block-gap-table-before: var(--md-table-gap-before);
+}
+
+.cm-editor .cm-line.cm-md-block-gap-table-after {
+  --md-block-gap-table-after: var(--md-table-gap-after);
+}
+
 /*
  * 标题前紧挨着的空行:用户主动留出的空行要占一整行,不能按块间距压扁。
- * 普通空行本来就是完整行高;表格的结构空行没有 cm-md-block-gap,仍保持折叠。
+ * 普通空行本来就是完整行高。
+ *
+ * 结构空行的例外:表格与图片的结构空行有自己的档位(见下面的
+ * cm-md-image-gap-blank-* 与 block-gap-table-*),不能被这里展开成整行。
+ * 用 :not 排除,让它们各自的规则继续生效。注意 :not 会抬高特异度,
+ * 所以图片那四条也必须列出来 —— 否则这条会反过来压过它们(图片规则
+ * 原本靠"同特异度、文件里更靠后"生效)。
  */
-.cm-editor .cm-line.cm-md-block-gap.cm-md-h-space-before {
+.cm-editor .cm-line.cm-md-block-gap.cm-md-h-space-before:not(
+    .cm-md-block-gap-table-before
+  ):not(.cm-md-block-gap-table-after):not(.cm-md-image-gap-blank-before-heading):not(
+    .cm-md-image-gap-blank-before-body
+  ):not(.cm-md-image-gap-blank-after-heading):not(.cm-md-image-gap-blank-after-body) {
   line-height: inherit;
 }
 
@@ -522,6 +561,62 @@
   --md-heading-pad: calc(var(--editor-body-size) * var(--md-heading-space-between, 1));
 }
 
+/*
+ * 标题紧挨着独占一行的图片时(设置「外观 → 块间距 → 图片上方/下方与标题」)。
+ *
+ * 图片那一侧有自己的档位,标题这一侧的留白清零,两者不叠加 —— 否则把图片间距
+ * 拉到 0 档,标题还会留着自己的那一档。类由 rules.ts 的 styleImageGaps 打在
+ * 标题行上;必须放在标题间距规则之后,同特异度时后者生效。
+ */
+.cm-editor .cm-line.cm-md-h-tight-image-bottom {
+  padding-bottom: 0;
+}
+
+.cm-editor .cm-line.cm-md-h-tight-image-top {
+  /* 「+」按钮跟着 --md-heading-pad 定位,和 padding-top 一起归零 */
+  --md-heading-pad: 0px;
+}
+
+/*
+ * 图片(独占一行)与上方 / 下方标题或正文的留白。
+ *
+ * 紧贴在一起时做在图片行自己的 padding 上;中间只剩一条结构空行时,把空行压到
+ * 该档高度(cm-md-image-gap-blank-*)。两种写法同一个观感,和块间距一致。
+ * 空行的规则放在标题规则之后:图片下方紧挨标题时,那条空行同时带着
+ * cm-md-h-space-before(整行高),这里要把它按图片档收紧。
+ */
+.cm-editor .cm-line.cm-md-image-gap-before-heading {
+  padding-top: var(--md-image-gap-before-heading);
+}
+
+.cm-editor .cm-line.cm-md-image-gap-before-body {
+  padding-top: var(--md-image-gap-before-body);
+}
+
+.cm-editor .cm-line.cm-md-image-gap-after-heading {
+  padding-bottom: var(--md-image-gap-after-heading);
+}
+
+.cm-editor .cm-line.cm-md-image-gap-after-body {
+  padding-bottom: var(--md-image-gap-after-body);
+}
+
+.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-heading {
+  line-height: var(--md-image-gap-before-heading);
+}
+
+.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-body {
+  line-height: var(--md-image-gap-before-body);
+}
+
+.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-heading {
+  line-height: var(--md-image-gap-after-heading);
+}
+
+.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-body {
+  line-height: var(--md-image-gap-after-body);
+}
+
 .cm-md-link {
   color: var(--accent);
   text-decoration: underline;
@@ -590,6 +685,34 @@
   font-size: 0;
 }
 
+/*
+ * 表格间距走两条路:
+ *   · 结构空行存在时,空行按 cm-md-block-gap-table-before/after 排,
+ *     表格 frame 这一侧归零 —— 不然同一道缝会算两次;
+ *   · 紧贴标题时,标题自己的上 / 下留白说了算,frame 这一侧也归零;
+ *   · 紧贴代码块 / 列表 / 引用 / 正文时,frame 的 padding 提供间距。
+ */
+.cm-md-table-host.cm-md-table-gap-line-top .cm-md-table-frame,
+.cm-md-table-host.cm-md-table-tight-heading-top .cm-md-table-frame {
+  padding-top: 0;
+}
+
+.cm-md-table-host.cm-md-table-gap-line-bottom .cm-md-table-frame,
+.cm-md-table-host.cm-md-table-tight-heading-bottom .cm-md-table-frame {
+  padding-bottom: 0;
+}
+
+/*
+ * 邻居的 cm-md-gap-* 会把 padding 加在表格的宿主行 / 折叠行上:
+ * 那些行的行高本来就是 0,padding 却会真的占版式空间。统一清零。
+ * 必须放在 gap 规则之后(同特异度,后者生效)。
+ */
+.cm-editor .cm-line.cm-md-table-host,
+.cm-editor .cm-line.cm-md-table-void {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .cm-md-table-host .cm-md-table-frame {
   font-size: var(--editor-body-size);
   line-height: normal;
@@ -612,9 +735,9 @@
   display: inline-block;
   /* 自定义过列宽的表格铺满正文宽度(见 .cm-md-table-frame-sized) */
   box-sizing: border-box;
-  /* 表格与正文的上下间距:这两段是 widget 自己的留白,不是可点击的文档行 */
-  padding: var(--md-table-gap-top, var(--md-table-gap, 12px)) 30px
-    var(--md-table-gap-bottom, var(--md-table-gap, 12px)) 24px;
+  /* 表格与上下的间距:没有结构空行 / 紧贴标题时由这两段 padding 提供 */
+  padding: var(--md-table-gap-top, var(--md-table-gap-before, 12px)) 30px
+    var(--md-table-gap-bottom, var(--md-table-gap-after, 12px)) 24px;
   margin: 0 -30px 0 -24px;
   outline: none;
 }
@@ -884,13 +1007,11 @@
 /*
  * 多行表格的后续行:源码藏在 widget 后面,折叠高度。
  *
- * .cm-md-table-gap 是表格上下紧邻的结构空行:GFM / markdown-it / Obsidian
- * 会把紧贴表格的非空行读成表格行,这两条空行必须留在源码里;但它们不接受光标,
- * 排版上也不该占一层行高 —— 表格与正文的视觉间距完全交给
- * .cm-md-table-frame 的 --md-table-gap-top / --md-table-gap-bottom。
+ * GFM / markdown-it / Obsidian 会把紧贴表格的非空行读成表格行,表头与表尾的
+ * 空行必须留在源码里;它们不接受光标,排版上也不该占一层行高 —— 间距由
+ * cm-md-block-gap-table-before/after(有空行时)或 frame 的 padding(紧贴时)承担。
  */
 .cm-md-table-void,
-.cm-md-table-gap,
 .cm-md-table-widths {
   line-height: 0;
   font-size: 0;
@@ -1115,6 +1236,17 @@
   height: 0;
   border-top: 2px solid var(--border);
   vertical-align: middle;
+}
+
+/*
+ * widget 外壳是 span(行内),里面却是一张块级 img。块级子元素会把外壳拆成
+ * 前后两段行内盒,上面凭空多出一条整行高的空行盒 —— 图片看起来从下一行才
+ * 开始,与上一段的距离比排版值多出一整行。改成 inline-block 让外壳整体收缩
+ * 包裹图片、顶边贴在所在行上,图片就从这一行开始显示。
+ */
+.cm-md-image {
+  display: inline-block;
+  vertical-align: top;
 }
 
 .cm-md-image img {

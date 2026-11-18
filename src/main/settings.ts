@@ -7,6 +7,7 @@ import {
   clampBlockSpace,
   clampFontSize,
   clampHeadingSpace,
+  clampImageSpace,
   clampLineSpace,
   EDITOR_DEFAULTS,
   EDITOR_FONT_SIZE_VERSION
@@ -184,6 +185,27 @@ function normalize(raw: Partial<Settings>): Settings {
     EDITOR_DEFAULTS.quoteSpaceBefore
   )
   merged.quoteSpaceAfter = clampBlockSpace(merged.quoteSpaceAfter, EDITOR_DEFAULTS.quoteSpaceAfter)
+  merged.tableSpaceBefore = clampBlockSpace(
+    merged.tableSpaceBefore,
+    EDITOR_DEFAULTS.tableSpaceBefore
+  )
+  merged.tableSpaceAfter = clampBlockSpace(merged.tableSpaceAfter, EDITOR_DEFAULTS.tableSpaceAfter)
+  merged.imageSpaceBeforeHeading = clampImageSpace(
+    merged.imageSpaceBeforeHeading,
+    EDITOR_DEFAULTS.imageSpaceBeforeHeading
+  )
+  merged.imageSpaceBeforeBody = clampImageSpace(
+    merged.imageSpaceBeforeBody,
+    EDITOR_DEFAULTS.imageSpaceBeforeBody
+  )
+  merged.imageSpaceAfterHeading = clampImageSpace(
+    merged.imageSpaceAfterHeading,
+    EDITOR_DEFAULTS.imageSpaceAfterHeading
+  )
+  merged.imageSpaceAfterBody = clampImageSpace(
+    merged.imageSpaceAfterBody,
+    EDITOR_DEFAULTS.imageSpaceAfterBody
+  )
   merged.lineWrapping = merged.lineWrapping !== false
   merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
   merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)

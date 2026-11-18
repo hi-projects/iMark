@@ -94,6 +94,18 @@ interface AppState {
   quoteSpaceBefore: number
   /** 引用下方留白(档) */
   quoteSpaceAfter: number
+  /** 表格上方留白(档,× 正文字号) */
+  tableSpaceBefore: number
+  /** 表格下方留白(档) */
+  tableSpaceAfter: number
+  /** 图片上方紧挨标题时的留白(档,× 正文字号) */
+  imageSpaceBeforeHeading: number
+  /** 图片上方紧挨正文时的留白(档) */
+  imageSpaceBeforeBody: number
+  /** 图片下方紧挨标题时的留白(档) */
+  imageSpaceAfterHeading: number
+  /** 图片下方紧挨正文时的留白(档) */
+  imageSpaceAfterBody: number
   /** 最近一次自动保存成功的时刻;null 表示不显示提示 */
   autoSavedAt: number | null
   /** 自动保存失败的说明(状态栏红字);成功后清掉 */
@@ -151,6 +163,12 @@ export const appStore = reactive<AppState>({
   listSpaceAfter: 1,
   quoteSpaceBefore: 1,
   quoteSpaceAfter: 1,
+  tableSpaceBefore: 1.7,
+  tableSpaceAfter: 0.7,
+  imageSpaceBeforeHeading: 1,
+  imageSpaceBeforeBody: 1,
+  imageSpaceAfterHeading: 1,
+  imageSpaceAfterBody: 1,
   autoSavedAt: null,
   autoSaveError: null,
   expandedDirs: new Set<string>(),

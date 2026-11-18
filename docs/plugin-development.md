@@ -209,7 +209,7 @@ getCommands(filterInternal?: boolean): Thenable<string[]>
 | API | 说明 |
 |---|---|
 | `showInformationMessage` / `showWarningMessage` / `showErrorMessage` | 带按钮时是模态队列；不带按钮时是右下角气泡。返回用户点中的按钮文本或 `undefined` |
-| `showInputBox` | 文本 / 密码输入；返回字符串或 `undefined` |
+| `showInputBox` | 文本 / 密码输入；返回字符串或 `undefined`。提供 `validateInput(value)` 时，输入会实时回问宿主，错误画在输入框下方；有错误时按「确定」不会关闭对话框。回调可以是 `Promise`，超时按通过处理。`promptAsHelp: true` 把 `prompt` 收进标题旁的小问号（悬停看全文），不占正文 |
 | `showQuickPick` | 字符串数组或 `QuickPickItem[]`；支持 `canPickMany` |
 | `createStatusBarItem(alignment?, priority?)` | 状态栏条目；每个扩展最多 5 条，全应用最多 12 条；文本上限 80 字 |
 | `createOutputChannel(name)` | 写入扩展日志，支持 `append/appendLine/replace/clear/info/warn/error/debug/trace` |
