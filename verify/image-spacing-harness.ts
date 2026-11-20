@@ -10,8 +10,9 @@
  *     图片档是权威值,不与标题间距叠加;
  *   B 紧贴正文:留白做在图片行上,空行变体也不算段间距;
  *   C 中间有空行:那条结构空行压到图片档高度,标题一侧照样清零;
- *   D 圆环上「图片 ↔ 标题」「图片 ↔ 正文」两个配对里各两根滑块,即时生效、
- *     读数正确,画面上的实际间距跟着走;值写进 settings.json,重载后还原;
+ *   D 「标题在上/图片在下」「正文在上/图片在下」两个配对各给一根滑块,互换
+ *     后调另一侧;即时生效、读数正确,画面上的实际间距跟着走;
+ *     值写进 settings.json,重载后还原;
  *   E 「恢复默认设置」把图片间距也带回 1 档(表格回到 1.7 / 0.7 档)。
  *
  * 跑法(先 `npm run build`,再在仓库根目录):
@@ -208,28 +209,38 @@ async function main(): Promise<void> {
     return false
   }
 
-  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  /** 调色板:点已选中的上块,直到回到空状态 */
   async function resetRing(): Promise<void> {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const state = await evalJs<string>(
         `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
       )
       if (state === 'empty') return
       await evalJs(
-        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+        `document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`
       )
-      await sleep(100)
+      await sleep(80)
     }
   }
 
-  /** 圆环:选中心 + 第二个块,等配对面板出现 */
-  async function selectPair(center: string, target: string): Promise<boolean> {
+  async function clickNode(kind: string): Promise<void> {
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+  }
+
+  /** 先点 top(上面),再点 bottom(下面) */
+  async function selectPair(top: string, bottom: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
-    await sleep(100)
+    await clickNode(top)
+    await clickNode(bottom)
     return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
+  }
+
+  /** 互换上下 */
+  async function swapSides(): Promise<boolean> {
+    await evalJs(`document.querySelector('[data-ring-swap]')?.click()`)
+    await sleep(150)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 2000)
   }
 
   const near = (a: number, b: number, tol = 0.6): boolean => Math.abs(a - b) <= tol
@@ -383,7 +394,7 @@ async function main(): Promise<void> {
       })()`)
   }
 
-  /** 当前配对面板里可见的两根滑块读数 */
+  /** 当前配对面板里可见的滑块读数 */
   const imageReadouts = (): Promise<Record<string, string>> =>
     evalJs<Record<string, string>>(`
       (() => {
@@ -395,27 +406,43 @@ async function main(): Promise<void> {
         return out
       })()`)
 
-  const headingPair = await selectPair('image', 'heading')
+  const headingPair = await selectPair('heading', 'image')
   check(
-    '圆环上选「图片 ↔ 标题」后有两根滑块',
-    headingPair && (await waitFor(`document.querySelectorAll('input[data-image-space]').length === 2`)),
-    '图片 ↔ 标题配对没有出现两根滑块'
+    '标题在上、图片在下:面板只列「图片上方与标题」一根滑块',
+    headingPair && (await waitFor(`document.querySelector('input[data-image-space="beforeHeading"]')`)),
+    '标题 ↔ 图片配对没有出现 beforeHeading 滑块'
   )
   check('拖动「图片上方与标题」→ 2 档', await setSlider('beforeHeading', 2))
+  await sleep(150)
+  const beforeHeadingReadout = await imageReadouts()
+  check(
+    '互换后图片在上:面板只列「图片下方与标题」一根滑块',
+    (await swapSides()) &&
+      (await waitFor(`document.querySelector('input[data-image-space="afterHeading"]')`)),
+    '互换后没有出现 afterHeading 滑块'
+  )
   check('拖动「图片下方与标题」→ 0 档', await setSlider('afterHeading', 0))
   await sleep(200)
-  const headingReadouts = await imageReadouts()
+  const afterHeadingReadout = await imageReadouts()
 
-  const bodyPair = await selectPair('image', 'body')
+  const bodyPair = await selectPair('body', 'image')
   check(
-    '圆环上选「图片 ↔ 正文」后有两根滑块',
-    bodyPair && (await waitFor(`document.querySelectorAll('input[data-image-space]').length === 2`)),
-    '图片 ↔ 正文配对没有出现两根滑块'
+    '正文在上、图片在下:面板只列「图片上方与正文」一根滑块',
+    bodyPair && (await waitFor(`document.querySelector('input[data-image-space="beforeBody"]')`)),
+    '正文 ↔ 图片配对没有出现 beforeBody 滑块'
   )
   check('拖动「图片上方与正文」→ 0.5 档', await setSlider('beforeBody', 0.5))
+  await sleep(150)
+  const beforeBodyReadout = await imageReadouts()
+  check(
+    '互换后图片在上:面板只列「图片下方与正文」一根滑块',
+    (await swapSides()) &&
+      (await waitFor(`document.querySelector('input[data-image-space="afterBody"]')`)),
+    '互换后没有出现 afterBody 滑块'
+  )
   check('拖动「图片下方与正文」→ 2 档', await setSlider('afterBody', 2))
   await sleep(400)
-  const bodyReadouts = await imageReadouts()
+  const afterBodyReadout = await imageReadouts()
 
   const ui = await evalJs<{ vars: Record<string, string>; readouts: Record<string, string> }>(`
     (() => {
@@ -430,7 +457,12 @@ async function main(): Promise<void> {
         readouts: {}
       }
     })()`)
-  ui.readouts = { ...headingReadouts, ...bodyReadouts }
+  ui.readouts = {
+    ...beforeHeadingReadout,
+    ...afterHeadingReadout,
+    ...beforeBodyReadout,
+    ...afterBodyReadout
+  }
   console.log(`     [实测] ${JSON.stringify(ui)}`)
   check(
     '根变量跟着滑块走',

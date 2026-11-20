@@ -102,13 +102,14 @@ const EDIT_INFO = (name: string) => `
   }
   const dir = items.find(el => el.querySelector('.explorer-name')?.textContent === ${JSON.stringify(name)})
   const px = el => el ? parseFloat(getComputedStyle(el).paddingLeft) : null
-  // 树里每层的缩进固定 +14;文件行没有展开箭头,靠 +16 补偿 —— 反过来就能算出行的层级。
+  // 树里每层的缩进固定 +14;文件行没有展开箭头,靠 +19 补偿(箭头 13 + 行内间距 6)
+  // —— 反过来就能算出行的层级。
   // 取「同一层级」的行来比名字列:输入行正好是某棵子树的最后一项时,紧挨着的下一行
   // 是别的顶层项,拿它比会得到一个完全不同的缩进。
   const depthOf = el => {
     const pad = parseFloat(getComputedStyle(el).paddingLeft)
     const isFile = !el.querySelector('.explorer-chevron, .explorer-chevron-space')
-    return Math.round((pad - 8 - (isFile ? 16 : 0)) / 14)
+    return Math.round((pad - 8 - (isFile ? 19 : 0)) / 14)
   }
   const rowDepth = depthOf(row)
   const sameDepth = el =>
@@ -328,7 +329,7 @@ async function main(): Promise<void> {
   console.log(`     prev=${a.prev} next=${a.next} padding=${a.padding}/${a.parentPadding} left=${a.inputLeft}/${a.siblingLeft}`)
   check('紧跟在 ros2-moveit2 目录行之后(不是在列表最前)', a.prev === 'ros2-moveit2' && !a.first, JSON.stringify([a.prev, a.first, a.index]))
   check('位于该目录第一个子项之前', a.next === '管线.md', String(a.next))
-  check('缩进与建好后的文件行一致(父目录 +14 层 +16 无箭头补偿)', a.padding !== null && a.parentPadding !== null && a.padding === a.parentPadding + 30, `${a.padding} vs ${a.parentPadding}`)
+  check('缩进与建好后的文件行一致(父目录 +14 层 +19 无箭头补偿)', a.padding !== null && a.parentPadding !== null && a.padding === a.parentPadding + 33, `${a.padding} vs ${a.parentPadding}`)
   check('输入框与相邻文件名的列对齐', aligned(a), `${a.inputLeft} vs ${a.siblingLeft}`)
   check('输入框里第一个字符与相邻文件名对齐', textAligned(a), `${a.textLeft} vs ${a.siblingLeft}`)
   check(
@@ -384,7 +385,7 @@ async function main(): Promise<void> {
   console.log(`     prev=${c.prev} next=${c.next} padding=${c.padding} left=${c.inputLeft}/${c.siblingLeft}`)
   check('输入行是列表里的第一个 .explorer-item', c.first && c.prev === null, JSON.stringify([c.prev, c.first, c.index]))
   check('下一行是第一个顶层项', c.next === 'ros2', String(c.next))
-  check('缩进为第一层的文件行(8 + 1*14 + 16)', c.padding === 38, String(c.padding))
+  check('缩进为第一层的文件行(8 + 1*14 + 19)', c.padding === 41, String(c.padding))
   check('输入框与相邻文件名的列对齐', aligned(c), `${c.inputLeft} vs ${c.siblingLeft}`)
   check('输入框自动聚焦', c.focused)
   const cPlaceholder = await evalJs<string>(`document.querySelector('.explorer-editing input').placeholder`)
@@ -414,7 +415,7 @@ async function main(): Promise<void> {
   const d = await editInfo('ros2-moveit2')
   console.log(`     prev=${d.prev} next=${d.next} padding=${d.padding}/${d.parentPadding}`)
   check('输入行紧跟 ros2-moveit2 目录行', d.prev === 'ros2-moveit2' && !d.first, JSON.stringify([d.prev, d.first]))
-  check('缩进与建好后的文件行一致', d.padding !== null && d.parentPadding !== null && d.padding === d.parentPadding + 30, `${d.padding} vs ${d.parentPadding}`)
+  check('缩进与建好后的文件行一致', d.padding !== null && d.parentPadding !== null && d.padding === d.parentPadding + 33, `${d.padding} vs ${d.parentPadding}`)
   await escape()
   await sleep(200)
 

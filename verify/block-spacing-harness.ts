@@ -10,7 +10,8 @@
  *   A 默认值 = 1 档:有空行时落在空行的 line-height 上,四个方向各管各的;
  *   B 默认值 = 1 档:紧贴正文时落在相邻正文行的 padding 上,同一行
  *     (代码块后面紧接列表)的上下两侧可以各用各的档位;
- *   C 设置面板七根块间距滑块即时生效、写盘,重载后按磁盘值还原;
+ *   C 调色板选「正文在上 / 块在下」→ 一根滑块,互换后调另一侧;即时生效、
+ *     写盘,重载后按磁盘值还原;
  *   D 文本间距的变化量与档位变化一致(不是只改了变量、画面没动);
  *   E 「恢复默认设置」把行间距、标题与块间距一起带回默认档;
  *   F 点收紧的结构空行不会把它撑成一行(光标落到相邻正文),
@@ -24,6 +25,7 @@
 
 import { app, BrowserWindow, protocol, type NativeImage } from 'electron'
 import { APP_VERSION } from './appVersion'
+import { EDITOR_DEFAULTS } from '../src/shared/editorSettings'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -228,38 +230,66 @@ async function main(): Promise<void> {
     await sleep(1000)
   }
 
-  /** 圆环:清掉当前配对 / 中心,回到七个块的初始状态 */
+  /** 调色板:点已选中的上块,直到回到空状态(点一次清配对/退自身,再点清 top) */
   async function resetRing(): Promise<void> {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const state = await evalJs<string>(
         `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
       )
       if (state === 'empty') return
       await evalJs(
-        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+        `document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`
       )
-      await sleep(100)
+      await sleep(80)
     }
   }
 
-  /** 圆环:选中心 + 第二个块,等配对面板出现 */
-  async function selectPair(center: string, target: string): Promise<boolean> {
+  async function clickNode(kind: string): Promise<void> {
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+  }
+
+  /** 先点 top(上面的内容),再点 bottom(下面的内容) */
+  async function selectPair(top: string, bottom: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
-    await sleep(100)
+    await clickNode(top)
+    await clickNode(bottom)
     return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
   }
 
-  /** 圆环:选中心 + 中心旁的「自身」 */
+  /** 连点同一个块两次 = 同类配对 */
   async function selectSelf(kind: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
-    await sleep(100)
+    await clickNode(kind)
+    await clickNode(kind)
     return waitFor(`document.querySelector('[data-pair-mode="self"]')`, 3000)
+  }
+
+  /** 互换上下,等面板重新出现 */
+  async function swapSides(): Promise<boolean> {
+    await evalJs(`document.querySelector('[data-ring-swap]')?.click()`)
+    await sleep(150)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 2000)
+  }
+
+  /**
+   * 「恢复默认设置」现在也会把正文字号带回默认 14px。
+   * 这个 harness 的像素断言都按 16px 算,重置后先把字号改回来再继续。
+   */
+  async function restoreBodyFont(): Promise<boolean> {
+    const ok = await evalJs<boolean>(`
+      (() => {
+        const row = [...document.querySelectorAll('.settings-row')]
+          .find(r => r.textContent.includes('正文字号'))
+        const input = row?.querySelector('input[type="range"]')
+        if (!input) return false
+        input.value = '${BODY}'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+    if (ok) await sleep(400)
+    return ok
   }
 
   const blankMetrics = (): Promise<BlankMetrics> =>
@@ -415,26 +445,42 @@ async function main(): Promise<void> {
 
   const codeSelected = await selectPair('body', 'code')
   check(
-    '正文 ↔ 代码块:面板只列这两根上下滑块',
-    codeSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 2`)),
-    '代码块配对没有出现两根滑块'
+    '正文在上、代码块在下:面板只列「代码块上方」一根滑块',
+    codeSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 1`)),
+    '正文 ↔ 代码块配对没有出现一根滑块'
   )
-  const codeSliderOk =
-    (await setBlockSlider('codeBefore', 2)) && (await setBlockSlider('codeAfter', 1.5))
-  await sleep(200)
-  const codeReadouts = await readBlockReadouts()
+  const codeBeforeOk = await setBlockSlider('codeBefore', 2)
+  await sleep(150)
+  const codeBeforeReadouts = await readBlockReadouts()
+  const codeSwapped = await swapSides()
+  check(
+    '互换后代码块在上:面板只列「代码块下方」一根滑块',
+    codeSwapped && (await waitFor(`document.querySelector('input[data-block-space="codeAfter"]')`)),
+    '互换后没有出现代码块下方滑块'
+  )
+  const codeAfterOk = await setBlockSlider('codeAfter', 1.5)
+  await sleep(150)
+  const codeAfterReadouts = await readBlockReadouts()
 
   const listSelected = await selectPair('body', 'list')
   check(
-    '正文 ↔ 列表:面板只列这两根上下滑块',
-    listSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 2`)),
-    '列表配对没有出现两根滑块'
+    '正文在上、列表在下:面板只列「列表上方」一根滑块',
+    listSelected && (await waitFor(`document.querySelectorAll('input[data-block-space]').length === 1`)),
+    '正文 ↔ 列表配对没有出现一根滑块'
   )
-  const listSliderOk =
-    (await setBlockSlider('listBefore', 0.5)) && (await setBlockSlider('listAfter', 2.5))
+  const listBeforeOk = await setBlockSlider('listBefore', 0.5)
+  await sleep(150)
+  const listBeforeReadouts = await readBlockReadouts()
+  const listSwapped = await swapSides()
+  check(
+    '互换后列表在上:面板只列「列表下方」一根滑块',
+    listSwapped && (await waitFor(`document.querySelector('input[data-block-space="listAfter"]')`)),
+    '互换后没有出现列表下方滑块'
+  )
+  const listAfterOk = await setBlockSlider('listAfter', 2.5)
   await sleep(400)
-  const listReadouts = await readBlockReadouts()
-  const sliderOk = codeSliderOk && listSliderOk
+  const listAfterReadouts = await readBlockReadouts()
+  const sliderOk = codeBeforeOk && codeAfterOk && listBeforeOk && listAfterOk
 
   const ui = await evalJs<{
     vars: Record<string, string>
@@ -452,7 +498,12 @@ async function main(): Promise<void> {
         readouts: []
       }
     })()`)
-  ui.readouts = [...codeReadouts, ...listReadouts]
+  ui.readouts = [
+    ...codeBeforeReadouts,
+    ...codeAfterReadouts,
+    ...listBeforeReadouts,
+    ...listAfterReadouts
+  ]
   console.log(`     [实测] ${JSON.stringify(ui)}`)
   const expectedVars = { codeBefore: '2', codeAfter: '1.5', listBefore: '0.5', listAfter: '2.5' }
   check(
@@ -573,6 +624,7 @@ async function main(): Promise<void> {
       const root = getComputedStyle(document.documentElement)
       return {
         vars: {
+          fontSize: root.getPropertyValue('--editor-font-size').trim(),
           lineSpace: root.getPropertyValue('--editor-line-space').trim(),
           headingBefore: root.getPropertyValue('--md-heading-space-before').trim(),
           headingAfter: root.getPropertyValue('--md-heading-space-after').trim(),
@@ -592,8 +644,9 @@ async function main(): Promise<void> {
     })()`)
   console.log(`     [实测] ${JSON.stringify(afterReset)}`)
   check(
-    '根变量都回到默认(行间距 / 标题 / 块 1 档,表格 1.7 / 0.7 档)',
-    afterReset.vars.lineSpace === '1' &&
+    '根变量都回到默认(字号 14px,行间距 / 标题 / 块 1 档,表格 1.7 / 0.7 档)',
+    afterReset.vars.fontSize === `${EDITOR_DEFAULTS.editorFontSize}px` &&
+      afterReset.vars.lineSpace === '1' &&
       afterReset.vars.headingBefore === '1' &&
       afterReset.vars.headingAfter === '1' &&
       afterReset.vars.headingBetween === '1' &&
@@ -612,8 +665,9 @@ async function main(): Promise<void> {
 
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(
-    '恢复默认也写回了 settings.json',
-    resetSaved.lineSpace === 1 &&
+    '恢复默认也写回了 settings.json(含字号)',
+    resetSaved.editorFontSize === EDITOR_DEFAULTS.editorFontSize &&
+      resetSaved.lineSpace === 1 &&
       resetSaved.headingSpaceBefore === 1 &&
       resetSaved.headingSpaceAfter === 1 &&
       resetSaved.headingSpaceBetween === 1 &&
@@ -626,6 +680,9 @@ async function main(): Promise<void> {
       resetSaved.tableSpaceAfter === 0.7,
     JSON.stringify(resetSaved)
   )
+
+  // 重置把字号也带回默认 14px;后面的像素断言按 16px 计算,先改回来再继续
+  check('把字号改回 16px,后面的像素断言按 16 计算', await restoreBodyFont())
 
   await evalJs(`document.querySelector('.settings-close')?.click()`)
   await sleep(200)
@@ -982,6 +1039,8 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
   await sleep(700)
+  // 重置会同时把字号带回 14px,先恢复成 16px 再量
+  await restoreBodyFont()
   const bodyReset = await bodyGapMetrics()
   check('恢复默认后「段间距」回到 1 档(16px)', near(bodyReset.bodyH, DEFAULT_GAP), String(bodyReset.bodyH))
 
@@ -1135,6 +1194,8 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
   await sleep(700)
+  // 重置会同时把字号带回 14px,先恢复成 16px 再量
+  await restoreBodyFont()
   const lineReset = await lineSpaceMetrics()
   check(
     '恢复默认后行间距回到 1 档(32px)',

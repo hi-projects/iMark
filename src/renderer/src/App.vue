@@ -235,17 +235,32 @@ onMounted(async () => {
       const pending = await api.takePendingOpenFile()
       // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复。
       // 任务栏中键/Shift+点击明确要的是新窗口,即使勾了也不恢复。
+      const resumePath = settings.vaultPath
+      // 上次的仓库可能已经被删掉:确认不在了就不要再自动打开(否则会进一个空仓库),
+      // 同时忘掉它并退掉主进程启动时占用的仓库,停在选择页。
+      const missingPaths = await api
+        .missingVaults(resumePath ? [resumePath] : [])
+        .catch((): string[] => [])
+      const resumeMissing = !!resumePath && missingPaths.includes(resumePath)
+      if (resumePath && resumeMissing) {
+        await api.saveSettings({ vaultPath: null }).catch(() => undefined)
+        void api.releaseVault(resumePath)
+      }
       const canResume =
-        !launch.newWindow && settings.skipVaultPicker && !!settings.vaultPath && settings.vaultPath.length > 0
+        !launch.newWindow &&
+        settings.skipVaultPicker &&
+        !!resumePath &&
+        resumePath.length > 0 &&
+        !resumeMissing
       if (pending) {
         await openFileFromSystem(pending)
       } else if (canResume) {
-        const ok = await loadVault(settings.vaultPath!, { silent: true })
+        const ok = await loadVault(resumePath!, { silent: true })
         if (ok) {
           // 必须等 EditorPane 挂载完,否则恢复页面拿不到编辑器实例
           await enterEditorAndWait()
           // 关闭前打开了页面就恢复它;没有就什么都不打开
-          await restoreLastDocument(settings.vaultPath!, settings)
+          await restoreLastDocument(resumePath!, settings)
         }
       }
     } catch (err) {

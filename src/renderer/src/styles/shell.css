@@ -187,8 +187,8 @@ body.pane-resizing * {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
+  gap: 6px;
+  height: 30px;
   padding-right: 8px;
   font-size: 13px;
   /* 明确行盒高度:输入框(表单控件)对 line-height: normal 的算法和普通元素不同,

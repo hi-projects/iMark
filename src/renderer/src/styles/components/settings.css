@@ -237,17 +237,24 @@
   padding: 0 20px 24px;
 }
 
+/*
+ * 模块与模块之间画一条横线:基础颜色 / 间距 / 自定义样式 … 各自是一个模块。
+ * 第一个模块紧跟页面标题,不加线。
+ */
 .settings-section + .settings-section {
   margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 
 .settings-section-head {
   padding: 4px 2px 12px;
 }
 
+/* 与插件设置页的模块名(.plugin-group-title)保持同一套样式 */
 .settings-section-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
   color: var(--text-primary);
 }
 
@@ -339,11 +346,24 @@
 /* ---------- 设置项(「编辑器」页:一行一项,开关/滑杆在右) ---------- */
 
 /* 同一组的几项装在一张卡里,行间用细线分隔 */
+/*
+ * 模块卡片:仿 Obsidian —— 标题在卡外,卡内一行行用横线分隔。
+ * 不再画描边,靠比页面略深/略浅的底色把卡片分出来;卡内横线保持 --border。
+ */
 .settings-card {
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 8px;
-  background: var(--bg-app);
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--bg-editor));
   overflow: hidden;
+}
+
+.settings-card-pad {
+  padding: 14px;
+}
+
+/* 同一区里的多张卡之间留出间距(间距页:预览卡 → 正文字号卡) */
+.settings-section .settings-card + .settings-card {
+  margin-top: 12px;
 }
 
 .settings-row {
@@ -561,23 +581,281 @@
   white-space: nowrap;
 }
 
-/* ---------- 间距圆环(外观 → 样式) ---------- */
+/* ---------- 间距设置(外观 → 样式) ---------- */
 
 /*
- * 圆环把「选两个块」放在一张卡里:空状态七个块围一圈,选中后中心块放大、
- * 其余环绕。卡片不能裁切 —— 节点用绝对定位,边缘会伸出卡片外。
+ * 左栏块调色板、右栏间距预览 + 滑块。两栏在设置内容里并排;
+ * 窗口窄时上下堆叠。卡片不能裁切 —— 圆圈用 aspect-ratio 撑成正方。
  */
 .settings-card-ring {
   margin-top: 12px;
-  padding: 14px;
-  overflow: visible;
 }
 
-.spacing-ring-canvas {
-  position: relative;
-  width: min(100%, 460px);
+.spacing-settings {
+  display: grid;
+  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
+  gap: 0 20px;
+  align-items: stretch;
+  padding: 14px;
+}
+
+/* 预览 / 滑块 / 正文字号是同一个模块里的三段,用横线隔开 */
+.spacing-pair-section,
+.spacing-font-section {
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 760px) {
+  .spacing-settings {
+    grid-template-columns: 1fr;
+    gap: 16px 0;
+  }
+
+  .spacing-side {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+
+.spacing-palette {
+  min-width: 0;
+}
+
+.spacing-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.spacing-ring-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
   aspect-ratio: 1 / 1;
-  margin: 0 auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-editor);
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.spacing-ring-node:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+/* 先点的块 = 上面,用强调色 */
+.spacing-ring-node.is-top {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-editor));
+  color: var(--text-primary);
+}
+
+/* 后点的块 = 下面,用警示橙区分 */
+.spacing-ring-node.is-bottom {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-editor));
+  color: var(--text-primary);
+}
+
+.spacing-ring-node.is-self {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.spacing-ring-node:focus-visible,
+.spacing-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.spacing-ring-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 互换 / 清除放在左栏圆圈下方 */
+.spacing-palette-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.spacing-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-editor);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.spacing-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/*
+ * 交互提示只留给读屏:视觉上不再占位置(用户要求去掉这行标注)。
+ * 仍保留 role=status + aria-live,操作结果对辅助技术仍然可感知。
+ */
+.spacing-ring-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 右栏:间距预览 ---------- */
+
+.spacing-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+}
+
+/* 预览本身按编辑器文档的样子排:同样的背景、字体、字号与行距 */
+.spacing-preview-doc {
+  display: flex;
+  flex-direction: column;
+  /* 顶对齐:改间距时只让下面那块移动,上面的内容位置不动 */
+  justify-content: flex-start;
+  min-height: 150px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: var(--editor-body-size, 16px);
+  line-height: calc(1 + var(--editor-line-space, 1));
+  overflow: hidden;
+}
+
+.spacing-preview-placeholder {
+  padding: 22px 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.spacing-doc-sample {
+  flex: none;
+}
+
+/* 与编辑器里的 H2 同一套度量(见 editor.css 的 .cm-md-h2) */
+.spacing-doc-heading {
+  font-size: 1.2727em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.spacing-doc-code {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--bg-codeblock, var(--bg-code));
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+.spacing-doc-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.spacing-doc-quote {
+  padding-left: 10px;
+  border-left: 3px solid var(--quote-bar, var(--accent));
+  color: var(--text-secondary);
+}
+
+.spacing-doc-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 72px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, var(--bg-editor));
+  color: var(--text-tertiary);
+  font-size: 0.8em;
+}
+
+.spacing-doc-table {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8em;
+  line-height: 1.4;
+}
+
+.spacing-doc-table span {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.spacing-doc-table span:nth-child(odd) {
+  border-right: 1px solid var(--border);
+}
+
+.spacing-doc-table span:nth-child(n + 3) {
+  border-bottom: 0;
+}
+
+.spacing-doc-table span:nth-child(-n + 2) {
+  background: var(--bg-app);
+  font-weight: 600;
+}
+
+.spacing-doc-gap {
+  flex: none;
+}
+
+.spacing-doc-ghost {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-size: 0.8em;
+  text-align: center;
+}
+
+/* ---------- 块对面板 ---------- */
+
+.spacing-pair-panel {
+  min-width: 0;
 }
 
 /*
@@ -590,195 +868,13 @@
   white-space: nowrap;
 }
 
-.spacing-ring-node {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  width: 64px;
-  height: 64px;
-  padding: 0;
-  transform: translate(-50%, -50%);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--bg-editor);
-  color: var(--text-secondary);
-  font-family: var(--font-editor);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    left 0.18s ease,
-    top 0.18s ease,
-    width 0.18s ease,
-    height 0.18s ease,
-    border-color 0.16s ease,
-    background 0.16s ease,
-    color 0.16s ease;
-}
-
-.spacing-ring-node:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.spacing-ring-node.is-center {
-  width: 84px;
-  height: 84px;
-  border-color: var(--accent);
-  background: var(--bg-active);
-  color: var(--active-text);
-  font-size: 12px;
-}
-
-.spacing-ring-node.is-pair {
-  border-color: var(--accent);
-  background: var(--bg-selection);
-  color: var(--text-primary);
-}
-
-.spacing-ring-node:focus-visible,
-.spacing-ring-self:focus-visible,
-.spacing-pair-recenter:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.spacing-ring-label {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 中心块右下角的「自身」圆点:同类块之间的间距 */
-.spacing-ring-self {
-  position: absolute;
-  left: calc(50% + 46px);
-  top: calc(50% + 46px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  transform: translate(-50%, -50%);
-  border: 1px dashed var(--border);
-  border-radius: 50%;
-  background: var(--bg-app);
-  color: var(--text-tertiary);
-  font-family: var(--font-editor);
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.spacing-ring-self:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.spacing-ring-self.is-active {
-  border-style: solid;
-  border-color: var(--accent);
-  background: var(--bg-active);
-  color: var(--active-text);
-}
-
-.spacing-ring-hint {
-  min-height: 18px;
-  margin-top: 4px;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  text-align: center;
-}
-
-/* ---------- 块对面板 ---------- */
-
-.spacing-pair-panel {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.spacing-pair-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.spacing-pair-title {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.spacing-pair-sub {
-  margin-top: 3px;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.spacing-pair-recenter {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  margin-top: 2px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: var(--font-editor);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.spacing-pair-recenter:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
+/* 滑块行直接铺在模块卡里,不再套一层分组卡 */
 .spacing-pair-groups {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 12px;
-}
-
-@media (max-width: 760px) {
-  .spacing-pair-groups {
-    grid-template-columns: 1fr;
-  }
+  display: block;
 }
 
 .spacing-pair-group {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-app);
-}
-
-.spacing-pair-group-head {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.spacing-pair-group-title {
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.spacing-pair-group-desc {
-  margin-top: 3px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  line-height: 1.55;
+  overflow: visible;
 }
 
 .spacing-pair-row {
@@ -811,13 +907,6 @@
   font-size: 12px;
 }
 
-.spacing-settings-idle {
-  margin-top: 10px;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  text-align: center;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .spacing-ring-node {
     transition: none;
@@ -825,6 +914,10 @@
 }
 
 /* 恢复默认 */
+
+.settings-section .settings-reset {
+  margin-top: 12px;
+}
 
 .settings-reset {
   display: inline-flex;

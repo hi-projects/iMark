@@ -173,3 +173,21 @@
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
 }
+
+/* 自定义样式清单也放进模块卡:行与行之间用横线分隔 */
+.userstyle-card .userstyle-actions {
+  padding: 0;
+}
+
+.userstyle-card .userstyle-list {
+  margin-top: 12px;
+}
+
+.userstyle-card .userstyle-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.userstyle-card .userstyle-item {
+  border-radius: 0;
+  padding: 8px 2px;
+}

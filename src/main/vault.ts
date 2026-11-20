@@ -8,19 +8,26 @@ const FILE_EXTS = new Set(['md', 'markdown', 'mdown', 'txt'])
 
 /** 递归列出仓库文件树:只含 md 家族文件与文件夹,跳过隐藏/构建目录与符号链接 */
 export async function listVault(root: string): Promise<VaultNode> {
-  async function walk(dir: string, name: string): Promise<VaultNode> {
+  async function walk(dir: string, name: string, isRoot: boolean): Promise<VaultNode> {
     const node: VaultNode = { name, path: dir, type: 'dir', children: [] }
     let entries: fs.Dirent[] = []
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    } catch {
-      /* 目录不可读时按空处理 */
+    } catch (err) {
+      // 根目录读不了 = 仓库已经不在了(被删/被移走/无权限)。这里必须抛错:
+      // 如果按空目录返回,界面会当成一个空仓库打开,用户看到的不是「仓库没了」。
+      if (isRoot) {
+        throw new Error(
+          `无法读取仓库文件夹:${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+      /* 子目录不可读时按空处理,不让一个坏目录拖垮整棵树 */
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.') || IGNORED_DIRS.has(entry.name)) continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
-        node.children!.push(await walk(full, entry.name))
+        node.children!.push(await walk(full, entry.name, false))
       } else if (entry.isFile() && FILE_EXTS.has(path.extname(entry.name).slice(1).toLowerCase())) {
         node.children!.push({ name: entry.name, path: full, type: 'file' })
       }
@@ -34,7 +41,7 @@ export async function listVault(root: string): Promise<VaultNode> {
     )
     return node
   }
-  return walk(root, path.basename(root) || root)
+  return walk(root, path.basename(root) || root, true)
 }
 
 /**

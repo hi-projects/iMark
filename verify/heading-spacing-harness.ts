@@ -227,38 +227,46 @@ async function main(): Promise<void> {
     await sleep(1000)
   }
 
-  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  /** 调色板:点已选中的上块,直到回到空状态 */
   async function resetRing(): Promise<void> {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const state = await evalJs<string>(
         `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
       )
       if (state === 'empty') return
       await evalJs(
-        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+        `document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`
       )
-      await sleep(100)
+      await sleep(80)
     }
   }
 
-  /** 圆环:选中心 + 第二个块,等配对面板出现 */
-  async function selectPair(center: string, target: string): Promise<boolean> {
+  async function clickNode(kind: string): Promise<void> {
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+  }
+
+  /** 先点 top(上面),再点 bottom(下面) */
+  async function selectPair(top: string, bottom: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
-    await sleep(100)
+    await clickNode(top)
+    await clickNode(bottom)
     return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
   }
 
-  /** 圆环:选中心 + 中心旁的「自身」 */
+  /** 连点同一个块两次 = 同类配对 */
   async function selectSelf(kind: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
-    await sleep(100)
+    await clickNode(kind)
+    await clickNode(kind)
     return waitFor(`document.querySelector('[data-pair-mode="self"]')`, 3000)
+  }
+
+  /** 互换上下 */
+  async function swapSides(): Promise<boolean> {
+    await evalJs(`document.querySelector('[data-ring-swap]')?.click()`)
+    await sleep(150)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 2000)
   }
 
   /**
@@ -545,10 +553,10 @@ async function main(): Promise<void> {
   /*
    * 【D】设置 → 外观 → 样式圆环 → 标题间距
    *
-   * 三根滑块分在两个配对里:正文 ↔ 标题给「标题上方 / 下方」,标题自身给
-   * 「标题之间」;分别落到 --md-heading-space-*。拖动即时生效、松手写盘;
-   * 重新加载后按磁盘值还原。把三个值设成互不相同,才能看出哪根滑块管哪一侧
-   * (2 / 1.5 / 0.5 档,正文字号 16px → 32 / 24 / 8px)。
+   * 三根滑块分在两个配对里:「正文在上/标题在下」给标题上方,互换后给标题
+   * 下方;连点标题两次进自身,给「标题之间」。分别落到 --md-heading-space-*。
+   * 拖动即时生效、松手写盘;重新加载后按磁盘值还原。把三个值设成互不相同,
+   * 才能看出哪根滑块管哪一侧(2 / 1.5 / 0.5 档,正文字号 16px → 32 / 24 / 8px)。
    */
   console.log('\n【D】设置 → 外观 → 样式圆环:标题三档即时生效、落盘、重载后保留')
   await loadDoc(LOOSE)
@@ -585,14 +593,23 @@ async function main(): Promise<void> {
 
   const bodyPair = await selectPair('body', 'heading')
   check(
-    '圆环上选「正文 ↔ 标题」后有两根滑块(标题上方 / 下方)',
-    bodyPair && (await waitFor(`document.querySelectorAll('input[data-heading-space]').length === 2`)),
-    '正文 ↔ 标题配对没有出现两根滑块'
+    '正文在上、标题在下:面板只列「标题上方」一根滑块',
+    bodyPair && (await waitFor(`document.querySelector('input[data-heading-space="before"]')`)),
+    '正文 ↔ 标题配对没有出现标题上方滑块'
   )
-  const pairSliderOk =
-    (await setHeadingSlider('before', 2)) && (await setHeadingSlider('after', 1.5))
+  const beforeOk = await setHeadingSlider('before', 2)
+  await sleep(150)
+  const beforeReadout = await headingReadouts()
+  check(
+    '互换后标题在上:面板只列「标题下方」一根滑块',
+    (await swapSides()) &&
+      (await waitFor(`document.querySelector('input[data-heading-space="after"]')`)),
+    '互换后没有出现标题下方滑块'
+  )
+  const afterOk = await setHeadingSlider('after', 1.5)
   await sleep(300)
-  const pairReadouts = await headingReadouts()
+  const afterReadout = await headingReadouts()
+  const pairSliderOk = beforeOk && afterOk
 
   const selfSelected = await selectSelf('heading')
   check(
@@ -625,7 +642,7 @@ async function main(): Promise<void> {
         padBottom: cs ? parseFloat(cs.paddingBottom) : -1
       }
     })()`)
-  ui.readouts = [...pairReadouts, ...selfReadouts]
+  ui.readouts = [...beforeReadout, ...afterReadout, ...selfReadouts]
   console.log(`     [实测] ${JSON.stringify(ui)}`)
   check(
     '三根滑块拖动后根变量与读数同步',

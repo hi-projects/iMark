@@ -9,8 +9,9 @@
  * 后半段验证「项目级管理」本身：左侧项目行的 Git 设置能读回刚写的远端、
  * 改地址/分支时不清掉已保存的令牌、移除配置后设置页与列表标记一起消失。
  *
- * 真 git、真克隆 —— 远端是临时目录里的裸仓库。只断言磁盘/设置里的结果，
- * 不看界面自说自话。
+ * 真 git、真克隆 —— 远端是临时目录里的裸仓库，用 file:// 地址克隆（本地路径
+ * 克隆不走 upload-pack，git 不会打印进度）。除了磁盘/设置里的结果，还拦下
+ * 主进程推给渲染层的克隆进度，确认进度真的在走。
  *
  * 跑法（先 npm run build；Linux 无头用 xvfb-run）：
  *   IMARK_VERIFY_HIDDEN=1 xvfb-run -a node verify/run.mjs vault-picker-git
@@ -21,6 +22,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { APP_VERSION } from './appVersion'
 import { registerIpc } from '../src/main/ipc'
@@ -36,7 +38,7 @@ import {
 } from '../src/main/projectGit'
 import { createMainWindow } from '../src/main/window'
 import { IPC } from '../src/shared/ipc-channels'
-import type { ProjectGitRemoteConfig, VaultGitRemote } from '../src/shared/types'
+import type { CloneProgress, ProjectGitRemoteConfig, VaultGitRemote } from '../src/shared/types'
 
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
@@ -102,7 +104,9 @@ async function main(): Promise<void> {
   const remote = join(ud, 'source-remote.git')
   const cloneParent = join(ud, 'clones')
   const cloned = join(cloneParent, 'cloned-notes')
-  const cloneUrl = remote
+  // 用 file:// 而不是裸路径:本地路径克隆不走 upload-pack,git 不输出进度;
+  // file:// 走真正的传输路径,才能验收「克隆时有进度」。
+  const cloneUrl = pathToFileURL(remote).href
   const notePath = join(source, '笔记.md')
   const noteBody = '# 第一篇\n\n从远端克隆下来的笔记。\n'
 
@@ -227,6 +231,16 @@ async function main(): Promise<void> {
     return (await readProjectGitRemotes([path]))[path] ?? null
   }
 
+  // 主进程把克隆进度推给渲染层;拦下这些消息,断言「克隆时确实有进度」
+  const cloneProgressEvents: CloneProgress[] = []
+  const rawSend = win.webContents.send.bind(win.webContents)
+  win.webContents.send = ((channel: string, ...args: unknown[]) => {
+    if (channel === IPC.VaultCloneProgress) {
+      cloneProgressEvents.push(args[0] as CloneProgress)
+    }
+    return rawSend(channel, ...args)
+  }) as typeof win.webContents.send
+
   // ---------- A. 左右结构 ----------
 
   console.log('\n【A】选择页是左右结构，右侧有三个动作图标')
@@ -286,10 +300,24 @@ async function main(): Promise<void> {
     `getComputedStyle(document.querySelector('[data-field="clone-auth"]')).appearance`
   )
   check('认证方式下拉去掉原生外观（文字与 placeholder 对齐）', authAppearance === 'none', authAppearance)
-  check('点击「克隆并打开」', await click('[data-action="clone-submit"]'))
+  check('点击「克隆」', await click('[data-action="clone-submit"]'))
 
   const enteredEditor = await waitFor(`document.querySelector('.app-shell')`, 30_000)
   check('克隆成功后进入编辑器', enteredEditor)
+
+  const progressPhases = new Set(cloneProgressEvents.map(e => e.phase))
+  check('克隆过程中收到进度事件', cloneProgressEvents.length > 0, String(cloneProgressEvents.length))
+  check(
+    '进度覆盖对象统计与接收阶段',
+    progressPhases.has('统计对象') && progressPhases.has('接收对象'),
+    [...progressPhases].join('/')
+  )
+  check('进度最终到 100%', cloneProgressEvents.some(e => e.percent === 100), JSON.stringify(cloneProgressEvents.slice(-2)))
+  check(
+    '进度带对象计数',
+    cloneProgressEvents.some(e => /\d+\/\d+/.test(e.detail)),
+    JSON.stringify(cloneProgressEvents.slice(0, 3))
+  )
   check('克隆出来的笔记在磁盘上', existsSync(join(cloned, '笔记.md')))
   check(
     '笔记内容与远端一致',

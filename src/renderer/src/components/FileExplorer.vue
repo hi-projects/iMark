@@ -150,10 +150,11 @@ const newEditDepth = computed<number>(() => {
 
 /**
  * 新建输入行的左内边距:与建好后那一行完全一致 ——
- * 文件行没有展开箭头,靠 +16 把图标对齐到目录图标列;目录行则要留出箭头位置。
+ * 文件行没有展开箭头,靠 +19 把名字对齐到目录的名字列(箭头 13 + 行内间距 6);
+ * 目录行则要留出箭头位置。
  */
 const newEditPadding = computed<number>(() => {
-  return 8 + newEditDepth.value * 14 + (editing.mode === 'new-file' ? 16 : 0)
+  return 8 + newEditDepth.value * 14 + (editing.mode === 'new-file' ? 19 : 0)
 })
 
 function startEdit(mode: 'new-file' | 'new-dir' | 'rename', parentPath: string, target: VaultNode | null, initial = ''): void {
@@ -483,12 +484,12 @@ function guideLeft(level: number): string {
         <template v-for="(row, i) in rows" :key="row.node.path">
           <!--
             重命名输入行:缩进、引导线、图标都和这一行正常显示时一致
-            (文件行没有展开箭头,靠 +16 把图标对齐到目录图标列),输入框才落在名字列上。
+            (文件行没有展开箭头,靠 +19 把名字对齐到目录的名字列),输入框才落在名字列上。
           -->
           <div
             v-if="editing.mode === 'rename' && editing.target?.path === row.node.path"
             class="explorer-item explorer-editing"
-            :style="{ paddingLeft: 8 + row.depth * 14 + (row.node.type === 'file' ? 16 : 0) + 'px' }"
+            :style="{ paddingLeft: 8 + row.depth * 14 + (row.node.type === 'file' ? 19 : 0) + 'px' }"
           >
             <span
               v-for="level in row.depth - 1"
@@ -570,7 +571,7 @@ function guideLeft(level: number): string {
               'explorer-dragging': draggingNode?.path === row.node.path,
               'explorer-drop-target': dropPath === row.node.path
             }"
-            :style="{ paddingLeft: 8 + row.depth * 14 + 16 + 'px' }"
+            :style="{ paddingLeft: 8 + row.depth * 14 + 19 + 'px' }"
             :title="row.node.path"
             draggable="true"
             @click="onFileClick(row.node)"

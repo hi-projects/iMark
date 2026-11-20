@@ -8,6 +8,9 @@
  * 还要覆盖「不只是启动那一次」:打开仓库进编辑器 → 删掉另一个仓库 → 菜单
  * 「打开仓库」回到选择页,这一眼看到的列表同样应该是清理过的。
  *
+ * 以及勾选「启动时直接打开上次仓库」后,上次的仓库在磁盘上被删掉时不能进空仓库,
+ * 而是忘掉它、停在选择页。
+ *
  * 窗口全程不可见(见下面的 show 替换与 run.mjs 的 IMARK_VERIFY_HIDDEN)。
  *
  * 跑法(仓库根目录,先 npm run build,改了 preload/渲染层时必须重新 build):
@@ -212,6 +215,37 @@ async function main(): Promise<void> {
     )
     check('设置同步为清理后的列表', await waitVaults([alive]))
     await checkPersisted([alive], '运行中清理的结果同样落盘')
+  }
+
+  console.log('\n【C】勾选「打开上次仓库」但仓库已被删:停在选择页')
+  {
+    // 最后一个存在的仓库也删掉,让「上次仓库」指向一个不存在的路径
+    await rm(alive, { recursive: true, force: true })
+    await saveSettings({ skipVaultPicker: true, vaultPath: alive, vaults: [alive] })
+    for (const w of BrowserWindow.getAllWindows()) w.destroy()
+
+    const win2 = createMainWindow(await loadSettings())
+    win2.webContents.setBackgroundThrottling(false)
+    await new Promise<void>(resolve => win2.webContents.once('did-finish-load', () => resolve()))
+
+    check('没有自动打开已删除的仓库', await waitFor(win2, `document.querySelector('.vault-picker')`))
+    check(
+      '没有进入编辑器(不会显示一个空仓库)',
+      !(await evalJs<boolean>(win2, `Boolean(document.querySelector('.app-shell'))`))
+    )
+    check(
+      '「上次仓库」已从设置里清掉',
+      await (async () => {
+        const until = Date.now() + 5000
+        while (Date.now() < until) {
+          if (!getSettingsSync()?.vaultPath) return true
+          await sleep(50)
+        }
+        return false
+      })(),
+      String(getSettingsSync()?.vaultPath)
+    )
+    check('列表里也不再有它', await waitRows(win2, []), `实际 ${JSON.stringify(await rows(win2))}`)
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)

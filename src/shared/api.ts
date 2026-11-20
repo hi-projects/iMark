@@ -13,6 +13,7 @@ import type {
   PublishResult
 } from './market'
 import type {
+  CloneProgress,
   CloneVaultRequest,
   CloneVaultResult,
   DefaultEditorStatus,
@@ -137,6 +138,11 @@ export interface WindowApi {
    * 「远程同步」扩展的项目配置。失败时抛中文错误。
    */
   cloneVault(o: CloneVaultRequest): Promise<CloneVaultResult>
+  /**
+   * 订阅克隆进度(阶段 + 百分比 + 计数/速率)。
+   * 只在本窗口发起的克隆期间推送;返回取消订阅的函数。
+   */
+  onCloneProgress(cb: (p: CloneProgress) => void): () => void
   /** 批量读这些仓库的 Git 远端(项目级管理);没有配置的项为 null */
   vaultGitRemotes(paths: string[]): Promise<Record<string, VaultGitRemote | null>>
   /** 写一个仓库的 Git 远端;传 null 清除(只清配置,不删本地仓库) */

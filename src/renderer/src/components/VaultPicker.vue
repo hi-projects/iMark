@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   FolderGit2,
   FolderOpen,
@@ -26,7 +26,7 @@ import {
 } from '../services/vaultService'
 import { notifyError, pushNotice } from '../services/notice'
 import { api } from '../services/api'
-import type { VaultGitRemote } from '@shared/types'
+import type { CloneProgress, VaultGitRemote } from '@shared/types'
 import iconSvg from '../../../../build/icon.svg?raw'
 
 type Panel = 'actions' | 'clone' | 'create' | 'git'
@@ -101,8 +101,15 @@ const clone = reactive({
 /** 用户手动改过文件夹名后,不再跟着地址自动变 */
 const nameEdited = ref(false)
 const cloning = ref(false)
+const cloneProgress = ref<CloneProgress | null>(null)
 const cloneError = ref('')
 const cloneUrlInput = ref<HTMLInputElement | null>(null)
+
+// 进度事件只在本窗口发起的克隆期间有用;离开选择页就退订
+const offCloneProgress = api.onCloneProgress(progress => {
+  if (cloning.value) cloneProgress.value = progress
+})
+onUnmounted(offCloneProgress)
 
 /** `https://host/组/笔记.git` → `笔记`(scp 风格的 `git@host:组/笔记.git` 也认) */
 function folderNameFromUrl(url: string): string {
@@ -155,6 +162,7 @@ async function confirmClone(): Promise<void> {
     clone.parentDir = parent
   }
   cloning.value = true
+  cloneProgress.value = { phase: '连接远端', percent: null, detail: '' }
   try {
     const ok = await cloneVaultAndOpen({
       url,
@@ -173,6 +181,7 @@ async function confirmClone(): Promise<void> {
     notifyError('克隆仓库', err)
   } finally {
     cloning.value = false
+    cloneProgress.value = null
   }
 }
 
@@ -501,6 +510,27 @@ async function onSkipChange(): Promise<void> {
             将在 <code>{{ clone.parentDir || '克隆到' }}</code> 下创建
             <code>{{ clone.name.trim() || '仓库名称' }}</code>文件夹作为仓库
           </p>
+
+          <div v-if="cloning" class="vault-clone-progress">
+            <div class="vault-clone-progress-head">
+              <span>{{ cloneProgress?.phase ?? '连接远端' }}</span>
+              <span v-if="cloneProgress?.percent != null" class="vault-clone-progress-percent">
+                {{ cloneProgress.percent }}%
+              </span>
+            </div>
+            <div class="vault-clone-progress-track">
+              <div
+                class="vault-clone-progress-bar"
+                :class="{ 'vault-clone-progress-indeterminate': cloneProgress?.percent == null }"
+                :style="
+                  cloneProgress?.percent != null ? { width: `${cloneProgress.percent}%` } : undefined
+                "
+              />
+            </div>
+            <p v-if="cloneProgress?.detail" class="vault-clone-progress-detail">
+              {{ cloneProgress.detail }}
+            </p>
+          </div>
 
           <p v-if="cloneError" class="vault-picker-error">{{ cloneError }}</p>
 

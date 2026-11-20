@@ -520,7 +520,7 @@ onBeforeUnmount(() => {
           <div class="settings-section">
             <div class="settings-section-head">
               <div class="settings-section-title">自动保存</div>
-              <div class="settings-section-desc">自动保存文档改动。注意：该功能只对已保存文件生效，未落盘的新文档不生效，以免弹出保存弹窗</div>
+              <div class="settings-section-desc">自动保存文档</div>
             </div>
 
             <div class="settings-card">
@@ -646,38 +646,40 @@ onBeforeUnmount(() => {
               <div class="settings-section-title">基础颜色</div>
               <div class="settings-section-desc">设置界面主题。选择后立即生效，并保存到本地设置。</div>
             </div>
-            <div class="settings-themes">
-              <button
-                v-for="t in THEME_ORDER"
-                :key="t"
-                class="settings-theme"
-                :class="{ 'settings-theme-active': appStore.theme === t }"
-                :title="`${THEME_LABELS[t]}主题`"
-                @click="setTheme(t)"
-              >
-                <span class="settings-theme-swatch" :data-preview="t">
-                  <span class="settings-theme-swatch-bar"></span>
-                  <span class="settings-theme-swatch-line"></span>
-                  <span class="settings-theme-swatch-line settings-theme-swatch-line-short"></span>
-                </span>
-                <span class="settings-theme-label">{{ THEME_LABELS[t] }}</span>
-              </button>
+            <div class="settings-card settings-card-pad">
+              <div class="settings-themes">
+                <button
+                  v-for="t in THEME_ORDER"
+                  :key="t"
+                  class="settings-theme"
+                  :class="{ 'settings-theme-active': appStore.theme === t }"
+                  :title="`${THEME_LABELS[t]}主题`"
+                  @click="setTheme(t)"
+                >
+                  <span class="settings-theme-swatch" :data-preview="t">
+                    <span class="settings-theme-swatch-bar"></span>
+                    <span class="settings-theme-swatch-line"></span>
+                    <span class="settings-theme-swatch-line settings-theme-swatch-line-short"></span>
+                  </span>
+                  <span class="settings-theme-label">{{ THEME_LABELS[t] }}</span>
+                </button>
+              </div>
             </div>
           </div>
 
           <div class="settings-section">
             <div class="settings-section-head">
-              <div class="settings-section-title">样式</div>
+              <div class="settings-section-title">间距</div>
               <div class="settings-section-desc">
-                先用圆环选两个块：点一个块把它放到中心，再点另一个块，调它们之间的距离。中心块旁的「自身」调同类块之间（正文自身里还有行间距）。全部按正文字号计档，1 档 = 1 个正文字号；改正文字号时同比例缩放，拖动后立即生效。
+                调整实时渲染结果中各类文字的间距
               </div>
             </div>
 
-            <div class="settings-card">
+            <SpacingSettings>
               <div class="settings-row">
                 <div class="settings-row-info">
                   <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">滑块就是正文字号；标题、代码块按比例缩放。只影响编辑器，不影响导出。</div>
+                  <div class="settings-row-desc">其他各类文字根据正文字号按比例缩放。只影响编辑器，不影响导出。</div>
                 </div>
                 <div class="settings-control">
                   <input
@@ -693,14 +695,8 @@ onBeforeUnmount(() => {
                   <span class="settings-readout">{{ bodyFontLabel }}</span>
                 </div>
               </div>
-            </div>
+            </SpacingSettings>
 
-            <div class="settings-card settings-card-ring">
-              <SpacingSettings />
-            </div>
-          </div>
-
-          <div class="settings-section">
             <button class="settings-reset" @click="resetSpacingSettings()">
               <RotateCcw :size="13" />
               <span>恢复默认设置</span>

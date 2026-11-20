@@ -291,15 +291,17 @@ export async function setImageSpace(side: ImageSpaceSide, value: number): Promis
 }
 
 /**
- * 「外观 → 样式」的恢复默认:重置行间距、标题间距、块间距(含表格)与图片间距
- * 这十七项,不动主题、自定义样式与「编辑器」页的偏好。
+ * 「外观 → 间距」的恢复默认:重置正文字号、行间距、标题间距、块间距(含表格)
+ * 与图片间距这十八项,不动主题、自定义样式与「编辑器」页的偏好。
  */
 export async function resetSpacingSettings(): Promise<void> {
+  applyFontSize(EDITOR_DEFAULTS.editorFontSize)
   applyLineSpace(EDITOR_DEFAULTS.lineSpace)
   applyHeadingSpaces({ ...HEADING_SPACE_DEFAULTS })
   applyBlockSpaces({ ...BLOCK_SPACE_DEFAULTS })
   applyImageSpaces({ ...IMAGE_SPACE_DEFAULTS })
   await api.saveSettings({
+    editorFontSize: EDITOR_DEFAULTS.editorFontSize,
     lineSpace: EDITOR_DEFAULTS.lineSpace,
     headingSpaceBefore: HEADING_SPACE_DEFAULTS.before,
     headingSpaceAfter: HEADING_SPACE_DEFAULTS.after,

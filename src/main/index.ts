@@ -3,7 +3,8 @@ import { createMainWindow, setMainWindowClosedHandler } from './window'
 import { registerIpc } from './ipc'
 import { registerImarkProtocol } from './protocol'
 import { buildAppMenu, setExtensionCommands, reservedAccelerators } from './menu'
-import { loadSettings } from './settings'
+import { loadSettings, saveSettings } from './settings'
+import { missingVaults } from './vault'
 import { initExtensions, getExtensionService, shutdownExtensions } from './extensions/service'
 import { registerExtensionWebviewProtocol } from './extensions/webviewProtocol'
 import { EXTENSION_WEBVIEW_SCHEME } from '@shared/extensionProtocol'
@@ -164,6 +165,19 @@ if (!prepareDataDirs()) {
     await ensureUserStylesDir()
     const settings = await loadSettings()
     const pendingFile = fileFromArgv(process.argv, app.isPackaged)
+
+    // 「上次仓库」可能已经被删掉。必须在建窗之前确认:窗口尺寸是按「要不要恢复
+    // 仓库」定的,晚一步(等渲染层发现)就先按编辑器最大化、再缩回选择页,肉眼
+    // 是一次全屏闪缩。确认不在了就当没有上次仓库,并把它从设置里清掉。
+    if (!pendingFile && settings.skipVaultPicker && settings.vaultPath) {
+      const gone = await missingVaults([settings.vaultPath])
+      if (gone.length > 0) {
+        settings.vaultPath = null
+        await saveSettings({ vaultPath: null }).catch(err => {
+          console.warn('[iMark] 清理失效的上次仓库路径失败:', err)
+        })
+      }
+    }
 
     // 启动时真正会打开哪个仓库:带文件时以**文件所属仓库**为准(渲染层也优先处理
     // 文件,不会恢复上次仓库);没带文件时才看「直接打开上次仓库」。

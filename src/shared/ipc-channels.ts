@@ -97,6 +97,8 @@ export const IPC = {
    * 克隆成功后由主进程把远端写进「远程同步」扩展的按仓库配置,不必再手填一遍。
    */
   VaultClone: 'vault:clone',
+  /** 主→渲染:克隆进度(阶段 + 百分比),只在发起克隆的那个窗口推送 */
+  VaultCloneProgress: 'vault:clone-progress',
   /** 渲染→主:批量读这些仓库的 Git 远端(项目级管理用),缺失的项为 null */
   VaultGitList: 'vault:git-list',
   /** 渲染→主:写/清除某个仓库的 Git 远端;null 表示清除 */

@@ -1,22 +1,37 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Code2, Heading1, Image as ImageIcon, List, Quote, Table2, Type } from 'lucide-vue-next'
+import {
+  ArrowUpDown,
+  Code2,
+  Heading1,
+  Image as ImageIcon,
+  List,
+  Quote,
+  Table2,
+  Type,
+  X
+} from 'lucide-vue-next'
 import { BLOCK_KINDS, BLOCK_LABELS, type BlockKind } from '../services/spacingPairs'
 
 /**
- * 间距圆环:空状态七个块围一圈;点一个块 → 它到中心,其余环绕;再点一个块 →
- * 两个块配对。圆环只负责"选谁",具体滑块在 SpacingPairPanel 里。
+ * 左栏的块调色板:七个圆圈排成网格。
+ *
+ *   · 第一次点 = 上面那个块;
+ *   · 再点另一个块 = 下面那个块;
+ *   · 连点同一个块两次 = 调同类块之间的间距。
+ *
+ * 选中状态交给父组件,这里只画颜色和转发点击(上 / 下用两种颜色区分)。
  */
 const props = defineProps<{
-  center: BlockKind | null
-  target: BlockKind | null
-  mode: 'none' | 'self' | 'cross'
+  top: BlockKind | null
+  bottom: BlockKind | null
+  self: boolean
 }>()
 
 const emit = defineEmits<{
   pick: [kind: BlockKind]
-  self: []
-  recenter: [kind: BlockKind]
+  swap: []
+  clear: []
 }>()
 
 const ICONS = {
@@ -29,110 +44,75 @@ const ICONS = {
   table: Table2
 } as const
 
-/** 外圈节点离画布中心的距离(画布宽度的百分比) */
-const NODE_RADIUS = 38
-
-interface NodePos {
-  x: number
-  y: number
+function roleOf(kind: BlockKind): 'top' | 'bottom' | 'none' {
+  if (props.top === kind) return 'top'
+  if (props.bottom === kind) return 'bottom'
+  return 'none'
 }
 
-const positions = computed<Map<BlockKind, NodePos>>(() => {
-  const map = new Map<BlockKind, NodePos>()
-  const ring = props.center ? BLOCK_KINDS.filter(k => k !== props.center) : BLOCK_KINDS
-  if (props.center) map.set(props.center, { x: 50, y: 50 })
-  ring.forEach((kind, i) => {
-    // 从正上方开始顺时针排,七个块时也不会有一个落在正下方被提示文字挡住
-    const angle = ((-90 + (360 / ring.length) * i) * Math.PI) / 180
-    map.set(kind, {
-      x: 50 + NODE_RADIUS * Math.cos(angle),
-      y: 50 + NODE_RADIUS * Math.sin(angle)
-    })
-  })
-  return map
-})
-
 const ringState = computed(() => {
-  if (!props.center) return 'empty'
-  if (props.mode === 'self') return 'self'
-  if (props.mode === 'cross' && props.target) return 'cross'
-  return 'centered'
+  if (!props.top) return 'empty'
+  if (props.self) return 'self'
+  if (props.bottom) return 'pair'
+  return 'top'
 })
 
 const hint = computed(() => {
-  if (!props.center) return '点一个块，把它放到中心'
-  if (props.mode === 'self') {
-    return `正在调「${BLOCK_LABELS[props.center]}」与自身；再点一次「自身」退出`
+  if (!props.top) return '先点一个块，作为上面的内容'
+  if (props.self) return `正在调「${BLOCK_LABELS[props.top]}」与自身；再点一次取消`
+  if (props.bottom) {
+    return `上：「${BLOCK_LABELS[props.top]}」 下：「${BLOCK_LABELS[props.bottom]}」；点已选中的块取消`
   }
-  if (props.mode === 'cross' && props.target) {
-    return `已选「${BLOCK_LABELS[props.center]}」与「${BLOCK_LABELS[props.target]}」；点中心可清除配对`
-  }
-  return `再点一个块，调它和「${BLOCK_LABELS[props.center]}」之间的距离`
+  return `再点一个块作为下面的内容；连点「${BLOCK_LABELS[props.top]}」调同类间距`
 })
-
-function isCenter(kind: BlockKind): boolean {
-  return props.center === kind
-}
-
-function isPair(kind: BlockKind): boolean {
-  return props.mode === 'cross' && props.target === kind
-}
-
-function styleFor(kind: BlockKind): Record<string, string> {
-  const pos = positions.value.get(kind)
-  return pos ? { left: `${pos.x}%`, top: `${pos.y}%` } : {}
-}
-
-/**
- * 单击立即选中;双击留给"换中心"。
- *
- * 第二次 click 的 detail 是 2,先吞掉,免得它把刚选中的配对又清掉 ——
- * 这样单击不用等双击判定,手感不拖。
- */
-function onPick(kind: BlockKind, e: MouseEvent): void {
-  if (e.detail > 1) return
-  emit('pick', kind)
-}
-
-function onDblClick(kind: BlockKind): void {
-  if (!isCenter(kind)) emit('recenter', kind)
-}
 </script>
 
 <template>
-  <div class="spacing-ring" data-spacing-ring :data-ring-state="ringState">
-    <div class="spacing-ring-canvas">
+  <div class="spacing-palette" data-spacing-ring :data-ring-state="ringState">
+    <div class="spacing-palette-grid">
       <button
         v-for="kind in BLOCK_KINDS"
         :key="kind"
         class="spacing-ring-node"
-        :class="{ 'is-center': isCenter(kind), 'is-pair': isPair(kind) }"
-        :style="styleFor(kind)"
+        :class="{
+          'is-top': roleOf(kind) === 'top',
+          'is-bottom': roleOf(kind) === 'bottom',
+          'is-self': self && top === kind
+        }"
         :data-block-node="kind"
-        :data-block-role="isCenter(kind) ? 'center' : 'ring'"
-        :aria-pressed="isCenter(kind) || isPair(kind)"
+        :data-block-role="roleOf(kind)"
+        :aria-pressed="roleOf(kind) !== 'none'"
         :title="BLOCK_LABELS[kind]"
         type="button"
-        @click="onPick(kind, $event)"
-        @dblclick="onDblClick(kind)"
+        @click="emit('pick', kind)"
       >
-        <component :is="ICONS[kind]" :size="isCenter(kind) ? 22 : 18" />
+        <component :is="ICONS[kind]" :size="18" />
         <span class="spacing-ring-label">{{ BLOCK_LABELS[kind] }}</span>
       </button>
+    </div>
 
+    <div v-if="top" class="spacing-palette-actions">
       <button
-        v-if="center"
-        class="spacing-ring-self"
-        :class="{ 'is-active': mode === 'self' }"
-        :data-block-self="center"
-        :aria-pressed="mode === 'self'"
+        v-if="bottom && !self"
+        class="spacing-action"
+        data-ring-swap
         type="button"
-        title="调同类块之间的间距"
-        @click="emit('self')"
+        @click="emit('swap')"
       >
-        自身
+        <ArrowUpDown :size="13" />
+        <span>互换上下</span>
+      </button>
+      <button
+        class="spacing-action"
+        data-ring-clear
+        type="button"
+        @click="emit('clear')"
+      >
+        <X :size="13" />
+        <span>清除</span>
       </button>
     </div>
+
     <div class="spacing-ring-hint" role="status" aria-live="polite">{{ hint }}</div>
   </div>
 </template>

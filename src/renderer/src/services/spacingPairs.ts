@@ -96,13 +96,13 @@ export interface SpaceGroup {
 }
 
 export interface PairView {
-  /** 按 BLOCK_KINDS 顺序拼的稳定 key,与中心是谁无关 */
+  /** 按 BLOCK_KINDS 顺序拼的稳定 key,与先后顺序无关(预览里用 top / bottom 表示方向) */
   key: string
-  center: BlockKind
-  target: BlockKind
+  /** 上面那个块(先点的) */
+  top: BlockKind
+  /** 下面那个块(后点的);同类配对时与 top 相同 */
+  bottom: BlockKind
   mode: 'self' | 'cross'
-  title: string
-  subtitle: string
   groups: SpaceGroup[]
   /** 没有可调项时的说明(例如图片自身) */
   empty?: string
@@ -246,9 +246,10 @@ function bodyGroups(other: BlockKind): SpaceGroup[] {
     ]
   }
   const sides = BLOCK_SIDES[other as BlockishKind]
+  // 另一块在上 → 这条缝在它下面(after);正文在上 → 缝在块上面(before)。
   return [
-    { direction: `${other}-above`, title: aboveTitle(other), rows: [blockRow(sides.before)] },
-    { direction: 'body-above', title: '正文在上', rows: [blockRow(sides.after)] }
+    { direction: `${other}-above`, title: aboveTitle(other), rows: [blockRow(sides.after)] },
+    { direction: 'body-above', title: '正文在上', rows: [blockRow(sides.before)] }
   ]
 }
 
@@ -358,11 +359,9 @@ function crossGroups(center: BlockKind, target: BlockKind): SpaceGroup[] {
 function selfView(kind: BlockKind): PairView {
   const base = {
     key: `${kind}-${kind}`,
-    center: kind,
-    target: kind,
-    mode: 'self' as const,
-    title: `${BLOCK_LABELS[kind]} · 自身`,
-    subtitle: '同一个块类型之间的间距。'
+    top: kind,
+    bottom: kind,
+    mode: 'self' as const
   }
   if (kind === 'body') {
     return {
@@ -418,28 +417,30 @@ function selfView(kind: BlockKind): PairView {
 }
 
 /**
- * 圆环 + 配对面板要显示的内容。
+ * 左侧块 + 右侧预览 / 滑块要显示的内容。
  *
- * `mode === 'self'`(或 target 与 center 相同)走同类配对;没有选第二个块时返回
- * null —— 圆环只显示中心,面板不出现。
+ * 配对是有方向的:先点的 `top` 在上面,后点的 `bottom` 在下面。面板只给这一条
+ * 边界真正生效的字段;要看反方向,用预览里的「互换」按钮。
+ * `self` 走同类配对;还没有选第二个块时返回 null(只显示预览,不出滑块)。
  */
 export function pairView(
-  center: BlockKind,
-  target: BlockKind | null,
-  mode: 'none' | 'self' | 'cross'
+  top: BlockKind,
+  bottom: BlockKind | null,
+  self: boolean
 ): PairView | null {
-  if (mode === 'self' || (target !== null && target === center)) return selfView(center)
-  if (!target) return null
-  const ordered = [...[center, target]].sort(
+  if (self) return selfView(top)
+  if (!bottom || bottom === top) return null
+  const ordered = [...[top, bottom]].sort(
     (a, b) => BLOCK_KINDS.indexOf(a) - BLOCK_KINDS.indexOf(b)
   ) as [BlockKind, BlockKind]
+  const groups = crossGroups(top, bottom)
+  // 每个方向组的 direction 都是「谁在上」,按 top 选出当前这一侧。
+  const active = groups.find(g => g.direction === `${top}-above`)
   return {
     key: `${ordered[0]}-${ordered[1]}`,
-    center,
-    target,
+    top,
+    bottom,
     mode: 'cross',
-    title: `${BLOCK_LABELS[center]} ↔ ${BLOCK_LABELS[target]}`,
-    subtitle: '两个方向分开调：谁在上，就由谁的留白管这一侧。',
-    groups: crossGroups(center, target)
+    groups: active ? [active] : groups.slice(0, 1)
   }
 }

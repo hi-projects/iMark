@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { RefreshCw } from 'lucide-vue-next'
 import {
   BLOCK_SPACE_MAX,
   BLOCK_SPACE_MIN,
@@ -25,18 +24,14 @@ import {
   setImageSpace,
   setLineSpace
 } from '../services/editorSettings'
-import { BLOCK_LABELS, type PairView, type SpaceRow } from '../services/spacingPairs'
+import type { PairView, SpaceRow } from '../services/spacingPairs'
 
 /**
- * 一对块的两个方向:每组只列这个方向上真正生效的字段。
+ * 一条边界的方向组:只列「上块在上、下块在下」这一侧真正生效的字段。
  * 行上保留旧的 data-heading-space / data-block-space / data-image-space /
- * data-line-space 属性,验收 harness 不必依赖圆环的布局。
+ * data-line-space 属性,验收 harness 不必依赖具体布局。
  */
 const props = defineProps<{ pair: PairView }>()
-
-const emit = defineEmits<{
-  recenter: [kind: PairView['target']]
-}>()
 
 function valueOf(row: SpaceRow): number {
   return appStore[row.field]
@@ -110,36 +105,16 @@ function onCommit(row: SpaceRow, e: Event): void {
   }
 }
 
-function recenter(): void {
-  if (props.pair.mode === 'cross') emit('recenter', props.pair.target)
-}
 </script>
 
 <template>
   <section
     class="spacing-pair-panel"
     :data-pair-panel="pair.key"
-    :data-pair-center="pair.center"
-    :data-pair-target="pair.target"
+    :data-pair-top="pair.top"
+    :data-pair-bottom="pair.bottom"
     :data-pair-mode="pair.mode"
   >
-    <header class="spacing-pair-head">
-      <div class="spacing-pair-heading">
-        <div class="spacing-pair-title">{{ pair.title }}</div>
-        <div class="spacing-pair-sub">{{ pair.subtitle }}</div>
-      </div>
-      <button
-        v-if="pair.mode === 'cross'"
-        class="spacing-pair-recenter"
-        type="button"
-        :data-ring-recenter="pair.target"
-        @click="recenter"
-      >
-        <RefreshCw :size="12" />
-        <span>以「{{ BLOCK_LABELS[pair.target] }}」为中心</span>
-      </button>
-    </header>
-
     <div v-if="pair.groups.length" class="spacing-pair-groups">
       <div
         v-for="group in pair.groups"
@@ -147,15 +122,10 @@ function recenter(): void {
         class="spacing-pair-group"
         :data-pair-direction="group.direction"
       >
-        <div class="spacing-pair-group-head">
-          <div class="spacing-pair-group-title">{{ group.title }}</div>
-          <div v-if="group.desc" class="spacing-pair-group-desc">{{ group.desc }}</div>
-        </div>
-
         <div
           v-for="row in group.rows"
           :key="row.field"
-          class="settings-row settings-row-stack spacing-pair-row"
+          class="settings-row spacing-pair-row"
           :data-space-field="row.field"
           :data-space-group="group.direction"
         >

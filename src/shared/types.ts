@@ -277,3 +277,13 @@ export interface CloneVaultResult {
   /** 项目级 Git 远端是否已经写入项目配置(供「远程同步」扩展读取) */
   remoteSaved: boolean
 }
+
+/** 克隆过程中从 git 输出解析出的一步进度 */
+export interface CloneProgress {
+  /** 阶段名(已本地化,如「接收对象」) */
+  phase: string
+  /** 0-100;这一阶段还没有百分比信息时为 null */
+  percent: number | null
+  /** 当前计数/速率,如「56/123, 1.20 MiB | 300.00 KiB/s」;没有时为空串 */
+  detail: string
+}

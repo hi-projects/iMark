@@ -425,21 +425,43 @@
 .plugin-group {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
+/* 模块 = 标题 + 卡片;卡内字段用横线分隔(仿 Obsidian 设置页) */
+.plugin-group-card {
+  overflow: hidden;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--bg-editor));
+}
+
+.plugin-group-card .plugin-field {
+  padding: 12px 14px;
+}
+
+.plugin-group-card .plugin-field + .plugin-field {
+  border-top: 1px solid var(--border);
+}
+
+.plugin-ops-card {
+  padding: 12px 14px;
+}
+
+/* 上一个模块内容 → 当前模块标题上方横线:略微收一点,线不要离上文太远 */
 .plugin-group + .plugin-group {
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
-/* 模块名是这一屏的标题:主文字色 + 加粗,压过组内字段标签 */
+/* 模块名是这一屏的标题:主文字色 + 加粗,压过组内字段标签。
+   分隔线画在模块上方(不是标题下面),与设置页的模块分隔一致。 */
 .plugin-group-title {
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 0;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+  /* 与设置页「选项」部分的模块一致:线到标题约 18px(段间距 14 + 标题区上边距 4) */
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
   font-size: 13px;
   font-weight: 650;
   color: var(--text-primary);
@@ -822,13 +844,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
 }
 
 .plugin-ops-head .plugin-group-title {
-  padding-bottom: 0;
-  border-bottom: none;
+  padding-top: 0;
+  border-top: none;
 }
 
 .plugin-ops-empty {

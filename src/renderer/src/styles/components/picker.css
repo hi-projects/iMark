@@ -384,6 +384,65 @@ select.vault-input {
   padding: 1px 4px;
 }
 
+/* 克隆进度:阶段 + 百分比 + 计数/速率 */
+.vault-clone-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vault-clone-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.vault-clone-progress-percent {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-clone-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-app);
+  overflow: hidden;
+}
+
+.vault-clone-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+/* 还没拿到百分比(连远端、统计对象)时来回扫 */
+.vault-clone-progress-indeterminate {
+  width: 35%;
+  animation: vault-clone-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes vault-clone-indeterminate {
+  from {
+    margin-left: 0;
+  }
+  to {
+    margin-left: 65%;
+  }
+}
+
+.vault-clone-progress-detail {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .vault-picker-error {
   margin: 0;
   padding: 8px 10px;

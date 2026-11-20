@@ -7,9 +7,10 @@
  * 2. 要展示的 git 输出先过 `redactUrl()`,别把带 token 的地址漏进界面或日志。
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdir, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
+import type { CloneProgress } from '@shared/types'
 
 export interface GitRunOptions {
   cwd: string
@@ -62,6 +63,110 @@ export function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResul
       }
     )
   })
+}
+
+/**
+ * 流式跑 git,把 stderr 按行回调出来(克隆进度用)。
+ *
+ * git 的进度用 `\r` 原地刷新,这里把 `\r` 和 `\n` 都当分隔符。
+ * stdout/stderr 仍然完整收集,失败时照旧能给出摘要。
+ */
+function runGitStreaming(
+  args: string[],
+  opts: GitRunOptions & { onLine?: (line: string) => void }
+): Promise<GitRunResult> {
+  return new Promise(resolve => {
+    const child = spawn('git', ['-c', 'http.postBuffer=104857600', ...args], {
+      cwd: opts.cwd,
+      env: gitEnv(opts.env),
+      windowsHide: true
+    })
+    let stdout = ''
+    let stderr = ''
+    let pending = ''
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const finish = (result: GitRunResult): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(result)
+    }
+
+    timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish({
+        ok: false,
+        code: 1,
+        stdout,
+        stderr: `${stderr}\n克隆超时`
+      })
+    }, opts.timeoutMs ?? DEFAULT_TIMEOUT)
+
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      stdout = (stdout + chunk).slice(-MAX_BUFFER)
+    })
+    child.stderr?.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-MAX_BUFFER)
+      pending += chunk
+      const lines = pending.split(/[\r\n]+/)
+      pending = lines.pop() ?? ''
+      for (const line of lines) opts.onLine?.(line)
+    })
+    child.on('error', err => {
+      const notFound = (err as NodeJS.ErrnoException).code === 'ENOENT'
+      finish({
+        ok: false,
+        code: notFound ? 127 : 1,
+        stdout,
+        stderr: notFound
+          ? '未找到 git 可执行文件(请确认已安装 Git 并已加入 PATH)'
+          : err.message
+      })
+    })
+    child.on('close', code => {
+      if (pending) opts.onLine?.(pending)
+      finish({ ok: code === 0, code: code ?? 1, stdout, stderr })
+    })
+  })
+}
+
+/** git 进度里的英文阶段名 → 界面文案 */
+const CLONE_PHASES: Record<string, string> = {
+  'Enumerating objects': '统计对象',
+  'Counting objects': '统计对象',
+  'Compressing objects': '压缩对象',
+  'Receiving objects': '接收对象',
+  'Resolving deltas': '解析差异',
+  'Updating files': '更新文件',
+  'Updating working tree': '更新文件',
+  'Checking out files': '检出文件'
+}
+
+/** 解析一行进度,如 `Receiving objects:  45% (56/123), 1.20 MiB | 300.00 KiB/s` */
+function parseCloneProgress(line: string): CloneProgress | null {
+  const raw = line
+    .replace(/^remote:\s*/, '')
+    .replace(/,\s*done\.?\s*$/, '')
+    .trim()
+  const match = raw.match(/^([A-Za-z][A-Za-z ]*?):\s*(\d+)%(?:\s*\(([^)]*)\))?(?:\s*,\s*(.+))?$/)
+  if (!match) return null
+  const phase = CLONE_PHASES[match[1]!.trim()]
+  if (!phase) return null
+  const percent = Math.max(0, Math.min(100, Number(match[2])))
+  const detail = [match[3], match[4]].filter((s): s is string => Boolean(s?.trim())).join(', ')
+  return { phase, percent, detail }
+}
+
+/** 错误摘要里去掉进度行,否则真正的原因会被一屏 `Receiving objects…` 挤掉 */
+function withoutProgress(text: string): string {
+  return text
+    .split(/[\r\n]+/)
+    .filter(line => !parseCloneProgress(line))
+    .join('\n')
 }
 
 export async function isGitAvailable(): Promise<boolean> {
@@ -119,6 +224,8 @@ export interface CloneOptions {
   branch: string
   username: string
   secret: string
+  /** 克隆进度;主进程里已按 ~80ms 节流 */
+  onProgress?: (progress: CloneProgress) => void
 }
 
 export interface CloneOutcome {
@@ -178,19 +285,33 @@ export async function cloneRepository(opts: CloneOptions): Promise<CloneOutcome>
   const args = [
     ...(useCredential ? credentialArgs() : []),
     'clone',
+    // 强制输出进度:非 TTY 下 git 默认不打印
+    '--progress',
     ...(opts.branch.trim() ? ['--branch', opts.branch.trim()] : []),
     '--',
     url,
     target
   ]
-  const run = await runGit(args, {
+
+  // 进度回调节流:git 每秒能刷很多次,渲染层只需要看得清的频率
+  let lastProgressAt = 0
+  const run = await runGitStreaming(args, {
     cwd: opts.parentDir,
-    env: credentialEnv(opts.username, opts.secret)
+    env: credentialEnv(opts.username, opts.secret),
+    onLine: line => {
+      const progress = parseCloneProgress(line)
+      if (!progress) return
+      const now = Date.now()
+      if (progress.percent !== 100 && now - lastProgressAt < 80) return
+      lastProgressAt = now
+      opts.onProgress?.(progress)
+    }
   })
   if (!run.ok) {
     // 只删本次调用刚建出来的路径;调用前已确认它不存在
     await rm(target, { recursive: true, force: true }).catch(() => {})
-    const detail = summarize(run.stderr || run.stdout) || `git clone 退出码 ${run.code}`
+    const detail =
+      summarize(withoutProgress(run.stderr) || run.stdout) || `git clone 退出码 ${run.code}`
     return { ok: false, path: '', branch: '', detail: `克隆失败:${detail}` }
   }
 

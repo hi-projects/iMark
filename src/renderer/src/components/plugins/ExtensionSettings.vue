@@ -544,24 +544,26 @@ const busy = computed(() => extensionStore.busy !== null)
             <FileJson :size="13" />
           </button>
         </h3>
-        <PluginField
-          v-for="field in group.fields"
-          :key="field.key"
-          :extension-id="selected.descriptor.id"
-          :field="field"
-          :value="fieldValue(field)"
-          :hint="passwordHint(selected.descriptor.id, field)"
-          :target-secrets="targetSecrets(selected.descriptor.id, field)"
-          :target-actions="targetActionsFor(field)"
-          :target-results="selected.status.targetResults ?? {}"
-          :default-directory="selected.storagePath"
-          @change="v => commit(field, v)"
-          @run-action="runTargetAction"
-          @save-secret="v => saveSecret(field, null, v)"
-          @clear-secret="saveSecret(field, null, null)"
-          @save-target-secret="(targetId, v) => saveTargetSecret(field, targetId, v)"
-          @clear-target-secret="targetId => saveTargetSecret(field, targetId, null)"
-        />
+        <div v-if="group.fields.length > 0" class="plugin-group-card">
+          <PluginField
+            v-for="field in group.fields"
+            :key="field.key"
+            :extension-id="selected.descriptor.id"
+            :field="field"
+            :value="fieldValue(field)"
+            :hint="passwordHint(selected.descriptor.id, field)"
+            :target-secrets="targetSecrets(selected.descriptor.id, field)"
+            :target-actions="targetActionsFor(field)"
+            :target-results="selected.status.targetResults ?? {}"
+            :default-directory="selected.storagePath"
+            @change="v => commit(field, v)"
+            @run-action="runTargetAction"
+            @save-secret="v => saveSecret(field, null, v)"
+            @clear-secret="saveSecret(field, null, null)"
+            @save-target-secret="(targetId, v) => saveTargetSecret(field, targetId, v)"
+            @clear-target-secret="targetId => saveTargetSecret(field, targetId, null)"
+          />
+        </div>
       </section>
 
       <!--
@@ -580,22 +582,24 @@ const busy = computed(() => extensionStore.busy !== null)
             </button>
           </span>
         </div>
-        <div v-if="recentLogs.length === 0" class="plugin-ops-empty">
-          还没有日志。扩展运行时的输出与命令操作会显示在这里。
-        </div>
-        <div v-else class="plugin-logs">
-          <button class="plugin-link" @click="logsOpen = !logsOpen">
-            {{ logsOpen ? '▾' : '▸' }} 扩展日志（最近 {{ recentLogs.length }} 条）
-          </button>
-          <ol v-if="logsOpen" class="plugin-logs-body">
-            <li v-for="(line, i) in recentLogs" :key="i" class="plugin-log-line">
-              <span class="plugin-log-time">{{ formatLogTime(line.at) }}</span>
-              <span class="plugin-log-level" :class="`plugin-log-level-${line.level}`">
-                {{ logLevelLabel(line.level) }}
-              </span>
-              <span class="plugin-log-message">{{ line.message }}</span>
-            </li>
-          </ol>
+        <div class="plugin-group-card plugin-ops-card">
+          <div v-if="recentLogs.length === 0" class="plugin-ops-empty">
+            还没有日志。扩展运行时的输出与命令操作会显示在这里。
+          </div>
+          <div v-else class="plugin-logs">
+            <button class="plugin-link" @click="logsOpen = !logsOpen">
+              {{ logsOpen ? '▾' : '▸' }} 扩展日志（最近 {{ recentLogs.length }} 条）
+            </button>
+            <ol v-if="logsOpen" class="plugin-logs-body">
+              <li v-for="(line, i) in recentLogs" :key="i" class="plugin-log-line">
+                <span class="plugin-log-time">{{ formatLogTime(line.at) }}</span>
+                <span class="plugin-log-level" :class="`plugin-log-level-${line.level}`">
+                  {{ logLevelLabel(line.level) }}
+                </span>
+                <span class="plugin-log-message">{{ line.message }}</span>
+              </li>
+            </ol>
+          </div>
         </div>
       </section>
 

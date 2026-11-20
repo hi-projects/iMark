@@ -154,8 +154,8 @@ export const EDITOR_DEFAULTS = {
    */
   autoSaveDelay: 1,
   lineWrapping: true,
-  /** 与旧版默认(基准 13px × 1.375 ≈ 17.9px)在视觉上一致 */
-  editorFontSize: 18,
+  /** 默认正文字号 */
+  editorFontSize: 14,
   /** 见 EDITOR_FONT_SIZE_VERSION:2 = 设置值即实际正文字号 */
   editorFontSizeVersion: EDITOR_FONT_SIZE_VERSION,
   /** 行间距(档,× 正文字号);行高 = 1 + 这一档 */

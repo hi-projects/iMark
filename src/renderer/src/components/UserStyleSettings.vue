@@ -95,6 +95,7 @@ function onRemove(name: string): void {
       </div>
     </div>
 
+    <div class="settings-card settings-card-pad userstyle-card">
     <div class="userstyle-actions">
       <!-- 两个「导入」的动作要一眼分得清:一个收文件夹、一个收单个文件,
            所以文案里都带上宾语(而不是「从文件夹导入」对「导入 CSS 文件」) -->
@@ -187,6 +188,7 @@ function onRemove(name: string): void {
         也可以用「打开配置文件夹」直接往里放文件、建子目录。
       </div>
     </template>
+    </div>
 
     <!--
       类名清单放在这里而不是只靠文件夹里的 example.css:想改样式的人第一个动作是

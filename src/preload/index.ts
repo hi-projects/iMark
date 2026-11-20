@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type MenuCommandId } from '@shared/ipc-channels'
 import type { MarketProgress, MarketQuery, MarketSource } from '@shared/market'
 import type {
+  CloneProgress,
   CloneVaultRequest,
   CloneVaultResult,
   DefaultEditorStatus,
@@ -22,6 +23,57 @@ import type {
   ExtensionView
 } from '@shared/extensions'
 import type { MainToRendererMessage, RendererToMainMessage } from '@shared/extensionProtocol'
+
+/*
+ * 首帧之前定下主题。
+ *
+ * 主题令牌的默认值是亮色(见 @shared/theme/tokens.css),而渲染层要等异步取到设置
+ * 才 applyTheme。深色主题下这两者之间的第一帧就是白底 —— 启动时肉眼可见地闪一下。
+ * 主进程在建窗时通过 additionalArguments 把主题传进来,preload 在页面脚本与
+ * 首次绘制之前就把 data-theme 写好,后续 applyTheme 只是覆盖同一个值。
+ */
+interface HtmlRoot {
+  setAttribute(name: string, value: string): void
+}
+interface ThemeDocument {
+  documentElement?: HtmlRoot | null
+}
+const root = globalThis as {
+  document?: ThemeDocument
+  MutationObserver?: new (cb: () => void) => {
+    observe(target: ThemeDocument, options: { childList: boolean }): void
+    disconnect(): void
+  }
+}
+const themeArg = process.argv.find(arg => arg.startsWith('--imark-theme='))
+const initialTheme = themeArg?.slice('--imark-theme='.length)
+const themed = initialTheme === 'light' || initialTheme === 'dark'
+
+/**
+ * preload 执行时 `document.documentElement` 可能还不存在(实测为 null),所以不能
+ * 只写一次:先试一次,不行就等 <html> 插进来。MutationObserver 的回调在解析阶段
+ * 作为微任务跑,早于样式表加载完成后的首帧绘制,不会慢半拍又闪一下。
+ */
+function applyInitialTheme(): boolean {
+  const element = root.document?.documentElement
+  if (!element) return false
+  element.setAttribute('data-theme', initialTheme!)
+  // 样式表还没到时的首帧:画布默认是白的。先用与主题一致的底色兜住
+  // (与主进程 BrowserWindow 的 backgroundColor 同一组颜色)。
+  // 只写背景色:整份 style 会在 applyTheme 里被清掉,别把 color-scheme 也留在上面。
+  const windowBg = initialTheme === 'dark' ? '#262626' : '#ffffff'
+  element.setAttribute('style', `background:${windowBg}`)
+  return true
+}
+
+if (themed) {
+  if (!applyInitialTheme() && root.document && root.MutationObserver) {
+    const observer = new root.MutationObserver(() => {
+      if (applyInitialTheme()) observer.disconnect()
+    })
+    observer.observe(root.document, { childList: true })
+  }
+}
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_e: unknown, payload: T): void => cb(payload)
@@ -109,6 +161,8 @@ const api = {
   releaseVault: (vaultPath: string): Promise<void> => request(IPC.VaultRelease, vaultPath),
   cloneVault: (o: CloneVaultRequest): Promise<CloneVaultResult> =>
     request(IPC.VaultClone, o),
+  onCloneProgress: (cb: (p: CloneProgress) => void): (() => void) =>
+    subscribe<CloneProgress>(IPC.VaultCloneProgress, cb),
   vaultGitRemotes: (paths: string[]): Promise<Record<string, VaultGitRemote | null>> =>
     request(IPC.VaultGitList, paths),
   setVaultGitRemote: (path: string, remote: VaultGitRemoteInput | null): Promise<void> =>

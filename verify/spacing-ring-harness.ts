@@ -1,19 +1,18 @@
 /**
- * 验收:设置 → 外观 →「样式」的块对圆环。
+ * 验收:设置 → 外观 →「间距」的两栏选择器。
  *
- * 圆环把原来一长串方向滑块换成「先选块,再选块对」:
- *   空状态七个块围一圈 → 点一个到中心 → 再点一个调两者间距;
- *   中心旁的「自身」圆点调同类块之间。字段与间距引擎都是原有的,
- *   唯一的新数据是表格的上 / 下档(tableSpaceBefore / tableSpaceAfter)。
+ * 左栏是七个块的调色板(先点的在上面,后点的在下面,两种颜色区分);
+ * 右栏是这条边界的间距预览 + 滑块,预览里可以互换上下或清除。
+ * 连点同一个块两次进入同类配对(段间距 / 行间距 / 标题之间 …)。
  *
  * 断言:
- *   A 初始:七个块、没有中心、没有自身点、没有间距滑块;
- *   B 选中中心:一个中心 + 六个外圈,自身点出现;
- *   C 配对:标题 → 代码块,两个方向组的字段正确,不生效的字段给灰字说明;
+ *   A 初始:七个块、没有选中、预览空、没有滑块;
+ *   B 第一次点:块成为「上面」,预览显示它,还没有滑块;
+ *   C 第二次点:标题在上 / 代码块在下,只列这一方向的字段;
  *   D 预览 / 写盘 / 关开面板:滑块即时生效,值进 settings.json,重开保留;
- *   E 换中心、清配对、自身:点「以 X 为中心」对调,点中心逐级退出;
+ *   E 互换、清除、自身:互换后方向对调,点已选块清空,连点两次进自身;
  *   F 正文自身:段间距 + 行间距,行间距改变同一段内的行高;
- *   G 表格配对:表格上方 / 下方两根滑块可调、写盘;
+ *   G 表格配对:正文在上给表格上方,互换后给表格下方;写盘;
  *   H 表格排版:有结构空行时空行承担间距、frame 归零;紧贴标题时 frame
  *     再归零;紧贴代码块时 frame 提供间距,邻居 padding 不落在 host/void 上;
  *   I 恢复默认:所有间距根变量与 settings.json 回到默认(含表格 1.7 / 0.7);
@@ -25,6 +24,7 @@
 
 import { app, BrowserWindow, protocol, type NativeImage } from 'electron'
 import { APP_VERSION } from './appVersion'
+import { EDITOR_DEFAULTS } from '../src/shared/editorSettings'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { registerIpc } from '../src/main/ipc'
@@ -39,8 +39,6 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 const BODY = 16
-const TABLE_BEFORE = 1.7 * BODY
-const TABLE_AFTER = 0.7 * BODY
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -105,16 +103,26 @@ proto.show = () => {}
 proto.maximize = () => {}
 proto.unmaximize = () => {}
 
-interface RingState {
+interface PaletteState {
   state: string
-  center: string | null
-  ringNodes: number
-  selfNode: string | null
+  top: string | null
+  bottom: string | null
+  topNodes: number
+  bottomNodes: number
   panel: {
     key: string
-    center: string
-    target: string
+    top: string
+    bottom: string
     mode: string
+  } | null
+  groups: string[]
+  fields: string[]
+  preview: {
+    mode: string
+    top: string
+    bottom: string
+    samples: string[]
+    gap: number
   } | null
   sliders: number
   hint: string
@@ -246,41 +254,70 @@ async function main(): Promise<void> {
     await sleep(250)
   }
 
-  const ringState = (): Promise<RingState | null> =>
-    evalJs<RingState | null>(`
+  const paletteState = (): Promise<PaletteState | null> =>
+    evalJs<PaletteState | null>(`
       (() => {
         const ring = document.querySelector('[data-spacing-ring]')
         if (!ring) return null
         const panel = document.querySelector('[data-pair-panel]')
+        const preview = document.querySelector('[data-spacing-preview]')
         return {
           state: ring.getAttribute('data-ring-state') ?? '',
-          center: ring.querySelector('[data-block-role="center"]')?.getAttribute('data-block-node') ?? null,
-          ringNodes: ring.querySelectorAll('[data-block-role="ring"]').length,
-          selfNode: ring.querySelector('[data-block-self]')?.getAttribute('data-block-self') ?? null,
+          top: ring.querySelector('[data-block-role="top"]')?.getAttribute('data-block-node') ?? null,
+          bottom:
+            ring.querySelector('[data-block-role="bottom"]')?.getAttribute('data-block-node') ?? null,
+          topNodes: ring.querySelectorAll('[data-block-role="top"]').length,
+          bottomNodes: ring.querySelectorAll('[data-block-role="bottom"]').length,
           panel: panel
             ? {
                 key: panel.getAttribute('data-pair-panel') ?? '',
-                center: panel.getAttribute('data-pair-center') ?? '',
-                target: panel.getAttribute('data-pair-target') ?? '',
+                top: panel.getAttribute('data-pair-top') ?? '',
+                bottom: panel.getAttribute('data-pair-bottom') ?? '',
                 mode: panel.getAttribute('data-pair-mode') ?? ''
               }
             : null,
-          sliders: document.querySelectorAll('.spacing-settings input[type="range"]').length,
+          groups: panel
+            ? [...panel.querySelectorAll('[data-pair-direction]')].map(g =>
+                g.getAttribute('data-pair-direction'))
+            : [],
+          fields: panel
+            ? [...panel.querySelectorAll('[data-space-field]')].map(r =>
+                r.getAttribute('data-space-field'))
+            : [],
+          preview: preview
+            ? {
+                mode: preview.getAttribute('data-preview-mode') ?? '',
+                top: preview.getAttribute('data-preview-top') ?? '',
+                bottom: preview.getAttribute('data-preview-bottom') ?? '',
+                samples: [...preview.querySelectorAll('[data-sample]')].map(s =>
+                  s.getAttribute('data-sample')),
+                gap: preview.querySelector('[data-preview-gap]')
+                  ? Math.round(
+                      parseFloat(
+                        getComputedStyle(preview.querySelector('[data-preview-gap]')).height
+                      ) * 10
+                    ) / 10
+                  : 0
+              }
+            : null,
+          sliders: document.querySelectorAll(
+            '.spacing-settings input[type="range"], [data-pair-panel] input[type="range"]'
+          ).length,
           hint: ring.querySelector('.spacing-ring-hint')?.textContent?.trim() ?? ''
         }
       })()`)
 
-  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  /** 调色板回到空状态:点已选中的上块,直到没有选中 */
   async function resetRing(): Promise<void> {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const state = await evalJs<string>(
         `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
       )
       if (state === 'empty') return
       await evalJs(
-        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+        `document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`
       )
-      await sleep(100)
+      await sleep(80)
     }
   }
 
@@ -289,21 +326,27 @@ async function main(): Promise<void> {
     await sleep(100)
   }
 
-  /** 圆环:选中心 + 第二个块,等配对面板出现 */
-  async function selectPair(center: string, target: string): Promise<boolean> {
+  /** 先点 top(上面),再点 bottom(下面) */
+  async function selectPair(top: string, bottom: string): Promise<boolean> {
     await resetRing()
-    await clickNode(center)
-    await clickNode(target)
+    await clickNode(top)
+    await clickNode(bottom)
     return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
   }
 
-  /** 圆环:选中心 + 中心旁的「自身」 */
+  /** 连点同一个块两次 = 同类配对 */
   async function selectSelf(kind: string): Promise<boolean> {
     await resetRing()
     await clickNode(kind)
-    await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
-    await sleep(100)
+    await clickNode(kind)
     return waitFor(`document.querySelector('[data-pair-mode="self"]')`, 3000)
+  }
+
+  /** 互换上下 */
+  async function swapSides(): Promise<boolean> {
+    await evalJs(`document.querySelector('[data-ring-swap]')?.click()`)
+    await sleep(150)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 2000)
   }
 
   async function setRange(selector: string, value: number): Promise<boolean> {
@@ -329,94 +372,132 @@ async function main(): Promise<void> {
   const near = (a: number, b: number, tol = 0.8): boolean => Math.abs(a - b) <= tol
 
   // ---------- A ----------
-  console.log('\n【A】初始:七个块围成一圈,没有中心、没有自身点、没有间距滑块')
-  check('打开设置 → 外观,圆环出现了', await openAppearance())
+  console.log('\n【A】初始:左边七个块,什么都没选,右边预览为空')
+  check('打开设置 → 外观,调色板出现了', await openAppearance())
   {
-    const s = await ringState()
+    const s = await paletteState()
     console.log(`     [实测] ${JSON.stringify(s)}`)
-    check('圆环状态是 empty', s?.state === 'empty', JSON.stringify(s))
-    check('七个块节点都在', s?.ringNodes === 7 || (await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)) === 7, JSON.stringify(s))
-    check('没有中心块', s?.center === null, JSON.stringify(s?.center))
-    check('没有「自身」圆点', s?.selfNode === null, JSON.stringify(s?.selfNode))
+    check('调色板状态是 empty', s?.state === 'empty', JSON.stringify(s))
+    check(
+      '七个块节点都在,且都是圆形按钮',
+      (await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)) === 7,
+      JSON.stringify(s)
+    )
+    check('没有上块 / 下块', s?.top === null && s?.bottom === null, JSON.stringify(s))
+    check('右边预览是空状态', s?.preview?.mode === 'empty', JSON.stringify(s?.preview))
     check('没有配对面板', s?.panel === null, JSON.stringify(s?.panel))
-    check('圆环里没有间距滑块(字号行还在,但不算圆环的)', s?.sliders === 0, String(s?.sliders))
-    check('提示是「点一个块，把它放到中心」', !!s?.hint.includes('点一个块'), s?.hint)
+    check('调色板里没有间距滑块', s?.sliders === 0, String(s?.sliders))
+    check('提示「先点一个块，作为上面的内容」', !!s?.hint.includes('先点一个块'), s?.hint)
+    const divider = await evalJs<number>(
+      `parseFloat(getComputedStyle(document.querySelector('.spacing-side')).borderLeftWidth) || 0`
+    )
+    check('左右两栏之间有一条分隔线', divider === 1, String(divider))
   }
-  await shoot('ring-empty')
+  await shoot('spacing-empty')
 
   // ---------- B ----------
-  console.log('\n【B】点一个块:它到中心,其余六个围成一圈,中心旁出现「自身」')
+  console.log('\n【B】第一次点正文:它成为「上面」,预览显示它,还没有滑块')
   await clickNode('body')
   {
-    const s = await ringState()
+    const s = await paletteState()
     console.log(`     [实测] ${JSON.stringify(s)}`)
-    check('圆环状态是 centered', s?.state === 'centered', JSON.stringify(s))
-    check('中心是正文', s?.center === 'body', JSON.stringify(s?.center))
-    check('外圈剩六个块', s?.ringNodes === 6, String(s?.ringNodes))
-    check('「自身」圆点出现且对着正文', s?.selfNode === 'body', JSON.stringify(s?.selfNode))
-    check('面板还没出现', s?.panel === null, JSON.stringify(s?.panel))
+    check('状态是 top,上块是正文', s?.state === 'top' && s?.top === 'body', JSON.stringify(s))
+    check('只有一个上块、没有下块', s?.topNodes === 1 && s?.bottom === null, JSON.stringify(s))
+    check(
+      '预览画出正文样本,下面留虚线占位',
+      s?.preview?.mode === 'top' &&
+        s.preview.top === 'body' &&
+        s.preview.samples.join(',') === 'body' &&
+        (await evalJs<boolean>(`!!document.querySelector('[data-preview-doc] .spacing-doc-ghost')`)),
+      JSON.stringify(s?.preview)
+    )
+    check('面板还没出现,也没有滑块', s?.panel === null && s?.sliders === 0, JSON.stringify(s))
     check('提示改成「再点一个块…」', !!s?.hint.includes('再点一个块'), s?.hint)
   }
-  await shoot('ring-center')
+  await shoot('spacing-top')
 
   // ---------- C ----------
-  console.log('\n【C】标题 ↔ 代码块:两个方向组的字段正确,不生效的字段给灰字说明')
+  console.log('\n【C】第二次点代码块:标题在上 / 代码块在下,只列这一方向的字段')
   await resetRing()
   await clickNode('heading')
-  {
-    const s = await ringState()
-    console.log(`     [实测] ${JSON.stringify(s)}`)
-    check('中心换成标题', s?.center === 'heading' && s?.state === 'centered', JSON.stringify(s))
-  }
   await clickNode('code')
   {
-    const s = await ringState()
+    const s = await paletteState()
     console.log(`     [实测] ${JSON.stringify(s)}`)
     check(
-      '配对面板 key 是 heading-code,中心 / 目标 / 模式正确',
+      '上块是标题、下块是代码块,调色板状态是 pair',
+      s?.state === 'pair' && s?.top === 'heading' && s?.bottom === 'code',
+      JSON.stringify(s)
+    )
+    check(
+      '上下块用不同角色标记(各一个)',
+      s?.topNodes === 1 && s?.bottomNodes === 1,
+      JSON.stringify({ top: s?.topNodes, bottom: s?.bottomNodes })
+    )
+    check(
+      '面板 key 是 heading-code,top / bottom / 模式正确',
       s?.panel?.key === 'heading-code' &&
-        s.panel.center === 'heading' &&
-        s.panel.target === 'code' &&
+        s.panel.top === 'heading' &&
+        s.panel.bottom === 'code' &&
         s.panel.mode === 'cross',
       JSON.stringify(s?.panel)
     )
-    const groups = await evalJs<{
-      directions: string[]
-      headingRows: string[]
-      blockRows: string[]
-      inert: string[]
+    check(
+      '只列一个方向组 heading-above',
+      s?.groups.join(',') === 'heading-above',
+      JSON.stringify(s?.groups)
+    )
+    check(
+      '字段是标题下方 + 代码块上方(代码块上方只是空行时叠加)',
+      s?.fields.join(',') === 'headingSpaceAfter,codeSpaceBefore',
+      JSON.stringify(s?.fields)
+    )
+    check(
+      '预览按文档样式画出标题与代码块,间距 = 1 + 1 档(32px)',
+      s?.preview?.mode === 'pair' &&
+        s.preview.samples.join(',') === 'heading,code' &&
+        near(s.preview.gap, 32),
+      JSON.stringify(s?.preview)
+    )
+    check(
+      '代码块下方的「不生效」说明不在这个方向出现',
+      !(await evalJs<boolean>(`!!document.querySelector('[data-space-inert]')`)),
+      '出现了 inert 说明'
+    )
+    check(
+      '面板里不再有标题 / 副标题 / 分组标注',
+      !(await evalJs<boolean>(
+        `document.querySelector('.spacing-pair-title, .spacing-pair-sub, .spacing-pair-group-head')`
+      )),
+      '仍有标题或说明文字'
+    )
+    const layout = await evalJs<{
+      panelInCard: boolean
+      fontInCard: boolean
+      panelBeforeFont: boolean
     }>(`
       (() => {
+        const card = document.querySelector('.settings-card-ring')
         const panel = document.querySelector('[data-pair-panel]')
+        const fontRow = [...document.querySelectorAll('.settings-row')].find(r =>
+          r.textContent?.includes('正文字号'))
         return {
-          directions: [...panel.querySelectorAll('[data-pair-direction]')].map(g =>
-            g.getAttribute('data-pair-direction')),
-          headingRows: [...panel.querySelectorAll('input[data-heading-space]')].map(i =>
-            i.getAttribute('data-heading-space')),
-          blockRows: [...panel.querySelectorAll('input[data-block-space]')].map(i =>
-            i.getAttribute('data-block-space')),
-          inert: [...panel.querySelectorAll('[data-space-inert]')].map(i =>
-            i.getAttribute('data-space-inert'))
+          panelInCard: !!(card && panel && card.contains(panel)),
+          fontInCard: !!(card && fontRow && card.contains(fontRow)),
+          panelBeforeFont: !!(
+            panel &&
+            fontRow &&
+            (panel.compareDocumentPosition(fontRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+          )
         }
       })()`)
-    console.log(`     [实测] ${JSON.stringify(groups)}`)
     check(
-      '两个方向组:标题在上 / 代码块在上',
-      groups.directions.join(',') === 'heading-above,code-above',
-      JSON.stringify(groups.directions)
-    )
-    check(
-      '标题下方与标题上方各一根标题滑块,代码块上方一根块滑块',
-      groups.headingRows.join(',') === 'after,before' && groups.blockRows.join(',') === 'codeBefore',
-      JSON.stringify(groups)
-    )
-    check(
-      '代码块下方紧邻标题不生效,给的是灰色说明而不是滑块',
-      groups.inert.join(',') === 'codeSpaceAfter',
-      JSON.stringify(groups.inert)
+      '滑块与正文字号在同一张模块卡里,滑块在上',
+      layout.panelInCard && layout.fontInCard && layout.panelBeforeFont,
+      JSON.stringify(layout)
     )
   }
-  await shoot('ring-pair', '[data-pair-panel]')
+  await shoot('spacing-pair', '[data-pair-panel]')
 
   // ---------- D ----------
   console.log('\n【D】拖动滑块:即时生效、写盘、关开面板后保留')
@@ -459,7 +540,7 @@ async function main(): Promise<void> {
   await closeSettings()
   check('重新打开设置 → 外观', await openAppearance())
   check(
-    '重新选回「标题 ↔ 代码块」',
+    '重新选回「标题在上 / 代码块在下」',
     (await selectPair('heading', 'code')) &&
       (await waitFor(`document.querySelector('input[data-heading-space="after"]')`)),
     '重开后面板没有出现'
@@ -479,50 +560,71 @@ async function main(): Promise<void> {
   }
 
   // ---------- E ----------
-  console.log('\n【E】换中心、清配对、自身')
-  await evalJs(`document.querySelector('[data-ring-recenter="code"]')?.click()`)
-  await sleep(150)
+  console.log('\n【E】互换、清除、自身')
+  check('点「互换上下」', await swapSides())
   {
-    const s = await ringState()
-    console.log(`     [实测] ${JSON.stringify(s?.panel)}`)
+    const s = await paletteState()
+    console.log(`     [实测] ${JSON.stringify(s)}`)
     check(
-      '点「以代码块为中心」:配对关系对调,key 不变',
-      s?.center === 'code' &&
+      '互换后代码块在上、标题在下,key 不变',
+      s?.top === 'code' &&
+        s?.bottom === 'heading' &&
         s?.panel?.key === 'heading-code' &&
-        s?.panel.center === 'code' &&
-        s.panel.target === 'heading',
-      JSON.stringify(s?.panel)
+        s.panel.top === 'code' &&
+        s.panel.bottom === 'heading',
+      JSON.stringify(s)
     )
-  }
-  await evalJs(`document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`)
-  await sleep(120)
-  {
-    const s = await ringState()
     check(
-      '点中心:先清掉配对,中心还在',
-      s?.state === 'centered' && s?.center === 'code' && s?.panel === null,
+      '方向组换成 code-above,字段是标题上方 + 不生效的代码块下方',
+      s?.groups.join(',') === 'code-above' &&
+        s.fields.join(',') === 'headingSpaceBefore' &&
+        (await evalJs<boolean>(`!!document.querySelector('[data-space-inert="codeSpaceAfter"]')`)),
       JSON.stringify(s)
     )
   }
-  await evalJs(`document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`)
+  await evalJs(`document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`)
   await sleep(120)
   {
-    const s = await ringState()
+    const s = await paletteState()
     check(
-      '再点一次中心:回到空状态,七块重新围成一圈',
-      s?.state === 'empty' &&
-        s?.center === null &&
-        (await evalJs<number>(`document.querySelectorAll('[data-spacing-ring] .spacing-ring-node').length`)) === 7,
+      '点已选中的块:清空上下块,预览回到空状态',
+      s?.state === 'empty' && s?.top === null && s?.bottom === null && s?.preview?.mode === 'empty',
       JSON.stringify(s)
     )
   }
-  check('「正文 · 自身」配对出现', await selectSelf('body'))
+  check('选「正文在上 / 标题在下」', await selectPair('body', 'heading'))
   {
-    const s = await ringState()
-    const fields = await evalJs<string[]>(`
-      [...document.querySelectorAll('[data-pair-panel] [data-space-field]')]
-        .map(r => r.getAttribute('data-space-field'))`)
-    console.log(`     [实测] ${JSON.stringify({ s, fields })}`)
+    const s = await paletteState()
+    check(
+      '预览把标题前的整行空行也算进去(标题上方 16 + 整行 32 = 48px)',
+      s?.preview?.mode === 'pair' &&
+        s.preview.samples.join(',') === 'body,heading' &&
+        near(s.preview.gap, 48),
+      JSON.stringify(s?.preview)
+    )
+    const sampleTops = (): Promise<{ body: number; head: number }> =>
+      evalJs(`
+        (() => {
+          const d = document.querySelector('[data-preview-doc]')
+          const top = sel => Math.round(d.querySelector(sel).getBoundingClientRect().top * 10) / 10
+          return { body: top('[data-sample="body"]'), head: top('[data-sample="heading"]') }
+        })()`)
+    const beforeTops = await sampleTops()
+    check('拖动「标题上方」→ 0.1 档', await setRange('input[data-heading-space="before"]', 0.1))
+    await sleep(300)
+    const afterTops = await sampleTops()
+    check(
+      '调小标题间距时正文样本不动,只有标题上移',
+      near(afterTops.body, beforeTops.body, 1) && afterTops.head < beforeTops.head - 8,
+      JSON.stringify({ beforeTops, afterTops })
+    )
+    await setRange('input[data-heading-space="before"]', 1)
+    await sleep(150)
+  }
+  check('连点正文两次进「正文 · 自身」', await selectSelf('body'))
+  {
+    const s = await paletteState()
+    console.log(`     [实测] ${JSON.stringify(s)}`)
     check(
       '自身配对 key 是 body-body,mode 是 self',
       s?.panel?.key === 'body-body' && s.panel.mode === 'self',
@@ -530,23 +632,25 @@ async function main(): Promise<void> {
     )
     check(
       '正文自身有「段间距」和「行间距」两行',
-      fields.join(',') === 'bodySpaceBetween,lineSpace',
-      JSON.stringify(fields)
+      s?.fields.join(',') === 'bodySpaceBetween,lineSpace',
+      JSON.stringify(s?.fields)
     )
+    check('预览标成同类配对(上下都是正文)', s?.preview?.mode === 'self', JSON.stringify(s?.preview))
   }
-  await shoot('ring-self', '[data-pair-panel]')
-  await evalJs(`document.querySelector('.spacing-ring-self')?.click()`)
+  await shoot('spacing-self', '[data-pair-panel]')
+  await clickNode('body')
   await sleep(120)
   check(
-    '再点「自身」退出同类配对(面板消失、中心还在)',
-    (await ringState())?.state === 'centered' && !(await evalJs<boolean>(`document.querySelector('[data-pair-panel]')`)),
-    JSON.stringify(await ringState())
+    '再点一次正文:退出自身并清空选择',
+    (await paletteState())?.state === 'empty' &&
+      !(await evalJs<boolean>(`document.querySelector('[data-pair-panel]')`)),
+    JSON.stringify(await paletteState())
   )
 
   // ---------- F ----------
   console.log('\n【F】正文自身:段间距 + 行间距,行间距改变同一段内的行高')
   check('回到三行连写的文档', await loadDoc(LINES))
-  check('打开设置 → 外观并选「正文 · 自身」', (await openAppearance()) && (await selectSelf('body')))
+  check('打开设置 → 外观并连点两次正文', (await openAppearance()) && (await selectSelf('body')))
   const heights = (): Promise<{ heights: number[]; advance: number }> =>
     evalJs(`
       (() => {
@@ -591,28 +695,29 @@ async function main(): Promise<void> {
   check('行间距也写进了 settings.json', lineSaved.lineSpace === 2, String(lineSaved.lineSpace))
 
   // ---------- G ----------
-  console.log('\n【G】表格配对:表格上方 / 下方两根滑块可调、写盘')
-  check('圆环上选「正文 ↔ 表格」', await selectPair('body', 'table'))
+  console.log('\n【G】表格配对:正文在上给表格上方,互换后给表格下方')
+  check('选「正文在上 / 表格在下」', await selectPair('body', 'table'))
   {
-    const groups = await evalJs<{ key: string; fields: string[] }>(`
-      (() => {
-        const panel = document.querySelector('[data-pair-panel]')
-        return {
-          key: panel?.getAttribute('data-pair-panel') ?? '',
-          fields: [...panel.querySelectorAll('input[data-block-space]')].map(i =>
-            i.getAttribute('data-block-space'))
-        }
-      })()`)
-    console.log(`     [实测] ${JSON.stringify(groups)}`)
+    const s = await paletteState()
+    console.log(`     [实测] ${JSON.stringify(s)}`)
     check(
-      '面板 key 是 body-table,列出表格上方 / 下方两根滑块',
-      groups.key === 'body-table' && groups.fields.join(',') === 'tableBefore,tableAfter',
-      JSON.stringify(groups)
+      '面板 key 是 body-table,只列「表格上方」',
+      s?.panel?.key === 'body-table' && s.groups.join(',') === 'body-above' && s.fields.join(',') === 'tableSpaceBefore',
+      JSON.stringify(s)
     )
   }
-  const tableSetOk =
-    (await setRange('input[data-block-space="tableBefore"]', 2)) &&
-    (await setRange('input[data-block-space="tableAfter"]', 1.5))
+  check('拖动表格上方 → 2 档', await setRange('input[data-block-space="tableBefore"]', 2))
+  await sleep(150)
+  check('互换后表格在上、正文在下', await swapSides())
+  {
+    const s = await paletteState()
+    check(
+      '方向组换成 table-above,只列「表格下方」',
+      s?.groups.join(',') === 'table-above' && s.fields.join(',') === 'tableSpaceAfter',
+      JSON.stringify(s)
+    )
+  }
+  check('拖动表格下方 → 1.5 档', await setRange('input[data-block-space="tableAfter"]', 1.5))
   await sleep(400)
   {
     const vars = {
@@ -621,7 +726,7 @@ async function main(): Promise<void> {
     }
     check(
       '表格两根根变量跟着滑块走(2 / 1.5)',
-      tableSetOk && vars.before === '2' && vars.after === '1.5',
+      vars.before === '2' && vars.after === '1.5',
       JSON.stringify(vars)
     )
   }
@@ -769,6 +874,7 @@ async function main(): Promise<void> {
       (() => {
         const cs = getComputedStyle(document.documentElement)
         const names = {
+          fontSize: '--editor-font-size',
           lineSpace: '--editor-line-space',
           headingBefore: '--md-heading-space-before',
           headingAfter: '--md-heading-space-after',
@@ -815,18 +921,24 @@ async function main(): Promise<void> {
       JSON.stringify(vars)
     )
     check(
+      '正文字号也回到默认',
+      vars.fontSize === `${EDITOR_DEFAULTS.editorFontSize}px`,
+      JSON.stringify(vars.fontSize)
+    )
+    check(
       '表格回到默认 1.7 / 0.7 档',
       vars.tableBefore === '1.7' && vars.tableAfter === '0.7',
       JSON.stringify({ before: vars.tableBefore, after: vars.tableAfter })
     )
     const nodes = await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)
-    check('重置后圆环仍在,七个块都在', nodes === 7, String(nodes))
+    check('重置后七个块仍在', nodes === 7, String(nodes))
   }
   await sleep(400)
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(
-    '恢复默认也写回了 settings.json(含表格默认)',
-    resetSaved.lineSpace === 1 &&
+    '恢复默认也写回了 settings.json(含字号与表格默认)',
+    resetSaved.editorFontSize === EDITOR_DEFAULTS.editorFontSize &&
+      resetSaved.lineSpace === 1 &&
       resetSaved.headingSpaceAfter === 1 &&
       resetSaved.codeSpaceBefore === 1 &&
       resetSaved.tableSpaceBefore === 1.7 &&
@@ -865,13 +977,20 @@ async function main(): Promise<void> {
     console.log(`     [实测] ${JSON.stringify(a11y)}`)
     check(
       '七个块节点都是 button(type=button)',
-      a11y.tagNames.every(t => t === 'BUTTON') && a11y.types.every(t => t === 'button'),
+      a11y.tagNames.length === 7 && a11y.tagNames.every(t => t === 'BUTTON') && a11y.types.every(t => t === 'button'),
       JSON.stringify(a11y)
     )
     check('空状态下 aria-pressed 全是 false', a11y.pressed.every(v => v === 'false'), JSON.stringify(a11y.pressed))
     check('提示是 role=status + aria-live=polite', a11y.hintRole === 'status' && a11y.hintLive === 'polite', JSON.stringify(a11y))
+    const hintSize = await evalJs<number>(`
+      (() => {
+        const r = document.querySelector('.spacing-ring-hint')?.getBoundingClientRect()
+        return r ? Math.max(r.width, r.height) : -1
+      })()`)
+    check('提示文字视觉上已隐藏(只留给读屏)', hintSize <= 1, String(hintSize))
   }
   await clickNode('quote')
+  await clickNode('code')
   {
     const pressed = await evalJs<Record<string, string>>(`
       (() => {
@@ -882,14 +1001,37 @@ async function main(): Promise<void> {
         return out
       })()`)
     check(
-      '选中中心后只有那一块 aria-pressed=true',
-      pressed.quote === 'true' && Object.entries(pressed).filter(([, v]) => v === 'true').length === 1,
+      '上下两块 aria-pressed=true,其余为 false',
+      pressed.quote === 'true' &&
+        pressed.code === 'true' &&
+        Object.values(pressed).filter(v => v === 'true').length === 2,
       JSON.stringify(pressed)
     )
-    const selfPressed = await evalJs<string>(
-      `document.querySelector('.spacing-ring-self')?.getAttribute('aria-pressed') ?? ''`
+    const swap = await evalJs<{ tag: string; label: string } | null>(`
+      (() => {
+        const b = document.querySelector('[data-ring-swap]')
+        return b ? { tag: b.tagName, label: b.textContent?.trim() ?? '' } : null
+      })()`)
+    check(
+      '「互换上下」是真按钮,文案可读',
+      swap?.tag === 'BUTTON' && !!swap.label.includes('互换'),
+      JSON.stringify(swap)
     )
-    check('「自身」圆点也有 aria-pressed,未选中时为 false', selfPressed === 'false', selfPressed)
+    check(
+      '互换 / 清除按钮放在左栏调色板里',
+      await evalJs<boolean>(
+        `!!document.querySelector('[data-spacing-ring] [data-ring-swap]') &&
+         !!document.querySelector('[data-spacing-ring] [data-ring-clear]')`
+      ),
+      '按钮不在调色板内'
+    )
+    const buttonGap = await evalJs<number>(`
+      (() => {
+        const swap = document.querySelector('[data-ring-swap]')?.getBoundingClientRect()
+        const clear = document.querySelector('[data-ring-clear]')?.getBoundingClientRect()
+        return swap && clear ? Math.round((clear.left - swap.right) * 10) / 10 : -1
+      })()`)
+    check('「清除」紧挨在「互换上下」右边', buttonGap >= 4 && buttonGap <= 12, String(buttonGap))
   }
 
   console.log(`\n结果:${pass} 通过,${fail} 失败\n`)

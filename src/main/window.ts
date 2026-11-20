@@ -183,7 +183,10 @@ export function createMainWindow(
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      spellcheck: false
+      spellcheck: false,
+      // 把主题交给 preload,让首帧之前就定下 data-theme;否则深色主题下
+      // body 会先按默认亮色画一帧,肉眼是白闪(见 preload/index.ts)
+      additionalArguments: [`--imark-theme=${settings.theme}`]
     }
   })
 
@@ -200,7 +203,18 @@ export function createMainWindow(
   // 选择页是固定尺寸的启动视图:双击拖拽区不该把它放大(见 setWindowView)
   else applyMaximizable(mainWindow, false)
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  /*
+   * show 之前再显式压一次窗口底色。
+   *
+   * 构造参数里的 `backgroundColor` 在 Linux 上不总能及时作用到原生窗口:窗口
+   * 映射出来的第一帧会露出白色,深色主题下就是一次白闪。实测在 show 前调用
+   * `setBackgroundColor` 后,首个可见帧就是主题底色。
+   */
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.setBackgroundColor(WINDOW_BG[settings.theme] ?? WINDOW_BG.light)
+    mainWindow.show()
+  })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     // 渲染层内的导航一律拒绝,外部链接走 shell
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)

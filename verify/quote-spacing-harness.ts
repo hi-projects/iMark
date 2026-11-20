@@ -13,8 +13,8 @@
  *   A 有空行:引用前后两条结构空行各按 1 档(16px)收紧,竖线只画在引用行
  *   B 紧贴正文(没有空行):间距落在相邻正文行的 padding 上,引用后那段
  *     懒续行按正文渲染(无竖线、无缩进),引用行本身照常有竖线
- *   C 圆环上选「正文 ↔ 引用」后有两根滑块(引用上方 / 引用下方),拖动
- *     即时生效、读数正确;值写进 settings.json,重载后按磁盘值还原
+ *   C 调色板选「正文在上 / 引用在下」后是「引用上方」,互换后是「引用下方」;
+ *     拖动即时生效、读数正确;值写进 settings.json,重载后按磁盘值还原
  *   D 「恢复默认设置」把引用间距也带回 1 档(表格回到 1.7 / 0.7 档)
  *
  * 跑法(先 `npm run build`,再在仓库根目录):
@@ -166,28 +166,38 @@ async function main(): Promise<void> {
     return false
   }
 
-  /** 圆环回到空状态:反复点中心块,直到没有中心 */
+  /** 调色板:点已选中的上块,直到回到空状态 */
   async function resetRing(): Promise<void> {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const state = await evalJs<string>(
         `document.querySelector('[data-spacing-ring]')?.getAttribute('data-ring-state') ?? ''`
       )
       if (state === 'empty') return
       await evalJs(
-        `document.querySelector('[data-spacing-ring] [data-block-role="center"]')?.click()`
+        `document.querySelector('[data-spacing-ring] [data-block-role="top"]')?.click()`
       )
-      await sleep(100)
+      await sleep(80)
     }
   }
 
-  /** 圆环:选中心 + 第二个块,等配对面板出现 */
-  async function selectPair(center: string, target: string): Promise<boolean> {
+  async function clickNode(kind: string): Promise<void> {
+    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${kind}"]')?.click()`)
+    await sleep(100)
+  }
+
+  /** 先点 top(上面),再点 bottom(下面) */
+  async function selectPair(top: string, bottom: string): Promise<boolean> {
     await resetRing()
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${center}"]')?.click()`)
-    await sleep(100)
-    await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="${target}"]')?.click()`)
-    await sleep(100)
+    await clickNode(top)
+    await clickNode(bottom)
     return waitFor(`document.querySelector('[data-pair-panel]')`, 3000)
+  }
+
+  /** 互换上下 */
+  async function swapSides(): Promise<boolean> {
+    await evalJs(`document.querySelector('[data-ring-swap]')?.click()`)
+    await sleep(150)
+    return waitFor(`document.querySelector('[data-pair-panel]')`, 2000)
   }
 
   const near = (a: number, b: number, tol = 0.6): boolean => Math.abs(a - b) <= tol
@@ -237,13 +247,11 @@ async function main(): Promise<void> {
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
   await waitFor(`document.querySelector('[data-spacing-ring]')`)
+  const quoteSelected = await selectPair('body', 'quote')
   check(
-    '圆环上选「正文 ↔ 引用」后有引用上下两根滑块',
-    (await selectPair('body', 'quote')) &&
-      (await waitFor(
-        `document.querySelector('input[data-block-space="quoteBefore"]') && document.querySelector('input[data-block-space="quoteAfter"]')`
-      )),
-    '找不到 data-block-space="quoteBefore / quoteAfter"'
+    '正文在上、引用在下:面板只列「引用上方」一根滑块',
+    quoteSelected && (await waitFor(`document.querySelector('input[data-block-space="quoteBefore"]')`)),
+    '找不到 data-block-space="quoteBefore"'
   )
 
   async function setSlider(side: string, value: number): Promise<boolean> {
@@ -258,34 +266,43 @@ async function main(): Promise<void> {
       })()`)
   }
 
+  const readoutOf = (side: string): Promise<string> =>
+    evalJs<string>(`
+      document.querySelector('input[data-block-space="${side}"]')
+        ?.closest('.settings-control')?.querySelector('.settings-readout')?.textContent ?? ''`)
+
   check('拖动引用上方 → 2 档', await setSlider('quoteBefore', 2))
+  await sleep(150)
+  const beforeReadout = await readoutOf('quoteBefore')
+  check(
+    '互换后引用在上:面板只列「引用下方」一根滑块',
+    (await swapSides()) &&
+      (await waitFor(`document.querySelector('input[data-block-space="quoteAfter"]')`)),
+    '互换后没有出现引用下方滑块'
+  )
   check('拖动引用下方 → 0.5 档', await setSlider('quoteAfter', 0.5))
   await sleep(400)
 
-  const ui = await evalJs<{ vars: Record<string, string>; readouts: Record<string, string> }>(`
+  const ui = await evalJs<{ vars: Record<string, string> }>(`
     (() => {
       const root = getComputedStyle(document.documentElement)
-      const readout = side => {
-        const input = document.querySelector('input[data-block-space="' + side + '"]')
-        return input?.closest('.settings-control')?.querySelector('.settings-readout')?.textContent ?? ''
-      }
       return {
         vars: {
           before: root.getPropertyValue('--md-quote-space-before').trim(),
           after: root.getPropertyValue('--md-quote-space-after').trim()
-        },
-        readouts: { before: readout('quoteBefore'), after: readout('quoteAfter') }
+        }
       }
     })()`)
-  console.log(`     [实测] ${JSON.stringify(ui)}`)
+  const readouts = { before: beforeReadout, after: await readoutOf('quoteAfter') }
+  console.log(`     [实测] ${JSON.stringify({ ...ui, readouts })}`)
   check('根变量跟着滑块走', ui.vars.before === '2' && ui.vars.after === '0.5', JSON.stringify(ui.vars))
   check(
     '读数按「档 · px」显示',
-    ui.readouts.before.includes('2.0 档') &&
-      ui.readouts.before.includes('32 px') &&
-      ui.readouts.after.includes('0.5 档') &&
-      ui.readouts.after.includes('8 px'),
-    JSON.stringify(ui.readouts)
+    readouts.before.includes('2.0 档') &&
+      readouts.before.includes('32 px') &&
+      readouts.after.includes('0.5 档') &&
+      readouts.after.includes('8 px'),
+    JSON.stringify(readouts)
   )
 
   const blankAfter = await lineHeightOf('cm-md-block-gap-quote-before')

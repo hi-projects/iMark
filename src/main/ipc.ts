@@ -222,7 +222,7 @@ export function registerIpc(): void {
     )
   )
 
-  ipcMain.handle(IPC.VaultClone, async (_e, raw: unknown) => {
+  ipcMain.handle(IPC.VaultClone, async (event, raw: unknown) => {
     const req = (raw && typeof raw === 'object' ? raw : {}) as Partial<CloneVaultRequest>
     const url = typeof req.url === 'string' ? req.url.trim() : ''
     if (!url) throw new Error('仓库地址不能为空')
@@ -240,7 +240,12 @@ export function registerIpc(): void {
       name,
       branch,
       username: typeof req.username === 'string' ? req.username : '',
-      secret
+      secret,
+      onProgress: progress => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.VaultCloneProgress, progress)
+        }
+      }
     })
     if (!outcome.ok) throw new Error(outcome.detail)
 

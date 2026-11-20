@@ -256,6 +256,9 @@ export function initStoreWatchers(): void {
 export function applyTheme(theme: Theme): void {
   appStore.theme = theme
   document.documentElement.dataset.theme = theme
+  // preload 为了首帧不白闪临时压过一层内联底色;正式样式已经接管,去掉它,
+  // 否则运行时切换主题会残留上一次的底色。
+  document.documentElement.style.removeProperty('background')
   // 窗口控件由主进程画:界面换成哪档,右上角那块就跟着换。
   // 不依赖「设置变了」的通知 —— 启动时任何一步失败导致界面退回默认主题时,
   // 设置并没有变,只靠那条路径会留下一块颜色不对的标题区。
