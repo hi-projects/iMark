@@ -5,10 +5,11 @@
  * `ensureBundledProvisioned()` 从 `src/main/market/builtin/` 补装扩展包,
  * 然后按用户的真实路径走一遍:
  *
- *   1 文件树「新建画布」→ 先问名称 → 文件先落盘,标签里挂载整个 iDraw 应用
+ *   1 笔记行首「+」→「画布」→ 先问名称 → 文件先落盘,图像插在「+」所在行,
+ *     标签里挂载整个 iDraw 应用;文件树不再有「新建画布」按钮
  *   2 点模板卡片 → 5 节点 / 4 连线,标签出现未保存圆点
  *   3 「保存画布」→ 不弹路径框,直接写回创建时的 SVG
- *   4 再次「新建画布」仍先问名称;「打开画布」→ 快速选择里重新打开,节点恢复
+ *   4 命令面板的「新建画布」仍先问名称;「打开画布」→ 快速选择里重新打开,节点恢复
  *   5 与文件标签互切:切走时面板隐藏但 iframe 保留,切回恢复在同一张画布
  *   6 插件跟随 iMark 主题
  *   7 打开普通 SVG → 只读预览,不出现可编辑画布
@@ -258,12 +259,48 @@ async function main(): Promise<void> {
     return clicked
   }
 
-  console.log('\n【1】文件树左上角「新建画布」先问名称,再打开编辑区标签页')
+  const click = (sel: string): Promise<boolean> =>
+    evalJs<boolean>(
+      `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true })()`
+    )
+
+  const clickTab = (title: string): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const tab = [...document.querySelectorAll('.tab')]
+        .find(item => item.querySelector('.tab-title')?.textContent?.includes(${JSON.stringify(title)}))
+      if (!tab) return false
+      tab.click()
+      return true
+    })()`)
+
+  console.log('\n【1】笔记行首「+」→「画布」:先问名称,再插入图像并打开标签页')
   check(
-    '文件树出现新建画布按钮',
-    await waitFor("document.querySelector('.explorer-actions button[title=\"新建画布\"]')", 8000)
+    '文件树不再有「新建画布」按钮',
+    await evalJs<boolean>(
+      "document.querySelector('.explorer-actions button[title=\"新建画布\"]') === null"
+    )
   )
-  await evalJs("document.querySelector('.explorer-actions button[title=\"新建画布\"]')?.click()")
+  check('行首「+」出现', await waitFor("document.querySelector('.line-plus')", 8000))
+  check(
+    '「+」在光标行(第 1 行)',
+    (await evalJs<number>(`(() => {
+      const i = [...document.querySelectorAll('.cm-content .cm-line')]
+        .findIndex(el => el.querySelector('.line-plus'))
+      return i < 0 ? -1 : i + 1
+    })()`)) === 1
+  )
+  check('「+」点得开', await click('.line-plus'))
+  check('菜单里有「画布」', await waitFor("document.querySelector('.line-menu-item')", 4000))
+  check(
+    '点「画布」',
+    await evalJs<boolean>(`(() => {
+      const el = [...document.querySelectorAll('.line-menu-item')]
+        .find(item => item.textContent?.trim() === '画布')
+      if (!el) return false
+      el.click()
+      return true
+    })()`)
+  )
   check('先弹出名称输入框', await waitFor("document.querySelector('.ext-dialog-input')", 8000))
   check(
     '输入框占位文字是「输入画布名称」',
@@ -419,8 +456,65 @@ async function main(): Promise<void> {
   check('iDraw 应用挂载完成', mounted)
   check('空画布模板卡片可见', await waitForInFrame("document.querySelector('.canvas-welcome')"))
 
+  // 回到笔记:图像要插在点「+」的那一行,并从磁盘加载出刚建好的画布
+  check('点回笔记标签', await clickTab('笔记'))
+  wc.send(IPC.MenuCommand, 'file:save')
+  await sleep(900)
+  const noteText = await readFile(note, 'utf8')
+  check(
+    '画布图像插在点「+」的下一段,alt 与画布文件名一致',
+    noteText.split('\n').findIndex(line => line.includes('![flow](')) === 2 &&
+      noteText.includes('![flow](.assets/flow.svg)'),
+    noteText.replace(/\n/g, '⏎')
+  )
+  check(
+    '笔记里的画布图像加载成功',
+    await waitFor(
+      "[...document.querySelectorAll('.cm-md-image img')].some(img => img.complete && img.naturalWidth === 1600)",
+      8000
+    )
+  )
+  check(
+    'SVG 图片右上角有「在画布中打开」',
+    await waitFor(
+      "[...document.querySelectorAll('.cm-md-image')].some(el => el.querySelector('.cm-md-svg-edit') && el.querySelector('img')?.naturalWidth === 1600)",
+      5000
+    )
+  )
+  check(
+    '点图片按钮回到画布',
+    await evalJs<boolean>(`(() => {
+      const wrap = [...document.querySelectorAll('.cm-md-image')]
+        .find(el => el.querySelector('img')?.naturalWidth === 1600)
+      const btn = wrap?.querySelector('.cm-md-svg-edit')
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`)
+  )
+  await sleep(400)
+  check(
+    '按图片路径直接打开,不弹选择画布',
+    await evalJs<boolean>("!document.querySelector('.ext-dialog-list')")
+  )
+  check(
+    '画布标签重新激活',
+    await waitFor("document.querySelector('.tab-active .tab-title')?.textContent?.includes('flow.svg')", 8000)
+  )
+
   console.log('\n【1a】同名画布在名称输入框内报错,不再弹通知')
-  await evalJs("document.querySelector('.explorer-actions button[title=\"新建画布\"]')?.click()")
+  check('回到笔记', await clickTab('笔记'))
+  check('「+」点得开', await click('.line-plus'))
+  check(
+    '点「画布」',
+    await evalJs<boolean>(`(() => {
+      const el = [...document.querySelectorAll('.line-menu-item')]
+        .find(item => item.textContent?.trim() === '画布')
+      if (!el) return false
+      el.click()
+      return true
+    })()`)
+  )
   check('再次弹出名称输入框', await waitFor("document.querySelector('.ext-dialog-input')", 8000))
   check('输入已存在的名称', await fillInput('flow.svg'))
   check(
@@ -444,6 +538,7 @@ async function main(): Promise<void> {
   await evalJs("document.querySelector('.ext-dialog .line-dialog-btn:not(.line-dialog-primary)')?.click()")
   await sleep(200)
   check('取消后对话框关闭', await evalJs<boolean>("document.querySelector('.ext-dialog-input') === null"))
+  check('回到画布标签', await clickTab('flow.svg'))
 
   console.log('\n【1b】工具栏精简为「插入」,分组形状浮层在上方展开')
   const toolbar = await inFrame<{
@@ -533,7 +628,7 @@ async function main(): Promise<void> {
     await waitFor("!document.querySelector('.tab-active.tab-dirty')")
   )
 
-  console.log('\n【4】再次新建仍先问名称;之后重新打开已有画布')
+  console.log('\n【4】命令面板的「新建画布」仍先问名称;之后重新打开已有画布')
   // 新建命令会停在名称输入框上,不能 await,否则测不到输入框
   void service.executeCommand('idraw.canvas.new').catch(() => undefined)
   check('再次新建也先弹名称输入框', await waitFor("document.querySelector('.ext-dialog-input')", 8000))
@@ -570,6 +665,13 @@ async function main(): Promise<void> {
   check(
     '标签标题显示文件名',
     await waitFor("document.querySelector('.tab-active .tab-title')?.textContent?.includes('flow.svg')")
+  )
+  check(
+    '打开画布默认 100%,不自动适应内容',
+    await waitForInFrame(
+      "document.querySelector('.canvas-zoom-label')?.textContent.trim() === '100%'",
+      5000
+    )
   )
 
   const editShot = join(ud, 'idraw-plugin-edit.png')
@@ -610,6 +712,21 @@ async function main(): Promise<void> {
     '切回后仍是同一张画布',
     await waitForInFrame("document.querySelectorAll('[data-idraw-node]').length === 5")
   )
+
+  console.log('\n【5a】画布文件更新后,切回笔记会重新加载图像')
+  const flowOnDisk = await readFile(saved, 'utf8')
+  // 笔记显示按 data-idraw-fit 收边;改这个框就能看出图片有没有重新读盘
+  await writeFile(saved, flowOnDisk.replace(/data-idraw-fit="[^"]*"/, 'data-idraw-fit="0 0 800 600"'), 'utf8')
+  await clickTab('笔记')
+  check(
+    '图像按磁盘上的最新画布尺寸显示',
+    await waitFor(
+      "[...document.querySelectorAll('.cm-md-image img')].some(img => img.complete && img.naturalWidth === 800)",
+      8000
+    )
+  )
+  await writeFile(saved, flowOnDisk, 'utf8')
+  await clickTab('flow.svg')
 
   console.log('\n【6】插件跟随 iMark 主题')
   const lightBg = await inFrame<string>(

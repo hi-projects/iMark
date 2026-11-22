@@ -1,18 +1,18 @@
 /**
  * 内置扩展的补装与「内置包为准」验收。
  *
- * 开发阶段四款官方扩展的版本号固定为 1.0.0,补装不能靠版本比较判断内容变化;
+ * 官方扩展的版本号以各自 package.json 为准,补装不能只靠版本比较判断内容变化;
  * 这里按整包 integrity 对齐,同 ID 的本地/市场副本也会被内置包覆盖。
  *
  * 判据取「登记 + 目录」两处,而不是只读内存 —— 因为「下次启动还会不会这样」才是
  * 用户真正的体验,而那取决于磁盘。
  *
  * 覆盖:
- *   - 全新环境:四款都补装;quick-edit 默认启用,其余三款默认关闭;
+ *   - 全新环境:四款都补装;advanced-edit 默认启用,其余三款默认关闭;
  *   - 并发/重复调用幂等;
  *   - bundled 来源的旧版本 → 覆盖为内置版本,启用态不变;
  *   - market / local 来源 → 覆盖为 bundled;
- *   - 比内置版本还新的 bundled 记录 → 仍按内置包覆盖(版本固定,没有降级保护)。
+ *   - 比内置版本还新的 bundled 记录 → 仍按内置包覆盖(内置包始终为准,没有降级保护)。
  *
  * 跑法:node verify/run.mjs bundled-upgrade
  */
@@ -33,7 +33,7 @@ import {
   setRecord
 } from '../src/main/extensions/installedStore'
 import { extensionDir, installedPath } from '../src/main/extensions/paths'
-import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
+import advancedEditPackage from '../src/main/market/builtin/imark.advanced-edit.imkpkg.json?raw'
 import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
 import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
 import claudeCodePackage from '../src/main/market/builtin/imark.claude-code.imkpkg.json?raw'
@@ -71,11 +71,11 @@ function parse(raw: string): Bundled {
   }
 }
 
-const QUICK = parse(quickEditPackage)
+const ADVANCED = parse(advancedEditPackage)
 const GIT = parse(gitSyncPackage)
 const AGENT = parse(agentPackage)
 const CLAUDE = parse(claudeCodePackage)
-const BUNDLED = [QUICK, GIT, AGENT, CLAUDE]
+const BUNDLED = [ADVANCED, GIT, AGENT, CLAUDE]
 
 interface InstalledFile {
   version: number
@@ -155,11 +155,11 @@ async function main(): Promise<void> {
     ensureBundledProvisioned(service)
   ])
 
-  // 开发阶段所有官方扩展版本固定为 1.0.0;内容变化由 integrity 判断。
+  // 版本号各自独立;内容变化不能只靠版本比较,仍由 integrity 判断。
   check(
-    '四款内置包版本固定为 1.0.0',
-    BUNDLED.every(bundled => bundled.manifest.version === '1.0.0'),
-    BUNDLED.map(bundled => `${bundled.id}@${bundled.manifest.version}`).join(',')
+    'Advanced Edit 仍为首次开发版本 1.0.0',
+    ADVANCED.manifest.version === '1.0.0',
+    `${ADVANCED.id}@${ADVANCED.manifest.version}`
   )
   check(
     '四款内置包都要求 iMark ^1.0.0',
@@ -213,11 +213,11 @@ async function main(): Promise<void> {
     }
   }
 
-  const quickView = await service.getExtensionView(QUICK.id)
+  const advancedView = await service.getExtensionView(ADVANCED.id)
   const gitView = await service.getExtensionView(GIT.id)
   const agentView = await service.getExtensionView(AGENT.id)
   const claudeView = await service.getExtensionView(CLAUDE.id)
-  check('quick-edit 默认启用', quickView?.enabled === true)
+  check('Advanced Edit 默认启用', advancedView?.enabled === true)
   check('git-sync 默认关闭', gitView?.enabled === false)
   check('Agent Core 默认关闭', agentView?.enabled === false)
   check('Claude Code 默认关闭', claudeView?.enabled === false)
@@ -238,14 +238,14 @@ async function main(): Promise<void> {
   check('重复调用没有改变默认启用态', (await service.getExtensionView(GIT.id))?.enabled === false)
 
   // ---------- [B2] 同版本但内容变化:按 integrity 重装 ----------
-  console.log('\n[B2] 版本号固定，内容变化 → 按 integrity 重装')
-  await fakeIntegrity(QUICK, '0'.repeat(64))
+  console.log('\n[B2] 版本号不变，内容变化 → 按 integrity 重装')
+  await fakeIntegrity(ADVANCED, '0'.repeat(64))
   await service.refreshInstalled()
   await ensureBundledProvisioned(service)
-  const refreshed = (await readInstalled()).extensions[QUICK.id]
+  const refreshed = (await readInstalled()).extensions[ADVANCED.id]
   check(
     '同版本也会被内置包覆盖',
-    refreshed?.integrity === QUICK.envelope.integrity,
+    refreshed?.integrity === ADVANCED.envelope.integrity,
     String(refreshed?.integrity)
   )
   check('来源仍是 bundled', refreshed?.source === 'bundled', String(refreshed?.source))
@@ -253,23 +253,23 @@ async function main(): Promise<void> {
   // ---------- [C] bundled 来源的旧版本:覆盖 ----------
   console.log('\n[C] bundled 来源的旧版本 → 覆盖')
   const oldVersion = '0.0.1'
-  await fakeOld(QUICK, oldVersion, 'bundled')
+  await fakeOld(ADVANCED, oldVersion, 'bundled')
   await service.refreshInstalled()
   check(
     '前提:服务看到的确实是旧版本',
-    (await service.getExtensionView(QUICK.id))?.installed?.version === oldVersion,
-    String((await service.getExtensionView(QUICK.id))?.installed?.version)
+    (await service.getExtensionView(ADVANCED.id))?.installed?.version === oldVersion,
+    String((await service.getExtensionView(ADVANCED.id))?.installed?.version)
   )
   await ensureBundledProvisioned(service)
-  const replaced = (await readInstalled()).extensions[QUICK.id]
-  check('覆盖为内置版本', replaced?.version === QUICK.manifest.version, String(replaced?.version))
+  const replaced = (await readInstalled()).extensions[ADVANCED.id]
+  check('覆盖为内置版本', replaced?.version === ADVANCED.manifest.version, String(replaced?.version))
   check('来源仍是 bundled', replaced?.source === 'bundled', String(replaced?.source))
-  check('登记 integrity 等于内置包', replaced?.integrity === QUICK.envelope.integrity)
+  check('登记 integrity 等于内置包', replaced?.integrity === ADVANCED.envelope.integrity)
   const replacedPkg = JSON.parse(
-    await readFile(join(extensionDir(QUICK.id), 'package.json'), 'utf8')
+    await readFile(join(extensionDir(ADVANCED.id), 'package.json'), 'utf8')
   ) as { version: string }
-  check('磁盘清单也是内置版本', replacedPkg.version === QUICK.manifest.version, replacedPkg.version)
-  check('覆盖不改变用户开着的状态', (await service.getExtensionView(QUICK.id))?.enabled === true)
+  check('磁盘清单也是内置版本', replacedPkg.version === ADVANCED.manifest.version, replacedPkg.version)
+  check('覆盖不改变用户开着的状态', (await service.getExtensionView(ADVANCED.id))?.enabled === true)
 
   // ---------- [D] market 来源:覆盖为内置包 ----------
   console.log('\n[D] market 来源的旧版本 → 覆盖为内置包')

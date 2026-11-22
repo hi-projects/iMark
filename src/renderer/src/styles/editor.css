@@ -80,6 +80,16 @@
   padding: 64px 0 40vh;
   max-width: calc(var(--editor-line-width) - 2 * var(--editor-line-gutter));
   margin: 0 auto;
+  /* 中英文/数字之间由浏览器自动留白;只影响排版,源码不增加空格 */
+  text-autospace: normal;
+}
+
+/* 代码与公式源码是字面内容,不做中英文自动留白 */
+.cm-md-code,
+.cm-md-inlinecode,
+.cm-md-math-src-line,
+.cm-md-math-src {
+  text-autospace: no-autospace;
 }
 
 /*
@@ -166,6 +176,8 @@
   background: var(--bg-code);
   border-radius: 4px;
   padding: 0.12em 0.4em;
+  /* 自动留白跨不过行内代码两侧的零宽 widget,这里补一点外边距 */
+  margin-inline: 0.15em;
 }
 
 /* ---------- 行内 HTML 白名单(services/inlineHtml) ---------- */
@@ -404,7 +416,7 @@
  * 的间距,行高取其中较大的一个 —— 不靠 CSS 先后顺序互相覆盖。
  */
 .cm-editor .cm-line.cm-md-block-gap {
-  line-height: max(
+  --md-gap-height: max(
     var(--md-block-gap-body, 0px),
     var(--md-block-gap-code-before, 0px),
     var(--md-block-gap-code-after, 0px),
@@ -415,6 +427,11 @@
     var(--md-block-gap-table-before, 0px),
     var(--md-block-gap-table-after, 0px)
   );
+  line-height: var(--md-gap-height);
+  /* 行高只由角色决定:光标 / 空行里的临时节点不能把行盒撑高 */
+  height: var(--md-gap-height);
+  max-height: var(--md-gap-height);
+  overflow: hidden;
 }
 
 .cm-editor .cm-line.cm-md-block-gap-body {
@@ -468,6 +485,8 @@
   ):not(.cm-md-block-gap-table-after):not(.cm-md-image-gap-blank-before-heading):not(
     .cm-md-image-gap-blank-before-body
   ):not(.cm-md-image-gap-blank-after-heading):not(.cm-md-image-gap-blank-after-body) {
+  /* 标题前这条是「整行高」的间距,不是压缩档;固定成正文行高 */
+  --md-gap-height: calc((1 + var(--editor-line-space, 1)) * 1em);
   line-height: inherit;
 }
 
@@ -602,18 +621,22 @@
 }
 
 .cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-heading {
+  --md-gap-height: var(--md-image-gap-before-heading);
   line-height: var(--md-image-gap-before-heading);
 }
 
 .cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-body {
+  --md-gap-height: var(--md-image-gap-before-body);
   line-height: var(--md-image-gap-before-body);
 }
 
 .cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-heading {
+  --md-gap-height: var(--md-image-gap-after-heading);
   line-height: var(--md-image-gap-after-heading);
 }
 
 .cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-body {
+  --md-gap-height: var(--md-image-gap-after-body);
   line-height: var(--md-image-gap-after-body);
 }
 
@@ -1247,6 +1270,39 @@
 .cm-md-image {
   display: inline-block;
   vertical-align: top;
+  /* 「在画布中打开」按钮的定位参照 */
+  position: relative;
+}
+
+/* 本地 SVG 右上角的入口:悬停/聚焦时更亮,平时压暗一点不抢图片本身 */
+.cm-md-svg-edit {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-editor);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0.72;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+
+.cm-md-svg-edit:hover,
+.cm-md-svg-edit:focus-visible {
+  opacity: 1;
+  background: var(--bg-toolbar-btn-hover);
+  color: var(--text-secondary);
 }
 
 .cm-md-image img {

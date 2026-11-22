@@ -1,5 +1,5 @@
 /**
- * quick-edit 扩展端到端验收。
+ * advanced-edit 扩展端到端验收。
  *
  * 这条链路横跨四个边界：CodeMirror 装饰（渲染层）→ 贡献点快照（主进程）
  * → 扩展宿主进程（utilityProcess 里的 `activate` / `insertTable`）
@@ -16,7 +16,7 @@
  *   7 卸载 → 目录与贡献点一起消失
  *
  * 跑法（在仓库根目录）：
- *   node verify/run.mjs quick-edit
+ *   node verify/run.mjs advanced-edit
  */
 
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
@@ -38,7 +38,7 @@ import {
 
 // 打包产物固定落在 <仓库>/out/main/ 下（见 verify/run.mjs），所以由 __dirname 往上两级。
 const REPO = join(__dirname, '..', '..')
-const QUICK_EDIT_ID = 'imark.quick-edit'
+const ADVANCED_EDIT_ID = 'imark.advanced-edit'
 
 let pass = 0
 let fail = 0
@@ -67,7 +67,7 @@ const sep = (cols: number): string => row(...(Array(cols).fill(' :---: ') as str
 
 async function main(): Promise<void> {
   if (!app.commandLine.hasSwitch('user-data-dir')) {
-    console.error('拒绝运行：必须带 --user-data-dir（用 `node verify/run.mjs quick-edit` 跑会自动带上）')
+    console.error('拒绝运行：必须带 --user-data-dir（用 `node verify/run.mjs advanced-edit` 跑会自动带上）')
     app.exit(2)
     return
   }
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
 
   // 装内置包：与市场安装走同一条校验/落盘路径（没有「因为是内置所以跳过」）
   const envelope = JSON.parse(
-    await readFile(join(REPO, 'src/main/market/builtin/imark.quick-edit.imkpkg.json'), 'utf8')
+    await readFile(join(REPO, 'src/main/market/builtin/imark.advanced-edit.imkpkg.json'), 'utf8')
   ) as unknown
   const installed = await installExtensionPackage(envelope, {
     source: 'bundled',
@@ -308,20 +308,20 @@ async function main(): Promise<void> {
 
   console.log('\n【1】内置包安装：贡献点来自 package.json，onCommand 前不 fork 宿主')
   const views = service.listExtensions()
-  const quick = views.find(v => v.descriptor.id === QUICK_EDIT_ID)
-  check('扩展列表里有 imark.quick-edit', !!quick, JSON.stringify(views.map(v => v.descriptor.id)))
-  check('默认启用', quick?.enabled === true, JSON.stringify(quick))
-  check('来源标成内置（bundled）', quick?.source === 'bundled', String(quick?.source))
+  const advanced = views.find(v => v.descriptor.id === ADVANCED_EDIT_ID)
+  check('扩展列表里有 imark.advanced-edit', !!advanced, JSON.stringify(views.map(v => v.descriptor.id)))
+  check('默认启用', advanced?.enabled === true, JSON.stringify(advanced))
+  check('来源标成内置（bundled）', advanced?.source === 'bundled', String(advanced?.source))
   check(
     '清单里声明了插入命令',
-    quick?.descriptor.contributes.commands?.some(c => c.command === 'imark.quick-edit.insertTable') === true
+    advanced?.descriptor.contributes.commands?.some(c => c.command === 'imark.advanced-edit.insertTable') === true
   )
 
   const contribs = service.getContributions()
-  const lineItem = contribs.lineMenu.find(item => item.command === 'imark.quick-edit.insertTable')
+  const lineItem = contribs.lineMenu.find(item => item.command === 'imark.advanced-edit.insertTable')
   check('贡献点快照里有这条菜单', !!lineItem, JSON.stringify(contribs.lineMenu))
   check('菜单条目带对话框（行数/列数）', lineItem?.dialog?.fields.length === 2, JSON.stringify(lineItem?.dialog))
-  check('还没有命中 onCommand，扩展未激活', !service.isActivated(QUICK_EDIT_ID))
+  check('还没有命中 onCommand，扩展未激活', !service.isActivated(ADVANCED_EDIT_ID))
   check(
     '未激活时不占用宿主进程',
     service.hostGroupsView().every(group => group.pid === null),
@@ -365,7 +365,7 @@ async function main(): Promise<void> {
   check('点得到「插入」', await click('.line-dialog-primary'))
   check('对话框关掉了', await waitFor(`!document.querySelector('.line-dialog')`, 4000))
   await sleep(600)
-  check('命令触发了宿主激活', service.isActivated(QUICK_EDIT_ID))
+  check('命令触发了宿主激活', service.isActivated(ADVANCED_EDIT_ID))
 
   // ---------- 4. 渲染与焦点 ----------
 
@@ -522,27 +522,27 @@ async function main(): Promise<void> {
   // ---------- 7. 停用 / 重新启用 ----------
 
   console.log('\n【7】停用 → 菜单与按钮消失、宿主释放；重新启用 → 恢复')
-  await service.setEnabled(QUICK_EDIT_ID, false)
-  check('停用后扩展不在启用列表', service.listExtensions().find(v => v.descriptor.id === QUICK_EDIT_ID)?.enabled === false)
-  check('贡献点里没有这条菜单', !service.getContributions().lineMenu.some(i => i.command === 'imark.quick-edit.insertTable'))
+  await service.setEnabled(ADVANCED_EDIT_ID, false)
+  check('停用后扩展不在启用列表', service.listExtensions().find(v => v.descriptor.id === ADVANCED_EDIT_ID)?.enabled === false)
+  check('贡献点里没有这条菜单', !service.getContributions().lineMenu.some(i => i.command === 'imark.advanced-edit.insertTable'))
   check('「+」按钮消失', await waitFor(`!document.querySelector('.line-plus')`, 5000))
-  check('宿主已释放', !service.isActivated(QUICK_EDIT_ID))
+  check('宿主已释放', !service.isActivated(ADVANCED_EDIT_ID))
 
-  await service.setEnabled(QUICK_EDIT_ID, true)
+  await service.setEnabled(ADVANCED_EDIT_ID, true)
   check('重新启用后「+」回来', await waitFor(`document.querySelector('.line-plus')`, 5000))
   check(
     '菜单条目重新出现',
-    service.getContributions().lineMenu.some(i => i.command === 'imark.quick-edit.insertTable')
+    service.getContributions().lineMenu.some(i => i.command === 'imark.advanced-edit.insertTable')
   )
 
   // ---------- 8. 卸载 ----------
 
   console.log('\n【8】卸载扩展：目录、贡献点、按钮一起消失')
-  await service.uninstallExtension(QUICK_EDIT_ID)
-  check('扩展列表里不再有它', !service.listExtensions().some(v => v.descriptor.id === QUICK_EDIT_ID))
+  await service.uninstallExtension(ADVANCED_EDIT_ID)
+  check('扩展列表里不再有它', !service.listExtensions().some(v => v.descriptor.id === ADVANCED_EDIT_ID))
   check('贡献点快照清空', service.getContributions().lineMenu.length === 0)
   check('「+」按钮消失', await waitFor(`!document.querySelector('.line-plus')`, 5000))
-  const dirGone = await readFile(join(ud, 'plugins', QUICK_EDIT_ID, 'package.json'), 'utf8').then(
+  const dirGone = await readFile(join(ud, 'plugins', ADVANCED_EDIT_ID, 'package.json'), 'utf8').then(
     () => false,
     () => true
   )

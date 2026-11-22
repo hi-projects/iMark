@@ -15,6 +15,9 @@ import { initLineMenu } from './services/lineMenu'
 import { initUserStyleService } from './services/userStyleService'
 import { initNotificationCapture } from './services/notificationCapture'
 
+// 临时诊断面板(仅 dev):定位「选中空行」的选区状态后删除
+if (import.meta.env.DEV) void import('./debugSelection')
+
 // 先接管浏览器的 Notification,再挂载界面:扩展的通知也要进通知中心
 initNotificationCapture()
 // 编辑器桥必须在 EditorPane 挂载前就位:它要接住第一条事务与「编辑器就绪」快照

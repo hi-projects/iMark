@@ -73,6 +73,26 @@ export function extractOutline(state: EditorState): OutlineItem[] {
   return items
 }
 
+/** 点击大纲跳转时,标题文字停在视口顶边下方多少像素(见 jumpToHeading) */
+const JUMP_MARGIN = 24
+
+/**
+ * 点击大纲后的高亮钉子。
+ *
+ * 不能只按「视口顶边所在的章节」判定:跳转把标题停在视口顶边下方 24px,标题行
+ * 自己的上留白还会把行盒再往上抬一截,视口顶边那一小段仍旧属于上一条 ——
+ * 点了哪条偏偏不高亮哪条。文档末尾的标题更极端:底部留了 40vh 余量,它根本
+ * 滚不到顶边,按位置算会一直落回前面某条。
+ *
+ * 解除看滚动位置:跳转后真正落定时的第一帧记下落点,之后滚动位置离开落点
+ * 就是用户在滚,回到滚动跟随。切换标签 / 文档变化时由调用方 clearOutlinePin。
+ */
+let pinned: { from: number; landing: number | null } | null = null
+
+export function clearOutlinePin(): void {
+  pinned = null
+}
+
 /**
  * 视口顶边所在的文档位置(用像素几何,不用预渲染范围)。
  *
@@ -87,7 +107,10 @@ function visibleTop(view: EditorView): number {
   // documentTop 是首行顶边的屏幕坐标;与滚动容器顶边相减就是已滚过的像素
   const scrolled = view.scrollDOM.getBoundingClientRect().top - view.documentTop
   if (scrolled <= 0) return 0
-  return view.lineBlockAtHeight(scrolled).from
+  // 顶边下方 JUMP_MARGIN 这一段也算当前章节:点击大纲跳转正好把标题停在这里
+  // (标题行自己的上留白还会把行盒再往上抬几个像素)。不算进来的话,点完轻轻
+  // 一滚,高亮就翻回上一条。
+  return view.lineBlockAtHeight(scrolled + JUMP_MARGIN).from
 }
 
 /** 滚动跟随:视口顶部所在章节的标题高亮 */
@@ -97,6 +120,11 @@ export function updateActiveOutline(view: EditorView): void {
     appStore.outlineActive = null
     return
   }
+  // 点过大纲:在被点的那一条上停住,直到用户自己滚动(见 pinned)
+  if (pinned) {
+    appStore.outlineActive = pinned.from
+    return
+  }
   const top = visibleTop(view)
   let active: OutlineItem | undefined
   for (const it of items) {
@@ -104,6 +132,14 @@ export function updateActiveOutline(view: EditorView): void {
     else break
   }
   appStore.outlineActive = active ? active.from : null
+}
+
+/** 跳转后的第一次滚动是它自己造成的,记下落点;之后的滚动离开落点就解除钉子 */
+function settlePinnedOutline(view: EditorView): void {
+  if (!pinned) return
+  const top = view.scrollDOM.scrollTop
+  if (pinned.landing == null) pinned.landing = top
+  else if (Math.abs(top - pinned.landing) > 1) pinned = null
 }
 
 /**
@@ -125,6 +161,7 @@ export const outlineFollower = ViewPlugin.fromClass(
       if (this.frame) return
       this.frame = requestAnimationFrame(() => {
         this.frame = 0
+        settlePinnedOutline(this.view)
         updateActiveOutline(this.view)
       })
     }
@@ -139,9 +176,12 @@ export const outlineFollower = ViewPlugin.fromClass(
 /** 点击大纲跳转:光标定位到标题起始并滚动到视口上部 */
 export function jumpToHeading(view: EditorView, item: OutlineItem): void {
   const pos = Math.min(item.from, view.state.doc.length)
+  // 先钉住高亮再滚:跳转落点不能指望「视口顶边所在章节」的判定(见 pinned)
+  pinned = { from: item.from, landing: null }
+  appStore.outlineActive = item.from
   view.dispatch({
     selection: EditorSelection.cursor(pos),
-    effects: EditorView.scrollIntoView(pos, { y: 'start', yMargin: 24 })
+    effects: EditorView.scrollIntoView(pos, { y: 'start', yMargin: JUMP_MARGIN })
   })
   view.focus()
 }

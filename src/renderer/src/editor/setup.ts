@@ -18,7 +18,12 @@ import { codeTabsField, codeTabsStripField } from './wysiwyg/codeTabs'
 import { emptyFenceDeleteFilter, emptyMathBlockDeleteFilter } from './fenceCleanup'
 import { imagePaste } from './imagePaste'
 import { imageRestore } from './imageRestore'
-import { outlineFollower, updateActiveOutline } from './outline'
+import { clearOutlinePin, outlineFollower, updateActiveOutline } from './outline'
+import { tablePaste } from './tablePaste'
+import { installImeTracking } from './ime'
+
+// 输入法组合状态只在这里记录一次,按键命令统一问它
+installImeTracking()
 
 /**
  * 光标颜色等外观覆盖。
@@ -133,6 +138,8 @@ export function buildExtensions(
     wysiwyg(),
     // 剪贴板图片:先于 CM 自带的 paste handler 拦下图片数据
     imagePaste(),
+    // 正文里粘贴表格数据(整表 Ctrl+C 后贴到别处)→ Markdown 表格
+    tablePaste(),
     // 撤销删除时把图片文件从应用回收区搬回来
     imageRestore(),
     // 光标进入公式后源码态旁边浮一块实时预览
@@ -163,6 +170,8 @@ export function buildExtensions(
     // 滚动本身由 outlineFollower 逐帧结算;这里管的是视口范围/文档/选区变化。
     outlineFollower,
     EditorView.updateListener.of(update => {
+      // 文档一变,大纲里的偏移量就重排了,点击留下的高亮钉子作废
+      if (update.docChanged) clearOutlinePin()
       if (update.viewportChanged || update.docChanged || update.selectionSet) {
         updateActiveOutline(update.view)
       }

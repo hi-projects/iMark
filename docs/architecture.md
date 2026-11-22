@@ -137,7 +137,7 @@ docs/                       本文档
    只有勾选“直接打开上次仓库”才恢复。随后 `claimVault()` 认领；若仓库已在另一个窗口打开且
    联系得上，本实例把文件转交过去并退出。
 5. `initExtensions()`：加载扩展登记表、清理中断安装、恢复 webview 记录。
-6. `ensureBundledProvisioned()`：补装五款官方内置包（quick-edit / idraw.canvas / git-sync / agent / claude-code）。
+6. `ensureBundledProvisioned()`：补装五款官方内置包（advanced-edit / idraw.canvas / git-sync / agent / claude-code）。
 7. `buildAppMenu()`：扩展快捷键必须在此之前进入原生菜单。
 8. `setPendingOpenFile()`、`prepareTaskbarIcon()`（Windows 任务栏按钮图标）、`createMainWindow()`。
 9. `ready-to-show` 后补做暂存的聚焦/文件投递；`did-finish-load` 后 `service.startup()`
@@ -317,7 +317,7 @@ RangeSet + EditorView.atomicRanges
 
 扩展清单是 `package.json`，代码在 `utilityProcess` 宿主里通过 `require('imark')` 运行。
 `ExtensionService` 负责安装、启用态、配置、密钥、激活事件、宿主分组、命令路由与崩溃重启；
-内置的四款官方扩展随应用补装，走与市场下载完全相同的校验路径。
+内置的官方扩展随应用补装，走与市场下载完全相同的校验路径。
 
 市场服务端在 `server/`，零依赖、数据落 JSON + 按 sha256 去重的 blob。安装遵循
 “预览 → 用户确认 → 安装”，确认框展示整包 sha256、入口 sha256、能力声明与贡献摘要。

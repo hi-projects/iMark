@@ -1,23 +1,23 @@
 {
-  "name": "quick-edit",
+  "name": "advanced-edit",
   "publisher": "imark",
   "version": "1.0.0",
-  "displayName": "快速编辑",
+  "displayName": "Advanced Edit",
   "description": "在行首「+」菜单里插入一张 Markdown 表格",
   "author": "iMark",
   "engines": { "imark": "^1.0.0" },
   "main": "./main.js",
   "icon": "./icon.svg",
   "activationEvents": [
-    "onCommand:imark.quick-edit.insertTable"
+    "onCommand:imark.advanced-edit.insertTable"
   ],
   "capabilities": {},
   "contributes": {
     "commands": [
       {
-        "command": "imark.quick-edit.insertTable",
+        "command": "imark.advanced-edit.insertTable",
         "title": "插入表格",
-        "category": "快速编辑",
+        "category": "Advanced Edit",
         "detail": "在光标行下方插入一张空表，光标落在第一个表头单元格"
       }
     ],
@@ -25,7 +25,7 @@
       {
         "id": "table",
         "label": "表格",
-        "command": "imark.quick-edit.insertTable",
+        "command": "imark.advanced-edit.insertTable",
         "dialog": {
           "title": "插入表格",
           "confirmLabel": "插入",

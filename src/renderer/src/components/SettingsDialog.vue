@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Cpu, PackageCheck, Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
+import { Cpu, Info, PackageCheck, Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
 import HelpTip from './HelpTip.vue'
 import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
@@ -29,6 +29,7 @@ import { extensionTone } from '../services/extensionUi'
 import PluginIcon from './plugins/PluginIcon.vue'
 import ExtensionSettings from './plugins/ExtensionSettings.vue'
 import SystemSettings from './SystemSettings.vue'
+import AboutSettings from './AboutSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
 import SpacingSettings from './SpacingSettings.vue'
 import MarketPage from './market/MarketPage.vue'
@@ -65,17 +66,24 @@ const title = computed(() => {
   }
   if (settingsNav.page === 'editor') return '编辑器'
   if (settingsNav.page === 'system') return '系统'
+  if (settingsNav.page === 'about') return '关于'
   if (settingsNav.page === 'plugin') return selectedExtension.value?.descriptor.displayName ?? '扩展'
   return '外观'
 })
 
 /** 保存方式:名称与 VS Code 的 files.autoSave 对齐,「定时保存」含 1 秒档(即实时保存) */
 const AUTO_SAVE_MODE_OPTIONS: { mode: AutoSaveMode; label: string; title: string }[] = [
-  { mode: 'off', label: '关闭', title: '只能手动保存（Ctrl+S）' },
-  { mode: 'afterDelay', label: '定时保存', title: '停止输入一段时间后写盘' },
-  { mode: 'onFocusChange', label: '切换焦点时', title: '编辑器失去焦点时写盘' },
-  { mode: 'onWindowChange', label: '切换窗口时', title: '切换到其他窗口时写盘' }
+  { mode: 'afterDelay', label: '定时保存', title: '停止输入一段时间后保存' },
+  { mode: 'onFocusChange', label: '切换焦点时', title: '编辑器失去焦点时保存' },
+  { mode: 'onWindowChange', label: '切换窗口时', title: '切换到其他窗口时保存' },
+  { mode: 'off', label: '关闭', title: '只能手动保存（Ctrl+S）' }
 ]
+
+/** 每个保存方式下面那句「什么时候触发」;定时保存直接显示当前延迟 */
+function modeDescription(mode: AutoSaveMode): string {
+  if (mode === 'afterDelay') return `停止输入 ${delayLabel(appStore.autoSaveDelay)}后保存`
+  return AUTO_SAVE_MODE_OPTIONS.find(option => option.mode === mode)?.title ?? ''
+}
 
 /** 延迟的常用档位。1 秒档适合边写边落盘的场景 */
 const DELAY_PRESETS = [
@@ -86,20 +94,6 @@ const DELAY_PRESETS = [
   { label: '5 分钟', sec: 300 },
   { label: '10 分钟', sec: 600 }
 ]
-
-/** 保存方式下方那句话:当前到底会不会自动写盘、在什么时候写 */
-const autoSaveSummary = computed(() => {
-  switch (appStore.autoSaveMode) {
-    case 'afterDelay':
-      return `已开启 · 停止输入 ${delayLabel(appStore.autoSaveDelay)}后写盘`
-    case 'onFocusChange':
-      return '已开启 · 编辑器失去焦点时写盘'
-    case 'onWindowChange':
-      return '已开启 · 切换到其他窗口时写盘'
-    default:
-      return '当前关闭，只能手动保存（Ctrl+S）'
-  }
-})
 
 /**
  * 手打延迟:越界由 clampAutoSaveDelay 夹到上下限,输入框会跟着回弹。
@@ -425,6 +419,14 @@ onBeforeUnmount(() => {
           <Settings2 :size="15" />
           <span>系统</span>
         </button>
+        <button
+          class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'about' }"
+          @click="settingsNav.page = 'about'"
+        >
+          <Info :size="15" />
+          <span>关于</span>
+        </button>
         <!-- 扩展单独一行分组:市场、扩展分配与已安装在前,下面直接列出每个已安装扩展 -->
         <div class="settings-nav-group">
           <span>扩展</span>
@@ -516,41 +518,42 @@ onBeforeUnmount(() => {
           <SystemSettings />
         </div>
 
+        <div v-else-if="settingsNav.page === 'about'" class="settings-body">
+          <AboutSettings />
+        </div>
+
         <div v-else-if="settingsNav.page === 'editor'" class="settings-body">
           <div class="settings-section">
             <div class="settings-section-head">
               <div class="settings-section-title">自动保存</div>
-              <div class="settings-section-desc">自动保存文档</div>
+              <div class="settings-section-desc">触发自动保存的时刻</div>
             </div>
 
             <div class="settings-card">
-              <div class="settings-row settings-row-stack">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">保存方式</div>
-                  <div class="settings-row-desc">{{ autoSaveSummary }}</div>
-                </div>
-                <div class="settings-control">
-                  <span class="settings-presets">
-                    <button
-                      v-for="option in AUTO_SAVE_MODE_OPTIONS"
-                      :key="option.mode"
-                      class="settings-preset"
-                      :class="{ 'settings-preset-active': appStore.autoSaveMode === option.mode }"
-                      :title="option.title"
-                      @click="setAutoSaveMode(option.mode)"
-                    >
-                      {{ option.label }}
-                    </button>
+              <div
+                v-for="option in AUTO_SAVE_MODE_OPTIONS"
+                :key="option.mode"
+                class="settings-mode"
+                :class="{ 'settings-mode-active': appStore.autoSaveMode === option.mode }"
+              >
+                <button
+                  type="button"
+                  class="settings-mode-pick"
+                  :data-autosave-mode="option.mode"
+                  :aria-pressed="appStore.autoSaveMode === option.mode"
+                  @click="setAutoSaveMode(option.mode)"
+                >
+                  <span class="settings-mode-radio" aria-hidden="true"></span>
+                  <span class="settings-mode-body">
+                    <span class="settings-mode-title">{{ option.label }}</span>
+                    <span class="settings-mode-desc">{{ modeDescription(option.mode) }}</span>
                   </span>
-                </div>
-              </div>
+                </button>
 
-              <div v-if="appStore.autoSaveMode === 'afterDelay'" class="settings-row settings-row-stack">
-                <div class="settings-row-info">
-                  <div class="settings-row-title">保存延迟</div>
-                  <div class="settings-row-desc">自动保存间隔时长，最短{{ AUTO_SAVE_DELAY_MIN }}秒，文档没有改动时，不触发自动保存</div>
-                </div>
-                <div class="settings-control">
+                <div
+                  v-if="option.mode === 'afterDelay' && appStore.autoSaveMode === 'afterDelay'"
+                  class="settings-mode-delay"
+                >
                   <span class="settings-presets">
                     <button
                       v-for="p in DELAY_PRESETS"
@@ -679,7 +682,7 @@ onBeforeUnmount(() => {
               <div class="settings-row">
                 <div class="settings-row-info">
                   <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">其他各类文字根据正文字号按比例缩放。只影响编辑器，不影响导出。</div>
+                  <div class="settings-row-desc">其他各类文字根据正文字号按比例缩放，只影响显示，不影响导出。</div>
                 </div>
                 <div class="settings-control">
                   <input

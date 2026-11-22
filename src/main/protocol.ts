@@ -43,6 +43,99 @@ function allowedRoots(): string[] {
 }
 
 /**
+ * iDraw 画布在笔记里的显示方式。
+ *
+ * 文件本身保留白色页面和「页面 ∪ 内容」的 viewBox —— 外部查看器看到的是一张
+ * 固定尺寸、白底的图;`data-idraw-fit` 是引擎写下的内容紧边界。笔记里的图片
+ * 去掉白底、按这个边界收边:背景就是笔记自己的主题背景,图片也不会用一整张
+ * 空页面把内容压得很小。
+ */
+const IDRAW_PAGE_RE = /<rect\b[^>]*\bdata-idraw-page="1"[^>]*\/>\s*/i
+const MAX_FIT_SVG_BYTES = 8 * 1024 * 1024
+/** 与 iDraw 的 CONTENT_MARGIN 一致:紧边界四周留出的空白 */
+const IDRAW_MARGIN = 40
+
+/** 读一个数字属性;缺失或不是数字返回 null */
+function attrNumber(tag: string, name: string): number | null {
+  const m = new RegExp(`\\s${name}="([^"]*)"`).exec(tag)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isFinite(n) ? n : null
+}
+
+/** 根节点自己的 viewBox(x y w h) */
+function rootViewBox(text: string): [number, number, number, number] | null {
+  const tag = /<svg\b[^>]*>/.exec(text)?.[0]
+  if (!tag) return null
+  const raw = /\sviewBox="([^"]*)"/.exec(tag)?.[1]
+  const parts = raw?.trim().split(/[\s,]+/).map(Number)
+  if (parts?.length === 4 && parts.every(Number.isFinite) && parts[2]! > 0 && parts[3]! > 0) {
+    return parts as [number, number, number, number]
+  }
+  const w = attrNumber(tag, 'width')
+  const h = attrNumber(tag, 'height')
+  return w && h && w > 0 && h > 0 ? [0, 0, w, h] : null
+}
+
+/** 旧文件没有 data-idraw-fit:按节点框算一个紧边界(连线端点都在节点上) */
+function nodeFit(text: string): [number, number, number, number] | null {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let found = false
+  for (const [tag] of text.matchAll(/<g\b[^>]*\bdata-idraw-node="[^"]*"[^>]*>/g)) {
+    const x = attrNumber(tag, 'data-idraw-x')
+    const y = attrNumber(tag, 'data-idraw-y')
+    const w = attrNumber(tag, 'data-idraw-w')
+    const h = attrNumber(tag, 'data-idraw-h')
+    if (x === null || y === null || w === null || h === null) continue
+    found = true
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x + w)
+    maxY = Math.max(maxY, y + h)
+  }
+  if (!found) return null
+  return [minX - IDRAW_MARGIN, minY - IDRAW_MARGIN, maxX - minX + IDRAW_MARGIN * 2, maxY - minY + IDRAW_MARGIN * 2]
+}
+
+function fitCanvasPreview(buf: Buffer): Buffer | null {
+  if (buf.byteLength > MAX_FIT_SVG_BYTES) return null
+  const text = buf.toString('utf8')
+  // 不是 iDraw 画布(没有这个标记)就原样返回
+  if (!/\bdata-idraw-canvas="1"/.test(text)) return null
+  const m = /\bdata-idraw-fit="([^"]+)"/.exec(text)
+  let box: [number, number, number, number] | null = null
+  if (m) {
+    const parts = m[1]!.trim().split(/[\s,]+/).map(Number)
+    if (parts.length === 4 && parts.every(Number.isFinite) && parts[2]! > 0 && parts[3]! > 0) {
+      box = parts as [number, number, number, number]
+    }
+  }
+  box ??= nodeFit(text) ?? rootViewBox(text)
+  if (!box) return null
+  const [x, y, w, h] = box
+  let out = text.replace(IDRAW_PAGE_RE, '')
+  out = out.replace(/<svg\b[^>]*>/, tag => {
+    const attrs: [string, string][] = [
+      ['width', String(w)],
+      ['height', String(h)],
+      ['viewBox', `${x} ${y} ${w} ${h}`]
+    ]
+    let next = tag
+    for (const [name, value] of attrs) {
+      const re = new RegExp(`\\s${name}="[^"]*"`)
+      next = re.test(next)
+        ? next.replace(re, ` ${name}="${value}"`)
+        : next.replace(/^<svg\b/, `<svg ${name}="${value}"`)
+    }
+    return next
+  })
+  return Buffer.from(out, 'utf8')
+}
+
+/**
  * imark://img/<encodeURIComponent(绝对路径)>
  * 渲染层的 <img> 通过该协议加载本地图片。直接 fs 读取,不走 net.fetch(file://),规避二次编码问题。
  *
@@ -71,7 +164,8 @@ export function registerImarkProtocol(): void {
         return new Response('Outside allowed roots', { status: 403 })
       }
       const buf = await fs.promises.readFile(p)
-      return new Response(buf, {
+      const preview = mime === 'image/svg+xml' ? fitCanvasPreview(buf) : null
+      return new Response(preview ?? buf, {
         headers: { 'content-type': mime }
       })
     } catch {

@@ -178,7 +178,25 @@ async function main(): Promise<void> {
 
   async function clickMode(label: string): Promise<boolean> {
     const ok = await evalJs<boolean>(
-      `(() => { const b = [...document.querySelectorAll('.settings-card .settings-preset')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); b?.click(); return !!b })()`
+      `(() => {
+        const b = [...document.querySelectorAll('[data-autosave-mode]')]
+          .find(x => (x.querySelector('.settings-mode-title')?.textContent ?? '').trim() === ${JSON.stringify(label)})
+        b?.click()
+        return !!b
+      })()`
+    )
+    await sleep(400)
+    return ok
+  }
+
+  async function clickDelayPreset(label: string): Promise<boolean> {
+    const ok = await evalJs<boolean>(
+      `(() => {
+        const b = [...document.querySelectorAll('.settings-mode-delay .settings-preset')]
+          .find(x => x.textContent.trim() === ${JSON.stringify(label)})
+        b?.click()
+        return !!b
+      })()`
     )
     await sleep(400)
     return ok
@@ -219,12 +237,12 @@ async function main(): Promise<void> {
   await openEditorSettings()
   const modeState = await evalJs<{ labels: string[]; timedActive: boolean; delayRow: boolean }>(`
     (() => {
-      const buttons = [...document.querySelectorAll('.settings-card .settings-preset')]
-      const labels = buttons.map(b => b.textContent.trim())
-      const timed = buttons.find(b => b.textContent.trim() === '定时保存')
+      const buttons = [...document.querySelectorAll('[data-autosave-mode]')]
+      const labels = buttons.map(b => (b.querySelector('.settings-mode-title')?.textContent ?? '').trim())
+      const timed = buttons.find(b => (b.querySelector('.settings-mode-title')?.textContent ?? '').trim() === '定时保存')
       return {
         labels,
-        timedActive: timed?.classList.contains('settings-preset-active') === true,
+        timedActive: timed?.closest('.settings-mode')?.classList.contains('settings-mode-active') === true,
         delayRow: !!document.querySelector('.settings-number')
       }
     })()`)
@@ -235,7 +253,7 @@ async function main(): Promise<void> {
   check('定时模式显示保存延迟', modeState.delayRow, JSON.stringify(modeState))
 
   // 切到 1 秒档:最快的一档,方便后面的断言快速看到结果
-  check('能点中 1 秒档', await clickMode('1 秒'))
+  check('能点中 1 秒档', await clickDelayPreset('1 秒'))
   const oneSecond = await readSettings()
   check(
     '1 秒档已落进 settings.json',

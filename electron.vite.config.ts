@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
+import pkg from './package.json'
 
 // Electron 44.7.0 的 Windows 包没有随附 crashpad_handler.exe,Chromium 每次启动都会
 // 打印 `registration_protocol_win.cc ... CreateFile ... (0x2)`(崩溃上报的命名管道
@@ -55,6 +56,15 @@ export default defineConfig({
   },
   renderer: {
     plugins: [vue()],
+    // 关于页显示应用版本:构建时从 package.json 注入,避免在界面里再维护一份常量
+    define: {
+      __APP_VERSION__: JSON.stringify(pkg.version)
+    },
+    // Mermaid 自带的动态 chunk 会被 Vite 预打包拆成 dist-*.js,运行时请求的
+    // 文件名与优化产物对不上;让它走原生 ESM,不再进依赖预打包。
+    optimizeDeps: {
+      exclude: ['mermaid']
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),

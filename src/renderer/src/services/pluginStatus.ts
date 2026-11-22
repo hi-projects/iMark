@@ -3,7 +3,7 @@
  *
  * 关键区分:**启用态 ≠ 上一次操作的成败**。
  * `status` 只描述扩展自己 `reportStatus()` 的结论(idle/running/ok/partial/error),
- * 而像 quick-edit 这种只在行首菜单里被点一下的扩展,启用后可能永远没有「操作」,
+ * 而像 Advanced Edit 这种只在行首菜单里被点一下的扩展,启用后可能永远没有「操作」,
  * 但它确实已经跑起来了。所以圆点先看 enabled,再让 error/running 覆盖它。
  *
  * 扩展视图同时带 `runtime.status`(inactive/activating/active/failed/…);

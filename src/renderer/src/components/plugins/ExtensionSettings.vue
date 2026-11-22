@@ -485,7 +485,7 @@ const busy = computed(() => extensionStore.busy !== null)
   <!-- 扩展设置(选中哪个由左侧导航决定) -->
   <div v-if="selected" class="plugin-page">
     <div class="plugin-detail-head">
-      <span class="plugin-detail-version">v{{ selected.descriptor.version }}</span>
+      <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
       <label class="plugin-switch" :title="selected.enabled ? '停用' : '启用'">
         <input
           type="checkbox"
@@ -496,8 +496,6 @@ const busy = computed(() => extensionStore.busy !== null)
         <span class="plugin-switch-track" />
       </label>
     </div>
-
-    <p class="plugin-field-desc">{{ selected.descriptor.description }}</p>
 
     <div v-if="selected.loadError" class="plugin-status-card plugin-status-card-error">
       <div class="plugin-status-line">

@@ -2,13 +2,15 @@
  * 表格单元格的「新增行列对齐 / 行内 Markdown+LaTeX / 区域复制粘贴」端到端验证。
  *
  * 覆盖三件事:
- *   1. 表头/正文默认居中(quick-edit 插出来的是 `:---:`)时,用表格四周的「+」
+ *   1. 表头/正文默认居中(advanced-edit 插出来的是 `:---:`)时,用表格四周的「+」
  *      新增的行、列也必须是居中的 —— 列的对齐标记在分隔行里,新列不能凭空退成
  *      `---`(左对齐);新行则要按所在列的对齐走。
  *   2. 单元格在渲染态走 markdown-it 行内渲染:粗体/代码/行内公式都该变成真元素,
  *      而不是露出源码;以 `- ` / `1. ` 开头的整格内容折成 <ul>/<ol>。
  *   3. 拖选一块矩形单元格后 Ctrl+C 复制成 TSV;把光标放进某一格再 Ctrl+V,
  *      按原样(几行几列)写进去 —— 超出表格范围时表格跟着长。
+ *   4. 结构选区上直接打字:第一枚字符进入编辑态;多格选中时同一段文字
+ *      实时同步到每一格、提交时一次写回(输入法组字也走这条路)。
  *
  * 跑法(在仓库根目录):
  *   xvfb-run -a node verify/run.mjs table-cells
@@ -45,7 +47,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-/** quick-edit 插出来的表长这样:全空的 3×3,所有列居中 */
+/** advanced-edit 插出来的表长这样:全空的 3×3,所有列居中 */
 const CENTERED_3X3 = [
   '|         |         |         |',
   '| :---: | :---: | :---: |',
@@ -737,6 +739,279 @@ async function main(): Promise<void> {
     activePaste.items.length === 2,
     JSON.stringify(activePaste.items)
   )
+
+  // ---------- 8. 整表选中 → Ctrl+C → 正文里 Ctrl+V ----------
+
+  console.log('\n【8】整表选中后 Ctrl+C,在正文里 Ctrl+V:应粘回一张表,不是一段制表符文本')
+
+  const sourceLines = (): Promise<string[]> =>
+    evalJs<string[]>(`(() => {
+      const view = document.querySelector('.cm-content').cmTile.root.view
+      return view.state.doc.toString().split('\\n')
+    })()`)
+
+  const allTables = (): Promise<Array<{ th: string[]; rows: string[][] }>> =>
+    evalJs(`[...document.querySelectorAll('.cm-content .cm-md-table-widget table')].map(t => ({
+      th: [...t.querySelectorAll('thead th')].map(el => el.textContent.trim()),
+      rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(el => el.textContent.trim()))
+    }))`)
+
+  /** 轮询页面条件 */
+  async function waitFor(code: string, ms = 5000): Promise<boolean> {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (await evalJs<boolean>(`(() => { try { return !!(${code}) } catch { return false } })()`)) return true
+      await sleep(80)
+    }
+    return false
+  }
+
+  /** 点到某一行文字的右侧,把光标放进那一行 */
+  async function clickLineContaining(text: string): Promise<boolean> {
+    const p = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const line = [...document.querySelectorAll('.cm-content .cm-line')]
+          .find(el => (el.textContent || '').includes(${JSON.stringify(text)}))
+        if (!line) return null
+        const r = line.getBoundingClientRect()
+        return { x: Math.round(r.right - 8), y: Math.round(r.top + r.height / 2) }
+      })()`)
+    if (!p) return false
+    wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+    await sleep(350)
+    return true
+  }
+
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  check('点表格浮动控件「选中整表」', await clickControl('[data-act="select-table"]'))
+  check(
+    '整表选区出现(描边高亮)',
+    await waitFor(`document.querySelector('.cm-md-table-frame.is-selected')`, 3000)
+  )
+  await hotkey('c')
+  check('点进表格下方的正文行', await clickLineContaining('末尾'))
+  await hotkey('v')
+  await sleep(500)
+
+  const afterPaste = await sourceLines()
+  const tablesAfter = await allTables()
+  console.log(`    粘贴后表格数=${tablesAfter.length} 源码=${JSON.stringify(afterPaste)}`)
+  check('粘贴后文档里有两张表(原表 + 粘进来的)', tablesAfter.length === 2, String(tablesAfter.length))
+  check(
+    '粘贴出来的表和复制的表内容一致',
+    JSON.stringify(tablesAfter[1]?.th) === JSON.stringify(['姓名', '年龄', '城市']) &&
+      JSON.stringify(tablesAfter[1]?.rows) === JSON.stringify([
+        ['张三', '30', '北京'],
+        ['李四', '25', '上海']
+      ]),
+    JSON.stringify(tablesAfter[1])
+  )
+  check(
+    '源码里是 Markdown 表格(没有制表符)',
+    afterPaste.some(line => /^\|\s*:?-{3,}/.test(line)) &&
+      afterPaste.every(line => !line.includes('\t')),
+    JSON.stringify(afterPaste)
+  )
+  check(
+    '列对齐也带过来了(居中 → :---:)',
+    afterPaste.includes('| :---: | :---: | :---: |'),
+    JSON.stringify(afterPaste)
+  )
+
+  // 新建的空文档里直接 Ctrl+V(剪贴板里还是刚才那张表)
+  await loadDoc('')
+  await hotkey('v')
+  await sleep(400)
+  const emptyDocTables = await allTables()
+  const emptyDocSource = await sourceLines()
+  check(
+    '空文档里 Ctrl+V 也直接成表',
+    emptyDocTables.length === 1 && emptyDocSource[0]?.startsWith('|'),
+    JSON.stringify(emptyDocSource)
+  )
+
+  // 外部 TSV(只有纯文本、没有 HTML)同样按表格贴
+  await loadDoc(`开头\n\n末尾\n`)
+  clipboard.writeText('A\tB\nC\tD')
+  check('点进正文行(TSV)', await clickLineContaining('末尾'))
+  await hotkey('v')
+  await sleep(400)
+  const tsvTables = await allTables()
+  check(
+    '纯 TSV 也变成表格',
+    tsvTables.length === 1 &&
+      JSON.stringify(tsvTables[0]?.th) === JSON.stringify(['A', 'B']) &&
+      JSON.stringify(tsvTables[0]?.rows) === JSON.stringify([['C', 'D']]),
+    JSON.stringify(tsvTables)
+  )
+
+  // 多行散文(没有制表符)不能误判成表格
+  await loadDoc(`开头\n\n末尾\n`)
+  clipboard.writeText('第一行文字\n第二行文字')
+  check('点进正文行(纯文本)', await clickLineContaining('末尾'))
+  await hotkey('v')
+  await sleep(400)
+  const plainTables = await allTables()
+  const plainSource = await sourceLines()
+  check(
+    '多行纯文本仍按普通文本粘贴',
+    plainTables.length === 0 && plainSource.some(line => line.includes('第一行文字')),
+    JSON.stringify(plainSource)
+  )
+
+  // 复制单个格子:贴回正文就是一段文字,不该冒出一张单列表
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  await dragSelect([1, 0], [1, 0])
+  await hotkey('c')
+  check('点进正文行(单格)', await clickLineContaining('末尾'))
+  await hotkey('v')
+  await sleep(400)
+  const cellTables = await allTables()
+  const cellSource = await sourceLines()
+  check(
+    '单个格子贴回正文仍是文字',
+    cellTables.length === 1 && cellSource.some(line => line.startsWith('末尾张三')),
+    JSON.stringify(cellSource)
+  )
+
+  // ---------- 9. 选中单元格后直接输入 ----------
+
+  console.log('\n【9】选中单元格后直接打字:进入编辑态;多格选中时同步输入同样内容')
+
+  const selectedCells = (): Promise<number> =>
+    evalJs(`document.querySelectorAll('.cm-md-table-selected').length`)
+
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  await dragSelect([1, 0], [1, 0])
+  check('拖出 1×1 选区', (await selectedCells()) === 1, String(await selectedCells()))
+  await hotkey('z', [])
+  const typing = await evalJs<{ text: string; editable: string | null } | null>(`
+    (() => {
+      const el = document.querySelector('.cm-md-table-cell-editing')
+      return el ? { text: el.textContent || '', editable: el.getAttribute('contenteditable') } : null
+    })()`)
+  check(
+    '选中一格后直接打字 = 进入编辑态并写入该字符',
+    typing?.text === 'z' && typing?.editable === 'plaintext-only',
+    JSON.stringify(typing)
+  )
+  await hotkey('Enter', [])
+  await sleep(400)
+  const typedSingle = await grid()
+  check(
+    '回车提交后落在单元格里',
+    typedSingle.rows[0]?.[0] === 'z',
+    JSON.stringify(typedSingle.rows)
+  )
+  check(
+    '源码里也写进去了',
+    (await sourceLines()).some(line => line.includes('| z |')),
+    JSON.stringify(await sourceLines())
+  )
+
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  await dragSelect([1, 0], [2, 1])
+  check('拖出 2×2 选区', (await selectedCells()) === 4, String(await selectedCells()))
+  await hotkey('m', [])
+  const mirrored = await grid()
+  check(
+    '第一枚字符同时铺到选中的 4 格',
+    mirrored.rows[0]?.[0] === 'm' &&
+      mirrored.rows[0]?.[1] === 'm' &&
+      mirrored.rows[1]?.[0] === 'm' &&
+      mirrored.rows[1]?.[1] === 'm',
+    JSON.stringify(mirrored.rows)
+  )
+  // 后续字符走真实的文本输入(焦点已经在可编辑的单元格里)
+  wc.sendInputEvent({ type: 'char', keyCode: 'n' })
+  await sleep(250)
+  const mirroredMore = await grid()
+  check(
+    '继续输入时 4 格保持同样内容',
+    mirroredMore.rows[0]?.[0] === 'mn' &&
+      mirroredMore.rows[0]?.[1] === 'mn' &&
+      mirroredMore.rows[1]?.[0] === 'mn' &&
+      mirroredMore.rows[1]?.[1] === 'mn',
+    JSON.stringify(mirroredMore.rows)
+  )
+  await hotkey('Enter', [])
+  await sleep(400)
+  const typedMulti = await grid()
+  const typedSource = await sourceLines()
+  check(
+    '回车提交后 4 格都落在源码里',
+    typedSource.filter(line => line.includes('| mn | mn |')).length === 2,
+    JSON.stringify(typedSource)
+  )
+  check(
+    '没选中的格子保持原样',
+    typedMulti.rows[0]?.[2] === '北京' && typedMulti.rows[1]?.[2] === '上海',
+    JSON.stringify(typedMulti.rows)
+  )
+
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  await dragSelect([1, 0], [2, 1])
+  await hotkey('q', [])
+  await hotkey('Escape', [])
+  await sleep(350)
+  const cancelled = await grid()
+  check(
+    'Esc 取消:选区内容原样恢复',
+    cancelled.rows[0]?.[0] === '张三' &&
+      cancelled.rows[1]?.[0] === '李四' &&
+      cancelled.rows[0]?.[1] === '30',
+    JSON.stringify(cancelled.rows)
+  )
+  check(
+    'Esc 取消不改文档',
+    (await sourceLines()).some(line => line.includes('张三')) &&
+      !(await sourceLines()).some(line => line.includes('| q |')),
+    JSON.stringify(await sourceLines())
+  )
+
+  // 输入法:组字键(Process / 229)先进入编辑态,组合文字落到单元格里
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  await dragSelect([1, 0], [2, 1])
+  const imeStarted = await evalJs<boolean>(`(() => {
+    const frame = document.querySelector('.cm-md-table-frame')
+    if (!frame) return false
+    frame.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Process', keyCode: 229, bubbles: true, cancelable: true })
+    )
+    return true
+  })()`)
+  await sleep(250)
+  const imeEditing = await evalJs<boolean>(
+    `!!document.activeElement && document.activeElement.classList.contains('cm-md-table-cell-editing')`
+  )
+  check('输入法组字键先进入编辑态', imeStarted && imeEditing, `started=${imeStarted}`)
+
+  wc.debugger.attach('1.3')
+  const cdp = (method: string, params?: unknown): Promise<unknown> =>
+    wc.debugger.sendCommand(method, params)
+  await cdp('Input.imeSetComposition', { text: '中', selectionStart: 1, selectionEnd: 1 })
+  await sleep(300)
+  const imeGrid = await grid()
+  check(
+    '组字中的文字同时出现在 4 格',
+    imeGrid.rows[0]?.[0] === '中' &&
+      imeGrid.rows[0]?.[1] === '中' &&
+      imeGrid.rows[1]?.[0] === '中' &&
+      imeGrid.rows[1]?.[1] === '中',
+    JSON.stringify(imeGrid.rows)
+  )
+  await cdp('Input.insertText', { text: '中' })
+  await sleep(300)
+  await hotkey('Enter', [])
+  await sleep(400)
+  const imeSource = await sourceLines()
+  check(
+    '输入法输入提交后 4 格都写进源码',
+    imeSource.filter(line => line.includes('| 中 | 中 |')).length === 2,
+    JSON.stringify(imeSource)
+  )
+  wc.debugger.detach()
 
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })

@@ -719,7 +719,7 @@ class AgentHost {
     return removed
   }
 
-  /** 设置页的「立即清理过期会话」：手动执行一次，结果写进状态卡与调试日志 */
+  /** 设置页的「清理过期会话」：手动执行一次，结果写进状态卡与调试日志 */
   private async cleanupNow(): Promise<ActionResult> {
     const config = this.config ?? this.refreshConfig()
     if (config.sessionRetentionDays <= 0) {

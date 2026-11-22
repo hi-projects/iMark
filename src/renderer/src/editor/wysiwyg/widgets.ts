@@ -5,6 +5,7 @@ import { syntaxTree } from '@codemirror/language'
 import katex from 'katex'
 import { renderInline } from './inline'
 import { mermaidErrorMessage, renderMermaid, type MermaidTheme } from '../../services/mermaid'
+import { runExtensionCommand } from '../../services/extensionService'
 import { copyText } from '../../utils/clipboard'
 import { formatWidthsDirective, normalizeWidths } from '../../services/tableWidths'
 
@@ -123,6 +124,35 @@ export class CheckboxWidget extends WidgetType {
 const IMAGE_RETRY_LIMIT = 10
 const IMAGE_RETRY_DELAY_MS = 200
 
+/**
+ * 本地 SVG 图片的绝对路径;远程 / data 图片没有可交给画布编辑的文件。
+ * `resolveImageSrc` 生成的本地图片 URL 是 `imark://img/<encodeURIComponent(绝对路径)>`。
+ */
+function localSvgPath(src: string): string | null {
+  const prefix = 'imark://img/'
+  if (!src.startsWith(prefix)) return null
+  let path = ''
+  try {
+    path = decodeURIComponent(src.slice(prefix.length))
+  } catch {
+    return null
+  }
+  return /\.svg$/i.test(path) ? path : null
+}
+
+/** 图片右上角「在画布中打开」的铅笔图标 */
+const SVG_EDIT_ICON =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+
+/**
+ * 本地图片的加载版本号。
+ *
+ * 同一个路径的内容会在编辑器之外变掉(iDraw 保存画布、撤销把图片搬回来),
+ * 而 Blink 的图片缓存只看 URL —— 不换 URL 的话,切回笔记/重建 widget 后
+ * 拿到的仍是上一版。每次创建 `<img>` 加一个不同的版本串,强制重新读盘。
+ */
+let imageLoadVersion = 0
+
 /** 图片:光标在节点内时显示原始语法,节点外渲染真图。点击交给 CM(映射到节点边缘 → 触发显形) */
 export class ImageWidget extends WidgetType {
   constructor(
@@ -136,11 +166,14 @@ export class ImageWidget extends WidgetType {
     return other.src === this.src && other.alt === this.alt
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement('span')
     wrap.className = 'cm-md-image cm-md-widget'
     const img = document.createElement('img')
-    img.src = this.src
+    const local = this.src.startsWith('imark://')
+    // 见 imageLoadVersion:本地图片每次出现都当新内容去读
+    const initial = local ? `${this.src}?v=${++imageLoadVersion}` : this.src
+    img.src = initial
     if (this.alt) {
       img.alt = this.alt
       img.title = this.alt
@@ -153,10 +186,10 @@ export class ImageWidget extends WidgetType {
     img.addEventListener('error', () => {
       // 撤销删除时文件是异步搬回来的:本地图片在最初两秒里重试,
       // 而不是把第一次「文件还没到位」当成永久失败。加查询串是为了绕开失败缓存。
-      if (this.src.startsWith('imark://') && retries < IMAGE_RETRY_LIMIT) {
+      if (local && retries < IMAGE_RETRY_LIMIT) {
         retries += 1
         setTimeout(() => {
-          if (img.isConnected) img.src = `${this.src}?retry=${retries}`
+          if (img.isConnected) img.src = `${initial}&retry=${retries}`
         }, IMAGE_RETRY_DELAY_MS)
         return
       }
@@ -166,7 +199,45 @@ export class ImageWidget extends WidgetType {
       wrap.appendChild(label)
     })
     wrap.appendChild(img)
+
+    // 本地 SVG 右上角给一个入口:直接交给 iDraw 打开,接着编辑。
+    // 远程 SVG 没有本地文件可开;普通 SVG 在画布里是只读预览。
+    const svgPath = localSvgPath(this.src)
+    if (svgPath) {
+      const edit = document.createElement('button')
+      edit.type = 'button'
+      edit.className = 'cm-md-svg-edit'
+      edit.title = '在画布中打开'
+      edit.setAttribute('aria-label', '在画布中打开')
+      edit.innerHTML = SVG_EDIT_ICON
+      // 别让编辑器把这次点击当成「进入图片源码」
+      edit.addEventListener('mousedown', e => {
+        e.preventDefault()
+        e.stopPropagation()
+      })
+      edit.addEventListener('click', e => {
+        e.preventDefault()
+        e.stopPropagation()
+        void runExtensionCommand('idraw.canvas.open', [{ path: svgPath }], 'action')
+      })
+      wrap.appendChild(edit)
+    }
+
+    /*
+     * 图片尺寸是异步落定的(加载完成、失败重试、画布保存后重读),而行高缓存
+     * 不会自己更新。不通知 CodeMirror 的话,之后插入的代码块等块级 widget 会
+     * 先按旧高度落在图片的位置上,等测量完成再被挪到正确位置 —— 看上去就是
+     * 「在画布位置闪一下」。ResizeObserver 在尺寸真正变化后补一次测量。
+     */
+    const observer = new ResizeObserver(() => remeasureWidget(view))
+    observer.observe(wrap)
+    resizeObservers.set(wrap, observer)
     return wrap
+  }
+
+  destroy(dom: HTMLElement): void {
+    resizeObservers.get(dom)?.disconnect()
+    resizeObservers.delete(dom)
   }
 
   ignoreEvent(): boolean {
@@ -304,6 +375,14 @@ type TableSelection =
   | { kind: 'range'; rowFrom: number; rowTo: number; colFrom: number; colTo: number }
   | null
 
+/** 结构选区里直接输入:这一块里的每一格都写同一段文字(见 startTypingInSelection) */
+interface TableEditRange {
+  rowFrom: number
+  rowTo: number
+  colFrom: number
+  colTo: number
+}
+
 /** 围绕表格的浮动控件(插行/删行/插列/删列/选整表/删整表/整表对齐) */
 interface TableControls {
   selectTable: HTMLButtonElement
@@ -339,7 +418,17 @@ interface TableDomState {
   model: TableSpec
   /** 上一轮模型的表首位置。DOM 被复用给**另一张**表时用它识别 */
   tableFrom: number
-  active: { cell: HTMLElement; row: number; col: number } | null
+  active: {
+    cell: HTMLElement
+    row: number
+    col: number
+    /** 多格直接输入的目标块;提交时这段文字写进块里每一格(见 flushActive) */
+    mirror?: TableEditRange
+    /** 输入法组字进过这一格(决定"空内容别提交"的安全网) */
+    touched?: boolean
+    /** 输入时把文字同步给镜像格的监听;releaseActive 时摘掉 */
+    onInput?: () => void
+  } | null
   selection: TableSelection
   controls: TableControls | null
   layoutScheduled: boolean
@@ -433,7 +522,7 @@ function normalizeCellText(raw: string): string {
 }
 
 /** 语义文本 → 源码。竖线必须转义,否则一格会被拆成两格 */
-function escapeCell(text: string): string {
+export function escapeCell(text: string): string {
   let out = ''
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
@@ -467,7 +556,7 @@ function serializeDelimiter(align: TableAlign[]): string {
  * 新增列该用什么对齐。
  *
  * 对齐是按列写在分隔行里的,新列没有"自己的"标记,不主动挑一个就会落到
- * `---`(左对齐)。而 quick-edit 插出来的表整张都是 `:---:`,用户看到的是
+ * `---`(左对齐)。而 Advanced Edit 插出来的表整张都是 `:---:`,用户看到的是
  * "默认居中",用「+」加一列却左对齐 —— 同一张表里两种对齐,很割裂。
  * 规则:
  *   - 全表对齐一致时跟着它(最常见的情况:整张表居中);
@@ -559,8 +648,50 @@ function releaseActive(state: TableDomState): void {
   if (!active) return
   state.active = null
   activeTableStates.delete(state)
+  if (active.onInput) active.cell.removeEventListener('input', active.onInput)
   active.cell.removeAttribute('contenteditable')
   active.cell.classList.remove('cm-md-table-cell-editing')
+}
+
+/** 把选区范围夹进当前表格(编辑期间表格可能被增删行/列) */
+function clampRange(state: TableDomState, range: TableEditRange): TableEditRange {
+  const rows = allRows(state.model).length
+  const cols = state.model.columns
+  const rowFrom = Math.max(0, Math.min(range.rowFrom, rows - 1))
+  const rowTo = Math.max(rowFrom, Math.min(range.rowTo, rows - 1))
+  const colFrom = Math.max(0, Math.min(range.colFrom, cols - 1))
+  const colTo = Math.max(colFrom, Math.min(range.colTo, cols - 1))
+  return { rowFrom, rowTo, colFrom, colTo }
+}
+
+/**
+ * 输入过程中把正在编辑那一格的文字同步到选中块里的其余格。
+ * 只改 DOM:模型在提交时一次性写(见 flushActive),中途取消按模型重画即可还原。
+ */
+function paintMirror(state: TableDomState): void {
+  const active = state.active
+  if (!active?.mirror) return
+  const range = clampRange(state, active.mirror)
+  const text = active.cell.innerText ?? ''
+  for (let r = range.rowFrom; r <= range.rowTo; r++) {
+    for (let c = range.colFrom; c <= range.colTo; c++) {
+      if (r === active.row && c === active.col) continue
+      const cell = state.rows[r]?.[c]
+      if (cell && cell.textContent !== text) cell.textContent = text
+    }
+  }
+}
+
+/** 按模型重画一块格子:取消编辑、或者空输入没有落盘时,把镜像文字收回去 */
+function repaintRange(state: TableDomState, range: TableEditRange): void {
+  const rows = allRows(state.model)
+  const clamped = clampRange(state, range)
+  for (let r = clamped.rowFrom; r <= clamped.rowTo; r++) {
+    for (let c = clamped.colFrom; c <= clamped.colTo; c++) {
+      if (!state.rows[r]?.[c]) continue
+      paintCell(state, r, c, rows[r]?.cells[c]?.text ?? '')
+    }
+  }
 }
 
 /**
@@ -572,17 +703,59 @@ function releaseActive(state: TableDomState): void {
 function flushActive(state: TableDomState): boolean {
   const active = state.active
   if (!active) return false
-  const row = rowOf(state.model, active.row)
+  const rows = allRows(state.model)
+  const row = rows[active.row]
   const cell = row?.cells[active.col]
   const text = normalizeCellText(active.cell.innerText ?? '')
-  if (!row || !cell || text === cell.text) return false
+  if (!row || !cell) return false
   // 编辑期间文档可能已被整个换掉(setState):位置对不上就绝不落笔
   if (state.view.state.doc.sliceString(row.from, row.to) !== row.raw) return false
 
-  cell.text = text
-  state.view.dispatch({
-    changes: { from: row.from, to: row.to, insert: serializeRow(row.cells, state.model.columns) }
-  })
+  // 单击进入编辑:只改这一格
+  if (!active.mirror) {
+    if (text === cell.text) return false
+    cell.text = text
+    state.view.dispatch({
+      changes: { from: row.from, to: row.to, insert: serializeRow(row.cells, state.model.columns) }
+    })
+    return true
+  }
+
+  /*
+   * 多格直接输入:同一段文字写进选区的每一格。
+   * 只对内容真的变了的行各发一次整行重写 —— 放进同一个 dispatch,
+   * 一次撤销就能整体收回。
+   *
+   * 输入法那一路(first key 是 Process)可能一个字都没组进来就失焦:
+   * 此时不落盘,免得把整块选中格清空。
+   */
+  if (text === '' && !active.touched) return false
+  const range = clampRange(state, active.mirror)
+  const columns = state.model.columns
+  const doc = state.view.state.doc
+  const changes: Array<{ from: number; to: number; insert: string }> = []
+  for (let r = range.rowFrom; r <= range.rowTo; r++) {
+    const spec = rows[r]
+    if (!spec) continue
+    if (doc.sliceString(spec.from, spec.to) !== spec.raw) continue
+    // 缺的尾列补成空单元格:与表头同一条规则,序列化时一并写全
+    while (spec.cells.length < columns) {
+      spec.cells.push({ text: '', from: spec.to, to: spec.to })
+    }
+    let changed = false
+    for (let c = range.colFrom; c <= range.colTo; c++) {
+      const target = spec.cells[c]
+      if (target && target.text !== text) {
+        target.text = text
+        changed = true
+      }
+    }
+    if (changed) {
+      changes.push({ from: spec.from, to: spec.to, insert: serializeRow(spec.cells, columns) })
+    }
+  }
+  if (changes.length === 0) return false
+  state.view.dispatch({ changes })
   return true
 }
 
@@ -609,25 +782,46 @@ function writeCellText(state: TableDomState, rowIndex: number, colIndex: number,
 function finishEdit(state: TableDomState, rerender: boolean): void {
   const active = state.active
   if (!active) return
+  const mirror = active.mirror
   flushActive(state)
   releaseActive(state)
   if (!rerender) return
+  // 多格输入:整块按模型重画(空输入没落盘时也要把镜像文字收回去)
+  if (mirror) {
+    repaintRange(state, mirror)
+    return
+  }
   // 模型在 flush 的 dispatch 里已经换过一份;仍在使用同一个 DOM 时按新模型重画
   if (state.rows[active.row]?.[active.col] !== active.cell) return
   const row = rowOf(state.model, active.row)
   paintCell(state, active.row, active.col, row?.cells[active.col]?.text ?? '')
 }
 
-function startEdit(state: TableDomState, row: number, col: number, x?: number, y?: number): void {
-  if (state.active) finishEdit(state, true)
-  const cell = state.rows[row]?.[col]
-  const spec = rowOf(state.model, row)?.cells[col]
-  if (!cell || !spec) return
-
-  cell.textContent = spec.text
+/**
+ * 把某一格切成输入框并记为当前编辑格。
+ *
+ * 初始文字与「多格同步」由调用方决定:单击进入沿用原文;结构选区里直接输入
+ * 则换成第一枚字符,并把选区记成镜像范围(见 startTypingInSelection)。
+ */
+function beginCellEdit(
+  state: TableDomState,
+  cell: HTMLElement,
+  row: number,
+  col: number,
+  text: string,
+  mirror?: TableEditRange
+): void {
+  cell.textContent = text
   cell.setAttribute('contenteditable', 'plaintext-only')
   cell.classList.add('cm-md-table-cell-editing')
-  state.active = { cell, row, col }
+  const onInput = mirror
+    ? (): void => {
+        if (state.active) state.active.touched = true
+        paintMirror(state)
+      }
+    : undefined
+  if (onInput) cell.addEventListener('input', onInput)
+  state.active = { cell, row, col, mirror, onInput }
   activeTableStates.add(state)
   // 直接挂在单元格上:切文件时 DOM 被移除,委托到 wrap 的监听可能已经收不到,
   // 而挂在目标上的 blur 监听一定会响。此时 stale 检查会拦下对**新**文档的误写。
@@ -638,10 +832,39 @@ function startEdit(state: TableDomState, row: number, col: number, x?: number, y
     },
     { once: true }
   )
+}
+
+function startEdit(state: TableDomState, row: number, col: number, x?: number, y?: number): void {
+  if (state.active) finishEdit(state, true)
+  const cell = state.rows[row]?.[col]
+  const spec = rowOf(state.model, row)?.cells[col]
+  if (!cell || !spec) return
+
+  beginCellEdit(state, cell, row, col, spec.text)
   cell.focus()
   // 光标位置要在**换成源码文本之后**再按坐标算:点的是渲染后的字,落点该落在源码里
   const offset = x != null && y != null ? caretOffsetAt(cell, x, y) : null
   setCaret(cell, offset ?? spec.text.length)
+}
+
+/**
+ * 结构选区里按下第一枚字符:直接进入编辑态。
+ *
+ * 与单击进入不同,这里**替换**原有内容(和电子表格一致:选中格子再打字就是输入新值)。
+ * 多格选中时这一格是输入源:输入过程中其余格实时同步,提交时同一段文字写进每一格。
+ *
+ * `initial` 通常就是按下的那枚字符;输入法那一路先传空串进入编辑态,
+ * 让组字在单元格里继续(空组字失焦不会落盘,见 flushActive)。
+ */
+function startTypingInSelection(state: TableDomState, sel: TableEditRange, initial: string): void {
+  if (state.active) finishEdit(state, true)
+  const range = clampRange(state, sel)
+  const cell = state.rows[range.rowFrom]?.[range.colFrom]
+  if (!cell) return
+  beginCellEdit(state, cell, range.rowFrom, range.colFrom, initial, range)
+  cell.focus({ preventScroll: true })
+  setCaret(cell, initial.length)
+  paintMirror(state)
 }
 
 /**
@@ -680,7 +903,12 @@ function startEditAfterChange(
 function cancelEdit(state: TableDomState): void {
   const active = state.active
   if (!active) return
+  const mirror = active.mirror
   releaseActive(state)
+  if (mirror) {
+    repaintRange(state, mirror)
+    return
+  }
   const row = rowOf(state.model, active.row)
   paintCell(state, active.row, active.col, row?.cells[active.col]?.text ?? '')
 }
@@ -1255,13 +1483,13 @@ function applyHoverControls(state: TableDomState): void {
  * 控件放在表格四周。顶部控件浮在表格顶边之上(负坐标),
  * 底边正好贴住表格上沿 —— 和表格之间没有空隙,鼠标移上去不会先掉出去。
  */
-/** 行删除 × 在左留白居中 */
+/** 行插入 + 在左留白居中(表格前方) */
 const CTL_LEFT = 12
-/** 右侧留白里行插入 + 的中心 */
+/** 右侧留白里行删除 × 的中心(表格后方) */
 const CTL_RIGHT = 14
 /**
  * 右上角整表按钮组:相对表格右边缘的横向偏移、组内纵向间距。
- * 横向偏移 32 是为了让开行插入 + (中心 +14,占 6..22),两组按钮不会叠在一起。
+ * 横向偏移 32 是为了让开行删除 × (中心 +14,占 6..22),两组按钮不会叠在一起。
  */
 const CTL_GROUP_X = 32
 const CTL_GROUP_GAP = 20
@@ -1269,8 +1497,8 @@ const CTL_GROUP_GAP = 20
 const CTL_SHOW_MARGIN = 16
 /**
  * 行列控件的响应带(以表格边缘为基准):
- *   - 左:行删除 × 的外沿(frame 左留白 24 - 控件中心 12 - 半宽 8);
- *   - 右:行插入 + 的外沿(中心 14 + 半宽 8);
+ *   - 左:行插入 + 的外沿(frame 左留白 24 - 控件中心 12 - 半宽 8);
+ *   - 右:行删除 × 的外沿(中心 14 + 半宽 8);
  *   - 上:顶部列按钮的外沿(中心 8 + 半宽 8)。
  * 鼠标在更远的空白处时,即使 x / y 恰好与某一行列对齐,也不点亮控件。
  */
@@ -1311,8 +1539,9 @@ function layoutControls(state: TableDomState): void {
   trs.forEach((tr, r) => {
     const rect = tr.getBoundingClientRect()
     const centerY = rect.top + rect.height / 2 - frameRect.top
-    place(controls.rowDeletes[r], CTL_LEFT, centerY)
-    place(controls.addRows[r], tableRight + CTL_RIGHT, rect.bottom - frameRect.top)
+    // 加号在前(左)、叉在后(右):插入贴着行下边界,删除对着行中线
+    place(controls.addRows[r], CTL_LEFT, rect.bottom - frameRect.top)
+    place(controls.rowDeletes[r], tableRight + CTL_RIGHT, centerY)
   })
 
   const headCells = Array.from(headRow.cells)
@@ -1815,6 +2044,17 @@ function selectionGrid(state: TableDomState): string[][] | null {
   return grid
 }
 
+/** 选区覆盖的列各自的对齐方式(复制到 HTML 时带上,贴回正文才不会丢) */
+function selectionAligns(state: TableDomState): TableAlign[] {
+  const sel = state.selection
+  if (!sel) return []
+  if (sel.kind === 'table') return state.model.align
+  const cols = state.model.columns
+  const colFrom = Math.max(0, Math.min(sel.colFrom, cols - 1))
+  const colTo = Math.max(colFrom, Math.min(sel.colTo, cols - 1))
+  return state.model.align.slice(colFrom, colTo + 1)
+}
+
 function gridToTsv(grid: string[][]): string {
   return grid.map(row => row.join('\t')).join('\n')
 }
@@ -1827,10 +2067,23 @@ function escapeHtmlText(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** 给表格外的应用(Excel / 文档)一份 HTML,纯文本仍是 TSV —— 两边都贴得进去 */
-function gridToHtml(grid: string[][]): string {
+/**
+ * 给表格外的应用(Excel / 文档)一份 HTML,纯文本仍是 TSV —— 两边都贴得进去。
+ *
+ * 每格带上 `data-align`:贴回正文时(见 editor/tablePaste.ts)要靠它把列对齐
+ * 还原成分隔行里的 `:---:` / `---:`,否则复制粘贴一圈后居中会变成左对齐。
+ */
+function gridToHtml(grid: string[][], aligns: TableAlign[] = []): string {
   const rows = grid
-    .map(row => `<tr>${row.map(cell => `<td>${escapeHtmlText(cell)}</td>`).join('')}</tr>`)
+    .map(
+      row =>
+        `<tr>${row
+          .map((cell, c) => {
+            const align = aligns[c] ? ` data-align="${aligns[c]}"` : ''
+            return `<td${align}>${escapeHtmlText(cell)}</td>`
+          })
+          .join('')}</tr>`
+    )
     .join('')
   return `<table>${rows}</table>`
 }
@@ -1855,7 +2108,7 @@ function copySelectionTo(event: ClipboardEvent, state: TableDomState): boolean {
   // 拿不到 clipboardData 时别拦:让浏览器的默认复制去处理,至少不会吞掉按键
   if (!data) return false
   data.setData('text/plain', gridToTsv(grid))
-  data.setData('text/html', gridToHtml(grid))
+  data.setData('text/html', gridToHtml(grid, selectionAligns(state)))
   event.preventDefault()
   /*
    * 必须在捕获阶段截住整个事件:CodeMirror 在 contentDOM 上的 copy 处理器会
@@ -1871,7 +2124,7 @@ function copySelectionTo(event: ClipboardEvent, state: TableDomState): boolean {
  *
  * 末尾单个空行不算一行(Excel 复制时总是带一个),否则每次粘贴都会多出一行空行。
  */
-function parseClipboardGrid(text: string): string[][] | null {
+export function parseClipboardGrid(text: string): string[][] | null {
   if (!text) return null
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
@@ -1880,12 +2133,12 @@ function parseClipboardGrid(text: string): string[][] | null {
 }
 
 /** 剪贴板 HTML 里有没有真表格(iMark 自己复制表格、Excel 都会带) */
-function htmlHasTable(html: string): boolean {
+export function htmlHasTable(html: string): boolean {
   return /<table[\s>]/i.test(html)
 }
 
 /** HTML 行内标签 → Markdown。只处理格子里用得上的几种,不认识的标签取文字 */
-function inlineMarkdown(node: Node): string {
+export function inlineMarkdown(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
   if (!(node instanceof Element)) return ''
   const children = (): string => Array.from(node.childNodes, inlineMarkdown).join('')
@@ -2292,6 +2545,13 @@ function bindTableEvents(state: TableDomState): void {
       }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
+        // 多格输入:提交后就地结束,不再按单格编辑的规则跳到下一行
+        if (active.mirror) {
+          finishEdit(state, true)
+          clearSelection(state)
+          state.frame.focus({ preventScroll: true })
+          return
+        }
         const row = active.row
         const col = active.col
         if (row + 1 < allRows(state.model).length) {
@@ -2305,6 +2565,12 @@ function bindTableEvents(state: TableDomState): void {
       }
       if (e.key === 'Tab') {
         e.preventDefault()
+        if (active.mirror) {
+          finishEdit(state, true)
+          clearSelection(state)
+          state.frame.focus({ preventScroll: true })
+          return
+        }
         const row = active.row
         const col = active.col
         const columns = state.model.columns
@@ -2365,6 +2631,32 @@ function bindTableEvents(state: TableDomState): void {
     }
     // 按钮不拦:Enter / Space 要能触发它的 click
     if (e.target instanceof HTMLButtonElement) return
+    /*
+     * 结构选区上直接打字:第一枚字符进入编辑态(替换原内容),多格选中时同一段
+     * 文字同步写进每一格(见 startTypingInSelection)。焦点在 frame 上才接 ——
+     * 控件按钮自己处理按键。
+     */
+    const sel = state.selection
+    if (
+      sel?.kind === 'range' &&
+      e.target === state.frame &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !isAlignMenuOpen(state)
+    ) {
+      if (e.key.length === 1 && !e.isComposing) {
+        e.preventDefault()
+        startTypingInSelection(state, sel, e.key)
+        return
+      }
+      // 输入法:Windows 上组字键是 Process / 229。先进入编辑态,不拦默认行为,
+      // 让组合输入落到刚聚焦的单元格里;一个字都没组进来就失焦不会落盘。
+      if (e.key === 'Process' || e.keyCode === 229) {
+        startTypingInSelection(state, sel, '')
+        return
+      }
+    }
     if (!e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault()
   })
 

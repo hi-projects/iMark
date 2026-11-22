@@ -93,7 +93,10 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSave: false
+        autoSave: false,
+        // 行高断言按 18px 正文字号标定;显式固定,别跟着应用默认值漂
+        editorFontSize: 18,
+        editorFontSizeVersion: 2
       },
       null,
       2

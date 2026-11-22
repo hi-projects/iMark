@@ -91,9 +91,12 @@ interface Snap {
   headings: { text: string; top: number }[]
 }
 
+/** 与 outline.ts 的 JUMP_MARGIN 一致:视口顶边下方这一段也算「当前章节」 */
+const JUMP_MARGIN = 24
+
 /**
  * 大纲此刻**应该**高亮哪一节:视口最高处落在哪一节里就选谁 ——
- * 也就是最后一个起点不高于视口顶边的标题。
+ * 也就是最后一个起点不高于「视口顶边 + JUMP_MARGIN」的标题。
  * 与 src/renderer/src/editor/outline.ts 的 visibleTop 保持同一条规则。
  *
  * 依赖"视口上方的邻近标题仍在 DOM 里":CM 会多渲染视口上方最多 1000px,
@@ -101,8 +104,8 @@ interface Snap {
  */
 function expectedActive(s: Snap): string {
   let want = ''
-  for (const h of s.headings) if (h.top <= 0.5) want = h.text
-  // 没有任何标题高于视口顶边 = 已经在文档最顶部,第一个标题就是当前节
+  for (const h of s.headings) if (h.top < JUMP_MARGIN) want = h.text
+  // 没有任何标题落在视口顶边这一带 = 已经在文档最顶部,第一个标题就是当前节
   return want || (s.headings[0]?.text ?? '')
 }
 
@@ -267,6 +270,53 @@ async function main(): Promise<void> {
   await scrollTo(0)
   const back = await snap()
   check('长文档:滚回顶部回到第一节', back.active === '章节1', `active=${back.active}`)
+
+  // ---------- 点击大纲:跳转落点与高亮必须是同一条 ----------
+  // 跳转把标题停在视口顶边下方,顶边那一小段仍属于上一条;文档末尾的标题
+  // 还滚不到顶边。只按视口几何判定时,点哪条偏偏不高亮哪条。
+  const clickOutline = async (index: number): Promise<void> => {
+    await evalJs(`(() => {
+      const items = [...document.querySelectorAll('.outline-item')]
+      if (items[${index}]) items[${index}].click()
+      return true
+    })()`)
+    // 跳转的滚动 → 一帧 rAF → Vue 渲染,留足余量
+    await sleep(500)
+  }
+
+  for (const index of [2, 10, 19]) {
+    await clickOutline(index)
+    const s = await snap()
+    const want = s.outline[index] ?? ''
+    // 标题行的 textContent 里还带着行首折叠按钮的「+」,用包含判断
+    const heading = s.headings.find(h => h.text.includes(want))
+    console.log(
+      `    点击第 ${index + 1} 条「${want}」→ scrollTop=${s.scrollTop} 首条可见行="${s.firstVisible}" ` +
+        `标题 top=${heading ? Math.round(heading.top) : '不在 DOM'} 实际高亮=${s.active}`
+    )
+    check(`点击大纲第 ${index + 1} 条:跳转后高亮就是它`, want !== '' && s.active === want, `期望 ${want},实际 ${s.active}`)
+  }
+
+  // 点完只往回滚一点点(标题还停在视口顶边附近):高亮不能立刻翻回上一条
+  await clickOutline(10)
+  const landing = await snap()
+  await scrollTo(landing.scrollTop - 10)
+  const nudged = await snap()
+  check(
+    '点击后轻微滚动:高亮仍停在点中的那一条',
+    nudged.active === '章节11',
+    `scrollTop=${nudged.scrollTop},实际 ${nudged.active}`
+  )
+
+  // 点完之后用户自己滚动,高亮要回到跟随(点击钉住不能赖着不走)
+  await scrollTo(maxScroll * 0.5)
+  const afterPin = await snap()
+  const wantAfterPin = expectedActive(afterPin)
+  check(
+    '点击大纲后继续滚动:高亮恢复跟随',
+    wantAfterPin !== '' && afterPin.active === wantAfterPin,
+    `期望 ${wantAfterPin},实际 ${afterPin.active}`
+  )
 
   // ---------- 短文档:整篇都在预渲染范围里 ----------
   // 这种文档滚动时视口范围不变,updateListener 的 viewportChanged 不会触发;

@@ -50,6 +50,13 @@ async function main(): Promise<void> {
     openedPaths.push(path)
     return ''
   }
+  // 关于页的 GitHub 按钮会调用 shell.openExternal:验收里只记录 URL,别真的拉起浏览器
+  const openedExternal: string[] = []
+  ;(shell as unknown as { openExternal: (url: string) => Promise<void> }).openExternal = async (
+    url: string
+  ) => {
+    openedExternal.push(url)
+  }
 
   const ud = app.getPath('userData')
   const vault = join(ud, 'vault')
@@ -155,13 +162,13 @@ async function main(): Promise<void> {
     '右侧标题为「已安装扩展」',
     await waitFor(`document.querySelector('.settings-main-header h1')?.textContent?.trim() === '已安装扩展'`)
   )
-  check('四款内置扩展出现在列表里', await waitFor(`document.querySelectorAll('.market-row').length === 4`))
+  check('五款内置扩展出现在列表里', await waitFor(`document.querySelectorAll('.market-row').length === 5`))
   check(
-    '四款扩展的图标都加载出来了',
+    '五款扩展的图标都加载出来了',
     await waitFor(
       `[...document.querySelectorAll('.market-row .plugin-icon')]
         .filter(el => el.tagName === 'IMG' && el.naturalWidth > 0 &&
-          (el.getAttribute('src') || '').startsWith('data:image/svg+xml')).length === 4`
+          (el.getAttribute('src') || '').startsWith('data:image/svg+xml')).length === 5`
     )
   )
   check(
@@ -211,8 +218,8 @@ async function main(): Promise<void> {
     await evalJs<boolean>(`document.querySelectorAll('.market-row-perm').length === 0`)
   )
   check(
-    'quick-edit 默认启用、git-sync 默认停用',
-    rows.some(r => r.name.includes('快速编辑') && !r.status.includes('已停用')) &&
+    'Advanced Edit 默认启用、git-sync 默认停用',
+    rows.some(r => r.name.includes('Advanced Edit') && !r.status.includes('已停用')) &&
       rows.some(r => r.name.includes('远程同步') && r.status.includes('已停用')),
     JSON.stringify(rows)
   )
@@ -221,6 +228,109 @@ async function main(): Promise<void> {
     rows.some(r => r.name.includes('Agent Core') && r.status.includes('已停用')) &&
       rows.some(r => r.name === 'Claude Code' && r.status.includes('已停用')),
     JSON.stringify(rows)
+  )
+
+  console.log('\n[A2] 关于页:本应用与应用矩阵')
+  const onAbout = await evalJs<boolean>(`(() => {
+    const b = [...document.querySelectorAll('.settings-nav-item')]
+      .find(x => x.textContent.trim() === '关于')
+    if (!b) return false
+    b.click()
+    return true
+  })()`)
+  check(
+    '左栏能进入关于页',
+    onAbout && (await waitFor(`document.querySelector('.settings-about')`))
+  )
+  const aboutUi = await evalJs<{
+    title: string
+    sections: string[]
+    name: string
+    version: string
+    desc: string
+    familyName: string
+    familyDesc: string
+    icons: number
+  }>(`(() => {
+    const main = document.querySelector('.settings-about')
+    const family = document.querySelector('.settings-family-app')
+    const icons = [...document.querySelectorAll('.settings-about img, .settings-family-app-icon')]
+    return {
+      title: document.querySelector('.settings-main-header h1')?.textContent?.trim() ?? '',
+      sections: [...document.querySelectorAll('.settings-section-title')].map(el => el.textContent?.trim() ?? ''),
+      name: main?.querySelector('h3')?.textContent?.trim() ?? '',
+      version: main?.querySelector('p')?.textContent?.trim() ?? '',
+      desc: document.querySelector('.settings-about-desc')?.textContent?.trim() ?? '',
+      familyName: family?.querySelector('.settings-family-app-name')?.textContent?.trim() ?? '',
+      familyDesc: family?.querySelector('.settings-family-app-desc')?.textContent?.trim() ?? '',
+      icons: icons.filter(el => el.tagName === 'IMG' && el.naturalWidth > 0).length
+    }
+  })()`)
+  check(
+    '关于页展示本应用名称与版本',
+    aboutUi.title === '关于' &&
+      aboutUi.name === 'iMark' &&
+      aboutUi.version === `版本 ${APP_VERSION}`,
+    JSON.stringify(aboutUi)
+  )
+  check(
+    '关于页有「本应用」与「应用矩阵」两个模块',
+    aboutUi.sections.includes('本应用') && aboutUi.sections.includes('应用矩阵'),
+    JSON.stringify(aboutUi.sections)
+  )
+  check(
+    '应用矩阵展示 iDraw 图标与简介',
+    aboutUi.icons === 2 &&
+      aboutUi.desc.includes('专注文字创作') &&
+      aboutUi.familyName === 'iDraw' &&
+      aboutUi.familyDesc.includes('专注绘制流程图与示意图'),
+    JSON.stringify(aboutUi)
+  )
+
+  const navOrder = await evalJs<{
+    groups: string[]
+    aboutAfterSystem: boolean
+    extensionNext: boolean
+  }>(`(() => {
+    const nav = document.querySelector('.settings-nav')
+    const items = [...nav.querySelectorAll('.settings-nav-item')]
+    const about = items.find(x => x.textContent.trim() === '关于')
+    const system = items.find(x => x.textContent.trim() === '系统')
+    const next = about?.nextElementSibling
+    return {
+      groups: [...nav.querySelectorAll('.settings-nav-group')].map(g => g.textContent.trim()),
+      aboutAfterSystem: !!about && !!system && system.nextElementSibling === about,
+      extensionNext:
+        next?.classList.contains('settings-nav-group') === true &&
+        (next.textContent ?? '').includes('扩展')
+    }
+  })()`)
+  check(
+    '关于放在选项组最后、扩展分组之前',
+    !navOrder.groups.includes('应用') && navOrder.aboutAfterSystem && navOrder.extensionNext,
+    JSON.stringify(navOrder)
+  )
+
+  const githubLink = await evalJs<{ exists: boolean; title: string }>(`(() => {
+    const b = document.querySelector('.settings-family-app[data-app="idraw"] .settings-family-app-link')
+    return { exists: !!b, title: b?.getAttribute('title') ?? '' }
+  })()`)
+  check(
+    '应用矩阵每行提供 GitHub 入口',
+    githubLink.exists && githubLink.title === '在 GitHub 上查看 iDraw',
+    JSON.stringify(githubLink)
+  )
+  const clickedGithub = await evalJs<boolean>(`(() => {
+    const b = document.querySelector('.settings-family-app[data-app="idraw"] .settings-family-app-link')
+    if (!b) return false
+    b.click()
+    return true
+  })()`)
+  for (let i = 0; i < 20 && openedExternal.length === 0; i++) await sleep(100)
+  check(
+    'GitHub 入口用系统浏览器打开对应仓库',
+    clickedGithub && openedExternal[0] === 'https://github.com/hi-projects/iDraw',
+    JSON.stringify(openedExternal)
   )
 
   console.log('\n[B] 浏览市场:离线提示,不崩')
@@ -253,16 +363,21 @@ async function main(): Promise<void> {
       .find(x => x.textContent.trim() === '已安装')
     if (b) b.click()
   })()`)
-  await waitFor(`document.querySelectorAll('.market-row').length === 4`)
+  await waitFor(`document.querySelectorAll('.market-row').length === 5`)
   const toSettings = await evalJs<boolean>(`(() => {
-    const row = [...document.querySelectorAll('.market-row')].find(r => r.textContent.includes('快速编辑'))
+    const row = [...document.querySelectorAll('.market-row')].find(r => r.textContent.includes('Advanced Edit'))
     const b = row ? [...row.querySelectorAll('button')].find(x => x.textContent.trim() === '设置') : null
     if (!b) return false
     b.click()
     return true
   })()`)
   check('从已安装行进入扩展设置', toSettings)
-  check('设置页显示扩展名与启用开关', await waitFor(`document.querySelector('.plugin-detail-version') && document.querySelector('.plugin-switch')`))
+  check(
+    '设置页只有启用开关，不再显示版本',
+    await waitFor(
+      `document.querySelector('.plugin-switch') && !document.querySelector('.plugin-detail-version')`
+    )
+  )
   check(
     '调试区没有日志时给出空态说明',
     await waitFor(`document.querySelector('.plugin-ops-empty')?.textContent.includes('还没有日志')`)
@@ -365,28 +480,30 @@ async function main(): Promise<void> {
         )`
       ))
   )
-  const claudeGroupFields = await evalJs<string[]>(`(() => {
-    const group = [...document.querySelectorAll('.plugin-group')]
-      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
-    return group
-      ? [...group.querySelectorAll('.plugin-field-label')].map(el => el.textContent.trim())
-      : []
+  const claudeFields = await evalJs<{ all: string[]; external: string[] }>(`(() => {
+    const groups = [...document.querySelectorAll('.plugin-group')]
+    const labels = g => [...g.querySelectorAll('.plugin-field-label')].map(el => el.textContent.trim())
+    const external = groups.find(
+      g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code（settings.json）'
+    )
+    return {
+      all: [...document.querySelectorAll('.plugin-field-label')].map(el => el.textContent.trim()),
+      external: external ? labels(external) : []
+    }
   })()`)
-  const effortAt = claudeGroupFields.findIndex(label => label.includes('推理强度'))
-  const extraAt = claudeGroupFields.findIndex(label => label.includes('额外参数'))
+  const effortAt = claudeFields.all.findIndex(label => label.includes('推理强度'))
+  const extraAt = claudeFields.all.findIndex(label => label.includes('额外参数'))
   check(
-    '推理强度与额外参数在 Claude Code 模块内且顺序正确',
-    effortAt >= 0 && extraAt > effortAt,
-    JSON.stringify(claudeGroupFields)
+    '推理强度在外部设置模块、额外参数在 Claude Code 模块且次序正确',
+    effortAt >= 0 &&
+      extraAt > effortAt &&
+      claudeFields.external.some(label => label.includes('推理强度')),
+    JSON.stringify(claudeFields)
   )
 
   const extraUi = await evalJs<{ textarea: boolean; add: boolean; rows: number }>(`(() => {
-    const group = [...document.querySelectorAll('.plugin-group')]
-      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
-    const field = group
-      ? [...group.querySelectorAll('.plugin-field')]
-          .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
-      : null
+    const field = [...document.querySelectorAll('.plugin-field')]
+      .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
     return {
       textarea: !!field?.querySelector('textarea'),
       add: !!field?.querySelector('button[title="添加参数"]'),
@@ -400,12 +517,8 @@ async function main(): Promise<void> {
   )
 
   const addClicked = await evalJs<boolean>(`(() => {
-    const group = [...document.querySelectorAll('.plugin-group')]
-      .find(g => g.querySelector('.plugin-group-title')?.textContent.trim() === 'Claude Code')
-    const field = group
-      ? [...group.querySelectorAll('.plugin-field')]
-          .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
-      : null
+    const field = [...document.querySelectorAll('.plugin-field')]
+      .find(f => (f.querySelector('.plugin-field-label')?.textContent || '').includes('额外参数'))
     const btn = field ? field.querySelector('button[title="添加参数"]') : null
     if (!btn) return false
     btn.click()
@@ -600,8 +713,8 @@ async function main(): Promise<void> {
     modeBox: { borderWidth: string; hasTitle: boolean; presetsBelow: boolean } | null
     sectionHeads: string[]
     text: string
-    quickEditInHost: boolean
-    quickEditReload: boolean
+    advancedEditInHost: boolean
+    advancedEditReload: boolean
     hostCardsWithoutReload: number
     hostMetas: string[]
     headDots: number
@@ -611,7 +724,7 @@ async function main(): Promise<void> {
     pausedAffinity: number
   }>(`(() => {
     const cards = [...document.querySelectorAll('.market-host-groups .market-host-card')]
-    const card = cards.find(c => c.textContent.includes('快速编辑'))
+    const card = cards.find(c => c.textContent.includes('Advanced Edit'))
     const paused = document.querySelector('.market-host-paused')
     const mode = document.querySelector('.market-host-mode')
     const hint = mode?.querySelector('.market-hint')
@@ -630,8 +743,8 @@ async function main(): Promise<void> {
       sectionHeads: [...document.querySelectorAll('.market-host-section-head b')]
         .map(b => b.textContent.trim()),
       text: document.querySelector('.market-hosts')?.innerText ?? '',
-      quickEditInHost: !!card,
-      quickEditReload: card
+      advancedEditInHost: !!card,
+      advancedEditReload: card
         ? !!card.querySelector('.plugin-icon-btn[title^="重新加载这个进程"]')
         : false,
       hostCardsWithoutReload: cards.filter(c => !c.querySelector('.plugin-icon-btn[title^="重新加载这个进程"]')).length,
@@ -674,8 +787,8 @@ async function main(): Promise<void> {
   )
   check('页面不再出现「宿主」字样', !hostPanel.text.includes('宿主'))
   check(
-    '快速编辑出现在进程卡里，每张进程卡都有重载按钮',
-    hostPanel.quickEditInHost && hostPanel.quickEditReload && hostPanel.hostCardsWithoutReload === 0
+    'Advanced Edit 出现在进程卡里，每张进程卡都有重载按钮',
+    hostPanel.advancedEditInHost && hostPanel.advancedEditReload && hostPanel.hostCardsWithoutReload === 0
   )
   check(
     '进程卡不展示「PID —」占位符',
@@ -788,7 +901,7 @@ async function main(): Promise<void> {
     JSON.stringify(await readHostSettings())
   )
 
-  // quick-edit 是懒激活(onCommand),此刻宿主没启动,切换模式不会真的拉起进程;
+  // advanced-edit 是懒激活(onCommand),此刻宿主没启动,切换模式不会真的拉起进程;
   // 这里只验证按钮 → 设置写盘 → 再切回来的回路。
   const setMode = (label: string): Promise<boolean> =>
     evalJs<boolean>(`(() => {
@@ -886,7 +999,7 @@ async function main(): Promise<void> {
       return badge.getBoundingClientRect().left - name.getBoundingClientRect().right <= 16
     })()`)
   )
-  check('给快速编辑填编号 1', await setRowAffinity('快速编辑', '1'))
+  check('给 Advanced Edit 填编号 1', await setRowAffinity('Advanced Edit', '1'))
   await sleep(500)
   check('给远程同步填编号 1', await setRowAffinity('远程同步', '1'))
   await sleep(500)
@@ -977,9 +1090,9 @@ async function main(): Promise<void> {
       .find(x => x.textContent.trim() === '已安装')
     if (b) b.click()
   })()`)
-  await waitFor(`document.querySelectorAll('.market-row').length === 4`)
+  await waitFor(`document.querySelectorAll('.market-row').length === 5`)
   await evalJs(`(() => {
-    const row = [...document.querySelectorAll('.market-row')].find(r => r.textContent.includes('快速编辑'))
+    const row = [...document.querySelectorAll('.market-row')].find(r => r.textContent.includes('Advanced Edit'))
     const b = row ? row.querySelector('button[title="卸载"]') : null
     if (b) b.click()
   })()`)
@@ -1143,6 +1256,36 @@ async function main(): Promise<void> {
       2000
     ))
   await sleep(100)
+  const agentHead = await evalJs<{
+    descInHead: boolean
+    switchInHead: boolean
+    fieldSizing: string
+    overflowY: string
+    noInnerScroll: boolean
+  }>(`(() => {
+    const head = document.querySelector('.plugin-detail-head')
+    const textarea = document.querySelector('.plugin-textarea')
+    const style = textarea ? getComputedStyle(textarea) : null
+    return {
+      descInHead: !!head?.querySelector('.plugin-field-desc'),
+      switchInHead: !!head?.querySelector('.plugin-switch'),
+      fieldSizing: style ? style.getPropertyValue('field-sizing') : '',
+      overflowY: style ? style.overflowY : '',
+      noInnerScroll: textarea ? textarea.scrollHeight <= textarea.clientHeight + 1 : false
+    }
+  })()`)
+  check(
+    '插件简介与启停开关同一行，不再留空白行',
+    agentHead.descInHead && agentHead.switchInHead,
+    JSON.stringify(agentHead)
+  )
+  check(
+    '系统提示词随内容展开，没有内部滚动条',
+    agentHead.fieldSizing === 'content' &&
+      agentHead.overflowY === 'hidden' &&
+      agentHead.noInnerScroll,
+    JSON.stringify(agentHead)
+  )
   const agentStatusLabel = await evalJs<string>(
     `document.querySelector('.plugin-status-line b')?.textContent?.trim() ?? ''`
   )
@@ -1170,9 +1313,9 @@ async function main(): Promise<void> {
     )
   )
   check(
-    'Agent Core 设置页显示「立即清理过期会话」按钮',
+    'Agent Core 设置页显示「清理过期会话」按钮',
     await evalJs<boolean>(
-      `[...document.querySelectorAll('.plugin-global-actions button')].some(b => b.textContent.trim() === '立即清理过期会话')`
+      `[...document.querySelectorAll('.plugin-global-actions button')].some(b => b.textContent.trim() === '清理过期会话')`
     )
   )
   check(

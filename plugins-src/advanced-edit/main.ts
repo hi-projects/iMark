@@ -1,5 +1,5 @@
 /**
- * 快速编辑 —— 行首「+」菜单里的表格插入。
+ * Advanced Edit —— 行首「+」菜单里的表格插入。
  *
  * 这是一个刻意保持很小的扩展:清单声明菜单条目与对话框,命令处理器只把行数/列数
  * 变成一段 Markdown 文本,再通过 `TextEditor.edit` 写进当前文档。
@@ -14,7 +14,7 @@
 
 import * as imark from 'imark'
 
-const COMMAND = 'imark.quick-edit.insertTable'
+const COMMAND = 'imark.advanced-edit.insertTable'
 
 const ROWS_MIN = 1
 const ROWS_MAX = 50

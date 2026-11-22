@@ -22,7 +22,7 @@
 import { ChangeSet, type EditorState, type TransactionSpec } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { applyWrapping, buildDocumentState } from '../editor/setup'
-import { extractOutline, updateActiveOutline } from '../editor/outline'
+import { clearOutlinePin, extractOutline, updateActiveOutline } from '../editor/outline'
 import { flushTableEdits } from '../editor/wysiwyg/widgets'
 import { activeTab, appStore, editorHolder, type OutlineItem } from '../stores/app'
 import { basename, computeStats, stripMarkdownExt } from '../utils/text'
@@ -324,6 +324,8 @@ export function captureActiveTab(): void {
 function mountTabState(id: string, view: EditorView): void {
   const rt = runtime.get(id)
   if (!rt) return
+  // 换标签/换文档后,上一条笔记点击大纲留下的高亮钉子不再成立
+  clearOutlinePin()
   view.setState(rt.state)
   applyWrapping(view, appStore.lineWrapping)
   if (rt.scrollEffect) view.dispatch({ effects: rt.scrollEffect })
@@ -400,6 +402,7 @@ export function closeTabNow(id: string, opts?: { disposePanel?: boolean }): void
 /** 当前没有标签:编辑器回到只读空状态 */
 export function deactivateToEmpty(): void {
   clearTimers()
+  clearOutlinePin()
   appStore.activeTabId = null
   const view = editorHolder.view
   if (view) {
@@ -619,6 +622,7 @@ export function replaceTabDocument(id: string, content: string, eol: 'LF' | 'CRL
 
   const view = editorHolder.view
   if (id === appStore.activeTabId && view) {
+    clearOutlinePin()
     view.setState(state)
     updateActiveOutline(view)
   }

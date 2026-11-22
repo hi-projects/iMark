@@ -56,6 +56,13 @@ export interface RuleContext {
    * 回车创建、仍空着的段落行首(见 editor/emptyParagraph.ts)。
    */
   emptyParagraphs: ReadonlySet<number>
+  /**
+   * 当前非空选区来自鼠标拖选(含松开左键之后)。
+   *
+   * 这种选区只用来选内容,不该让行内标记 / 公式 / 图片 / 图表退回源码;
+   * 光标点进这些元素(空选区)仍然照常显示源码,方便编辑。
+   */
+  pinRendered: boolean
   decos: Range<Decoration>[]
   atomic: Range<Decoration>[]
   links: LinkInfo[]
@@ -133,8 +140,7 @@ function markHeadingSpaceBefore(ctx: RuleContext, pos: number): void {
   if (line.number <= 1) return
   const prev = ctx.doc.line(line.number - 1)
   if (!isBlankLine(prev.text)) return
-  const structural =
-    !caretOnGapLine(ctx, prev.from, prev.to) && !keptEmptyParagraph(ctx, prev.from)
+  const structural = !keptEmptyParagraph(ctx, prev.from)
   addLine(
     ctx,
     prev.from,
@@ -209,7 +215,22 @@ function hideWithWidget(ctx: RuleContext, from: number, to: number, widget: Widg
 
 function lineUntouched(ctx: RuleContext, pos: number): boolean {
   const line = ctx.doc.lineAt(pos)
-  return !touchesLines(ctx.sel, ctx.doc, line.from, line.to)
+  return !showsSourceLines(ctx, line.from, line.to)
+}
+
+/**
+ * 这个块要不要退回源码。
+ *
+ * 普通情况按原规则:光标或选区碰到它 = 显形可编辑(见 touches)。
+ * 鼠标拖选期间与松开之后例外:选区只用于选中,块保持渲染态,不展开源码。
+ */
+function showsSource(ctx: RuleContext, from: number, to: number): boolean {
+  return !ctx.pinRendered && touches(ctx.sel, from, to)
+}
+
+/** 行粒度的上面那条规则(图表按整块占的行判断) */
+function showsSourceLines(ctx: RuleContext, from: number, to: number): boolean {
+  return !ctx.pinRendered && touchesLines(ctx.sel, ctx.doc, from, to)
 }
 
 /**
@@ -323,7 +344,6 @@ function addGapBefore(ctx: RuleContext, pos: number, padClass: string, blankClas
   const prev = ctx.doc.line(line.number - 1)
   if (
     !isBlankLine(prev.text) ||
-    caretOnGapLine(ctx, prev.from, prev.to) ||
     keptEmptyParagraph(ctx, prev.from)
   )
     addLine(ctx, prev.from, padClass)
@@ -336,32 +356,18 @@ function addGapAfter(ctx: RuleContext, pos: number, padClass: string, blankClass
   const next = ctx.doc.line(line.number + 1)
   if (
     !isBlankLine(next.text) ||
-    caretOnGapLine(ctx, next.from, next.to) ||
     keptEmptyParagraph(ctx, next.from)
   )
     addLine(ctx, next.from, padClass)
   else addLine(ctx, next.from, `cm-md-block-gap ${blankClass}`)
 }
 
-/**
- * 光标是不是就停在这一条结构空行上(只看空选区,拖选时不动版式)。
- *
- * 空行收紧后只有不到一行的行高,而光标矩形是围着行盒算的 —— 光标会贴在
- * 上一块的下沿;等真开始输入,这一行变成正文行、间距改走 padding,字才落到
- * 预期位置,于是出现"光标不在打字处,输入后跳一下"。
- *
- * 光标一落上空行,就按正文行的排法渲染它(padding 由调用方照常打上):光标
- * 和随后输入的第一个字从一开始就在同一处,继续输入也不会再移动。
- */
-function caretOnGapLine(ctx: RuleContext, from: number, to: number): boolean {
-  return ctx.sel.ranges.some(r => r.empty && r.head >= from && r.head <= to)
-}
 
 /**
  * 这条空行是不是「回车创建、仍空着的段落」(见 editor/emptyParagraph.ts)。
  *
- * 它和光标停在上面的空行按同一种排法处理:保持整行高,不收紧成块间距 ——
- * 否则光标一点开,第二段就缩成一道缝,再也点不回去。
+ * 它是用户可编辑的内容行,不是结构间距:必须保持整行高,不收紧成 block-gap。
+ * 这个角色由 emptyParagraphs 状态决定,和光标/选区无关。
  */
 function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
   return ctx.emptyParagraphs.has(from)
@@ -372,7 +378,7 @@ function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
  *
  * CommonMark 里段落之间必须隔一个空行;这条空行本来按正文行高排,间距固定。
  * 现在收进「段间距」这一档(设置「外观 → 样式」可调),和块间距同一套
- * 排法:空行只留一档高,光标落上去时再按正文行撑开(见 addGapBefore)。
+ * 排法:空行只留一档高;行高只由角色决定,光标/选区不改变它(见 addGapBefore)。
  * 没有空行的两行在 CommonMark 里是同一段,距离归「行间距」管 —— 不归这里。
  *
  * 只处理「两段正文」之间的空行:上一段是普通段落,或者是排版上已经按正文
@@ -458,10 +464,7 @@ function styleImageGaps(ctx: RuleContext, image: SyntaxNode): void {
       const above = neighborLine(ctx, line.number - 2, -1)
       const kind = above ? imageNeighborKind(ctx, above) : null
       if (above && kind) {
-        if (
-          !caretOnGapLine(ctx, prev.from, prev.to) &&
-          !keptEmptyParagraph(ctx, prev.from)
-        ) {
+        if (!keptEmptyParagraph(ctx, prev.from)) {
           addLine(ctx, prev.from, `cm-md-block-gap cm-md-image-gap-blank-before-${kind}`)
         } else {
           // 光标停在这条空行上:空行保持整行,留白改做在图片行上
@@ -484,10 +487,7 @@ function styleImageGaps(ctx: RuleContext, image: SyntaxNode): void {
       const below = neighborLine(ctx, line.number + 2, 1)
       const kind = below ? imageNeighborKind(ctx, below) : null
       if (below && kind) {
-        if (
-          !caretOnGapLine(ctx, next.from, next.to) &&
-          !keptEmptyParagraph(ctx, next.from)
-        ) {
+        if (!keptEmptyParagraph(ctx, next.from)) {
           addLine(ctx, next.from, `cm-md-block-gap cm-md-image-gap-blank-after-${kind}`)
         } else {
           addLine(ctx, line.from, `cm-md-image-gap-after-${kind}`)
@@ -529,7 +529,6 @@ export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: nu
     if (number === ctx.doc.lines) continue
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
-    if (caretOnGapLine(ctx, line.from, line.to)) continue
     // 光标刚离开的空段落仍是可点击的一行,不能收成间距
     if (keptEmptyParagraph(ctx, line.from)) continue
     addLine(ctx, line.from, 'cm-md-block-gap cm-md-block-gap-body')
@@ -1179,14 +1178,14 @@ function styleInlineHtmlTag(tag: SyntaxNode, ctx: RuleContext): void {
   // 配对的结束标签由开始标签统一隐藏;落单的结束标签保持源码
   if (parsed.closing) return
   if (parsed.void) {
-    if (!touches(ctx.sel, tag.from, tag.to)) {
+    if (!showsSource(ctx, tag.from, tag.to)) {
       hideWithWidget(ctx, tag.from, tag.to, new HtmlBreakWidget())
     }
     return
   }
   const close = findHtmlCloseTag(tag, parsed.name, ctx.doc)
   if (!close) return
-  if (!touches(ctx.sel, tag.from, close.to)) {
+  if (!showsSource(ctx, tag.from, close.to)) {
     hide(ctx, tag.from, tag.to)
     hide(ctx, close.from, close.to)
   }
@@ -1287,7 +1286,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'Emphasis':
     case 'StrongEmphasis':
     case 'Strikethrough': {
-      if (!touches(ctx.sel, node.from, node.to)) {
+      if (!showsSource(ctx, node.from, node.to)) {
         const n = node.node
         const first = n.firstChild
         const last = n.lastChild
@@ -1306,7 +1305,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'EmphasisMark':
     case 'StrikethroughMark': {
       const parent = node.node.parent
-      if (parent && !touches(ctx.sel, parent.from, parent.to)) {
+      if (parent && !showsSource(ctx, parent.from, parent.to)) {
         hide(ctx, node.from, node.to)
       }
       return
@@ -1326,7 +1325,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // 时藏起来,屏幕上只留被转义的字符本身;光标贴在它上面时仍按源码显示,
     // 方便删改。导出侧 markdown-it 本来就是这套语义,这里只是让编辑器跟上。
     case 'Escape': {
-      if (!touches(ctx.sel, node.from, node.to)) hide(ctx, node.from, node.from + 1)
+      if (!showsSource(ctx, node.from, node.to)) hide(ctx, node.from, node.from + 1)
       return
     }
 
@@ -1349,7 +1348,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     }
     case 'CodeMark': {
       const parent = node.node.parent
-      if (parent?.name === 'InlineCode' && !touches(ctx.sel, parent.from, parent.to)) {
+      if (parent?.name === 'InlineCode' && !showsSource(ctx, parent.from, parent.to)) {
         hide(ctx, node.from, node.to)
       }
       return
@@ -1381,7 +1380,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
          * 几行照样被清空,屏幕上就是一块空白。
          */
         const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
-        if (firstLineVisible && !touchesLines(ctx.sel, ctx.doc, node.from, node.to)) {
+        if (firstLineVisible && !showsSourceLines(ctx, node.from, node.to)) {
           const widget = new MermaidWidget(readCodeSource(ctx.doc, code), currentMermaidTheme())
           hideWithWidget(ctx, firstLine.from, firstLine.to, widget)
           for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
@@ -1521,7 +1520,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'InlineMath': {
       const content = mathContentRange(node.node)
       if (!content) return false
-      if (touches(ctx.sel, node.from, node.to)) {
+      if (showsSource(ctx, node.from, node.to)) {
         // 源码态:内容加淡底,便于看出公式边界
         ctx.decos.push({ from: content.from, to: content.to, value: markDeco('cm-md-math-src') })
       } else {
@@ -1540,7 +1539,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        * 空行会恢复成整行高,光标行往下跳(和只敲了 `-` 的列表标记同理,见
        * BulletList 分支)。
        */
-      if (node.name === 'MathBlock' && touches(ctx.sel, node.from, node.to)) {
+      if (node.name === 'MathBlock' && showsSource(ctx, node.from, node.to)) {
         styleBodyGap(ctx, node.node)
       }
       // 刚敲出来的 `$$` / `\[` 先按普通文本显示,回车补全后再当公式块
@@ -1555,13 +1554,13 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       if (
         node.name === 'MathBlock' &&
         node.node.parent?.name === 'Document' &&
-        !touches(ctx.sel, node.from, node.to)
+        !showsSource(ctx, node.from, node.to)
       ) {
         addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
       }
       const content = mathContentRange(node.node)
       if (!content) return false
-      if (touches(ctx.sel, node.from, node.to)) {
+      if (showsSource(ctx, node.from, node.to)) {
         styleMathSource(ctx, node.node)
         return false
       }
@@ -1594,7 +1593,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     }
     case 'MathMark': {
       const parent = node.node.parent
-      if (parent && !touches(ctx.sel, parent.from, parent.to)) return // 外层已整体替换
+      if (parent && !showsSource(ctx, parent.from, parent.to)) return // 外层已整体替换
       ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-mathmark') })
       return
     }
@@ -1603,11 +1602,12 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'Image': {
       // 图片独占一行时,上下与标题 / 正文的留白按「图片间距」四档排
       styleImageGaps(ctx, node.node)
-      if (!touches(ctx.sel, node.from, node.to)) {
+      if (!showsSource(ctx, node.from, node.to)) {
         const text = ctx.doc.sliceString(node.from, node.to)
-        const m = /^!\[([^\]]*)\]\(\s*([^)\s]+)[^)]*\)/.exec(text)
+        // 目标可以写成 `<带 空格/括号的路径>`,CommonMark 允许;第二种写法是裸路径
+        const m = /^!\[([^\]]*)\]\(\s*(?:<([^>\n]+)>|([^)\s]+))[^)]*\)/.exec(text)
         if (m) {
-          const src = resolveImageSrc(m[2], ctx.docDir)
+          const src = resolveImageSrc(m[2] ?? m[3], ctx.docDir)
           hideWithWidget(ctx, node.from, node.to, new ImageWidget(src, m[1]))
           return false
         }
@@ -1626,7 +1626,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       const tail = marks.length >= 2 ? marks[1] : null
       const open = marks[0] ?? null
       // 光标在整个节点(标签区或 URL 区)之外 → 渲染态;进入任一区域 → 显形可编辑
-      if (tail && open && !touches(ctx.sel, node.from, node.to)) {
+      if (tail && open && !showsSource(ctx, node.from, node.to)) {
         hide(ctx, open.from, open.to)
         hide(ctx, tail.from, node.to)
         addMark(ctx, open.to, tail.from, 'cm-md-link')

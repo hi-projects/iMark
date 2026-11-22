@@ -203,6 +203,109 @@ async function main(): Promise<void> {
   check('公式体一行不少', back.text.includes('\\right)') && back.text.includes('q_\\sigma'), JSON.stringify(back.text.slice(0, 160)))
   check('依旧没有列表圆点', back.bullets === 0, JSON.stringify(back.bullets))
 
+  console.log('\n【3b】鼠标拖选经过公式:过程中与松开后都不展开源码')
+  await loadDoc(`开头\n\n${FORMULA}\n\n末尾\n`)
+  const points = await evalJs<{
+    start: { x: number; y: number }
+    end: { x: number; y: number }
+  } | null>(`
+    (() => {
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+      const first = lines.find(el => (el.textContent || '').includes('开头'))
+      const last = lines.find(el => (el.textContent || '').includes('末尾'))
+      if (!first || !last) return null
+      const a = first.getBoundingClientRect()
+      const b = last.getBoundingClientRect()
+      return {
+        start: { x: Math.round(a.left + 8), y: Math.round(a.top + a.height / 2) },
+        end: { x: Math.round(b.left + b.width - 8), y: Math.round(b.top + b.height / 2) }
+      }
+    })()`)
+  check('找得到公式外的前后正文', points !== null, JSON.stringify(points))
+  if (points) {
+    const mid = {
+      x: Math.round((points.start.x + points.end.x) / 2),
+      y: Math.round((points.start.y + points.end.y) / 2)
+    }
+    /*
+     * sendInputEvent 的 mouseMove 不带 buttons 位,CM 的 MouseSelection 会当成
+     * 「按键已松开」直接结束;这里直接派发带 buttons=1 的鼠标事件。
+     */
+    const mouse = (type: string, x: number, y: number, buttons: number): Promise<boolean> =>
+      evalJs<boolean>(`
+        (() => {
+          const target = ${JSON.stringify(type)} === 'mousedown'
+            ? document.querySelector('.cm-content')
+            : document
+          target?.dispatchEvent(new MouseEvent(${JSON.stringify(type)}, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: ${x},
+            clientY: ${y},
+            button: 0,
+            buttons: ${buttons}
+          }))
+          return true
+        })()`)
+    await mouse('mousedown', points.start.x, points.start.y, 1)
+    await sleep(80)
+    await mouse('mousemove', mid.x, mid.y, 1)
+    await sleep(80)
+    await mouse('mousemove', points.end.x, points.end.y, 1)
+    await sleep(600)
+    const during = await state()
+    check(
+      '拖选已经形成(有选区高亮)',
+      await evalJs<boolean>(`document.querySelectorAll('.cm-selectionBackground').length > 0`)
+    )
+    check(
+      '拖选过程中公式保持渲染',
+      during.widgets === 1 && during.srcMarks === 0 && !during.text.includes('\\sqrt'),
+      JSON.stringify({ ...during, text: during.text.slice(0, 160) })
+    )
+    await mouse('mouseup', points.end.x, points.end.y, 0)
+    await sleep(600)
+    const afterDrag = await state()
+    check(
+      '松开鼠标后公式仍保持渲染',
+      afterDrag.widgets === 1 && afterDrag.srcMarks === 0 && !afterDrag.text.includes('\\sqrt'),
+      JSON.stringify({ ...afterDrag, text: afterDrag.text.slice(0, 160) })
+    )
+    // 普通单击(空选区)还是要能点进公式改源码,别把编辑入口一起关了
+    const widgetPoint = await evalJs<{ x: number; y: number } | null>(`
+      (() => {
+        const w = document.querySelector('.cm-md-math-display')?.getBoundingClientRect()
+        return w
+          ? { x: Math.round(w.left + w.width / 2), y: Math.round(w.top + w.height / 2) }
+          : null
+      })()`)
+    check('拖选后公式 widget 还在', widgetPoint !== null, JSON.stringify(widgetPoint))
+    if (widgetPoint) {
+      wc.sendInputEvent({
+        type: 'mouseDown',
+        x: widgetPoint.x,
+        y: widgetPoint.y,
+        button: 'left',
+        clickCount: 1
+      })
+      wc.sendInputEvent({
+        type: 'mouseUp',
+        x: widgetPoint.x,
+        y: widgetPoint.y,
+        button: 'left',
+        clickCount: 1
+      })
+      await sleep(600)
+      const clicked = await state()
+      check(
+        '单击公式仍会进入源码态',
+        clicked.widgets === 0 && clicked.srcMarks > 0,
+        JSON.stringify(clicked)
+      )
+    }
+  }
+
   /** 写盘 + 重载:拿到一个光标在文首的干净编辑器(光标在公式外 → 渲染态) */
   async function loadDoc(content: string): Promise<void> {
     await writeFile(note, content, 'utf8')

@@ -20,7 +20,7 @@
     }
   },
   "include": [
-    "quick-edit/**/*.ts",
+    "advanced-edit/**/*.ts",
     "git-sync/**/*.ts",
     "agent/**/*.ts",
     "claude-code/**/*.ts"

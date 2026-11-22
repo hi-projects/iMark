@@ -45,7 +45,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-/** n 行 m 列的表格源码(与快速编辑扩展插入的形状一致:行数含表头) */
+/** n 行 m 列的表格源码(与Advanced Edit扩展插入的形状一致:行数含表头) */
 function makeTable(rows: number, cols: number): string {
   const blank = `|${'     |'.repeat(cols)}`
   const sep = `|${' --- |'.repeat(cols)}`
@@ -99,7 +99,10 @@ async function main(): Promise<void> {
         vaults: [vault],
         lastFile: note,
         marketUrl: '',
-        autoSaveMode: 'off'
+        autoSaveMode: 'off',
+        // 行高断言按 18px 正文字号标定;显式固定,别跟着应用默认值漂
+        editorFontSize: 18,
+        editorFontSizeVersion: 2
       },
       null,
       2
@@ -378,6 +381,28 @@ async function main(): Promise<void> {
     JSON.stringify(ctlInfo)
   )
   check('删除整表用的是垃圾桶图标', ctlInfo.trash, JSON.stringify(ctlInfo))
+
+  // 行控件的位置:加号在前(表格左侧)、叉在后(表格右侧)
+  const rowSides = await evalJs<{ del: boolean; add: boolean }>(`
+    (() => {
+      const table = document.querySelector('.cm-md-table-frame table')
+      if (!table) return { del: false, add: false }
+      const tr = table.getBoundingClientRect()
+      const del = document.querySelector('[data-act="delete-row"][data-row="1"]')
+      const add = document.querySelector('[data-act="add-row"][data-after="1"]')
+      const centerX = el => {
+        const r = el.getBoundingClientRect()
+        return r.left + r.width / 2
+      }
+      return del && add
+        ? { del: centerX(del) > tr.right, add: centerX(add) < tr.left }
+        : { del: false, add: false }
+    })()`)
+  check(
+    '行插入 + 在表格前方(左),行删除 × 在表格后方(右)',
+    rowSides.del && rowSides.add,
+    JSON.stringify(rowSides)
+  )
 
   // 留白必须被等量负外边距抵消:图标浮在四周,但不把表格往右下顶。
   // 上下间距改由结构空行 / 标题留白承担后,frame 的上下 padding 在有结构空行

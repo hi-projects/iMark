@@ -343,6 +343,115 @@
   --sw-line: #454545;
 }
 
+/* ---------- 关于页(本应用 / 应用矩阵) ---------- */
+
+.settings-about {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.settings-about img {
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  object-fit: cover;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
+.settings-about h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-about p {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.settings-about-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* 应用矩阵:一个应用一行,后续新增应用直接在 FAMILY_APPS 里加项 */
+.settings-family-app {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.settings-family-app + .settings-family-app {
+  border-top: 1px solid var(--border);
+}
+
+/* 右侧 GitHub 按钮:悬停或聚焦时才点亮,并出现「在 GitHub 上查看」提示 */
+.settings-family-app-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    background-color 0.14s ease,
+    transform 0.14s ease;
+}
+
+.settings-family-app-link:hover {
+  color: var(--accent);
+  background: var(--bg-toolbar-btn-hover);
+  transform: translateY(-1px);
+}
+
+.settings-family-app-link:focus-visible {
+  outline: none;
+  color: var(--accent);
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.settings-family-app-icon {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  object-fit: cover;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+
+.settings-family-app-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-family-app-name {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.settings-family-app-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
 /* ---------- 设置项(「编辑器」页:一行一项,开关/滑杆在右) ---------- */
 
 /* 同一组的几项装在一张卡里,行间用细线分隔 */
@@ -380,6 +489,79 @@
 /* 控件占地方(档位按钮、滑杆)时改成一上一下,别把说明文字挤成两行 */
 .settings-row-stack {
   display: block;
+}
+
+/* ---------- 自动保存:按触发时机纵向排列 ---------- */
+
+.settings-mode + .settings-mode {
+  border-top: 1px solid var(--border);
+}
+
+.settings-mode-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-mode-pick:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.settings-mode-radio {
+  position: relative;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.settings-mode-active .settings-mode-radio {
+  border-color: var(--accent);
+}
+
+.settings-mode-active .settings-mode-radio::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.settings-mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-mode-title {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.settings-mode-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* 选中「定时保存」时,延迟档位收在这一项下面 */
+.settings-mode-delay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 13px 40px;
 }
 
 .settings-row-info {

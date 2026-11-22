@@ -1,17 +1,15 @@
 import type { KeyBinding } from '@codemirror/view'
 import { insertCodeIndent } from './codeIndent'
 import {
-  completeFenceOnEnter,
   deleteEmptyListMarkup,
   deleteBlockStartBackward,
   deleteHardBreakBackward,
   deleteParagraphBreakForward,
   deleteParagraphBreakBackward,
-  exitListOnEmptyItem,
+  handleEnter,
   insertCodeBlock,
   insertHardBreak,
   insertHorizontalRule,
-  insertParagraph,
   insertImage,
   insertLink,
   selectAllInBlock,
@@ -31,12 +29,9 @@ import {
  * 这里主要作为菜单缺失场景的兜底;标点键同时绑定原始键与 shift 后的键名。
  */
 export const editorKeymap: KeyBinding[] = [
-  // 刚敲出开围栏 / `$$` 时按回车:补一行空行 + 收尾标记,别让后面的正文被吞进去
-  { key: 'Enter', run: completeFenceOnEnter },
-  // 空列表项上回车退出列表:在源码里留一条空行,别让后面的正文变成懒续行
-  { key: 'Enter', run: exitListOnEmptyItem },
-  // 正文回车 = 新段(源码补空行),Shift+回车 = 段内换行(行尾反斜杠)
-  { key: 'Enter', run: insertParagraph },
+  // Enter 统一入口:输入法 → 围栏补全 → 退出空列表 → 新段
+  { key: 'Enter', run: handleEnter },
+  // Shift+回车 = 段内换行(行尾反斜杠)
   { key: 'Shift-Enter', run: insertHardBreak },
   // 硬换行续行行首退格:把上一行末尾的 `\` 连同换行一起删掉,两行接回一行
   { key: 'Backspace', run: deleteHardBreakBackward },

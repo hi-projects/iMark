@@ -14,7 +14,7 @@
 
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   resolveStorageRoot,
   SessionStore,
@@ -84,10 +84,10 @@ async function main(): Promise<void> {
 
   const actions = manifest.contributes?.['imark.actions'] ?? []
   check(
-    '设置页有「立即清理过期会话」动作',
+    '设置页有「清理过期会话」动作',
     actions.some(
       action =>
-        action.command === 'imark.agent.cleanupSessions' && action.label === '立即清理过期会话'
+        action.command === 'imark.agent.cleanupSessions' && action.label === '清理过期会话'
     ),
     JSON.stringify(actions)
   )
@@ -120,15 +120,17 @@ async function main(): Promise<void> {
   )
 
   console.log('\n【1b】数据目录解析')
-  const fallback = '/tmp/imark-fallback'
+  // 路径解析会做 resolve:比较值也走同样的平台规则,否则在 Windows 上拿 /tmp 对不上盘符
+  const fallback = resolve(tmpdir(), 'imark-fallback')
   check(
     '留空回落到默认目录',
     resolveStorageRoot('', fallback).root === fallback &&
       resolveStorageRoot('   ', fallback).root === fallback
   )
+  const fakeHome = resolve(tmpdir(), 'home-tester')
   check(
     '~ 展开到 home',
-    resolveStorageRoot('~/agent', fallback, '/home/tester').root === '/home/tester/agent'
+    resolveStorageRoot('~/agent', fallback, fakeHome).root === resolve(fakeHome, 'agent')
   )
   const relative = resolveStorageRoot('relative/dir', fallback)
   check(

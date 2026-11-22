@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { previewEnvelope } from '../src/main/market/installer'
 import { packDirectory } from '../src/main/market/pack'
 import gitSyncPackage from '../src/main/market/builtin/imark.git-sync.imkpkg.json?raw'
-import quickEditPackage from '../src/main/market/builtin/imark.quick-edit.imkpkg.json?raw'
+import advancedEditPackage from '../src/main/market/builtin/imark.advanced-edit.imkpkg.json?raw'
 import agentPackage from '../src/main/market/builtin/imark.agent.imkpkg.json?raw'
 import claudeCodePackage from '../src/main/market/builtin/imark.claude-code.imkpkg.json?raw'
 
@@ -54,8 +54,8 @@ async function main(): Promise<void> {
   }
 
   // ---------- [B] 另一个含代码包 ----------
-  console.log('\n[B] 含代码扩展(quick-edit)')
-  const quick = previewEnvelope(JSON.parse(quickEditPackage), origin)
+  console.log('\n[B] 含代码扩展(advanced-edit)')
+  const quick = previewEnvelope(JSON.parse(advancedEditPackage), origin)
   check('预览成功', quick.ok, quick.ok ? '' : quick.errors.join(';'))
   if (quick.ok) {
     check('hasMain = true', quick.value.hasMain === true)

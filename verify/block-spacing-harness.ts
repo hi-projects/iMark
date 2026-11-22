@@ -521,7 +521,6 @@ async function main(): Promise<void> {
   )
 
   const blankAfter = await blankMetrics()
-  console.log(`     [实测] ${JSON.stringify(blankAfter)}`)
   check(
     '编辑器不等关闭面板就已跟着变(空行 32 / 24 / 8 / 40px)',
     near(blankAfter.blankLines['code-before'], 32) &&
@@ -832,7 +831,7 @@ async function main(): Promise<void> {
       JSON.stringify({ side, head: clicked.selHead, from: clicked.selLineFrom, to: clicked.selLineTo })
     )
 
-    // 方向键停上空行(直接落选区):仍按正文行撑开,输入首字不再跳
+    // 方向键停上空行:结构空行的行高只由角色决定,光标不能改变版式
     const pos = await gapLinePos(blockClass)
     await evalJs(`
       (() => {
@@ -841,21 +840,22 @@ async function main(): Promise<void> {
         return true
       })()`)
     await sleep(350)
-    const expanded = await caretMetrics(blockClass, padClass, nextText)
+    const withCaret = await caretMetrics(blockClass, padClass, nextText)
     check(
-      `${label}:方向键停上去后空行按正文行渲染(间距改走 padding)`,
+      `${label}:方向键停上去后空行仍保持收紧`,
       pos >= 0 &&
-        expanded.classes.includes(padClass) &&
-        !expanded.classes.includes('cm-md-block-gap') &&
-        expanded.lineHeight > DEFAULT_GAP,
-      JSON.stringify({ pos, expanded })
+        withCaret.classes.includes(blockClass) &&
+        !withCaret.classes.includes(padClass) &&
+        near(withCaret.lineHeight, DEFAULT_GAP),
+      JSON.stringify({ pos, withCaret })
     )
     check(
-      `${label}:光标不再贴在上一块的下沿`,
-      expanded.cursorTop > compact.cursorTop + DEFAULT_GAP / 2,
-      JSON.stringify({ before: compact.cursorTop, after: expanded.cursorTop })
+      `${label}:光标进来不改变相邻块的位置`,
+      near(withCaret.nextBoxTop - withCaret.blankTop, compact.nextBoxTop - compact.blankTop),
+      JSON.stringify({ compact, withCaret })
     )
 
+    // 在空行上真正输入 = 文档结构变化(空行变正文),此时才允许版式变化
     await evalJs(`
       (() => {
         const view = document.querySelector('.cm-content').cmTile.root.view
@@ -866,11 +866,9 @@ async function main(): Promise<void> {
     await sleep(350)
     const typed = await caretMetrics(blockClass, padClass, nextText)
     check(
-      `${label}:输入首字前后光标与下一段正文的位置完全一致`,
-      near(typed.cursorTop, expanded.cursorTop) &&
-        near(typed.cursorBottom, expanded.cursorBottom) &&
-        near(typed.nextTop, expanded.nextTop),
-      JSON.stringify({ expanded, typed })
+      `${label}:在空行上输入会生成正文`,
+      typed.doc.includes('1') && typed.selText.includes('1'),
+      JSON.stringify({ typed })
     )
   }
 
@@ -901,9 +899,11 @@ async function main(): Promise<void> {
   await sleep(350)
   const afterLeave = await caretMetrics('cm-md-block-gap-list-after', 'cm-md-gap-list-after', '正文丙')
   check(
-    '光标离开后空行恢复收紧(16px),不留变高的空行',
+    '光标进出结构空行都不改变收紧高度(16px)',
     leavePos >= 0 &&
-      expandedBeforeLeave.classes.includes('cm-md-gap-list-after') &&
+      expandedBeforeLeave.classes.includes('cm-md-block-gap-list-after') &&
+      !expandedBeforeLeave.classes.includes('cm-md-gap-list-after') &&
+      near(expandedBeforeLeave.lineHeight, DEFAULT_GAP) &&
       afterLeave.classes.includes('cm-md-block-gap-list-after') &&
       near(afterLeave.lineHeight, DEFAULT_GAP),
     JSON.stringify({ leavePos, expandedBeforeLeave, afterLeave })

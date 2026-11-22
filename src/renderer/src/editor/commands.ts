@@ -7,6 +7,7 @@ import type { SyntaxNode } from '@lezer/common'
 import type { MenuCommandId } from '@shared/ipc-channels'
 import { getPendingFence } from './pendingFence'
 import { getEmptyParagraphs, paragraphBreak, paragraphBreakAfter } from './emptyParagraph'
+import { isImeComposing } from './ime'
 
 /**
  * 格式命令:工具栏 / 键位 / 原生菜单三端共用。
@@ -242,6 +243,7 @@ export function deleteEmptyListMarkup(view: EditorView): boolean {
  * 所以这里把下移后的标记行直接清空,一次回车就回到列表后的空段落。
  */
 export function exitListOnEmptyItem(view: EditorView): boolean {
+  if (isImeComposing()) return false
   const state = view.state
   const sel = state.selection.main
   if (!sel.empty) return false
@@ -380,6 +382,10 @@ const HEADING_NODES = new Set([
  * 而不是把换行插进公式内容里(那只会把公式往下挪一点)。
  */
 export function insertParagraph(view: EditorView): boolean {
+  // 输入法组合中的回车是「上屏/选词」,不是新段。用统一组合状态判断:
+  // 不能只看 view.composing —— 组合结束后它可能一直停在 true,反而吞掉
+  // 用户真正的回车,块末尾只补出一个 \n。
+  if (isImeComposing()) return false
   const state = view.state
   const sel = state.selection
   // 多光标 / 有选区:交给默认回车,先删选区再断行
@@ -393,7 +399,15 @@ export function insertParagraph(view: EditorView): boolean {
     return breakAt(view, pos, lb + lb, pos === 0 ? 0 : lb.length)
   }
   const kind = bodyLineKind(state, line)
-  if (kind === 'other') return false
+  if (kind === 'other') {
+    // 代码块 / 公式块最后一行末尾回车:光标落到块后面那条新段落的行首。
+    // 不能沿用默认换行,否则光标会停在「块与文末之间」那条分隔空行上,
+    // 后面再点空白又会被挪到文档最后一行,看起来像光标自己跳了位置。
+    if (terminalBlockEnd(state, line, pos) && !hasContentAfter(state, line)) {
+      return startParagraphAfterBlock(view, state, line)
+    }
+    return false
+  }
 
   // 空行上回车也是新段(见上面的说明)
   if (kind === 'blank') {
@@ -438,6 +452,49 @@ export function insertParagraph(view: EditorView): boolean {
   return selfEnding
     ? breakAt(view, pos, lb, lb.length)
     : breakAt(view, pos, lb + lb, lb.length * 2)
+}
+
+/** 光标是否在代码块 / 公式块的结束行末尾 */
+function terminalBlockEnd(state: EditorState, line: Line, pos: number): boolean {
+  if (pos !== line.to) return false
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(line.from, 1)
+  for (; node; node = node.parent) {
+    if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'MathBlock') {
+      return node.to <= line.to
+    }
+  }
+  return false
+}
+
+/**
+ * 在代码块 / 公式块末尾回车:确保块后至少有两条换行(一条分隔 + 一条新段落),
+ * 光标落到最后那条空行上。
+ */
+function startParagraphAfterBlock(view: EditorView, state: EditorState, line: Line): boolean {
+  const lb = state.lineBreak
+  const tail = state.doc.sliceString(line.to)
+  const breaks = (tail.match(/\r\n|\r|\n/g) ?? []).length
+  const needed = Math.max(0, 2 - breaks)
+  view.dispatch({
+    changes: needed ? { from: line.to, insert: lb.repeat(needed) } : undefined,
+    selection: EditorSelection.cursor(state.doc.length + needed),
+    scrollIntoView: true,
+    userEvent: 'input',
+    annotations: paragraphBreak.of(true)
+  })
+  return true
+}
+
+/**
+ * Enter 的唯一入口:按优先级查一次转移,而不是散在三个 keybinding 里。
+ *
+ * 返回 false 时交还 CodeMirror / markdown keymap 处理(列表续写、代码内换行等)。
+ */
+export function handleEnter(view: EditorView): boolean {
+  if (isImeComposing()) return false
+  if (completeFenceOnEnter(view)) return true
+  if (exitListOnEmptyItem(view)) return true
+  return insertParagraph(view)
 }
 
 /** 这一行往下还有没有正文(标题后面全是空行 = 文末) */
@@ -680,6 +737,7 @@ export function deleteParagraphBreakForward(view: EditorView): boolean {
  * 补硬换行标记而不是把普通换行塞进公式里(否则只会把公式整体往下挪)。
  */
 export function insertHardBreak(view: EditorView): boolean {
+  if (isImeComposing()) return false
   const state = view.state
   const sel = state.selection
   if (sel.ranges.length > 1 || !sel.main.empty) return false
@@ -896,6 +954,7 @@ function fencePrefix(prefix: string): string {
 }
 
 export function completeFenceOnEnter(view: EditorView): boolean {
+  if (isImeComposing()) return false
   const state = view.state
   const sel = state.selection
   // 多光标 / 有选区:交给默认回车,别替用户决定在哪儿补围栏

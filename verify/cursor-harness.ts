@@ -118,7 +118,7 @@ async function main(): Promise<void> {
 
   const evalJs = <T>(code: string): Promise<T> => wc.executeJavaScript(code, true) as Promise<T>
 
-  /** 和 quick-edit harness 一样:窗口不 focus,CodeMirror 不认为自己在焦点里,光标层是隐藏的 */
+  /** 和 advanced-edit harness 一样:窗口不 focus,CodeMirror 不认为自己在焦点里,光标层是隐藏的 */
   async function focusWindow(): Promise<void> {
     if (!win.isVisible()) win.show()
     if (!win.isFocused()) win.focus()

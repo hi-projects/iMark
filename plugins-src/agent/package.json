@@ -32,14 +32,14 @@
       },
       {
         "command": "imark.agent.cleanupSessions",
-        "title": "立即清理过期会话",
+        "title": "清理过期会话",
         "category": "Agent Core"
       }
     ],
     "imark.actions": [
       {
         "command": "imark.agent.cleanupSessions",
-        "label": "立即清理过期会话",
+        "label": "清理过期会话",
         "scope": "global",
         "primary": true
       }

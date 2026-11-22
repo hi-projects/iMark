@@ -693,11 +693,11 @@ npm run typecheck:plugins
   “重新加载宿主”。
 - **配置**：设置页表单由清单自动渲染；改完立即推给宿主。
 - **源码**：市场详情页“查看源码”展示的字节与安装的是同一份。
-- **验收**：`verify/` 下有 `quick-edit`、`agent`、`market-package`、`install-confirm`、
+- **验收**：`verify/` 下有 `advanced-edit`、`agent`、`market-package`、`install-confirm`、
   `bundled-upgrade`、`extensions-*` 等 harness：
 
   ```bash
-  node verify/run.mjs quick-edit
+  node verify/run.mjs advanced-edit
   node verify/run.mjs agent
   node verify/run.mjs market-package
   ```

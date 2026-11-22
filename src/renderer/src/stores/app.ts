@@ -150,7 +150,7 @@ export const appStore = reactive<AppState>({
   autoSaveMode: 'off',
   autoSaveDelay: 1,
   lineWrapping: true,
-  editorFontSize: 18,
+  editorFontSize: 14,
   lineSpace: 1,
   codeIndentSize: 4,
   headingSpaceBefore: 1,

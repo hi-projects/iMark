@@ -5,6 +5,7 @@ import { Transaction, type ChangeDesc, type EditorState, type Line, type Range, 
 import { getPendingFence } from '../pendingFence'
 import { autoTitleChanges, caretGroupRange, codeTabsField } from './codeTabs'
 import { getEmptyParagraphs, paragraphClick } from '../emptyParagraph'
+import { isImeComposing } from '../ime'
 import { applyRule, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import {
@@ -17,8 +18,12 @@ import { api } from '../../services/api'
 
 const MAX_RETRY = 20
 
-/** 光标/选区是否在块级公式里 —— 决定 wysiwyg 显示公式源码还是渲染块 */
-function selectionInMath(state: EditorState): boolean {
+/**
+ * 光标/选区是否在块级公式里 —— 决定 wysiwyg 显示公式源码还是渲染块。
+ * 鼠标拖选时公式保持渲染,与 rules 的 showsSource 保持一致。
+ */
+function selectionInMath(state: EditorState, pinRendered = false): boolean {
+  if (pinRendered) return false
   for (const range of state.selection.ranges) {
     for (const bias of [1, -1] as const) {
       let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, bias)
@@ -49,6 +54,25 @@ function clickBelowDocEnd(view: EditorView, event: MouseEvent): boolean {
   const box = view.scrollDOM.getBoundingClientRect()
   if (coords.bottom < box.top || coords.top > box.bottom) return false
   return event.clientY > coords.bottom + 1
+}
+
+/**
+ * 光标是否已经停在文末的空段落上(它下面全是空行)。
+ *
+ * 在代码块 / 公式块末尾回车后,光标就在这样一条空行上;再点下面的空白时,
+ * 不能再补一条新空行、把光标挪到文档最后的空行 —— 那会把这行压成间距,
+ * 看起来像光标自己跳了位置。
+ */
+function caretOnTrailingBlank(view: EditorView): number | null {
+  const sel = view.state.selection.main
+  if (!sel.empty) return null
+  const doc = view.state.doc
+  const line = doc.lineAt(sel.head)
+  if (!isBlankLine(line.text)) return null
+  for (let n = line.number + 1; n <= doc.lines; n++) {
+    if (!isBlankLine(doc.line(n).text)) return null
+  }
+  return line.from
 }
 
 /**
@@ -184,12 +208,31 @@ export class WysiwygPlugin {
   /** 这一轮微任务里是否要用键盘方向键跳过块间距行 */
   private guardGapNav = false
   private themeObserver: MutationObserver | null = null
-  /** 窗口失焦(切到别的应用):元素不会触发 blur,但组合一定已经结束 */
-  private windowBlur = (): void => this.onEditorBlur()
+  /** 窗口失焦(切到别的应用):元素不会触发 blur,但组合一定已经结束;左键也必然已松开 */
+  private windowBlur = (): void => {
+    this.onEditorBlur()
+    this.endPointerDown()
+  }
   /** 点击文末空白临时补出来的空段落;用户没输入就撤掉(见 openTailParagraph) */
   private tailDraft: { from: number; to: number; text: string } | null = null
   /** 选区是否在块级公式里(渲染块 ↔ 源码态);切态时要强制重绘一次 */
   private mathSource: boolean
+  /**
+   * 当前非空选区来自鼠标拖选(含松开左键之后)。
+   * 此时行内标记 / 公式 / 图片 / 图表保持渲染态,不因选区碰到而展开源码。
+   */
+  private pinRendered = false
+  /**
+   * 最近一次选区来自指针(包括鼠标点击后留下的空光标)。
+   * 这种「光标」不应把结构空行撑开:用户是在点选,不是准备在空行里输入;
+   * 键盘方向键落上空行仍然按正文行展开(见 caretOnGapLine)。
+   */
+  private pointerSelection = false
+  /** 左键按住期间:结构空行不因光标落上去而展开(拖选途中也不跳) */
+  private pointerDown = false
+  /** 指针选区正在排队修正(避免每个 mousemove 都叠加一次) */
+  private snapScheduled = false
+  private onWindowMouseUp = (): void => this.endPointerDown()
   private mathRepaintScheduled = false
 
   constructor(readonly view: EditorView) {
@@ -215,12 +258,419 @@ export class WysiwygPlugin {
       attributeFilter: ['data-theme']
     })
     window.addEventListener('blur', this.windowBlur)
+    window.addEventListener('mouseup', this.onWindowMouseUp, true)
   }
 
   destroy(): void {
     this.themeObserver?.disconnect()
     this.themeObserver = null
     window.removeEventListener('blur', this.windowBlur)
+    window.removeEventListener('mouseup', this.onWindowMouseUp, true)
+  }
+
+  beginPointerDown(): void {
+    this.pointerDown = true
+  }
+
+  /** 松开左键(可能在编辑器外):按最终选区修正一次,再重算装饰 */
+  endPointerDown(): void {
+    if (!this.pointerDown) return
+    this.pointerDown = false
+    // 等 MouseSelection.up 把最终选区写完再处理;只靠 update 有时会漏掉这一帧
+    window.setTimeout(() => {
+      this.pendingRetry = true
+      try {
+        const snapped = this.snapPointerSelection(this.view.state)
+        this.view.dispatch(snapped ? { selection: snapped, userEvent: 'select.pointer' } : {})
+      } catch {
+        /* 视图已销毁 */
+      }
+    }, 0)
+  }
+
+  /**
+   * 鼠标选区不把端点停在空行上。
+   *
+   * 空行在渲染态下只承担段间距 / 块间距,或者只是源码里的换行;把它纳入
+   * 选区既看不到文字,又会让下面的块上下跳。键盘导航不受影响。
+   */
+  private isStructuralBlankLine(line: Line): boolean {
+    return line.text.replace(/[\s​﻿]/g, '') === ''
+  }
+
+  /**
+   * 这一行在屏幕上没有可选中的文字:空行、被 widget 整行替换的宿主行、
+   * 或多行块折叠出来的 `*-void` 行(公式 / 表格 / Mermaid 的后续行)。
+   */
+  private isUnselectableLine(line: Line): boolean {
+    if (this.isStructuralBlankLine(line)) return true
+    if (lineReplaced(this, line)) return true
+    return lineClasses(this, line).some(cls => cls.endsWith('-void'))
+  }
+
+  /** 选区整体落在同一个代码 / 公式 / 表格等块里:那是用户在选块本身,不要吸附 */
+  private selectionInsideBlock(state: EditorState, range: { from: number; to: number }): boolean {
+    const blocks = new Set([
+      'MathBlock',
+      'DisplayMath',
+      'FencedCode',
+      'CodeBlock',
+      'Table',
+      'HTMLBlock'
+    ])
+    const blockAt = (pos: number, bias: 1 | -1): { from: number; to: number } | null => {
+      let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+      while (node) {
+        if (blocks.has(node.name)) return node
+        node = node.parent
+      }
+      return null
+    }
+    const a = blockAt(range.from, 1)
+    const b = blockAt(range.to, -1)
+    return a !== null && b !== null && a.from === b.from && a.to === b.to
+  }
+
+  /**
+   * 端点落在段落分隔的两条换行中间时,吸到换行串边界。
+   * 返回 null 表示不需要修正。
+   */
+  private snapBreakBoundary(
+    state: EditorState,
+    range: { from: number; to: number }
+  ): { from: number; to: number } | null {
+    const text = state.doc.toString()
+    const boundary = (pos: number, side: 'from' | 'to'): number => {
+      let start = pos
+      let end = pos
+      while (start > 0 && text[start - 1] === '\n') start--
+      while (end < text.length && text[end] === '\n') end++
+      if (end - start < 2 || pos <= start || pos >= end) return pos
+      return side === 'to' ? end : start
+    }
+    const from = boundary(range.from, 'from')
+    const to = boundary(range.to, 'to')
+    if (from === range.from && to === range.to) return null
+    return { from: Math.min(from, to), to: Math.max(from, to) }
+  }
+
+  /**
+   * 渲染态的公式块是原子块:指针选区碰到它的一部分时,把端点扩到整块边界,
+   * 不允许出现「只选中半块公式」的中间态。源码态的公式仍可选中片段。
+   */
+  private expandRenderedMath(
+    state: EditorState,
+    range: { from: number; to: number }
+  ): { anchor: number; head: number } | null {
+    const expand = (pos: number, side: 'from' | 'to'): number => {
+      let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1)
+      while (node) {
+        if (node.name === 'MathBlock' || node.name === 'DisplayMath') {
+          const host = state.doc.lineAt(node.from)
+          const rendered = lineReplaced(this, host)
+          if (rendered) {
+            if (pos > node.from && pos < node.to) return side === 'from' ? node.from : node.to
+            // 端点正好贴在块边界上:选到块前面/后面也算「碰到块」,把整块带上,
+            // 避免出现「选中了块前那条空白、公式却没选中」的中间态。
+            if (side === 'to' && pos === node.from) return node.to
+            if (side === 'from' && pos === node.to) return node.from
+          }
+        }
+        node = node.parent
+      }
+      return pos
+    }
+    let from = expand(range.from, 'from')
+    let to = expand(range.to, 'to')
+    if (from === range.from && to === range.to) return null
+    if (from > to) [from, to] = [to, from]
+    return { anchor: from, head: to }
+  }
+
+  /** 选区是否完整包住一个渲染中的 widget(公式 / 图片 / 表格 / 图表) */
+  private selectionCoversWidget(range: { from: number; to: number }): boolean {
+    for (let iter = this.atomicSet.iter(); iter.value; iter.next()) {
+      if (iter.from === iter.to) continue
+      if (range.from <= iter.from && range.to >= iter.to) return true
+    }
+    return false
+  }
+
+  /** 选区里是否已经包含屏幕上有文字的行(隐藏块 / 空行不算) */
+  private selectionHasVisibleText(
+    state: EditorState,
+    range: { from: number; to: number }
+  ): boolean {
+    const first = state.doc.lineAt(range.from).number
+    const last = state.doc.lineAt(range.to).number
+    for (let n = first; n <= last; n++) {
+      const line = state.doc.line(n)
+      if (this.isUnselectableLine(line)) continue
+      const from = Math.max(line.from, range.from)
+      const to = Math.min(line.to, range.to)
+      if (to <= from) continue
+      if (state.doc.sliceString(from, to).trim() !== '') return true
+    }
+    return false
+  }
+
+  /**
+   * 指针选区不要把「只有结构空行」当成可见选区。
+   *
+   * 从下一段行首往上拖时,端点会先落进两段之间的空行;那段在源码里只是一条
+   * 换行,选中它既看不到内容,又会让上面的公式/图片等退回源码。把端点吸到
+   * 相邻正文的边界,选区至少包含一行的文字。
+   */
+  private snapPointerSelection(state: EditorState): { anchor: number; head: number } | null {
+    const dbg = ((window as unknown as { __imarkSnapDebug?: Record<string, unknown> })
+      .__imarkSnapDebug ??= {})
+    const finish = (result: { anchor: number; head: number } | null): typeof result => {
+      dbg.result = result
+      return result
+    }
+    if (state.selection.ranges.length !== 1) {
+      dbg.result = 'multi-range'
+      return null
+    }
+    const range = state.selection.main
+    if (range.empty) {
+      dbg.result = 'empty'
+      return null
+    }
+    const doc = state.doc
+    dbg.attempt = {
+      from: range.from,
+      to: range.to,
+      text: doc.sliceString(range.from, range.to),
+      docLength: doc.length
+    }
+    const expandedMath = this.expandRenderedMath(state, range)
+    if (expandedMath) {
+      dbg.result = 'expand-math'
+      return expandedMath
+    }
+    /*
+     * 段落之间的分隔是两个换行。鼠标端点落在两条换行中间时,选区会变成
+     * 「文字 + 一个 \n」这种中间态;把它吸到换行串的一个边界:终点带走
+     * 整段分隔,起点则完全让开分隔。
+     */
+    const breakFix = this.snapBreakBoundary(state, range)
+    if (breakFix) {
+      const expanded = this.expandRenderedMath(state, breakFix)
+      if (expanded) {
+        dbg.result = 'break+math'
+        return expanded
+      }
+      dbg.result = 'break-boundary'
+      return { anchor: breakFix.from, head: breakFix.to }
+    }
+
+    if (this.selectionInsideBlock(state, range)) {
+      dbg.result = 'inside-block'
+      return null
+    }
+    if (this.selectionCoversWidget(range)) {
+      dbg.result = 'covers-widget'
+      return null
+    }
+    // 已经选到可见文字:保留用户的真实选区,不再把端点吸走
+    if (this.selectionHasVisibleText(state, range)) {
+      dbg.result = 'has-visible-text'
+      return null
+    }
+
+    /*
+     * 选区里一个可见字符都没有(只框住了换行/空行)时,把光标头沿拖动方向
+     * 扩到最近的非空白字符。否则屏幕上就是「只选中了空白」,还会把空行撑开。
+     */
+    if (!/\S/.test(doc.sliceString(range.from, range.to))) {
+      // 从起点那一侧补文字:向上拖就补下面的行,向下拖就补上面的行
+      if (range.head >= range.anchor) {
+        let i = range.from
+        while (i > 0 && /\s/.test(doc.sliceString(i - 1, i))) i--
+        if (i > 0) return finish({ anchor: i - 1, head: range.head })
+      } else {
+        let i = range.to
+        while (i < doc.length && /\s/.test(doc.sliceString(i, i + 1))) i++
+        if (i < doc.length) return finish({ anchor: i + 1, head: range.head })
+      }
+    }
+
+    const lineOf = (pos: number): Line => doc.lineAt(pos)
+    const fromLine = lineOf(range.from)
+    const toLine = lineOf(range.to)
+    const fromGap = this.isUnselectableLine(fromLine)
+    const toGap = this.isUnselectableLine(toLine)
+    if (!fromGap && !toGap) return finish(null)
+
+    const prevText = (number: number): Line | null => {
+      for (let n = number - 1; n >= 1; n--) {
+        const line = doc.line(n)
+        if (!this.isUnselectableLine(line)) return line
+      }
+      return null
+    }
+    const nextText = (number: number): Line | null => {
+      for (let n = number + 1; n <= doc.lines; n++) {
+        const line = doc.line(n)
+        if (!this.isUnselectableLine(line)) return line
+      }
+      return null
+    }
+
+    let from = range.from
+    let to = range.to
+    let changed = false
+    if (fromGap) {
+      // 起点在不可见行:尽量把上一行可见正文整个带进来(没有就带下一行)
+      const prev = prevText(fromLine.number)
+      const next = nextText(fromLine.number)
+      if (prev) {
+        from = prev.from
+        changed = true
+      } else if (next) {
+        from = next.to
+        changed = true
+      }
+    }
+    if (toGap) {
+      // 终点在不可见行:尽量把下一行可见正文整个带进来(没有就带上一行)
+      const next = nextText(toLine.number)
+      const prev = prevText(toLine.number)
+      if (next) {
+        to = next.to
+        changed = true
+      } else if (prev) {
+        to = prev.to
+        changed = true
+      }
+    }
+    if (!changed) return finish(null)
+    if (from > to) [from, to] = [to, from]
+    return finish({ anchor: from, head: to })
+  }
+
+  /**
+   * 方向键落到结构空行上时,把空光标移到**移动方向上**的相邻正文。
+   *
+   * 结构空行已经固定 gap 高度,不能再承载可编辑光标。用户创建的空段落
+   * (emptyParagraphs / 文末空白)仍是内容行,不在此列。
+   *
+   * 必须带方向:从第 1 行按 ↓ 落到段间距时,光标应该继续往下到第 3 行;
+   * 一律往上一行行尾放会把光标弹回第 1 行(见 keepCaretOutOfBlockGaps 的同向规则)。
+   */
+  private scheduleCaretNormalize(fromHead: number): void {
+    queueMicrotask(() => {
+      const state = this.view.state
+      const sel = state.selection.main
+      if (!sel.empty || isImeComposing()) return
+      const line = state.doc.lineAt(sel.head)
+      if (line.text.trim() !== '') return
+      if (getEmptyParagraphs(state).includes(line.from)) return
+      // 文末空白行是用户可继续输入的位置(重开文件后空段落记录会丢)
+      let textAfter = false
+      for (let n = line.number + 1; n <= state.doc.lines; n++) {
+        if (state.doc.line(n).text.trim() !== '') {
+          textAfter = true
+          break
+        }
+      }
+      if (!textAfter) return
+      if (!lineClasses(this, line).includes('cm-md-block-gap')) return
+      const doc = state.doc
+      const dir = sel.head > fromHead ? 1 : -1
+      let target: number | null = null
+      for (let n = line.number + dir; n >= 1 && n <= doc.lines; n += dir) {
+        const l = doc.line(n)
+        if (!this.isUnselectableLine(l)) {
+          target = dir > 0 ? l.from : l.to
+          break
+        }
+      }
+      if (target === null) return
+      try {
+        this.view.dispatch({ selection: { anchor: target }, userEvent: 'select' })
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
+  }
+
+  /**
+   * 拖选途中只做「公式块原子化」这一件事。
+   *
+   * 不能在拖动时做完整的空白/隐藏行吸附 —— 那会和鼠标方向打架;但如果完全
+   * 不管,公式块又会出现「选中一半」的中间态。这里只把落在渲染态公式块内部
+   * 的端点扩到整块边界,不碰其它端点。
+   */
+  private scheduleBlockSnap(): void {
+    queueMicrotask(() => {
+      const state = this.view.state
+      const range = state.selection.main
+      if (range.empty) return
+      const breakFix = this.snapBreakBoundary(state, range)
+      const base = breakFix ?? { from: range.from, to: range.to }
+      const expanded = this.expandRenderedMath(state, base)
+      const from = expanded ? Math.min(expanded.anchor, expanded.head) : base.from
+      const to = expanded ? Math.max(expanded.anchor, expanded.head) : base.to
+      if (from === range.from && to === range.to) return
+      const forward = range.head >= range.anchor
+      const selection = forward ? { anchor: from, head: to } : { anchor: to, head: from }
+      try {
+        this.view.dispatch({ selection, userEvent: 'select.pointer' })
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
+  }
+
+  /** 排一次选区修正;执行时再按最新状态算,连续拖动不会拿旧坐标打架 */
+  private scheduleSnap(): void {
+    const dbg = ((window as unknown as { __imarkSnapDebug?: Record<string, unknown> })
+      .__imarkSnapDebug ??= {})
+    dbg.scheduled = Number(dbg.scheduled ?? 0) + 1
+    dbg.pointerDown = this.pointerDown
+    dbg.pointerSelection = this.pointerSelection
+    const sel = this.view.state.selection.main
+    dbg.selection = { empty: sel.empty, from: sel.from, to: sel.to, ranges: this.view.state.selection.ranges.length }
+    if (this.snapScheduled) return
+    this.snapScheduled = true
+    queueMicrotask(() => {
+      this.snapScheduled = false
+      const snapped = this.snapPointerSelection(this.view.state)
+      if (!snapped) return
+      try {
+        this.view.dispatch({ selection: snapped, userEvent: 'select.pointer' })
+      } catch {
+        /* 视图已销毁 */
+      }
+    })
+  }
+
+  /**
+   * 记住「这次非空选区是不是鼠标拖出来的」。
+   *
+   * CodeMirror 给鼠标选区的 userEvent 是 select.pointer;键盘 / 命令选区是 select。
+   * 松开左键后不会再有新事务,标记要留到下一次选区或文档变化,
+   * 这样拖选结束后公式仍然保持渲染。
+   */
+  private trackPointerSelection(update: ViewUpdate): void {
+    if (update.docChanged) {
+      this.pinRendered = false
+      this.pointerSelection = false
+      return
+    }
+    if (!update.selectionSet) return
+    const pointer = update.transactions.some(tr => tr.isUserEvent('select.pointer'))
+    const keyboard = update.transactions.some(
+      tr => tr.isUserEvent('select') && !tr.isUserEvent('select.pointer')
+    )
+    // 不是指针产生的选区(键盘 / 程序化)意味着上一轮鼠标状态已经结束,
+    // 否则 mousedown 没收到 mouseup 时 pointerDown 会卡住,结构空行再也展不开
+    if (!pointer) this.pointerDown = false
+    this.pointerSelection = pointer && !keyboard
+    this.pinRendered =
+      this.pointerSelection && update.state.selection.ranges.some(range => !range.empty)
   }
 
   update(update: ViewUpdate): void {
@@ -262,6 +712,20 @@ export class WysiwygPlugin {
         return
       }
     }
+    this.trackPointerSelection(update)
+    // 拖选途中只保证公式块原子化;完整的空白/隐藏行吸附留到松手后,
+    // 否则会和鼠标方向打架(从下往上选块会被不断拉回)。
+    if (update.selectionSet && !update.docChanged) {
+      // 只处理真正的键盘导航;焦点变化 / 程序化选区不能抢走用户刚落下的光标
+      const keyboardSelect = update.transactions.some(
+        tr => tr.isUserEvent('select') && !tr.isUserEvent('select.pointer')
+      )
+      if (keyboardSelect) {
+        this.scheduleCaretNormalize(update.startState.selection.main.head)
+      }
+      if (this.pointerDown) this.scheduleBlockSnap()
+      else this.scheduleSnap()
+    }
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
       // 把"移动之前"的光标位置交给护栏:从表格上面往下走、从下面往上走
@@ -273,7 +737,7 @@ export class WysiwygPlugin {
       // 方向键落点是不是间距行,必须在 rebuild 之前判断(见 gapLineLanding)
       const gapLine = gapNav && !update.docChanged ? this.gapLineLanding(update.state) : null
       this.rebuild()
-      const mathSource = selectionInMath(update.state)
+      const mathSource = selectionInMath(update.state, this.pinRendered)
       if (mathSource !== this.mathSource) {
         this.mathSource = mathSource
         // 公式块高度从「整块 widget」变成多行源码,先让 CM 立刻重测一次行高,
@@ -657,6 +1121,7 @@ export class WysiwygPlugin {
         pendingFence: getPendingFence(state),
         codeTabs: state.field(codeTabsField, false) ?? [],
         emptyParagraphs,
+        pinRendered: this.pinRendered,
         decos,
         atomic,
         links,
@@ -727,7 +1192,12 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       view.plugin(wysiwygViewPlugin)?.onEditorBlur()
       return false
     },
+    mouseup(event, view) {
+      if (event.button === 0) view.plugin(wysiwygViewPlugin)?.endPointerDown()
+      return false
+    },
     mousedown(event, view) {
+      if (event.button === 0) view.plugin(wysiwygViewPlugin)?.beginPointerDown()
       if (event.button !== 0) return false
       const target = event.target instanceof Element ? event.target : null
       if (!event.ctrlKey && !event.metaKey) {
@@ -745,7 +1215,9 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
           clickBelowDocEnd(view, event)
         ) {
           event.preventDefault()
-          plugin.openTailParagraph()
+          // 光标已经在新空段上:点击下方空白只是把焦点还回来,不再补一行
+          if (caretOnTrailingBlank(view) === null) plugin.openTailParagraph()
+          else view.focus()
           return true
         }
         // 精确解析对「空行正好是视口第一行」这种位置返回 null(CM 把视口起点上的

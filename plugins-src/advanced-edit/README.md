@@ -1,4 +1,4 @@
-# 快速编辑（Quick Edit）
+# Advanced Edit
 
 在光标所在行左侧的「+」菜单里插入一张 Markdown 表格。
 
@@ -40,7 +40,7 @@
 这个扩展遵循 VS Code 的扩展信任模型：**扩展代码以当前用户权限运行，没有权限沙箱**。
 它本身不访问网络、不读写文件、不碰密钥；启用前仍应确认扩展来自可信来源。
 
-实现上只做两件事：在 `package.json` 里声明命令 `imark.quick-edit.insertTable` 与一条
+实现上只做两件事：在 `package.json` 里声明命令 `imark.advanced-edit.insertTable` 与一条
 `imark.lineMenu` 贡献；被调用时把行数/列数变成 Markdown 文本，通过
 `window.activeTextEditor.edit()` 交给 iMark 插入。按钮、菜单、对话框和插入位置全部由
 iMark 渲染。

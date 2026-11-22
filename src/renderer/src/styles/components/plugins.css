@@ -3,7 +3,7 @@
 .plugin-page {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
 }
 
 /* 左侧导航里的扩展条目:状态点 + 名字 */
@@ -23,12 +23,6 @@
 
 .plugin-icon-empty {
   background: var(--bg-toolbar-btn-hover);
-}
-
-.plugin-detail-version {
-  flex: 1;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
 }
 
 /* 开关 */
@@ -161,10 +155,16 @@
 
 /* 详情页头部与动作 */
 
+/* 简介与启停开关同一行:简介占满剩余宽度,开关贴右 */
 .plugin-detail-head {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.plugin-detail-head .plugin-field-desc {
+  flex: 1;
+  min-width: 0;
 }
 
 .plugin-actions {
@@ -380,10 +380,17 @@
   flex: 0 0 auto;
 }
 
-.plugin-textarea {
-  min-height: 96px;
-  line-height: 1.6;
-  resize: vertical;
+/* 多行提示词/文本:比单行输入框多留内边距和行距,别让整块字挤成一片 */
+.plugin-input.plugin-textarea {
+  min-height: 120px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.8;
+  /* 高度随内容展开:长提示词完整显示,不再出现内部滚动条 */
+  field-sizing: content;
+  overflow-y: hidden;
+  resize: none;
 }
 
 /* 字符串列表:一行一个输入框,删除按钮跟在行尾 */

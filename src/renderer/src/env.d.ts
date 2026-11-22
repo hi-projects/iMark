@@ -3,6 +3,9 @@
 import type { WindowApi } from '@shared/api'
 
 declare global {
+  /** 构建时由 electron.vite.config.ts 从 package.json 注入 */
+  const __APP_VERSION__: string
+
   interface Window {
     /**
      * 宿主桥的**一次性取用**函数(见 preload/index.ts)。
