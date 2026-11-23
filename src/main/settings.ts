@@ -4,11 +4,9 @@ import type { AutoSaveMode, Settings, Theme } from '@shared/types'
 import {
   clampAutoSaveDelay,
   clampCodeIndentSize,
-  clampBlockSpace,
   clampFontSize,
-  clampHeadingSpace,
-  clampImageSpace,
   clampLineSpace,
+  clampPairSpace,
   EDITOR_DEFAULTS,
   EDITOR_FONT_SIZE_VERSION
 } from '@shared/editorSettings'
@@ -160,52 +158,25 @@ function normalize(raw: Partial<Settings>): Settings {
   // 该字段只在本轮开发里出现过、没有发布,读到就丢掉,由 lineSpace 的默认 1 档接手。
   delete (merged as Record<string, unknown>).lineHeight
   merged.codeIndentSize = clampCodeIndentSize(merged.codeIndentSize)
-  merged.headingSpaceBefore = clampHeadingSpace(
-    merged.headingSpaceBefore,
-    EDITOR_DEFAULTS.headingSpaceBefore
-  )
-  merged.headingSpaceAfter = clampHeadingSpace(
-    merged.headingSpaceAfter,
-    EDITOR_DEFAULTS.headingSpaceAfter
-  )
-  merged.headingSpaceBetween = clampHeadingSpace(
-    merged.headingSpaceBetween,
-    EDITOR_DEFAULTS.headingSpaceBetween
-  )
-  merged.bodySpaceBetween = clampBlockSpace(
-    merged.bodySpaceBetween,
-    EDITOR_DEFAULTS.bodySpaceBetween
-  )
-  merged.codeSpaceBefore = clampBlockSpace(merged.codeSpaceBefore, EDITOR_DEFAULTS.codeSpaceBefore)
-  merged.codeSpaceAfter = clampBlockSpace(merged.codeSpaceAfter, EDITOR_DEFAULTS.codeSpaceAfter)
-  merged.listSpaceBefore = clampBlockSpace(merged.listSpaceBefore, EDITOR_DEFAULTS.listSpaceBefore)
-  merged.listSpaceAfter = clampBlockSpace(merged.listSpaceAfter, EDITOR_DEFAULTS.listSpaceAfter)
-  merged.quoteSpaceBefore = clampBlockSpace(
-    merged.quoteSpaceBefore,
-    EDITOR_DEFAULTS.quoteSpaceBefore
-  )
-  merged.quoteSpaceAfter = clampBlockSpace(merged.quoteSpaceAfter, EDITOR_DEFAULTS.quoteSpaceAfter)
-  merged.tableSpaceBefore = clampBlockSpace(
-    merged.tableSpaceBefore,
-    EDITOR_DEFAULTS.tableSpaceBefore
-  )
-  merged.tableSpaceAfter = clampBlockSpace(merged.tableSpaceAfter, EDITOR_DEFAULTS.tableSpaceAfter)
-  merged.imageSpaceBeforeHeading = clampImageSpace(
-    merged.imageSpaceBeforeHeading,
-    EDITOR_DEFAULTS.imageSpaceBeforeHeading
-  )
-  merged.imageSpaceBeforeBody = clampImageSpace(
-    merged.imageSpaceBeforeBody,
-    EDITOR_DEFAULTS.imageSpaceBeforeBody
-  )
-  merged.imageSpaceAfterHeading = clampImageSpace(
-    merged.imageSpaceAfterHeading,
-    EDITOR_DEFAULTS.imageSpaceAfterHeading
-  )
-  merged.imageSpaceAfterBody = clampImageSpace(
-    merged.imageSpaceAfterBody,
-    EDITOR_DEFAULTS.imageSpaceAfterBody
-  )
+  // 块间距:有序配对 `<上块>-<下块>` → 档数。只保留合法 key / 有限数值,
+  // 非法项丢掉;没出现的配对在渲染时按 1 档。
+  const PAIR_KEY =
+    /^(body|heading|code|list|quote|image|table|math|mermaid)-(body|heading|code|list|quote|image|table|math|mermaid)$/
+  if (
+    !merged.pairGaps ||
+    typeof merged.pairGaps !== 'object' ||
+    Array.isArray(merged.pairGaps)
+  ) {
+    merged.pairGaps = {}
+  } else {
+    const clean: Record<string, number> = {}
+    for (const [key, value] of Object.entries(merged.pairGaps)) {
+      if (!PAIR_KEY.test(key)) continue
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      clean[key] = clampPairSpace(value)
+    }
+    merged.pairGaps = clean
+  }
   merged.lineWrapping = merged.lineWrapping !== false
   merged.explorerWidth = clampSidebarWidth(merged.explorerWidth)
   merged.outlineWidth = clampSidebarWidth(merged.outlineWidth)

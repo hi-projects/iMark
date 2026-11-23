@@ -51,89 +51,39 @@ export function clampLineSpace(value: unknown, fallback: number = LINE_SPACE_DEF
 }
 
 /**
- * 标题上下的留白(设置面板「外观」页),单位是「档」:1 档 = 正文字号。
+ * 块与块之间的间距(设置面板「外观 → 间距」的圆环),单位是「档」:
+ * 1 档 = 一个正文字号。每条边界由一个**有序配对**决定 ——
+ * `<上块>-<下块>`,例如 `body-heading`(正文在上、标题在下)、
+ * `heading-body`(反过来)、`body-code`、`code-body`……
  *
- *   · before  —— 标题前面是正文时,标题上方留的空白;
- *   · after   —— 标题后面是正文时,标题下方留的空白;
- *   · between —— 两个标题紧挨着(中间没有空行)时,两者之间的空白。
- *
- * 用倍数而不是 px:改正文字号时整组间距同比例缩放,和标题字号一样。
- * 默认各 1 档,与 Obsidian 的 --p-spacing 一致。
+ * 结构空行在渲染时完全折叠,间距由下方块首行的 padding-top 承担
+ * (见 editor.css 的配对规则、rules.ts 的配对类)。没设置过的配对按 1 档。
  */
-export const HEADING_SPACE_MIN = 0
-export const HEADING_SPACE_MAX = 3
-export const HEADING_SPACE_STEP = 0.1
-export const HEADING_SPACE_DEFAULTS = { before: 1, after: 1, between: 1 } as const
-export type HeadingSpaceSide = keyof typeof HEADING_SPACE_DEFAULTS
+export const PAIR_SPACE_MIN = 0
+export const PAIR_SPACE_MAX = 3
+export const PAIR_SPACE_STEP = 0.1
+export const PAIR_SPACE_DEFAULT = 1
 
-/** 夹到 [0, 3],按 0.1 档取整;非数字(输入被清空、settings.json 被手改)落回默认值 */
-export function clampHeadingSpace(value: unknown, fallback: number): number {
+/** 夹到 [0, 3],按 0.1 档取整;非数字落回默认值 */
+export function clampPairSpace(value: unknown, fallback: number = PAIR_SPACE_DEFAULT): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
-  const clamped = Math.min(HEADING_SPACE_MAX, Math.max(HEADING_SPACE_MIN, value))
+  const clamped = Math.min(PAIR_SPACE_MAX, Math.max(PAIR_SPACE_MIN, value))
   return Math.round(clamped * 10) / 10
 }
 
-/**
- * 块与正文之间、以及两段正文之间的留白(设置面板「外观 → 块间距」),
- * 单位同样是「档」。
- *
- *   · bodyBetween —— 两段正文之间那条空行的留白(设置里的「段间距」);
- *   · codeBefore / codeAfter —— 代码块前面 / 后面是正文时的留白;
- *   · listBefore / listAfter —— 列表前面 / 后面是正文时的留白;
- *   · quoteBefore / quoteAfter —— 引用前面 / 后面是正文时的留白;
- *   · tableBefore / tableAfter —— 表格上方 / 下方是正文(或其他块)时的留白。
- *
- * 表格默认不是 1 档:它此前没有独立档位,上方靠一条段间距空行、下方靠
- * frame 的 12px 留白。取 1.7 / 0.7 是为了让升级后的观感与旧版一致。
- * 默认 1 档(一个正文字号):与标题间距、正文行距用同一把尺子,块与正文
- * 之间的留白和段落之间看起来一致。刻度与标题间距相同(0–3 档,0.1 一档)。
- */
-export const BLOCK_SPACE_MIN = HEADING_SPACE_MIN
-export const BLOCK_SPACE_MAX = HEADING_SPACE_MAX
-export const BLOCK_SPACE_STEP = HEADING_SPACE_STEP
-export const BLOCK_SPACE_DEFAULTS = {
-  bodyBetween: 1,
-  codeBefore: 1,
-  codeAfter: 1,
-  listBefore: 1,
-  listAfter: 1,
-  quoteBefore: 1,
-  quoteAfter: 1,
-  tableBefore: 1.7,
-  tableAfter: 0.7
-} as const
-export type BlockSpaceSide = keyof typeof BLOCK_SPACE_DEFAULTS
-
-export function clampBlockSpace(value: unknown, fallback: number): number {
-  return clampHeadingSpace(value, fallback)
-}
-
-/**
- * 图片(独占一行时)与相邻标题 / 正文之间的留白(设置面板「外观 → 块间距」),
- * 单位同样是「档」。
- *
- *   · beforeHeading —— 图片上方紧挨标题(也就是标题下方与图片);
- *   · beforeBody    —— 图片上方紧挨正文(也就是正文下方与图片);
- *   · afterHeading  —— 图片下方紧挨标题(也就是标题上方与图片);
- *   · afterBody     —— 图片下方紧挨正文(也就是正文上方与图片)。
- *
- * 有这类设置时,图片那一侧的标题留白 / 段间距由图片自己这一档说了算 ——
- * 同一个缝隙只调一个值,不会两处叠加。默认 1 档,与块间距一致。
- */
-export const IMAGE_SPACE_MIN = HEADING_SPACE_MIN
-export const IMAGE_SPACE_MAX = HEADING_SPACE_MAX
-export const IMAGE_SPACE_STEP = HEADING_SPACE_STEP
-export const IMAGE_SPACE_DEFAULTS = {
-  beforeHeading: 1,
-  beforeBody: 1,
-  afterHeading: 1,
-  afterBody: 1
-} as const
-export type ImageSpaceSide = keyof typeof IMAGE_SPACE_DEFAULTS
-
-export function clampImageSpace(value: unknown, fallback: number): number {
-  return clampHeadingSpace(value, fallback)
-}
+/** 九个块类型的固定顺序,配对 key 与圆环都用它 */
+export const BLOCK_KINDS = [
+  'body',
+  'heading',
+  'code',
+  'list',
+  'quote',
+  'image',
+  'table',
+  'math',
+  'mermaid'
+] as const
+export type BlockKind = (typeof BLOCK_KINDS)[number]
 
 /**
  * 代码块内按 Tab 插入的空格数。
@@ -155,45 +105,15 @@ export const EDITOR_DEFAULTS = {
   autoSaveDelay: 1,
   lineWrapping: true,
   /** 默认正文字号 */
-  editorFontSize: 14,
+  editorFontSize: 15,
   /** 见 EDITOR_FONT_SIZE_VERSION:2 = 设置值即实际正文字号 */
   editorFontSizeVersion: EDITOR_FONT_SIZE_VERSION,
   /** 行间距(档,× 正文字号);行高 = 1 + 这一档 */
   lineSpace: LINE_SPACE_DEFAULT,
   /** 与 Obsidian 的 Tab size 默认档一致 */
   codeIndentSize: 4,
-  /** 标题上方留白(档,× 正文字号) */
-  headingSpaceBefore: HEADING_SPACE_DEFAULTS.before,
-  /** 标题下方留白(档,× 正文字号) */
-  headingSpaceAfter: HEADING_SPACE_DEFAULTS.after,
-  /** 两个紧挨着的标题之间的留白(档,× 正文字号) */
-  headingSpaceBetween: HEADING_SPACE_DEFAULTS.between,
-  /** 两段正文之间的留白(档,× 正文字号) */
-  bodySpaceBetween: BLOCK_SPACE_DEFAULTS.bodyBetween,
-  /** 代码块上方留白(档,× 正文字号) */
-  codeSpaceBefore: BLOCK_SPACE_DEFAULTS.codeBefore,
-  /** 代码块下方留白(档,× 正文字号) */
-  codeSpaceAfter: BLOCK_SPACE_DEFAULTS.codeAfter,
-  /** 列表上方留白(档,× 正文字号) */
-  listSpaceBefore: BLOCK_SPACE_DEFAULTS.listBefore,
-  /** 列表下方留白(档,× 正文字号) */
-  listSpaceAfter: BLOCK_SPACE_DEFAULTS.listAfter,
-  /** 引用上方留白(档,× 正文字号) */
-  quoteSpaceBefore: BLOCK_SPACE_DEFAULTS.quoteBefore,
-  /** 引用下方留白(档,× 正文字号) */
-  quoteSpaceAfter: BLOCK_SPACE_DEFAULTS.quoteAfter,
-  /** 表格上方留白(档,× 正文字号) */
-  tableSpaceBefore: BLOCK_SPACE_DEFAULTS.tableBefore,
-  /** 表格下方留白(档,× 正文字号) */
-  tableSpaceAfter: BLOCK_SPACE_DEFAULTS.tableAfter,
-  /** 图片上方紧挨标题时的留白(档,× 正文字号) */
-  imageSpaceBeforeHeading: IMAGE_SPACE_DEFAULTS.beforeHeading,
-  /** 图片上方紧挨正文时的留白(档,× 正文字号) */
-  imageSpaceBeforeBody: IMAGE_SPACE_DEFAULTS.beforeBody,
-  /** 图片下方紧挨标题时的留白(档,× 正文字号) */
-  imageSpaceAfterHeading: IMAGE_SPACE_DEFAULTS.afterHeading,
-  /** 图片下方紧挨正文时的留白(档,× 正文字号) */
-  imageSpaceAfterBody: IMAGE_SPACE_DEFAULTS.afterBody
+  /** 块与块之间的配对间距(档);未出现的配对按 1 档 */
+  pairGaps: {} as Record<string, number>
 } as const
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {

@@ -321,9 +321,22 @@ async function main(): Promise<void> {
   await loadDoc(single)
   await waitFor(readyCount, n => n === 1)
   await focusEditor()
-  await key('ArrowDown') // 第 2 行(空行)
-  await key('ArrowDown') // 第 3 行 = ```mermaid
-  await sleep(400)
+  /*
+   * 直接把光标放到开围栏行里,不靠方向键 —— 方向键在块级 widget / 结构空行上
+   * 有自己的跳转策略(见 build.ts),这里要验的是「光标进围栏 → 源码态」,
+   * 与跳转无关。
+   */
+  const setCaretAt = async (text: string, offset = 0): Promise<void> => {
+    await evalJs(`(() => {
+      const view = document.querySelector('.cm-content').cmTile.root.view
+      const pos = view.state.doc.toString().indexOf(${JSON.stringify(text)})
+      view.dispatch({ selection: { anchor: pos + ${offset} }, scrollIntoView: true })
+      view.focus()
+      return pos >= 0
+    })()`)
+    await sleep(300)
+  }
+  await setCaretAt('```mermaid', 3)
   check('光标确实进了围栏', await cursorInFence(), `第 ${await cursorLine()} 行`)
   check('SVG 消失(源码态)', (await widgetCount()) === 0, String(await widgetCount()))
   const sourceRows = await evalJs<string[]>(`
@@ -339,7 +352,12 @@ async function main(): Promise<void> {
     JSON.stringify(sourceRows)
   )
   // 走到文末(越过围栏和末尾那段)
-  for (let i = 0; i < 8; i++) await key('ArrowDown')
+  await evalJs(`(() => {
+    const view = document.querySelector('.cm-content').cmTile.root.view
+    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })
+    view.focus()
+    return true
+  })()`)
   await sleep(300)
   check('光标离开了围栏', !(await cursorInFence()), `第 ${await cursorLine()} 行`)
   const again = await waitFor(readyCount, n => n === 1)

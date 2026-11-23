@@ -7,14 +7,16 @@ import {
   Image as ImageIcon,
   List,
   Quote,
+  Sigma,
   Table2,
   Type,
+  Workflow,
   X
 } from 'lucide-vue-next'
 import { BLOCK_KINDS, BLOCK_LABELS, type BlockKind } from '../services/spacingPairs'
 
 /**
- * 左栏的块调色板:七个圆圈排成网格。
+ * 左栏的块调色板:九个圆圈排成网格。
  *
  *   · 第一次点 = 上面那个块;
  *   · 再点另一个块 = 下面那个块;
@@ -41,7 +43,9 @@ const ICONS = {
   list: List,
   quote: Quote,
   image: ImageIcon,
-  table: Table2
+  table: Table2,
+  math: Sigma,
+  mermaid: Workflow
 } as const
 
 function roleOf(kind: BlockKind): 'top' | 'bottom' | 'none' {

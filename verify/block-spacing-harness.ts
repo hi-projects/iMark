@@ -44,6 +44,12 @@ const REPO = join(__dirname, '..', '..')
 const BODY = 16
 /** 默认 1 档:一个正文字号 */
 const DEFAULT_GAP = 1 * BODY
+/**
+ * 两段正文之间的空行高度 = 「段间距」这一档。
+ * 段与段的两侧行盒已裁到文字边(editor.css 的 cm-md-para-trim-*),行间距不再
+ * 参与段距(见 cm-md-block-gap-body)。
+ */
+const BODY_GAP = DEFAULT_GAP
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 let pass = 0
@@ -273,7 +279,7 @@ async function main(): Promise<void> {
   }
 
   /**
-   * 「恢复默认设置」现在也会把正文字号带回默认 14px。
+   * 「恢复默认设置」现在也会把正文字号带回默认值(EDITOR_DEFAULTS.editorFontSize)。
    * 这个 harness 的像素断言都按 16px 算,重置后先把字号改回来再继续。
    */
   async function restoreBodyFont(): Promise<boolean> {
@@ -414,11 +420,11 @@ async function main(): Promise<void> {
       .find(b => b.textContent.trim() === '外观')
       ?.click()`)
   check(
-    '「样式」区里是七个块的圆环,初始没有中心',
+    '「样式」区里是九个块的圆环,初始没有中心',
     await waitFor(
-      `document.querySelectorAll('[data-block-node]').length === 7 && document.querySelector('[data-ring-state="empty"]')`
+      `document.querySelectorAll('[data-block-node]').length === 9 && document.querySelector('[data-ring-state="empty"]')`
     ),
-    '找不到七块圆环'
+    '找不到九块圆环'
   )
 
   async function setBlockSlider(side: string, value: number): Promise<boolean> {
@@ -643,7 +649,7 @@ async function main(): Promise<void> {
     })()`)
   console.log(`     [实测] ${JSON.stringify(afterReset)}`)
   check(
-    '根变量都回到默认(字号 14px,行间距 / 标题 / 块 1 档,表格 1.7 / 0.7 档)',
+    '根变量都回到默认(字号 = EDITOR_DEFAULTS,行间距 / 标题 / 块 1 档,表格 1.7 / 0.7 档)',
     afterReset.vars.fontSize === `${EDITOR_DEFAULTS.editorFontSize}px` &&
       afterReset.vars.lineSpace === '1' &&
       afterReset.vars.headingBefore === '1' &&
@@ -660,7 +666,7 @@ async function main(): Promise<void> {
       afterReset.vars.tableAfter === '0.7',
     JSON.stringify(afterReset)
   )
-  check('恢复默认后圆环仍在(七块选择器不受影响)', afterReset.nodes === 7, String(afterReset.nodes))
+  check('恢复默认后圆环仍在(九块选择器不受影响)', afterReset.nodes === 9, String(afterReset.nodes))
 
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(
@@ -680,7 +686,7 @@ async function main(): Promise<void> {
     JSON.stringify(resetSaved)
   )
 
-  // 重置把字号也带回默认 14px;后面的像素断言按 16px 计算,先改回来再继续
+  // 重置把字号也带回默认值;后面的像素断言按 16px 计算,先改回来再继续
   check('把字号改回 16px,后面的像素断言按 16 计算', await restoreBodyFont())
 
   await evalJs(`document.querySelector('.settings-close')?.click()`)
@@ -945,14 +951,17 @@ async function main(): Promise<void> {
   )
   const bodyDefault = await bodyGapMetrics()
   console.log(`     [实测] ${JSON.stringify(bodyDefault)}`)
-  check('默认 1 档(16px)', near(bodyDefault.bodyH, DEFAULT_GAP), String(bodyDefault.bodyH))
+  check('默认 1 档(16px)', near(bodyDefault.bodyH, BODY_GAP), String(bodyDefault.bodyH))
   // 标题前那条空行也带 cm-md-block-gap(方向键 / 点击要把它当结构行跨过),
-  // 但 CSS 会把行高放开成一整行 —— 这里按**实际行高**判断,不再看类名。
+  // 但 CSS 会把行高放开成一整行。正文之间的空行挂 cm-md-block-gap-body,
+  // 标题前那条不挂 —— 按类名区分,高度两者恰好都是一整行。
   check(
     '只有两段正文之间的空行被收紧(段落与标题之间仍是正常行距)',
     bodyDefault.bodyCount === 1 &&
-      bodyDefault.lines[3]?.h > DEFAULT_GAP + 8 &&
-      Math.abs((bodyDefault.lines[3]?.h ?? 0) - (bodyDefault.lines[2]?.h ?? 0)) <= 1,
+      /cm-md-block-gap-body/.test(bodyDefault.lines[1]?.cls ?? '') &&
+      !/cm-md-block-gap-body/.test(bodyDefault.lines[3]?.cls ?? '') &&
+      /cm-md-h-space-before/.test(bodyDefault.lines[3]?.cls ?? '') &&
+      (bodyDefault.lines[3]?.h ?? 0) >= 2 * BODY - 0.5,
     JSON.stringify(bodyDefault.lines)
   )
 
@@ -974,7 +983,7 @@ async function main(): Promise<void> {
   check(
     '点正文之间的空行:空行不撑开,光标落到上一段末尾',
     bodyClick.x >= 0 &&
-      near(bodyClicked.bodyH, DEFAULT_GAP) &&
+      near(bodyClicked.bodyH, BODY_GAP) &&
       bodyClicked.selText.includes('第一段正文。'),
     JSON.stringify({ bodyClick, bodyClicked })
   )
@@ -1013,7 +1022,7 @@ async function main(): Promise<void> {
   check(
     '拖到 2 档后空行变成 32px,读数正确',
     bodySlider &&
-      near(bodySet.bodyH, 32) &&
+      near(bodySet.bodyH, 2 * BODY) &&
       bodyUi.space === '2' &&
       bodyUi.readout.includes('2.0 档') &&
       bodyUi.readout.includes('32 px'),
@@ -1028,7 +1037,7 @@ async function main(): Promise<void> {
   await loadDoc(BODY_BLANK)
   await waitFor(`document.querySelectorAll('.cm-line.cm-md-block-gap-body').length === 1`)
   const bodyReloaded = await bodyGapMetrics()
-  check('重载后按磁盘值还原(32px)', near(bodyReloaded.bodyH, 32), String(bodyReloaded.bodyH))
+  check('重载后按磁盘值还原(32px)', near(bodyReloaded.bodyH, 2 * BODY), String(bodyReloaded.bodyH))
 
   await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
   await waitFor(`document.querySelector('.settings-nav-item')`)
@@ -1039,10 +1048,10 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
   await sleep(700)
-  // 重置会同时把字号带回 14px,先恢复成 16px 再量
+  // 重置会同时把字号带回默认值,先恢复成 16px 再量
   await restoreBodyFont()
   const bodyReset = await bodyGapMetrics()
-  check('恢复默认后「段间距」回到 1 档(16px)', near(bodyReset.bodyH, DEFAULT_GAP), String(bodyReset.bodyH))
+  check('恢复默认后「段间距」回到 1 档(16px)', near(bodyReset.bodyH, BODY_GAP), String(bodyReset.bodyH))
 
   // ---------- H ----------
   console.log('\n【H】行间距:同一段内连续行的行高按档位变化,不需要空行')
@@ -1064,13 +1073,16 @@ async function main(): Promise<void> {
       (() => {
         const lines = [...document.querySelectorAll('.cm-content .cm-line')]
         const round = n => Math.round(n * 100) / 100
+        const textTop = el => {
+          const r = document.createRange()
+          r.selectNodeContents(el)
+          return r.getBoundingClientRect().top
+        }
         return {
           texts: lines.map(el => el.textContent),
           heights: lines.map(el => round(el.getBoundingClientRect().height)),
           advance:
-            lines.length > 1
-              ? round(lines[1].getBoundingClientRect().top - lines[0].getBoundingClientRect().top)
-              : -1,
+            lines.length > 1 ? round(textTop(lines[1]) - textTop(lines[0])) : -1,
           vars: getComputedStyle(document.documentElement).getPropertyValue('--editor-line-space').trim()
         }
       })()`)
@@ -1080,9 +1092,9 @@ async function main(): Promise<void> {
   const lineDefault = await lineSpaceMetrics()
   console.log(`     [实测] ${JSON.stringify(lineDefault)}`)
   check(
-    '默认 1 档:同一段三行都是 32px,行与行紧挨着',
+    '默认 1 档:同一段内行距 32px,行与行紧挨着(首行上侧裁掉了半份行距)',
     lineDefault.heights.length >= 3 &&
-      lineDefault.heights.slice(0, 3).every(h => near(h, LINE_H, 0.8)) &&
+      near(lineDefault.heights[1], LINE_H, 0.8) &&
       near(lineDefault.advance, LINE_H, 0.8) &&
       lineDefault.vars === '1',
     JSON.stringify(lineDefault)
@@ -1159,9 +1171,9 @@ async function main(): Promise<void> {
     })()`)
   console.log(`     [实测] ${JSON.stringify({ lineSet, readout: lineUi })}`)
   check(
-    '拖到 1.6 档:行高与行间位移都变成 41.6px,读数按「档 · px」显示',
+    '拖到 1.6 档:行距与行间位移都变成 41.6px,读数按「档 · px」显示',
     lineSlider &&
-      lineSet.heights.slice(0, 3).every(h => near(h, (1 + 1.6) * BODY, 0.8)) &&
+      near(lineSet.heights[1], (1 + 1.6) * BODY, 0.8) &&
       near(lineSet.advance, (1 + 1.6) * BODY, 0.8) &&
       lineSet.vars === '1.6' &&
       lineUi.includes('1.6 档') &&
@@ -1180,7 +1192,8 @@ async function main(): Promise<void> {
   const lineReloaded = await lineSpaceMetrics()
   check(
     '重载后按磁盘值还原(41.6px)',
-    lineReloaded.heights.slice(0, 3).every(h => near(h, (1 + 1.6) * BODY, 0.8)) &&
+    near(lineReloaded.heights[1], (1 + 1.6) * BODY, 0.8) &&
+      near(lineReloaded.advance, (1 + 1.6) * BODY, 0.8) &&
       lineReloaded.vars === '1.6',
     JSON.stringify(lineReloaded)
   )
@@ -1194,12 +1207,14 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
   await sleep(700)
-  // 重置会同时把字号带回 14px,先恢复成 16px 再量
+  // 重置会同时把字号带回默认值,先恢复成 16px 再量
   await restoreBodyFont()
   const lineReset = await lineSpaceMetrics()
   check(
     '恢复默认后行间距回到 1 档(32px)',
-    near(lineReset.heights[0], LINE_H, 0.8) && lineReset.vars === '1',
+    near(lineReset.heights[1], LINE_H, 0.8) &&
+      near(lineReset.advance, LINE_H, 0.8) &&
+      lineReset.vars === '1',
     JSON.stringify(lineReset)
   )
 

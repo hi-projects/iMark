@@ -578,7 +578,7 @@ async function main(): Promise<void> {
     reset.vars.bodyBetween === '1' && reset.vars.tableBefore === '1.7' && reset.vars.tableAfter === '0.7',
     JSON.stringify(reset.vars)
   )
-  check('重置后圆环仍在,七个块都在', reset.nodes === 7, JSON.stringify(reset.nodes))
+  check('重置后圆环仍在,九个块都在', reset.nodes === 9, JSON.stringify(reset.nodes))
   await sleep(400)
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
   check(

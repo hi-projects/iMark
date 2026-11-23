@@ -71,6 +71,7 @@ if (!name) {
         'code-indent',
         'font-zoom',
         'math-block',
+        'math-enter-paragraph',
         'math-select-all',
         'math-pending',
         'math-delete',

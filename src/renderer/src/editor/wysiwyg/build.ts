@@ -4,9 +4,9 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
 import { Transaction, type ChangeDesc, type EditorState, type Line, type Range, type Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
 import { autoTitleChanges, caretGroupRange, codeTabsField } from './codeTabs'
-import { getEmptyParagraphs, paragraphClick } from '../emptyParagraph'
+import { getEmptyParagraphs } from '../emptyParagraph'
 import { isImeComposing } from '../ime'
-import { applyRule, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
+import { applyRule, blockKindOf, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
 import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
 import {
   addConflictDecorations,
@@ -57,44 +57,33 @@ function clickBelowDocEnd(view: EditorView, event: MouseEvent): boolean {
 }
 
 /**
- * 光标是否已经停在文末的空段落上(它下面全是空行)。
+ * 文档最后一个非空白字符之后的位置。
  *
- * 在代码块 / 公式块末尾回车后,光标就在这样一条空行上;再点下面的空白时,
- * 不能再补一条新空行、把光标挪到文档最后的空行 —— 那会把这行压成间距,
- * 看起来像光标自己跳了位置。
+ * 点击最后一行下方的空白时把光标放这里:只移动光标,不往源码里补换行。
+ * 文末若有空行,光标也落在最后一个字后面,而不是停在空行上。
  */
-function caretOnTrailingBlank(view: EditorView): number | null {
-  const sel = view.state.selection.main
-  if (!sel.empty) return null
-  const doc = view.state.doc
-  const line = doc.lineAt(sel.head)
-  if (!isBlankLine(line.text)) return null
-  for (let n = line.number + 1; n <= doc.lines; n++) {
-    if (!isBlankLine(doc.line(n).text)) return null
-  }
-  return line.from
+function endOfLastText(doc: Text): number {
+  let pos = doc.length
+  while (pos > 0 && /\s/.test(doc.sliceString(pos - 1, pos))) pos--
+  return pos
 }
 
 /**
- * 在文末新起一个空段落,返回临时补出来的区间(文末已经有空段落时为 null)。
+ * 文末由用户回车创建、还空着的段落位置(行尾);没有就返回 null。
  *
- * Markdown 里新段与上一段之间要空一行,所以文末要么已经是 `\n\n`,要么补到
- * `\n\n`;只补换行,不写任何可见内容。光标先落到新行上,用户真输入就留下,
- * 没输入就移开时由 WysiwygPlugin 撤回(见 dropTailDraft)。
+ * 这类空段是用户要接着输入的地方:点击文末空白时优先回到它上面,
+ * 不能越过它把光标送回上一段正文。
  */
-function insertTailParagraph(view: EditorView): { from: number; to: number; text: string } | null {
-  const { doc } = view.state
-  const end = doc.length
-  const tail = end === 0 ? '' : doc.sliceString(Math.max(0, end - 2), end)
-  const text = end === 0 || tail.endsWith('\n\n') ? '' : tail.endsWith('\n') ? '\n' : '\n\n'
-  view.dispatch({
-    changes: text ? { from: end, insert: text } : undefined,
-    selection: { anchor: end + text.length },
-    annotations: [paragraphClick.of(true)],
-    userEvent: 'select.pointer',
-    scrollIntoView: true
-  })
-  return text ? { from: end, to: end + text.length, text } : null
+function trailingEmptyParagraphEnd(state: EditorState): number | null {
+  const kept = new Set(getEmptyParagraphs(state))
+  const doc = state.doc
+  let best: number | null = null
+  for (let n = doc.lines; n >= 1; n--) {
+    const line = doc.line(n)
+    if (!isBlankLine(line.text)) break
+    if (kept.has(line.from)) best = line.to
+  }
+  return best
 }
 
 /** 这一行是不是被整行替换掉了(代码围栏、表格宿主行、公式、独占一行的图片等) */
@@ -116,70 +105,6 @@ function lineClasses(plugin: WysiwygPlugin, line: Line): string[] {
     if (cls) out.push(...cls.split(/\s+/))
   }
   return out
-}
-
-/**
- * 点击落在收紧的结构空行上时,光标该停到哪。
- *
- * 这类空行平时只占"一档间距"的高度(见 rules 的 addGapBefore / addGapAfter),
- * 看上去就是两块之间的留白。可光标一停上去,它会按正文行撑开(为了接着输入时
- * 字不跳),于是点一下空白,眼前凭空多出一整行,下面内容整体下移 —— 像是被
- * 点出来的新行。这里干脆不让光标停在空行上:点和识别出的留白时,把光标挪到
- * 空行另一侧最近的正文行(空行属于下面那块就往上找,属于上面那块就往下找),
- * 和点击渲染表格空白处的处理一致。想给两块之间补内容,在上一行末尾回车即可。
- *
- * 只改鼠标点击:方向键把光标挪上空行时仍按原样撑开,保证落点和输入位置一致。
- */
-function gapLineClickAnchor(view: EditorView, plugin: WysiwygPlugin, pos: number): number | null {
-  const doc = view.state.doc
-  const line = doc.lineAt(pos)
-  if (!isBlankLine(line.text)) return null
-  // 回车创建的空段落是用户要能点回去的一行,不按结构空行处理
-  const kept = new Set(getEmptyParagraphs(view.state))
-  if (kept.has(line.from)) return null
-  const classes = lineClasses(plugin, line)
-  if (!classes.includes('cm-md-block-gap')) return null
-  // 间距属于哪一侧:正文 / 表格空行是 `cm-md-block-gap-…-before|after`;
-  // 独占一行的图片上下,空行挂的是 `cm-md-image-gap-blank-before-body`
-  // 这类样式(见 rules 的 styleImageGaps),同样要按结构空行改道 —— 否则
-  // 点一下图片与上一段之间的留白,光标停上去把空行撑成整行,图像被推下去,
-  // 看起来像凭空多出一行。
-  const isSide = (side: 'before' | 'after'): boolean =>
-    classes.some(
-      c =>
-        (c.startsWith('cm-md-block-gap-') || c.startsWith('cm-md-image-gap-blank-')) &&
-        (c.endsWith(`-${side}`) || c.includes(`-${side}-`))
-    )
-  const isKept = (l: Line): boolean => kept.has(l.from)
-  const above = (): number | null => {
-    for (let n = line.number - 1; n >= 1; n--) {
-      const l = doc.line(n)
-      // 光标刚离开的空段落虽然也是空行,但它是用户点得回去的一行,优先落到它上面
-      if (isKept(l)) return l.from
-      if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
-      return l.to
-    }
-    return null
-  }
-  const below = (): number | null => {
-    for (let n = line.number + 1; n <= doc.lines; n++) {
-      const l = doc.line(n)
-      if (isKept(l)) return l.from
-      if (isBlankLine(l.text) || lineReplaced(plugin, l)) continue
-      return l.from
-    }
-    return null
-  }
-  // 点的是空段落旁边的段间距:用户就是在点那个空着的第二段,别送回上一段
-  const up = above()
-  const down = below()
-  if (up !== null && kept.has(up)) return up
-  if (down !== null && kept.has(down)) return down
-  // 空行挂的是 "-before"(间距属于下一块)或正文之间:往上找;
-  // 否则("-after")往下找。两个方向都没有可停的正文行时再从另一侧兜一次底。
-  if (classes.includes('cm-md-block-gap-body') || isSide('before')) return up ?? down
-  if (isSide('after')) return down ?? up
-  return null
 }
 
 export class WysiwygPlugin {
@@ -213,8 +138,6 @@ export class WysiwygPlugin {
     this.onEditorBlur()
     this.endPointerDown()
   }
-  /** 点击文末空白临时补出来的空段落;用户没输入就撤掉(见 openTailParagraph) */
-  private tailDraft: { from: number; to: number; text: string } | null = null
   /** 选区是否在块级公式里(渲染块 ↔ 源码态);切态时要强制重绘一次 */
   private mathSource: boolean
   /**
@@ -576,7 +499,7 @@ export class WysiwygPlugin {
         }
       }
       if (!textAfter) return
-      if (!lineClasses(this, line).includes('cm-md-block-gap')) return
+      if (!lineClasses(this, line).includes('cm-md-structural-blank')) return
       const doc = state.doc
       const dir = sel.head > fromHead ? 1 : -1
       let target: number | null = null
@@ -674,15 +597,6 @@ export class WysiwygPlugin {
   }
 
   update(update: ViewUpdate): void {
-    if (this.tailDraft) {
-      if (update.docChanged) {
-        // 用户输入了内容(或文档被别处改动):新段落成立,不再撤回
-        this.tailDraft = null
-      } else if (update.selectionSet && !this.selectionInTail(update.state)) {
-        // 光标移开临时空段落(点别处 / 方向键):没输入过,就当无事发生
-        this.dropTailDraft()
-      }
-    }
     // IME 组合期间不重建装饰(重建会打断中文输入),但必须把已有装饰按本次变更平移:
     // CM6 在组合中就会把上屏文字作为变更派发(userEvent input.type.compose),
     // 装饰原地不动就会与文档错位——表现为标记/widget 乱串、内容出现在错误位置,
@@ -855,10 +769,7 @@ export class WysiwygPlugin {
     const line = state.doc.lineAt(sel.main.head)
     if (!isBlankLine(line.text)) return null
     const classes = lineClasses(this, line)
-    const isGap =
-      classes.includes('cm-md-block-gap') ||
-      classes.some(cls => cls.startsWith('cm-md-gap-'))
-    return isGap ? line.from : null
+    return classes.includes('cm-md-structural-blank') ? line.from : null
   }
 
   onCompositionStart(): void {
@@ -869,50 +780,8 @@ export class WysiwygPlugin {
     this.composing = false
   }
 
-  /**
-   * 点击文末空白:光标落到最后一行下面新起的一段上。
-   * 文档只临时补出段落换行,真输入才留下;没输入就移开光标 / 失焦时撤回。
-   */
-  openTailParagraph(): void {
-    const draft = insertTailParagraph(this.view)
-    this.tailDraft = draft
-    // 已经有空段落可落(文末本来就是 `\n\n`)时没有草稿,光标直接停上去即可
-    this.view.focus()
-  }
-
-  /** 当前选区是不是仍然停在那段临时空段落上 */
-  private selectionInTail(state: EditorState): boolean {
-    const draft = this.tailDraft
-    if (!draft) return false
-    return state.selection.ranges.every(r => r.from >= draft.from && r.to <= draft.to)
-  }
-
-  /**
-   * 撤回文末临时空段落。
-   *
-   * 不能同步 dispatch(这里通常是在一次 update 里被叫到的),排进微任务;
-   * 真删之前再核对一遍原文,期间如果文档变过(update 会先清掉草稿)就不动。
-   */
-  private dropTailDraft(): void {
-    const draft = this.tailDraft
-    this.tailDraft = null
-    if (!draft) return
-    queueMicrotask(() => {
-      const view = this.view
-      const doc = view.state.doc
-      if (draft.to > doc.length || doc.sliceString(draft.from, draft.to) !== draft.text) return
-      try {
-        view.dispatch({ changes: { from: draft.from, to: draft.to }, userEvent: 'delete.draft' })
-      } catch {
-        /* 视图已销毁 */
-      }
-    })
-  }
-
   /** 编辑器失焦:组合不可能还活着,把可能丢失的 compositionend 补上 */
   onEditorBlur(): void {
-    // 没输入过的文末空段落不该因为切窗口而留在文档里
-    this.dropTailDraft()
     if (!this.composing && !this.view.composing) return
     this.endComposition()
     // 失焦本身不产生事务,不主动补一次重建就得等下一次输入才恢复样式
@@ -1098,20 +967,48 @@ export class WysiwygPlugin {
         }
       }
       const emptyParagraphs = new Set(getEmptyParagraphs(state))
+      const tree = syntaxTree(state)
+      /*
+       * 空段落行的行盒要与「敲进第一个字之后」完全一致,否则输入第一个字时
+       * 整篇内容会跳一下。段落的行盒会按相邻块裁掉上 / 下侧半份行距
+       * (见 rules.ts 的 styleParagraphTrim),这里先按同样的邻居判断把裁切
+       * 类挂上,空着的时候和变成段落以后高度相同。
+       */
+      const trimForEmpty = (line: Line): string => {
+        const bodyAt = (pos: number): boolean => {
+          let node: SyntaxNode | null = tree.resolveInner(pos, 1)
+          while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+          if (!node || node.parent?.name !== 'Document' || node.name !== 'Paragraph') return false
+          return !/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(state.doc.lineAt(node.from).text)
+        }
+        let above = line.number - 1
+        while (above >= 1 && !/\S/.test(state.doc.line(above).text)) above -= 1
+        let below = line.number + 1
+        while (below <= state.doc.lines && !/\S/.test(state.doc.line(below).text)) below += 1
+        const top = above < 1 || bodyAt(state.doc.line(above).from)
+        // 文末(new paragraph 后面什么都没有)也按正文裁下侧,与规则里一致:
+        // 回车在文末起的新段,空着时和敲进字后行盒一样高。
+        const bottom = below > state.doc.lines || bodyAt(state.doc.line(below).from)
+        return [top ? 'cm-md-para-trim-top' : '', bottom ? 'cm-md-para-trim-bottom' : '']
+          .filter(Boolean)
+          .join(' ')
+      }
       // 空段落行挂一个标记类:它可能同时挨着一档段落间距,样式据此保住整行高。
       // 也方便验收直接看出「这一行被认作空段落」,而不是碰巧没被收紧。
       for (const pos of emptyParagraphs) {
         if (pos < from || pos > to) continue
         const line = state.doc.lineAt(pos)
         if (line.from === pos) {
+          const trim = trimForEmpty(line)
           decos.push({
             from: pos,
             to: pos,
-            value: Decoration.line({ class: 'cm-md-empty-paragraph' })
+            value: Decoration.line({
+              class: trim ? `cm-md-empty-paragraph ${trim}` : 'cm-md-empty-paragraph'
+            })
           })
         }
       }
-      const tree = syntaxTree(state)
       const ctx: RuleContext = {
         sel: state.selection,
         doc: state.doc,
@@ -1131,6 +1028,41 @@ export class WysiwygPlugin {
           let node = tree.resolveInner(safe, 1)
           while (node.parent && node.parent.name !== 'Document') node = node.parent
           return node.parent ? node.name : null
+        }
+      }
+      // 空段落行的配对间距:按「上一个块 → 正文」挂类,行盒与敲进字以后一致
+      for (const pos of emptyParagraphs) {
+        if (pos < from || pos > to) continue
+        const line = state.doc.lineAt(pos)
+        if (line.from !== pos) continue
+        let n = line.number - 1
+        let aboveIsEmpty = false
+        while (n >= 1 && !/\S/.test(state.doc.line(n).text)) {
+          const l = state.doc.line(n)
+          if (emptyParagraphs.has(l.from)) {
+            aboveIsEmpty = true
+            break
+          }
+          n -= 1
+        }
+        if (aboveIsEmpty) {
+          decos.push({
+            from: pos,
+            to: pos,
+            value: Decoration.line({ class: 'cm-md-block-pair cm-md-body-body' })
+          })
+        } else if (n >= 1) {
+          let node: SyntaxNode | null = tree.resolveInner(state.doc.line(n).from, 1)
+          while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+          if (!node || node.parent?.name !== 'Document') continue
+          const kind = blockKindOf(ctx, node)
+          if (kind) {
+            decos.push({
+              from: pos,
+              to: pos,
+              value: Decoration.line({ class: `cm-md-block-pair cm-md-${kind}-body` })
+            })
+          }
         }
       }
       syntaxTree(state).iterate({
@@ -1203,21 +1135,25 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       if (!event.ctrlKey && !event.metaKey) {
         // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码或结构空行上的点击一律挪出去
         if (target?.closest?.('.cm-md-table-widget')) return false
-        // 点在最后一行下方的空白:在文末新起一个空段落。文档只临时补出段落
-        // 换行,键入才留下;没输入就移开时撤回(见 openTailParagraph)。
+        // 点在最后一行下方的空白:不改源码,只把光标放到最后一个字后面
+        // (旧行为会临时补出一个空段落,点一下文末就多一行,已去掉)。
         // 点在图表 / 图片这类块控件自己身上不算(控件内部各有各的点击语义)。
-        const plugin = view.plugin(wysiwygViewPlugin)
         if (
-          plugin &&
           !target?.closest?.('.cm-md-widget') &&
           !event.shiftKey &&
           !event.altKey &&
           clickBelowDocEnd(view, event)
         ) {
           event.preventDefault()
-          // 光标已经在新空段上:点击下方空白只是把焦点还回来,不再补一行
-          if (caretOnTrailingBlank(view) === null) plugin.openTailParagraph()
-          else view.focus()
+          view.dispatch({
+            selection: {
+              anchor:
+                trailingEmptyParagraphEnd(view.state) ?? endOfLastText(view.state.doc)
+            },
+            scrollIntoView: true,
+            userEvent: 'select.pointer'
+          })
+          view.focus()
           return true
         }
         // 精确解析对「空行正好是视口第一行」这种位置返回 null(CM 把视口起点上的
@@ -1239,15 +1175,6 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
             } else {
               view.dispatch({ selection: { anchor: hit.anchor }, userEvent: 'select.pointer' })
             }
-            view.focus()
-            return true
-          }
-          // 收紧的结构空行:点它不把空行撑出来,光标挪到最近的正文行(见 gapLineClickAnchor)
-          const anchor = plugin ? gapLineClickAnchor(view, plugin, pos) : null
-          if (anchor != null) {
-            event.preventDefault()
-            // 这是用户在点击:光标从空段落上离开时,空段落要留下(见 emptyParagraph.ts)
-            view.dispatch({ selection: { anchor }, userEvent: 'select.pointer' })
             view.focus()
             return true
           }

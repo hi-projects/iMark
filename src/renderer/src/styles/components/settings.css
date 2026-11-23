@@ -951,6 +951,16 @@
   flex: none;
 }
 
+/*
+ * 正文自身预览:抹掉两个样本首行上方 / 末行下方的半份行距,与编辑器里
+ * 段与段相接一侧的处理一致(见 editor.css 的 cm-md-para-trim-*)。
+ * 这样这条缝就只由「段间距」决定,而样本里两行之间仍按行间距排开 ——
+ * 一眼能同时看到两个滑块各自管哪一段。
+ */
+.spacing-preview[data-preview-mode='self'] .spacing-doc-sample[data-sample='body'] {
+  text-box-trim: trim-both;
+}
+
 /* 与编辑器里的 H2 同一套度量(见 editor.css 的 .cm-md-h2) */
 .spacing-doc-heading {
   font-size: 1.2727em;
@@ -990,6 +1000,31 @@
   background: color-mix(in srgb, var(--text-tertiary) 14%, var(--bg-editor));
   color: var(--text-tertiary);
   font-size: 0.8em;
+}
+
+/* 块级公式样本:居中、衬线斜体,像渲染出来的公式 */
+.spacing-doc-math {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  color: var(--text-primary);
+  font-family: 'Cambria Math', 'Latin Modern Math', Georgia, serif;
+  font-size: 1.05em;
+  font-style: italic;
+}
+
+/* 图表(mermaid)样本 */
+.spacing-doc-mermaid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 64px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-tertiary) 14%, var(--bg-editor));
+  color: var(--text-secondary);
+  font-size: 0.82em;
 }
 
 .spacing-doc-table {

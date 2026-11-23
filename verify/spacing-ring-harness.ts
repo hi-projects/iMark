@@ -1,12 +1,12 @@
 /**
  * 验收:设置 → 外观 →「间距」的两栏选择器。
  *
- * 左栏是七个块的调色板(先点的在上面,后点的在下面,两种颜色区分);
+ * 左栏是九个块的调色板(先点的在上面,后点的在下面,两种颜色区分);
  * 右栏是这条边界的间距预览 + 滑块,预览里可以互换上下或清除。
  * 连点同一个块两次进入同类配对(段间距 / 行间距 / 标题之间 …)。
  *
  * 断言:
- *   A 初始:七个块、没有选中、预览空、没有滑块;
+ *   A 初始:九个块、没有选中、预览空、没有滑块;
  *   B 第一次点:块成为「上面」,预览显示它,还没有滑块;
  *   C 第二次点:标题在上 / 代码块在下,只列这一方向的字段;
  *   D 预览 / 写盘 / 关开面板:滑块即时生效,值进 settings.json,重开保留;
@@ -372,15 +372,15 @@ async function main(): Promise<void> {
   const near = (a: number, b: number, tol = 0.8): boolean => Math.abs(a - b) <= tol
 
   // ---------- A ----------
-  console.log('\n【A】初始:左边七个块,什么都没选,右边预览为空')
+  console.log('\n【A】初始:左边九个块,什么都没选,右边预览为空')
   check('打开设置 → 外观,调色板出现了', await openAppearance())
   {
     const s = await paletteState()
     console.log(`     [实测] ${JSON.stringify(s)}`)
     check('调色板状态是 empty', s?.state === 'empty', JSON.stringify(s))
     check(
-      '七个块节点都在,且都是圆形按钮',
-      (await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)) === 7,
+      '九个块节点都在,且都是圆形按钮',
+      (await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)) === 9,
       JSON.stringify(s)
     )
     check('没有上块 / 下块', s?.top === null && s?.bottom === null, JSON.stringify(s))
@@ -656,20 +656,22 @@ async function main(): Promise<void> {
       (() => {
         const lines = [...document.querySelectorAll('.cm-content .cm-line')]
         const round = n => Math.round(n * 100) / 100
+        const textTop = el => {
+          const r = document.createRange()
+          r.selectNodeContents(el)
+          return r.getBoundingClientRect().top
+        }
         return {
           heights: lines.map(el => round(el.getBoundingClientRect().height)),
-          advance:
-            lines.length > 1
-              ? round(lines[1].getBoundingClientRect().top - lines[0].getBoundingClientRect().top)
-              : -1
+          advance: lines.length > 1 ? round(textTop(lines[1]) - textTop(lines[0])) : -1
         }
       })()`)
   {
     const before = await heights()
     console.log(`     [实测] 默认 ${JSON.stringify(before)}`)
     check(
-      '默认 1 档:同一段三行 32px,行与行紧挨着',
-      before.heights.slice(0, 3).every(h => near(h, 2 * BODY)) && near(before.advance, 2 * BODY),
+      '默认 1 档:同一段内行距 32px,行与行紧挨着(首行上侧裁掉半份行距)',
+      near(before.heights[1], 2 * BODY) && near(before.advance, 2 * BODY),
       JSON.stringify(before)
     )
   }
@@ -680,8 +682,8 @@ async function main(): Promise<void> {
     const readout = await readoutOf('input[data-line-space="lineSpace"]')
     console.log(`     [实测] 2 档 ${JSON.stringify(after)} / ${readout}`)
     check(
-      '行高变成 (1 + 2) × 字号 = 48px,行与行跟着拉开',
-      after.heights.slice(0, 3).every(h => near(h, 3 * BODY)) && near(after.advance, 3 * BODY),
+      '行距变成 (1 + 2) × 字号 = 48px,行与行跟着拉开',
+      near(after.heights[1], 3 * BODY) && near(after.advance, 3 * BODY),
       JSON.stringify(after)
     )
     check(
@@ -931,7 +933,7 @@ async function main(): Promise<void> {
       JSON.stringify({ before: vars.tableBefore, after: vars.tableAfter })
     )
     const nodes = await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)
-    check('重置后七个块仍在', nodes === 7, String(nodes))
+    check('重置后九个块仍在', nodes === 9, String(nodes))
   }
   await sleep(400)
   const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
@@ -976,8 +978,8 @@ async function main(): Promise<void> {
       })()`)
     console.log(`     [实测] ${JSON.stringify(a11y)}`)
     check(
-      '七个块节点都是 button(type=button)',
-      a11y.tagNames.length === 7 && a11y.tagNames.every(t => t === 'BUTTON') && a11y.types.every(t => t === 'button'),
+      '九个块节点都是 button(type=button)',
+      a11y.tagNames.length === 9 && a11y.tagNames.every(t => t === 'BUTTON') && a11y.types.every(t => t === 'button'),
       JSON.stringify(a11y)
     )
     check('空状态下 aria-pressed 全是 false', a11y.pressed.every(v => v === 'false'), JSON.stringify(a11y.pressed))

@@ -1,20 +1,14 @@
 import type { AutoSaveMode, Settings } from '@shared/types'
 import {
-  BLOCK_SPACE_DEFAULTS,
+  BLOCK_KINDS,
   clampAutoSaveDelay,
-  clampBlockSpace,
   clampCodeIndentSize,
   clampFontSize,
-  clampHeadingSpace,
-  clampImageSpace,
   clampLineSpace,
+  clampPairSpace,
   EDITOR_DEFAULTS,
-  HEADING_SPACE_DEFAULTS,
-  IMAGE_SPACE_DEFAULTS,
-  type BlockSpaceSide,
-  type CodeIndentSize,
-  type HeadingSpaceSide,
-  type ImageSpaceSide
+  PAIR_SPACE_DEFAULT,
+  type CodeIndentSize
 } from '@shared/editorSettings'
 import { appStore, editorHolder } from '../stores/app'
 import { applyWrapping, setWrappingPreference } from '../editor/setup'
@@ -44,115 +38,23 @@ function applyLineSpace(value: number): void {
   document.documentElement.style.setProperty('--editor-line-space', String(value))
 }
 
-/** 三个标题间距(档)挂在文档根上,CSS 里再乘 --editor-body-size —— 跟着字号缩放 */
-function applyHeadingSpaces(next: { before: number; after: number; between: number }): void {
-  appStore.headingSpaceBefore = next.before
-  appStore.headingSpaceAfter = next.after
-  appStore.headingSpaceBetween = next.between
-  const root = document.documentElement.style
-  root.setProperty('--md-heading-space-before', String(next.before))
-  root.setProperty('--md-heading-space-after', String(next.after))
-  root.setProperty('--md-heading-space-between', String(next.between))
-}
-
-function headingSpaces(): { before: number; after: number; between: number } {
-  return {
-    before: appStore.headingSpaceBefore,
-    after: appStore.headingSpaceAfter,
-    between: appStore.headingSpaceBetween
-  }
-}
-
-/** 间距档位 → settings.json 字段名 */
-const HEADING_SPACE_FIELD = {
-  before: 'headingSpaceBefore',
-  after: 'headingSpaceAfter',
-  between: 'headingSpaceBetween'
-} as const
+/** 全部有序配对 key,如 body-heading、heading-body……共 9 × 9 条 */
+const PAIR_KEYS: string[] = BLOCK_KINDS.flatMap(a => BLOCK_KINDS.map(b => `${a}-${b}`))
 
 /**
- * 段落之间、代码块 / 列表 / 引用 / 表格与正文的九个间距(档),同样挂在文档根上,
- * 由 editor.css 乘 --editor-body-size 得到实际留白。
+ * 块与块之间的配对间距(档)。每个有序配对在根上写一个 CSS 变量
+ * `--md-gap-<上块>-<下块>`,editor.css 的配对规则用它算下方块的 padding-top。
+ * 结构空行在渲染时完全折叠,间距只由这些配对值决定;没设置的按 1 档。
  */
-function applyBlockSpaces(next: Record<BlockSpaceSide, number>): void {
-  appStore.bodySpaceBetween = next.bodyBetween
-  appStore.codeSpaceBefore = next.codeBefore
-  appStore.codeSpaceAfter = next.codeAfter
-  appStore.listSpaceBefore = next.listBefore
-  appStore.listSpaceAfter = next.listAfter
-  appStore.quoteSpaceBefore = next.quoteBefore
-  appStore.quoteSpaceAfter = next.quoteAfter
-  appStore.tableSpaceBefore = next.tableBefore
-  appStore.tableSpaceAfter = next.tableAfter
-  const root = document.documentElement.style
-  root.setProperty('--md-body-space-between', String(next.bodyBetween))
-  root.setProperty('--md-code-space-before', String(next.codeBefore))
-  root.setProperty('--md-code-space-after', String(next.codeAfter))
-  root.setProperty('--md-list-space-before', String(next.listBefore))
-  root.setProperty('--md-list-space-after', String(next.listAfter))
-  root.setProperty('--md-quote-space-before', String(next.quoteBefore))
-  root.setProperty('--md-quote-space-after', String(next.quoteAfter))
-  root.setProperty('--md-table-space-before', String(next.tableBefore))
-  root.setProperty('--md-table-space-after', String(next.tableAfter))
-}
-
-function blockSpaces(): Record<BlockSpaceSide, number> {
-  return {
-    bodyBetween: appStore.bodySpaceBetween,
-    codeBefore: appStore.codeSpaceBefore,
-    codeAfter: appStore.codeSpaceAfter,
-    listBefore: appStore.listSpaceBefore,
-    listAfter: appStore.listSpaceAfter,
-    quoteBefore: appStore.quoteSpaceBefore,
-    quoteAfter: appStore.quoteSpaceAfter,
-    tableBefore: appStore.tableSpaceBefore,
-    tableAfter: appStore.tableSpaceAfter
+function applyPairGaps(next: Record<string, number>): void {
+  const clean: Record<string, number> = {}
+  for (const key of PAIR_KEYS) {
+    clean[key] = clampPairSpace(next[key], PAIR_SPACE_DEFAULT)
   }
-}
-
-const BLOCK_SPACE_FIELD = {
-  bodyBetween: 'bodySpaceBetween',
-  codeBefore: 'codeSpaceBefore',
-  codeAfter: 'codeSpaceAfter',
-  listBefore: 'listSpaceBefore',
-  listAfter: 'listSpaceAfter',
-  quoteBefore: 'quoteSpaceBefore',
-  quoteAfter: 'quoteSpaceAfter',
-  tableBefore: 'tableSpaceBefore',
-  tableAfter: 'tableSpaceAfter'
-} as const
-
-/**
- * 图片(独占一行时)与相邻标题 / 正文的四个间距(档)。和块间距同一套做法:
- * 值挂在文档根上,editor.css 再乘 --editor-body-size 得到实际留白。
- */
-function applyImageSpaces(next: Record<ImageSpaceSide, number>): void {
-  appStore.imageSpaceBeforeHeading = next.beforeHeading
-  appStore.imageSpaceBeforeBody = next.beforeBody
-  appStore.imageSpaceAfterHeading = next.afterHeading
-  appStore.imageSpaceAfterBody = next.afterBody
+  appStore.pairGaps = clean
   const root = document.documentElement.style
-  root.setProperty('--md-image-space-before-heading', String(next.beforeHeading))
-  root.setProperty('--md-image-space-before-body', String(next.beforeBody))
-  root.setProperty('--md-image-space-after-heading', String(next.afterHeading))
-  root.setProperty('--md-image-space-after-body', String(next.afterBody))
+  for (const key of PAIR_KEYS) root.setProperty(`--md-gap-${key}`, String(clean[key]))
 }
-
-function imageSpaces(): Record<ImageSpaceSide, number> {
-  return {
-    beforeHeading: appStore.imageSpaceBeforeHeading,
-    beforeBody: appStore.imageSpaceBeforeBody,
-    afterHeading: appStore.imageSpaceAfterHeading,
-    afterBody: appStore.imageSpaceAfterBody
-  }
-}
-
-const IMAGE_SPACE_FIELD = {
-  beforeHeading: 'imageSpaceBeforeHeading',
-  beforeBody: 'imageSpaceBeforeBody',
-  afterHeading: 'imageSpaceAfterHeading',
-  afterBody: 'imageSpaceAfterBody'
-} as const
 
 /**
  * Tab 缩进只影响「下一次按键」,所以既不用碰 EditorView,也不用重建 state:
@@ -179,28 +81,7 @@ export function initEditorSettings(s: Settings): void {
   applyFontSize(clampFontSize(s.editorFontSize))
   applyLineSpace(clampLineSpace(s.lineSpace, EDITOR_DEFAULTS.lineSpace))
   applyCodeIndent(clampCodeIndentSize(s.codeIndentSize))
-  applyHeadingSpaces({
-    before: clampHeadingSpace(s.headingSpaceBefore, HEADING_SPACE_DEFAULTS.before),
-    after: clampHeadingSpace(s.headingSpaceAfter, HEADING_SPACE_DEFAULTS.after),
-    between: clampHeadingSpace(s.headingSpaceBetween, HEADING_SPACE_DEFAULTS.between)
-  })
-  applyBlockSpaces({
-    bodyBetween: clampBlockSpace(s.bodySpaceBetween, BLOCK_SPACE_DEFAULTS.bodyBetween),
-    codeBefore: clampBlockSpace(s.codeSpaceBefore, BLOCK_SPACE_DEFAULTS.codeBefore),
-    codeAfter: clampBlockSpace(s.codeSpaceAfter, BLOCK_SPACE_DEFAULTS.codeAfter),
-    listBefore: clampBlockSpace(s.listSpaceBefore, BLOCK_SPACE_DEFAULTS.listBefore),
-    listAfter: clampBlockSpace(s.listSpaceAfter, BLOCK_SPACE_DEFAULTS.listAfter),
-    quoteBefore: clampBlockSpace(s.quoteSpaceBefore, BLOCK_SPACE_DEFAULTS.quoteBefore),
-    quoteAfter: clampBlockSpace(s.quoteSpaceAfter, BLOCK_SPACE_DEFAULTS.quoteAfter),
-    tableBefore: clampBlockSpace(s.tableSpaceBefore, BLOCK_SPACE_DEFAULTS.tableBefore),
-    tableAfter: clampBlockSpace(s.tableSpaceAfter, BLOCK_SPACE_DEFAULTS.tableAfter)
-  })
-  applyImageSpaces({
-    beforeHeading: clampImageSpace(s.imageSpaceBeforeHeading, IMAGE_SPACE_DEFAULTS.beforeHeading),
-    beforeBody: clampImageSpace(s.imageSpaceBeforeBody, IMAGE_SPACE_DEFAULTS.beforeBody),
-    afterHeading: clampImageSpace(s.imageSpaceAfterHeading, IMAGE_SPACE_DEFAULTS.afterHeading),
-    afterBody: clampImageSpace(s.imageSpaceAfterBody, IMAGE_SPACE_DEFAULTS.afterBody)
-  })
+  applyPairGaps(s.pairGaps ?? {})
   restartAutoSave()
 }
 
@@ -254,75 +135,30 @@ export async function setCodeIndentSize(size: number): Promise<void> {
   await api.saveSettings({ codeIndentSize: value })
 }
 
-/** 拖标题间距滑块时的即时预览:只改画面,松手才落盘(与字号滑块同一套手感) */
-export function previewHeadingSpace(side: HeadingSpaceSide, value: number): void {
-  const next = headingSpaces()
-  next[side] = clampHeadingSpace(value, HEADING_SPACE_DEFAULTS[side])
-  applyHeadingSpaces(next)
+/** 拖配对间距滑块时的即时预览:只改画面,松手才落盘 */
+export function previewPairGap(key: string, value: number): void {
+  applyPairGaps({ ...appStore.pairGaps, [key]: clampPairSpace(value, PAIR_SPACE_DEFAULT) })
 }
 
-export async function setHeadingSpace(side: HeadingSpaceSide, value: number): Promise<void> {
-  previewHeadingSpace(side, value)
-  await api.saveSettings({ [HEADING_SPACE_FIELD[side]]: headingSpaces()[side] })
-}
-
-/** 拖块间距滑块时的即时预览:只改画面,松手才落盘 */
-export function previewBlockSpace(side: BlockSpaceSide, value: number): void {
-  const next = blockSpaces()
-  next[side] = clampBlockSpace(value, BLOCK_SPACE_DEFAULTS[side])
-  applyBlockSpaces(next)
-}
-
-export async function setBlockSpace(side: BlockSpaceSide, value: number): Promise<void> {
-  previewBlockSpace(side, value)
-  await api.saveSettings({ [BLOCK_SPACE_FIELD[side]]: blockSpaces()[side] })
-}
-
-/** 拖图片间距滑块时的即时预览:只改画面,松手才落盘 */
-export function previewImageSpace(side: ImageSpaceSide, value: number): void {
-  const next = imageSpaces()
-  next[side] = clampImageSpace(value, IMAGE_SPACE_DEFAULTS[side])
-  applyImageSpaces(next)
-}
-
-export async function setImageSpace(side: ImageSpaceSide, value: number): Promise<void> {
-  previewImageSpace(side, value)
-  await api.saveSettings({ [IMAGE_SPACE_FIELD[side]]: imageSpaces()[side] })
+export async function setPairGap(key: string, value: number): Promise<void> {
+  previewPairGap(key, value)
+  await api.saveSettings({ pairGaps: { ...appStore.pairGaps } })
 }
 
 /**
- * 「外观 → 间距」的恢复默认:重置正文字号、行间距、标题间距、块间距(含表格)
- * 与图片间距这十八项,不动主题、自定义样式与「编辑器」页的偏好。
+ * 「外观 → 间距」的恢复默认:重置正文字号、行间距与全部配对间距,
+ * 不动主题、自定义样式与「编辑器」页的偏好。
  */
 export async function resetSpacingSettings(): Promise<void> {
   applyFontSize(EDITOR_DEFAULTS.editorFontSize)
   applyLineSpace(EDITOR_DEFAULTS.lineSpace)
-  applyHeadingSpaces({ ...HEADING_SPACE_DEFAULTS })
-  applyBlockSpaces({ ...BLOCK_SPACE_DEFAULTS })
-  applyImageSpaces({ ...IMAGE_SPACE_DEFAULTS })
+  applyPairGaps({})
   await api.saveSettings({
     editorFontSize: EDITOR_DEFAULTS.editorFontSize,
     lineSpace: EDITOR_DEFAULTS.lineSpace,
-    headingSpaceBefore: HEADING_SPACE_DEFAULTS.before,
-    headingSpaceAfter: HEADING_SPACE_DEFAULTS.after,
-    headingSpaceBetween: HEADING_SPACE_DEFAULTS.between,
-    bodySpaceBetween: BLOCK_SPACE_DEFAULTS.bodyBetween,
-    codeSpaceBefore: BLOCK_SPACE_DEFAULTS.codeBefore,
-    codeSpaceAfter: BLOCK_SPACE_DEFAULTS.codeAfter,
-    listSpaceBefore: BLOCK_SPACE_DEFAULTS.listBefore,
-    listSpaceAfter: BLOCK_SPACE_DEFAULTS.listAfter,
-    quoteSpaceBefore: BLOCK_SPACE_DEFAULTS.quoteBefore,
-    quoteSpaceAfter: BLOCK_SPACE_DEFAULTS.quoteAfter,
-    tableSpaceBefore: BLOCK_SPACE_DEFAULTS.tableBefore,
-    tableSpaceAfter: BLOCK_SPACE_DEFAULTS.tableAfter,
-    imageSpaceBeforeHeading: IMAGE_SPACE_DEFAULTS.beforeHeading,
-    imageSpaceBeforeBody: IMAGE_SPACE_DEFAULTS.beforeBody,
-    imageSpaceAfterHeading: IMAGE_SPACE_DEFAULTS.afterHeading,
-    imageSpaceAfterBody: IMAGE_SPACE_DEFAULTS.afterBody
+    pairGaps: {}
   })
 }
-
-// ---------- Ctrl + 滚轮调正文字号 ----------
 
 /**
  * 滚轮走多少距离算一格。鼠标滚轮一格通常是 53/100px(按下 Ctrl 有些平台会变),
@@ -380,9 +216,7 @@ export async function resetEditorSettings(): Promise<void> {
   applyFontSize(EDITOR_DEFAULTS.editorFontSize)
   applyLineSpace(EDITOR_DEFAULTS.lineSpace)
   applyCodeIndent(EDITOR_DEFAULTS.codeIndentSize)
-  applyHeadingSpaces({ ...HEADING_SPACE_DEFAULTS })
-  applyBlockSpaces({ ...BLOCK_SPACE_DEFAULTS })
-  applyImageSpaces({ ...IMAGE_SPACE_DEFAULTS })
+  applyPairGaps({})
   appStore.autoSaveMode = EDITOR_DEFAULTS.autoSaveMode
   appStore.autoSaveDelay = EDITOR_DEFAULTS.autoSaveDelay
   appStore.autoSavedAt = null

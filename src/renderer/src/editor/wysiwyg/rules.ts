@@ -1,6 +1,7 @@
 import { Decoration, type WidgetType } from '@codemirror/view'
 import type { EditorSelection, Line, Range, Text } from '@codemirror/state'
 import type { SyntaxNode, SyntaxNodeRef } from '@lezer/common'
+import type { BlockKind } from '@shared/editorSettings'
 import {
   CheckboxWidget,
   CodeCopyWidget,
@@ -99,66 +100,6 @@ function addLine(ctx: RuleContext, pos: number, cls: string): void {
   const line = ctx.doc.lineAt(pos)
   ctx.decorated.add(line.from)
   ctx.decos.push({ from: line.from, to: line.from, value: Decoration.line({ class: cls }) })
-}
-
-/**
- * 源码行是不是一个 ATX 标题。
- *
- * 只看行首 `#` + 空白,不做语法树查询:能走到这里的相邻行一定在文档流里
- * (标题节点本身不可能落在 fenced code 内),不会有"代码里的 # 被误判"。
- */
-function isHeadingText(text: string): boolean {
-  return /^#{1,6}(?:\s|$)/.test(text)
-}
-
-/**
- * 标题紧挨着另一个标题(中间没有空行)时,给两侧打上"紧贴"类。
- *
- * 标题上下各有一档留白(见 editor.css 的 --md-heading-pad):上留白把它和
- * 上面的内容分开,下留白把它和下面的正文分开。下面直接就是下一个标题时,
- * 下留白多余 —— 下一个标题自己的上留白已经把它们隔开了;而那个上留白改用
- * 「标题之间」这一档(设置里可调),不再叠加两份。效果是标题之间比标题接
- * 正文略窄,但不会散成两段、也不会贴死。
- *
- * 中间留了空行的不算 —— 那是作者主动写下的分隔。
- */
-/**
- * 标题前紧邻的空行:保留完整行高,同时算作结构分隔。
- *
- * 列表 / 代码块 / 引用后面的空行会被 addGapAfter 收成一档间距;标题前这条
- * 空行却是「回车 = 新段」补出来的分隔,视觉上要占一整行 —— 所以标
- * cm-md-h-space-before,由 CSS 把 block-gap 收紧的行高放开。
- *
- * 它同时还是排版用的结构行:方向键不该停在上面,点击也该落到正文(见
- * build.ts 的 keepCaretOutOfBlockGaps / gapLineClickAnchor)。所以两个类都
- * 要打,只留标就会被当成一条能停光标、带「+」的空行 —— 看着像新段里凭空
- * 多出来的段内换行。光标正停在这上面、或它是回车留下还没写字的空段落时
- * 例外:那是用户要编辑的落点,和 addGapBefore 一样不按结构行处理。
- */
-function markHeadingSpaceBefore(ctx: RuleContext, pos: number): void {
-  const line = ctx.doc.lineAt(pos)
-  if (line.number <= 1) return
-  const prev = ctx.doc.line(line.number - 1)
-  if (!isBlankLine(prev.text)) return
-  const structural = !keptEmptyParagraph(ctx, prev.from)
-  addLine(
-    ctx,
-    prev.from,
-    structural
-      ? 'cm-md-h-space-before cm-md-block-gap cm-md-block-gap-heading-before'
-      : 'cm-md-h-space-before'
-  )
-}
-
-function markHeadingEdges(ctx: RuleContext, firstPos: number, lastPos: number): void {
-  const first = ctx.doc.lineAt(firstPos)
-  const last = ctx.doc.lineAt(lastPos)
-  if (first.number > 1 && isHeadingText(ctx.doc.line(first.number - 1).text)) {
-    addLine(ctx, first.from, 'cm-md-h-tight-top')
-  }
-  if (last.number < ctx.doc.lines && isHeadingText(ctx.doc.line(last.number + 1).text)) {
-    addLine(ctx, last.from, 'cm-md-h-tight-bottom')
-  }
 }
 
 /**
@@ -327,78 +268,39 @@ function addLineRange(ctx: RuleContext, from: number, to: number, cls: string): 
 }
 
 /**
- * 块与正文之间的间距。两种写法都要照顾:
+ * 段与段之间:裁掉段落首行上侧 / 末行下侧行盒里的半份行距。
  *
- *   · 中间留了空行(常见于标准 Markdown):把那条空行加高(见 CSS 的
- *     .cm-md-block-gap),其它行不动;
- *   · 中间没有空行(本仓库的笔记就是这么写的):空行不存在,只能把间距做在
- *     **相邻正文行**的 padding 上(padClass,见 CSS 的 .cm-md-gap-*),
- *     不动块本身,也不动其它行的行距。
+ * 行盒高 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分一半。两段
+ * 相邻时,上一段末行的下半份 + 下一段首行的上半份会把两段的距离一起加上去——
+ * 行间距越大,段与段拉得越开,「段间距」就管不住它了。
  *
- * 两个类名都按「块类型 + 方向」区分(见 CSS 的 --md-code-gap-* /
- * --md-list-gap-*):同一条空行可能同时夹在代码块和列表之间,各算各的。
+ * 把面向另一段正文的那一侧用 text-box-trim 裁到文字边(行盒本身变矮,
+ * CodeMirror 量到的就是裁后的高度,点击 / 光标位置不受影响),段与段之间
+ * 就只剩段间距那条空行。文档最前面一段也裁上侧:它上面没有别的块,裁掉后
+ * 拖动行间距时整篇正文不会上下滑。
+ *
+ * 挨着标题 / 代码 / 列表 / 引用 / 图片的那一侧不裁:那些块各有自己的间距
+ * 档位,保持原有排法;独占一行的图片由图片间距管,同样跳过。
  */
-function addGapBefore(ctx: RuleContext, pos: number, padClass: string, blankClass: string): void {
-  const line = ctx.doc.lineAt(pos)
-  if (line.number <= 1) return
-  const prev = ctx.doc.line(line.number - 1)
-  if (
-    !isBlankLine(prev.text) ||
-    keptEmptyParagraph(ctx, prev.from)
-  )
-    addLine(ctx, prev.from, padClass)
-  else addLine(ctx, prev.from, `cm-md-block-gap ${blankClass}`)
-}
-
-function addGapAfter(ctx: RuleContext, pos: number, padClass: string, blankClass: string): void {
-  const line = ctx.doc.lineAt(pos)
-  if (line.number >= ctx.doc.lines) return
-  const next = ctx.doc.line(line.number + 1)
-  if (
-    !isBlankLine(next.text) ||
-    keptEmptyParagraph(ctx, next.from)
-  )
-    addLine(ctx, next.from, padClass)
-  else addLine(ctx, next.from, `cm-md-block-gap ${blankClass}`)
-}
-
-
-/**
- * 这条空行是不是「回车创建、仍空着的段落」(见 editor/emptyParagraph.ts)。
- *
- * 它是用户可编辑的内容行,不是结构间距:必须保持整行高,不收紧成 block-gap。
- * 这个角色由 emptyParagraphs 状态决定,和光标/选区无关。
- */
-function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
-  return ctx.emptyParagraphs.has(from)
-}
-
-/**
- * 两段正文之间那条结构空行的留白。
- *
- * CommonMark 里段落之间必须隔一个空行;这条空行本来按正文行高排,间距固定。
- * 现在收进「段间距」这一档(设置「外观 → 样式」可调),和块间距同一套
- * 排法:空行只留一档高;行高只由角色决定,光标/选区不改变它(见 addGapBefore)。
- * 没有空行的两行在 CommonMark 里是同一段,距离归「行间距」管 —— 不归这里。
- *
- * 只处理「两段正文」之间的空行:上一段是普通段落,或者是排版上已经按正文
- * 处理的列表结尾(见 listEndsWithLazyText)。段落挨着标题 / 代码块 / 引用时,
- * 那是那些块的间距在管,不要叠一份。
- *
- * 连排两条以上的空行由 collapseBlankRuns 统一收紧。
- */
-function styleBodyGap(ctx: RuleContext, para: SyntaxNode): void {
+function styleParagraphTrim(ctx: RuleContext, para: SyntaxNode): void {
   if (para.parent?.name !== 'Document') return
-  // 段落以独占一行的图片开头 / 前一段以图片结尾:那条空行的留白由「图片间距」
-  // 管(见 styleImageGaps),这里不要再叠一份段间距。
-  if (isImageOnlyLineText(ctx.doc.lineAt(para.from).text)) return
-  const prev = para.prevSibling
-  if (!prev) return
-  if (prev.name !== 'Paragraph' && !listEndsWithLazyText(ctx, prev)) return
-  if (prev.name === 'Paragraph' && isImageOnlyLineText(ctx.doc.lineAt(prev.to).text)) return
-  const line = ctx.doc.lineAt(para.from)
-  if (line.number <= 1 || !isBlankLine(ctx.doc.line(line.number - 1).text)) return
-  addGapBefore(ctx, para.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
+  const first = ctx.doc.lineAt(para.from)
+  const last = ctx.doc.lineAt(para.to)
+  if (!isImageOnlyLineText(first.text)) {
+    const prev = para.prevSibling
+    const prevIsBody =
+      !prev ||
+      (prev.name === 'Paragraph' && !isImageOnlyLineText(ctx.doc.lineAt(prev.to).text))
+    if (prevIsBody) addLine(ctx, first.from, 'cm-md-para-trim-top')
+  }
+  const next = para.nextSibling
+  // 文末段落也裁下侧:它下面没有别的块,裁掉与「回车在文末起新段」保持一致 ——
+  // 新段第一条空行的行盒与它上面的段落不再多出一份行距,输入第一个字时不跳。
+  const nextIsBody =
+    !next || (next.name === 'Paragraph' && !isImageOnlyLineText(ctx.doc.lineAt(next.from).text))
+  if (!isImageOnlyLineText(last.text) && nextIsBody) {
+    addLine(ctx, last.from, 'cm-md-para-trim-bottom')
+  }
 }
 
 /** 整行只有一张图片(图片独占一行) —— 只有这种图片参与块间距 */
@@ -408,100 +310,64 @@ function isImageOnlyLineText(text: string): boolean {
   return IMAGE_ONLY_LINE.test(text)
 }
 
-/**
- * 图片的邻居算「标题」还是「正文」。
- *
- * 只认这两种:代码块 / 列表 / 引用 / 表格等邻居各有自己的间距设置,图片不插一脚。
- * 邻居本身也是一张独占一行的图片时也返回 null —— 图片之间没有专门的档位,
- * 保持默认行距与段间距。
- */
-function imageNeighborKind(ctx: RuleContext, line: Line): 'heading' | 'body' | null {
-  if (isImageOnlyLineText(line.text)) return null
-  const name = ctx.blockAt(line.from)
-  if (!name) return null
-  if (name.startsWith('ATXHeading') || name.startsWith('SetextHeading')) return 'heading'
-  if (name === 'Paragraph') return 'body'
-  return null
+/** 顶层块节点对应的配对类型;不参与块间距的返回 null */
+export function blockKindOf(ctx: RuleContext, node: SyntaxNode): BlockKind | null {
+  switch (node.name) {
+    case 'Paragraph':
+      return isImageOnlyLineText(ctx.doc.lineAt(node.from).text) ? 'image' : 'body'
+    case 'ATXHeading1':
+    case 'ATXHeading2':
+    case 'ATXHeading3':
+    case 'ATXHeading4':
+    case 'ATXHeading5':
+    case 'ATXHeading6':
+    case 'SetextHeading1':
+    case 'SetextHeading2':
+      return 'heading'
+    case 'FencedCode':
+      return fenceLanguage(ctx.doc, node) === 'mermaid' ? 'mermaid' : 'code'
+    case 'CodeBlock':
+      return 'code'
+    case 'BulletList':
+    case 'OrderedList':
+      return 'list'
+    case 'Blockquote':
+      return 'quote'
+    case 'Table':
+      return 'table'
+    case 'MathBlock':
+      return 'math'
+    default:
+      return null
+  }
 }
 
-/** 从某一行往回 / 往后找第一条非空行(跳过结构空行);找不到返回 null */
-function neighborLine(
-  ctx: RuleContext,
-  from: number,
-  step: 1 | -1
-): Line | null {
-  for (let n = from; n >= 1 && n <= ctx.doc.lines; n += step) {
-    const line = ctx.doc.line(n)
-    if (!isBlankLine(line.text)) return line
-  }
-  return null
-}
-
 /**
- * 图片独占一行时,它与上方 / 下方标题或正文之间的留白(设置「外观 → 块间距」,
- * 四根滑块各管一个方向 × 邻居类型)。
- *
- * 两种写法都要照顾,和块间距同一套排法:
- *   · 中间有空行:把那条空行压到该档高度;
- *   · 紧贴在一起:把留白做在图片行自己的 padding 上。
- *
- * 图片这一档是**权威值**:紧挨标题时,标题那一侧原本的留白被清零
- * (cm-md-h-tight-image-*),不与图片档叠加 —— 否则滑块拉到 0 档还留着标题的间距。
- * 标题 / 正文两侧都带 `cm-md-h-space-before` 之类的行也由 CSS 放在后面的规则覆盖。
- *
- * 列表 / 引用 / 表格里的图片由容器自己的间距管,这里整块跳过。
+ * 块与块之间的配对间距:把 `cm-md-<上块>-<下块>` 挂到**下方块的首行**,
+ * 由 editor.css 的配对规则用 padding-top 承担间距。结构空行不占高度,
+ * 所以两块的可见距离只由这一条边的配对值决定。
  */
-function styleImageGaps(ctx: RuleContext, image: SyntaxNode): void {
-  const line = ctx.doc.lineAt(image.from)
-  if (!isImageOnlyLineText(line.text)) return
-  for (let p = image.parent; p; p = p.parent) {
-    if (p.name === 'ListItem' || p.name === 'Blockquote' || p.name === 'Table') return
+function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
+  if (node.parent?.name !== 'Document') return
+  const kind = blockKindOf(ctx, node)
+  if (!kind) return
+  const prev = node.prevSibling
+  const prevKind = prev ? blockKindOf(ctx, prev) : null
+  if (!prevKind) return
+  /*
+   * 代码块有自己的底色:间距若做在它的首行 padding 上,会连带把底色撑出一块
+   * 空白。这种情况把间距改做在上一块末行的 padding-bottom 上(代码块外面),
+   * 其余配对一律做在下方块首行的 padding-top 上。
+   */
+  if (kind === 'code' && prev) {
+    addLine(
+      ctx,
+      ctx.doc.lineAt(prev.to).from,
+      `cm-md-block-pair cm-md-${prevKind}-${kind} cm-md-pair-bottom`
+    )
+    return
   }
-
-  if (line.number > 1) {
-    const prev = ctx.doc.line(line.number - 1)
-    if (isBlankLine(prev.text)) {
-      const above = neighborLine(ctx, line.number - 2, -1)
-      const kind = above ? imageNeighborKind(ctx, above) : null
-      if (above && kind) {
-        if (!keptEmptyParagraph(ctx, prev.from)) {
-          addLine(ctx, prev.from, `cm-md-block-gap cm-md-image-gap-blank-before-${kind}`)
-        } else {
-          // 光标停在这条空行上:空行保持整行,留白改做在图片行上
-          addLine(ctx, line.from, `cm-md-image-gap-before-${kind}`)
-        }
-        if (kind === 'heading') addLine(ctx, above.from, 'cm-md-h-tight-image-bottom')
-      }
-    } else {
-      const kind = imageNeighborKind(ctx, prev)
-      if (kind) {
-        addLine(ctx, line.from, `cm-md-image-gap-before-${kind}`)
-        if (kind === 'heading') addLine(ctx, prev.from, 'cm-md-h-tight-image-bottom')
-      }
-    }
-  }
-
-  if (line.number < ctx.doc.lines) {
-    const next = ctx.doc.line(line.number + 1)
-    if (isBlankLine(next.text)) {
-      const below = neighborLine(ctx, line.number + 2, 1)
-      const kind = below ? imageNeighborKind(ctx, below) : null
-      if (below && kind) {
-        if (!keptEmptyParagraph(ctx, next.from)) {
-          addLine(ctx, next.from, `cm-md-block-gap cm-md-image-gap-blank-after-${kind}`)
-        } else {
-          addLine(ctx, line.from, `cm-md-image-gap-after-${kind}`)
-        }
-        if (kind === 'heading') addLine(ctx, below.from, 'cm-md-h-tight-image-top')
-      }
-    } else {
-      const kind = imageNeighborKind(ctx, next)
-      if (kind) {
-        addLine(ctx, line.from, `cm-md-image-gap-after-${kind}`)
-        if (kind === 'heading') addLine(ctx, next.from, 'cm-md-h-tight-image-top')
-      }
-    }
-  }
+  addLine(ctx, ctx.doc.lineAt(node.from).from, `cm-md-block-pair cm-md-${prevKind}-${kind}`)
 }
 
 /**
@@ -520,44 +386,21 @@ export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: nu
   for (let number = first; number <= last; number++) {
     const line = ctx.doc.line(number)
     if (!isBlankLine(line.text)) continue
-    // 只有挨着另一条空行时才算「连排」;单独一条空行是正常的分隔,保持整行
-    const prevBlank = number > 1 && isBlankLine(ctx.doc.line(number - 1).text)
-    const nextBlank = number < ctx.doc.lines && isBlankLine(ctx.doc.line(number + 1).text)
-    if (!prevBlank && !nextBlank) continue
-    // 文末空行是新段的落点:重新打开文件后「回车建出的空段落」记录会丢,
-    // 但它后面没有内容可分隔,只能是留给用户接着写的一行,得按整行留出来。
+    // 文末空行是新段的落点:留着可编辑
     if (number === ctx.doc.lines) continue
+    // 容器里的空行(代码块 / 引用 / 列表内部)是内容,已经有自己的行装饰;
+    // 回车建出的空段落是用户要编辑的一行,也不能折
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
-    // 光标刚离开的空段落仍是可点击的一行,不能收成间距
     if (keptEmptyParagraph(ctx, line.from)) continue
-    addLine(ctx, line.from, 'cm-md-block-gap cm-md-block-gap-body')
+    // 结构空行:源码里保留,视觉上完全折叠 —— 间距由下方块的配对 padding 承担
+    addLine(ctx, line.from, 'cm-md-structural-blank')
   }
 }
 
-/**
- * 列表节点是不是「列表标记之后还跟着没有列表点的正文」。
- *
- * 用户按两次回车去掉列表点,就是想跳出列表;CommonMark 仍然把紧接着的
- * 无标记行算成最后一项的懒续行(见上面 List 分支的说明)。这些行在界面上
- * 按正文排,所以它们下面的空行也该按「两段正文之间」的空行处理 —— 否则
- * 空行两头都不是 Paragraph,谁都不压它,就会留成一整行(间距凭空变高)。
- *
- * 只认列表标记后面确实还有内容的列表;标记所在行就是列表最后一行时返回
- * false,那种情况归列表自己的 after 间距管。
- */
-function listEndsWithLazyText(ctx: RuleContext, list: SyntaxNode): boolean {
-  if (list.name !== 'BulletList' && list.name !== 'OrderedList') return false
-  const mark = lastListMark(list)
-  if (!mark) return false
-  if (ctx.doc.lineAt(list.to).number <= ctx.doc.lineAt(mark.from).number) return false
-  // 最后那一行还必须属于正文段落:代码块 / 嵌套列表 / 表格收尾的列表,
-  // 它们下面的空行归各自的块间距管,不要再叠一份段间距。
-  for (let cur: SyntaxNode | null = list.resolve(list.to - 1, -1); cur; cur = cur.parent) {
-    if (cur.name === 'Paragraph') return true
-    if (cur.name === list.name) return false
-  }
-  return false
+/** 这一行是不是「回车创建、仍空着的段落」(见 editor/emptyParagraph.ts) */
+function keptEmptyParagraph(ctx: RuleContext, from: number): boolean {
+  return ctx.emptyParagraphs.has(from)
 }
 
 /** 这一行是否以硬换行结束(Markdown 的硬换行 = 行尾两个以上空格,或反斜杠) */
@@ -601,18 +444,6 @@ function hideTrailingBackslash(ctx: RuleContext, para: SyntaxNode): void {
 }
 
 /** 列表子树里最后一个列表标记:列表在视觉上的结尾(续行、嵌套列表都排在它后面) */
-function lastListMark(list: SyntaxNode): SyntaxNode | null {
-  let found: SyntaxNode | null = null
-  const visit = (n: SyntaxNode): void => {
-    for (let c = n.firstChild; c; c = c.nextSibling) {
-      if (c.name === 'ListMark') found = c
-      visit(c)
-    }
-  }
-  visit(list)
-  return found
-}
-
 /**
  * 列表标记是否已经敲完整(标记后面跟着空格或 Tab)。
  *
@@ -715,18 +546,6 @@ function readWidthLine(line: Line): { line: TableWidthLine; widths: number[] } |
     },
     widths: parsed.widths
   }
-}
-
-/**
- * 这一行所在的最外层块是不是标题(ATX / Setext)。
- *
- * 只用于表格紧贴标题时把 frame 那一侧的留白归零 —— 紧贴时标题自己的
- * 上 / 下留白说了算,不叠表格的 padding。
- */
-function isHeadingLine(ctx: RuleContext, line: Line | null): boolean {
-  if (!line) return false
-  const name = ctx.blockAt(line.from)
-  return !!name && (name.startsWith('ATXHeading') || name.startsWith('SetextHeading'))
 }
 
 function readTable(doc: Text, table: SyntaxNode): TableSpec | null {
@@ -900,10 +719,6 @@ function codeLineClass(ctx: RuleContext, blockStart: number): string {
 function styleFencedCode(ctx: RuleContext, code: SyntaxNode): void {
   addLineRange(ctx, code.from, code.to, codeLineClass(ctx, code.from))
   addCodeCopy(ctx, code)
-  if (!afterHardBreak(ctx, code.from)) {
-    addGapBefore(ctx, code.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
-  }
-  addGapAfter(ctx, code.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
   const first = code.firstChild
   const last = code.lastChild
   if (first?.name === 'CodeMark' && lineUntouched(ctx, first.from)) {
@@ -992,10 +807,6 @@ function styleFencedCodeGroup(ctx: RuleContext, members: CodeMember[]): void {
   const doc = ctx.doc
   const head = members[0]
   const key = doc.lineAt(head.from).from
-  const last = members[members.length - 1]
-
-  addGapBefore(ctx, head.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
-  addGapAfter(ctx, last.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
 
   // 高亮哪一块、显示哪一块必须是同一份结果 —— 标签条也按它画(见 codeTabs.ts),
   // 否则会出现「高亮 a.js、正文却是 b.js」
@@ -1043,31 +854,6 @@ function isPendingMathFence(ctx: RuleContext, block: SyntaxNode): boolean {
 }
 
 /**
- * 占位列表标记(还没被解析成列表)也带上列表前后的间距。
- *
- * `正文\n1. ` 在 CommonMark 里仍是同一段正文 —— 空的列表项不能打断段落,
- * 没有 OrderedList 节点,也就没有上面那段「最外层列表补间距」。标记已经
- * 提前画出来了,间距若还等「补上第一个字、解析成列表」才出现,列表会在
- * 输入瞬间上下跳一下。这里按真正列表的同一套规则提前打上:落点相同
- * (撑开结构空行,或做成相邻正文行的 padding),补字后不会再有位移。
- *
- * 多行占位(连着敲了几条空项)算一个列表:只在第一条前、最后一条后留白,
- * 项与项之间不额外隔开。
- *
- * 段内硬换行(Shift+回车)连着的行仍然属于同一段:这时不补列表的前/后间距,
- * 否则硬换行会被撑成段落距离。等补上正文变成真正的列表时再按列表间距排。
- */
-function stylePendingListGaps(ctx: RuleContext, first: Line, last: Line = first): void {
-  const prev = first.number > 1 ? ctx.doc.line(first.number - 1) : null
-  if (!prev || !endsWithHardBreak(prev)) {
-    addGapBefore(ctx, first.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
-  }
-  if (!endsWithHardBreak(last)) {
-    addGapAfter(ctx, last.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
-  }
-}
-
-/**
  * 段落续行上只敲了列表符号、还没敲内容时,CommonMark 不把它当列表:
  * 空的列表项不能打断段落,`* ` / `+ ` / `1. ` 会整段并进前面的 Paragraph。
  * 于是符号原样显示,补上一个字才突然变成列表 —— 和 `- `(走 Setext 那条路,
@@ -1086,22 +872,10 @@ function stylePendingListMarker(ctx: RuleContext, para: SyntaxNode): void {
   // 段落首行不会是占位标记(会直接解析成列表),只认续行
   if (firstLine.number === lastLine.number) return
 
-  // 连续的占位行是一个列表;碰到普通正文就结算上一段
-  let runFirst: Line | null = null
-  let runLast: Line | null = null
-  const flush = (): void => {
-    if (runFirst && runLast) stylePendingListGaps(ctx, runFirst, runLast)
-    runFirst = null
-    runLast = null
-  }
-
   for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
     const line = ctx.doc.line(n)
     const m = /^([ \t]*)([*+]|\d{1,9}[.)])([ \t]+)$/.exec(line.text)
-    if (!m) {
-      flush()
-      continue
-    }
+    if (!m) continue
     const from = line.from + m[1].length
     const marker = m[2]
     const bullet = marker === '*' || marker === '+'
@@ -1110,10 +884,7 @@ function stylePendingListMarker(ctx: RuleContext, para: SyntaxNode): void {
       to: from + marker.length,
       value: markDeco(bullet ? 'cm-md-listmark cm-md-listmark-bullet' : 'cm-md-listmark')
     })
-    if (!runFirst) runFirst = line
-    runLast = line
   }
-  flush()
 }
 
 // ---------- 行内 HTML(白名单,见 services/inlineHtml) ----------
@@ -1224,6 +995,8 @@ function styleMathSource(ctx: RuleContext, node: SyntaxNode): void {
  * StrongEmphasisMark / ImageMark 不存在,统一只有 EmphasisMark / LinkMark。
  */
 export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void {
+  // 顶层块:按「上块 → 本块」挂配对类,间距由这两个类型决定
+  if (node.node.parent?.name === 'Document') styleBlockPair(ctx, node.node)
   switch (node.name) {
     // ----- 标题 -----
     case 'ATXHeading1':
@@ -1233,22 +1006,16 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'ATXHeading5':
     case 'ATXHeading6': {
       addLine(ctx, node.from, `cm-md-h${node.name.slice(-1)}`)
-      markHeadingSpaceBefore(ctx, node.from)
-      markHeadingEdges(ctx, node.from, node.to)
       return // 下钻:HeaderMark 与行内内容
     }
     case 'SetextHeading1':
       addLine(ctx, node.from, 'cm-md-h1')
-      markHeadingSpaceBefore(ctx, node.from)
-      markHeadingEdges(ctx, node.from, node.to)
       return
     case 'SetextHeading2': {
       // 单横线是「列表符号」的歧义态,不是标题下划线(见 isLoneDashSetext):
       // 上一行保持正文,这一行交给 HeaderMark 规则(敲了空格才画成圆点)。
       if (isLoneDashSetext(ctx, node.node)) return
       addLine(ctx, node.from, 'cm-md-h2')
-      markHeadingSpaceBefore(ctx, node.from)
-      markHeadingEdges(ctx, node.from, node.to)
       return
     }
     case 'HeaderMark': {
@@ -1271,8 +1038,6 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
           to: node.to,
           value: markDeco('cm-md-listmark cm-md-listmark-bullet')
         })
-        // 这里同样还是「占位」状态(补字后才变 BulletList),列表间距提前打上
-        stylePendingListGaps(ctx, ctx.doc.lineAt(node.from))
       } else {
         // Setext 下划线:降级为变暗,不隐藏。上一行末尾的硬换行反斜杠同样藏掉。
         const markLine = ctx.doc.lineAt(node.from)
@@ -1400,10 +1165,6 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'CodeBlock': {
       addLineRange(ctx, node.from, node.to, codeLineClass(ctx, node.from))
       addCodeCopy(ctx, node.node)
-      if (!afterHardBreak(ctx, node.from)) {
-        addGapBefore(ctx, node.from, 'cm-md-gap-code-before', 'cm-md-block-gap-code-before')
-      }
-      addGapAfter(ctx, node.to, 'cm-md-gap-code-after', 'cm-md-block-gap-code-after')
       return false
     }
 
@@ -1415,10 +1176,6 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       if (!quoteOpened(ctx.doc, node.node)) return
       const lastQuoted = styleQuotedLines(ctx, node.node)
       if (!lastQuoted) return
-      if (!afterHardBreak(ctx, node.from)) {
-        addGapBefore(ctx, node.from, 'cm-md-gap-quote-before', 'cm-md-block-gap-quote-before')
-      }
-      addGapAfter(ctx, lastQuoted.from, 'cm-md-gap-quote-after', 'cm-md-block-gap-quote-after')
       return
     }
     case 'QuoteMark': {
@@ -1442,7 +1199,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // ----- 段落(续行上的占位列表符号 / 两段正文之间的空行) -----
     case 'Paragraph':
       stylePendingListMarker(ctx, node.node)
-      styleBodyGap(ctx, node.node)
+      styleParagraphTrim(ctx, node.node)
       hideTrailingBackslash(ctx, node.node)
       return // 下钻:行内强调 / 链接
 
@@ -1466,27 +1223,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       }
       if (!nested) {
         const firstMark = node.node.getChild('ListItem')?.getChild('ListMark') ?? null
-        // 紧接段内硬换行时,列表和上一行仍属于同一段:不补块间距(距离=行间距)
-        const tightTop = afterHardBreak(ctx, node.from)
-        if (!markerComplete(ctx, firstMark)) {
-          // 只敲了 `-` / `1.`(还没空格):整行按普通正文显示,不补列表间距。
-          // 上下空行都按「两段正文之间」的段间距收起 —— 否则敲下短横线、
-          // 或在新段里开始输入时,空行从段间距恢复成整行,光标行会跳一下。
-          if (!tightTop) {
-            addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
-          }
-          addGapAfter(ctx, node.to, 'cm-md-gap-body', 'cm-md-block-gap-body')
-          return
-        }
-        const mark = lastListMark(node.node)
-        if (mark) {
-          if (!tightTop) {
-            addGapBefore(ctx, node.from, 'cm-md-gap-list-before', 'cm-md-block-gap-list-before')
-          }
-          if (markerComplete(ctx, mark)) {
-            addGapAfter(ctx, mark.from, 'cm-md-gap-list-after', 'cm-md-block-gap-list-after')
-          }
-        }
+        if (!markerComplete(ctx, firstMark)) return
       }
       return
     }
@@ -1532,32 +1269,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // DisplayMath 是段落中间的行内块级公式。两者外观与编辑行为完全一致。
     case 'DisplayMath':
     case 'MathBlock': {
-      /*
-       * 光标在公式块里时(包括刚敲出开标记、还没回车补全的待定状态),上方那条
-       * 空行按正文段间距收紧。语法树里这一行已经不是 Paragraph,没人再给它补
-       * 间距;不补的话,敲下第二个 `$`、或回车补全成公式块的那一刻,原本收紧的
-       * 空行会恢复成整行高,光标行往下跳(和只敲了 `-` 的列表标记同理,见
-       * BulletList 分支)。
-       */
-      if (node.name === 'MathBlock' && showsSource(ctx, node.from, node.to)) {
-        styleBodyGap(ctx, node.node)
-      }
       // 刚敲出来的 `$$` / `\[` 先按普通文本显示,回车补全后再当公式块
       if (node.name === 'MathBlock' && isPendingMathFence(ctx, node.node)) return false
-      /*
-       * 渲染态也要按同样的段间距压紧它上面那条空行。
-       *
-       * 少了这一条,公式前那条空行只在「上一行还是空段落」时被 collapseBlankRuns
-       * 收紧;一旦空段里输入了第一个字,空行就恢复整行高,下面的公式整体往下跳。
-       * 光标在公式里时由 styleBodyGap 处理,这里只补渲染态,两者间距一致。
-       */
-      if (
-        node.name === 'MathBlock' &&
-        node.node.parent?.name === 'Document' &&
-        !showsSource(ctx, node.from, node.to)
-      ) {
-        addGapBefore(ctx, node.from, 'cm-md-gap-body', 'cm-md-block-gap-body')
-      }
       const content = mathContentRange(node.node)
       if (!content) return false
       if (showsSource(ctx, node.from, node.to)) {
@@ -1600,8 +1313,6 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
 
     // ----- 图片 -----
     case 'Image': {
-      // 图片独占一行时,上下与标题 / 正文的留白按「图片间距」四档排
-      styleImageGaps(ctx, node.node)
       if (!showsSource(ctx, node.from, node.to)) {
         const text = ctx.doc.sliceString(node.from, node.to)
         // 目标可以写成 `<带 空格/括号的路径>`,CommonMark 允许;第二种写法是裸路径
@@ -1682,21 +1393,6 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
        *   · 紧贴标题 —— 标题自己的留白为准,frame 该侧也归零;
        *   · 紧贴其它块 —— frame 的 padding 提供间距(见 editor.css)。
        */
-      const hasBlankAbove =
-        spec.protectFrom < node.from && spec.protectFrom !== spec.widthLine?.from
-      const hasBlankBelow = spec.protectTo > node.to
-      // 列宽指令行也是表格的一部分,判断"上一行是不是标题"时要越过它
-      let aboveNumber = firstLine.number - 1
-      if (spec.widthLine) {
-        const widthLine = ctx.doc.lineAt(spec.widthLine.from)
-        if (widthLine.number === aboveNumber) aboveNumber -= 1
-      }
-      const tightHeadingAbove =
-        !hasBlankAbove && aboveNumber >= 1 && isHeadingLine(ctx, ctx.doc.line(aboveNumber))
-      const tightHeadingBelow =
-        !hasBlankBelow &&
-        lastLine.number < ctx.doc.lines &&
-        isHeadingLine(ctx, ctx.doc.line(lastLine.number + 1))
       // 首行换成 widget(它自带整张表),其余行清空并折叠高度
       // 宿主行去掉行盒 strut:否则表格上下会多出半行字体留白,看起来像多了一行。
       // 紧接段内硬换行时不再加 frame 顶部留白:距离就是行间距。
@@ -1707,11 +1403,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         [
           'cm-md-table-host',
           fullySelected ? 'cm-md-table-host-selected' : '',
-          tightTop ? 'cm-md-table-tight-top' : '',
-          hasBlankAbove ? 'cm-md-table-gap-line-top' : '',
-          hasBlankBelow ? 'cm-md-table-gap-line-bottom' : '',
-          tightHeadingAbove ? 'cm-md-table-tight-heading-top' : '',
-          tightHeadingBelow ? 'cm-md-table-tight-heading-bottom' : ''
+          tightTop ? 'cm-md-table-tight-top' : ''
         ]
           .filter(Boolean)
           .join(' ')
@@ -1722,25 +1414,15 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         hide(ctx, line.from, line.to)
         addLine(ctx, line.from, 'cm-md-table-void')
       }
-      /*
-       * 紧邻表格的分隔空行:源码里保留(GFM 需要它把表格与正文隔开),但排版上
-       * 折成零高度,视觉间距完全交给 widget 的 --md-table-gap*。
-       * 光标/点击由 keepCaretOutOfTables 与 caretOutsideRenderedTable 按
-       * TableSpec.protectFrom/protectTo 越过这段范围,用户不会停在看不见的行上。
-       */
+      // 紧邻表格的分隔空行由 collapseBlankRuns 统一折叠(0 高);光标 / 点击由
+      // keepCaretOutOfTables 与 caretOutsideRenderedTable 按 protectFrom/protectTo 越过。
       if (spec.widthLine) {
         // 列宽指令是表格的一部分:渲染态只藏指令文本,保留容器前缀的原位
         addLine(ctx, spec.widthLine.from, 'cm-md-table-widths')
         hide(ctx, spec.widthLine.textFrom, spec.widthLine.textTo)
       }
-      // 结构空行按表格的上 / 下档排;它可能同时贴着别的块(代码块 / 列表 /
-      // 引用),CSS 的 max() 会取两者较大值,frame 那一侧已经归零。
-      if (hasBlankAbove) {
-        addLine(ctx, spec.protectFrom, 'cm-md-block-gap cm-md-block-gap-table-before')
-      }
-      if (hasBlankBelow) {
-        addLine(ctx, spec.protectTo, 'cm-md-block-gap cm-md-block-gap-table-after')
-      }
+      // 表格前后的结构空行由 collapseBlankRuns 统一折叠;间距由表格宿主行上的
+      // 配对类承担(见 rules.ts 的 styleBlockPair 与 editor.css 的配对规则)。
       // 不下钻:单元格里的 URL / EmphasisMark 等规则会往已被隐藏的文本上加 mark 造成错位,
       // 行内高亮由 widget 内部的 renderInline 负责
       return false

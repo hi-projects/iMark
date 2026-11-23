@@ -1,13 +1,11 @@
 /**
- * 「点击最后一行下方 = 在文末新起一段」的端到端验证。
+ * 「点击最后一行下方」的端到端验证。
  *
- * 行为(见 build.ts 的 clickBelowDocEnd / openTailParagraph / dropTailDraft):
- *   - 点在最后一行下方的空白:光标落到最后一行下面新起的一行上,源码按段落
- *     补出空行(文末已经是 `\n\n` 时只挪光标,不动源码);
- *   - 新行按整行高显示(空段落),光标看得见;
- *   - 输入了内容,这一行就留下,点走也不会被撤掉;
- *   - 没输入就点走 / 失焦:临时补出来的空段落后撤回,文档和点击前一模一样;
- *   - 点在最后一行本身上不算「下方」,不补空段。
+ * 行为(见 build.ts 的 clickBelowDocEnd / endOfLastText):
+ *   - 点在最后一行下方的空白:不改源码,光标直接落到最后一个非空白字符后面;
+ *   - 文末本来就有空行时也一样,光标不会停在空行上;
+ *   - 接着输入就接在最后一行末尾,不会多出新行;
+ *   - 点击 / 失焦都不产生任何文档变更。
  *
  * 跑法(在仓库根目录,先 `npx electron-vite build`):
  *   xvfb-run -a node verify/run.mjs tail-click
@@ -141,6 +139,12 @@ async function main(): Promise<void> {
     await sleep(260)
   }
 
+  async function key(keyCode: string): Promise<void> {
+    wc.sendInputEvent({ type: 'keyDown', keyCode })
+    wc.sendInputEvent({ type: 'keyUp', keyCode })
+    await sleep(280)
+  }
+
   /** 真鼠标点一下页面坐标(wc.sendInputEvent 的坐标就是视口坐标) */
   async function clickAt(x: number, y: number): Promise<void> {
     wc.focus()
@@ -179,68 +183,30 @@ async function main(): Promise<void> {
     return true
   }
 
-  /** 光标的 DOM 行高 / 类名(确认新行按整行留出) */
-  const caretLineBox = (): Promise<{ cls: string; height: number } | null> =>
-    evalJs<{ cls: string; height: number } | null>(`
-      (() => {
-        const view = ${VIEW}
-        const head = view.state.selection.main.head
-        const line = view.state.doc.lineAt(head)
-        const el = [...document.querySelectorAll('.cm-content .cm-line')][line.number - 1]
-        if (!el) return null
-        const r = el.getBoundingClientRect()
-        return { cls: el.className, height: Math.round(r.height) }
-      })()`)
+  // ---------- 1. 点文末空白:不改源码,光标落到最后一个字后面 ----------
 
-  // ---------- 1. 点文末空白 → 新段,输入后留下 ----------
-
-  console.log('\n【1】点最后一行下方:光标落到新的一行,输入后这一行留下')
+  console.log('\n【1】点最后一行下方:不改源码,光标落到最后一个字后面')
   await loadDoc(USER_DOC)
   check('起始文档与用户文件一致', (await docText()) === USER_DOC)
   check('真鼠标点到文末空白', await clickBelowLastLine())
   {
     const text = await docText()
-    check('源码补出段落空行', text === USER_DOC + '\n\n', JSON.stringify(text.slice(-12)))
+    check('源码一个字都没变', text === USER_DOC, `${JSON.stringify(text.slice(-16))}  spot=${JSON.stringify(lastSpot)}`)
     const caret = await caretInfo()
-    const lines = text.split('\n')
-    check('光标落在新的一行(空行)', caret.line === lines.length && caret.text === '', JSON.stringify(caret))
-    const box = await caretLineBox()
-    check(
-      '新行按整行高显示(空段落,不是零高度)',
-      !!box && box.height > 10 && /cm-md-empty-paragraph/.test(box.cls),
-      JSON.stringify(box)
-    )
+    check('光标在最后一个非空白字符后面', caret.head === USER_DOC.length, JSON.stringify(caret))
   }
   await type('续写')
   {
     const text = await docText()
-    check('输入的字落在新段里', text.endsWith('\n\n续写'), JSON.stringify(text.slice(-10)))
+    check('输入接在最后一行末尾,没有多出新行', text === USER_DOC + '续写', JSON.stringify(text.slice(-10)))
   }
   await clickDomLine(0)
   await sleep(300)
-  check('输入过的段落点走也不撤回', (await docText()).endsWith('\n\n续写'))
+  check('点走也不改动文档', (await docText()) === USER_DOC + '续写')
 
-  // ---------- 2. 没输入就点走 → 撤回,文档一字不变 ----------
+  // ---------- 2. 文末有空行:光标也不会停在空行上 ----------
 
-  console.log('\n【2】点文末空白但没输入,点回正文:临时空段落撤回')
-  await loadDoc(USER_DOC)
-  await checkLoaded('重载后仍是用户文件', USER_DOC)
-  await clickBelowLastLine()
-  {
-    const text = await docText()
-    check(
-      '点下去时先补出段落空行',
-      text === USER_DOC + '\n\n',
-      `${JSON.stringify(text.slice(-16))}  spot=${JSON.stringify(lastSpot)}`
-    )
-  }
-  await clickDomLine(0)
-  await sleep(400)
-  check('点走后文档恢复原样', (await docText()) === USER_DOC, JSON.stringify((await docText()).slice(-12)))
-
-  // ---------- 3. 文末已经有空段落 → 只挪光标 ----------
-
-  console.log('\n【3】文末本来就有空段落:只把光标挪过去,源码不动')
+  console.log('\n【2】文末本来就有空行:光标仍落在最后一个字后面')
   const TAIL_SPACED = '第一段\n\n'
   await loadDoc(TAIL_SPACED)
   await checkLoaded('重载后是「第一段 + 空行」', TAIL_SPACED)
@@ -248,30 +214,65 @@ async function main(): Promise<void> {
   {
     const text = await docText()
     check('源码没有多出换行', text === TAIL_SPACED, `${JSON.stringify(text)}  spot=${JSON.stringify(lastSpot)}`)
+    const caret = await caretInfo()
+    check('光标在「第一段」后面,不在空行上', caret.head === 3 && caret.line === 1, JSON.stringify(caret))
   }
-  check('光标在文末', (await caretInfo()).head === TAIL_SPACED.length)
+  await type('x')
+  check('输入接在正文末尾', (await docText()) === '第一段x\n\n', JSON.stringify(await docText()))
   await clickDomLine(0)
   await sleep(300)
-  check('点走也不改文档', (await docText()) === TAIL_SPACED)
+  check('点走也不改文档', (await docText()) === '第一段x\n\n')
 
-  // ---------- 4. 点在最后一行本身上不算 ----------
+  // ---------- 3. 点在最后一行本身上:文档不变 ----------
 
-  console.log('\n【4】点在最后一行上(不是下方):不补空段')
+  console.log('\n【3】点在最后一行上(不是下方):不改文档')
   const PLAIN_TAIL = '第一段\n\n最后一行'
   await loadDoc(PLAIN_TAIL)
   await clickDomLine(2)
   await sleep(300)
-  check('文档没有被补换行', (await docText()) === PLAIN_TAIL, JSON.stringify(await docText()))
+  {
+    const caret = await caretInfo()
+    check('文档没有变化', (await docText()) === PLAIN_TAIL, JSON.stringify(await docText()))
+    check('光标落在最后一行里', caret.line === 3, JSON.stringify(caret))
+  }
 
-  // ---------- 5. 失焦撤回 ----------
+  // ---------- 4. 点击后失焦:没有临时草稿,文档不变 ----------
 
-  console.log('\n【5】点文末空白后切走焦点:临时空段落撤回')
+  console.log('\n【4】点文末空白后切走焦点:文档不变')
   await loadDoc(USER_DOC)
   await clickBelowLastLine()
-  check('失焦前补出了段落空行', (await docText()) === USER_DOC + '\n\n')
+  check('点击后文档不变', (await docText()) === USER_DOC)
   await evalJs(`(() => { document.querySelector('.cm-content')?.blur(); return true })()`)
   await sleep(400)
-  check('失焦后撤回', (await docText()) === USER_DOC, JSON.stringify((await docText()).slice(-12)))
+  check('失焦后仍是原样', (await docText()) === USER_DOC, JSON.stringify((await docText()).slice(-12)))
+
+  // ---------- 5. 手动回车创建空段:点文末要回到这个空段 ----------
+
+  console.log('\n【5】手动回车创建空段后点文末空白:光标回到这个空段上')
+  await loadDoc('第一段')
+  await evalJs(`(() => {
+    const v = ${VIEW}
+    v.focus()
+    v.dispatch({ selection: { anchor: v.state.doc.length } })
+    return true
+  })()`)
+  await sleep(150)
+  await key('Return')
+  await sleep(300)
+  check('回车创建了空段', (await docText()) === '第一段\n\n', JSON.stringify(await docText()))
+  await clickBelowLastLine()
+  {
+    const text = await docText()
+    const caret = await caretInfo()
+    check('点击不改文档', text === '第一段\n\n', JSON.stringify(text))
+    check(
+      '光标落在新建的空段上(不是上一段正文)',
+      caret.head === text.length && caret.line === 3,
+      JSON.stringify(caret)
+    )
+  }
+  await type('续')
+  check('输入接在空段里', (await docText()) === '第一段\n\n续', JSON.stringify(await docText()))
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)
   app.exit(fail === 0 ? 0 : 1)

@@ -431,13 +431,13 @@ async function main(): Promise<void> {
       JSON.stringify(src)
     )
     const lines = await domLines()
-    const body = lines[4]?.height ?? 0
     check(
-      '空行也是当前段落:回车后它仍按整行留着,新段在它下面',
+      '空行也是当前段落:回车后它仍是可编辑的一行,下面那条结构空行收紧成段间距',
       lines.length === 5 &&
         /cm-md-empty-paragraph/.test(lines[0]?.cls ?? '') &&
-        lines[1].height < body - 8 &&
-        lines[2].height >= body - 1,
+        /cm-md-block-gap-body/.test(lines[1]?.cls ?? '') &&
+        !/cm-md-block-gap/.test(lines[2]?.cls ?? '') &&
+        /cm-md-empty-paragraph/.test(lines[2]?.cls ?? ''),
       JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
     )
   }
@@ -452,13 +452,12 @@ async function main(): Promise<void> {
   await key('Enter')
   {
     const lines = await domLines()
-    const body = lines[2]?.height ?? 0
     check(
-      '原空段落仍按整行留着,新段在段间距下面',
+      '原空段落仍可编辑,新段在段间距空行下面',
       lines.length === 3 &&
         /cm-md-empty-paragraph/.test(lines[0]?.cls ?? '') &&
-        lines[0].height >= body - 1 &&
-        lines[1].height < body - 8,
+        /cm-md-block-gap-body/.test(lines[1]?.cls ?? '') &&
+        /cm-md-empty-paragraph/.test(lines[2]?.cls ?? ''),
       JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
     )
   }
@@ -535,14 +534,13 @@ async function main(): Promise<void> {
     const src = await readSource()
     check('落盘:中间空出三条空行(上下各一条分隔)', src.join('|') === '第一段||||第二段', JSON.stringify(src))
     const lines = await domLines()
-    const body = lines[0]?.height ?? 0
     check(
-      '显示:只有光标那条空行是整行,其余空行收紧成段间距',
+      '显示:光标那条是空段落,上下两条空行收紧成段间距',
       lines.length === 6 &&
-        lines[2].height >= body - 1 &&
-        lines[1].height < body - 8 &&
-        lines[3].height < body - 8,
-      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}`))
+        /cm-md-empty-paragraph/.test(lines[2]?.cls ?? '') &&
+        /cm-md-block-gap-body/.test(lines[1]?.cls ?? '') &&
+        /cm-md-block-gap-body/.test(lines[3]?.cls ?? ''),
+      JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
     )
   }
   await type('新段')
@@ -868,8 +866,8 @@ async function main(): Promise<void> {
     )
     check(
       '新段与短横线之间是段间距(不是行间距)',
-      dash >= 0 && Math.abs(pitch - paragraphPitch) <= 1,
-      JSON.stringify({ pitch, paragraphPitch, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.cls}`) })
+      dash >= 0 && /cm-md-block-gap-body/.test(lines[caret.line - 2]?.cls ?? ''),
+      JSON.stringify({ lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.cls}`) })
     )
     const topBefore = lines[caret.line - 1]?.top ?? -1
     await type('X')
@@ -1122,14 +1120,13 @@ async function main(): Promise<void> {
     check('源码:第一行是新段,和下面正文之间隔着一条空行', doc === '\n\n1\n', JSON.stringify(doc))
     const lines = await domLines()
     check(
-      '第一行就是新段,按整行留出,和下面的正文隔开段落间距',
+      '第一行就是新段(可编辑的空段落),和下面的正文隔开段落间距',
       lines.length === 4 &&
         lines[0]?.text === '' &&
         /cm-md-empty-paragraph/.test(lines[0].cls) &&
         !/cm-md-block-gap/.test(lines[0].cls) &&
-        lines[0].height >= 30 &&
         !!lines[1] &&
-        /cm-md-block-gap/.test(lines[1].cls) &&
+        /cm-md-block-gap-body/.test(lines[1].cls) &&
         lines[2]?.text === '1',
       JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}:${l.height}[${l.cls}]`))
     )
@@ -1183,8 +1180,8 @@ async function main(): Promise<void> {
     const listH = lines[1]?.height ?? 0
     check(
       '列表项与上一行按行间距排(没有列表块间距)',
-      Math.abs(pitch - listH) <= 1,
-      JSON.stringify({ pitch, listH, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.height}`) })
+      lines.length >= 2 && !/cm-md-block-gap/.test(lines[1]?.cls ?? ''),
+      JSON.stringify({ pitch, listH, lines: lines.map(l => `${JSON.stringify(l.text)}:${l.top}:${l.height}[${l.cls}]`) })
     )
   }
 

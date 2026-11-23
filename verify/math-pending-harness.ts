@@ -175,6 +175,9 @@ async function main(): Promise<void> {
 
   console.log('\n【1】空行上刚敲出 $$:按普通文本显示')
   await setCursor(blankPos)
+  console.log(
+    `     [定位] blankPos=${blankPos} doc=${JSON.stringify(await evalJs<string>(`document.querySelector('.cm-content').cmTile.root.view.state.doc.toString()`))} anchor=${await evalJs<number>(`document.querySelector('.cm-content').cmTile.root.view.state.selection.main.head`)}`
+  )
   await type('$$')
   await sleep(400)
   {

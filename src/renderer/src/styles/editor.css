@@ -370,274 +370,383 @@
 }
 
 /*
- * 段落之间、代码块 / 列表 / 引用与正文之间的结构间距,按「块类型 × 方向」
- * 各留一个旋钮(设置「外观 → 样式」;--md-*-space-* 是根元素上的档数)。
+ * 块与块之间的配对间距。
  *
- * 两种排法共用同一个值:有空行时把那条空行加高,没空行时做在相邻正文行的
- * padding 上(见 rules.ts 的 addGapBefore/After),两种写法看起来是同一个间距。
- * 乘 --editor-body-size 按正文尺寸缩放;默认 1 档(一个正文字号)。
+ * 结构空行在渲染时完全折叠(见 cm-md-structural-blank);间距由**下方块的首行**
+ * 承担:rules.ts 按「上块 → 下块」挂 `cm-md-<上块>-<下块>` 类,这里用
+ * padding-top 加出配对值(0–3 档 × 正文字号)。每个有序配对一条规则、
+ * 一个根变量 `--md-gap-<上块>-<下块>`;没设置过的按 1 档。
+ *
+ * --md-heading-pad 只给行首「+」按钮定位用,跟着同一份值走。
  */
-.cm-editor {
-  --md-body-gap-between: calc(var(--editor-body-size) * var(--md-body-space-between, 1));
-  --md-code-gap-before: calc(var(--editor-body-size) * var(--md-code-space-before, 1));
-  --md-code-gap-after: calc(var(--editor-body-size) * var(--md-code-space-after, 1));
-  --md-list-gap-before: calc(var(--editor-body-size) * var(--md-list-space-before, 1));
-  --md-list-gap-after: calc(var(--editor-body-size) * var(--md-list-space-after, 1));
-  --md-quote-gap-before: calc(var(--editor-body-size) * var(--md-quote-space-before, 1));
-  --md-quote-gap-after: calc(var(--editor-body-size) * var(--md-quote-space-after, 1));
-  /* 图片独占一行时,上 / 下紧挨标题或正文的留白 */
-  --md-image-gap-before-heading: calc(
-    var(--editor-body-size) * var(--md-image-space-before-heading, 1)
-  );
-  --md-image-gap-before-body: calc(var(--editor-body-size) * var(--md-image-space-before-body, 1));
-  --md-image-gap-after-heading: calc(
-    var(--editor-body-size) * var(--md-image-space-after-heading, 1)
-  );
-  --md-image-gap-after-body: calc(var(--editor-body-size) * var(--md-image-space-after-body, 1));
-  /*
-   * 表格上下间距:有结构空行时由那条空行承担,没有空行时由表格 frame 的
-   * padding 承担。--md-table-gap 是旧版的整体覆盖入口,设了就两边都用它。
-   */
-  --md-table-gap-before: var(--md-table-gap, calc(
-    var(--editor-body-size) * var(--md-table-space-before, 1.7)
-  ));
-  --md-table-gap-after: var(--md-table-gap, calc(
-    var(--editor-body-size) * var(--md-table-space-after, 0.7)
-  ));
-}
-
-/*
- * 块与正文之间的结构空行(代码块 / 列表 / 引用前后)。
- *
- * 这些空行在 Markdown 源码里本来就留着,渲染态下把它们的行高按上面的间距
- * 收紧,块和正文之间就不会糊在一起。只加在空行上,正文行自己的行距不受影响。
- *
- * 一条空行可能同时贴着两种块(代码块后面紧接列表),每个类只登记自己那一侧
- * 的间距,行高取其中较大的一个 —— 不靠 CSS 先后顺序互相覆盖。
- */
-.cm-editor .cm-line.cm-md-block-gap {
-  --md-gap-height: max(
-    var(--md-block-gap-body, 0px),
-    var(--md-block-gap-code-before, 0px),
-    var(--md-block-gap-code-after, 0px),
-    var(--md-block-gap-list-before, 0px),
-    var(--md-block-gap-list-after, 0px),
-    var(--md-block-gap-quote-before, 0px),
-    var(--md-block-gap-quote-after, 0px),
-    var(--md-block-gap-table-before, 0px),
-    var(--md-block-gap-table-after, 0px)
-  );
-  line-height: var(--md-gap-height);
-  /* 行高只由角色决定:光标 / 空行里的临时节点不能把行盒撑高 */
-  height: var(--md-gap-height);
-  max-height: var(--md-gap-height);
+.cm-editor .cm-line.cm-md-structural-blank {
+  height: 0;
+  line-height: 0;
+  font-size: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
-.cm-editor .cm-line.cm-md-block-gap-body {
-  --md-block-gap-body: var(--md-body-gap-between);
+.cm-editor .cm-line.cm-md-body-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-body, 1));
+}
+.cm-editor .cm-line.cm-md-body-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-heading, 1));
+}
+.cm-editor .cm-line.cm-md-body-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
+}
+.cm-editor .cm-line.cm-md-body-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-list, 1));
+}
+.cm-editor .cm-line.cm-md-body-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
+}
+.cm-editor .cm-line.cm-md-body-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-image, 1));
+}
+.cm-editor .cm-line.cm-md-body-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-table, 1));
+}
+.cm-editor .cm-line.cm-md-body-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-math, 1));
+}
+.cm-editor .cm-line.cm-md-body-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-heading-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-body, 1));
+}
+.cm-editor .cm-line.cm-md-heading-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-heading, 1));
+}
+.cm-editor .cm-line.cm-md-heading-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
+}
+.cm-editor .cm-line.cm-md-heading-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-list, 1));
+}
+.cm-editor .cm-line.cm-md-heading-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
+}
+.cm-editor .cm-line.cm-md-heading-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-image, 1));
+}
+.cm-editor .cm-line.cm-md-heading-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-table, 1));
+}
+.cm-editor .cm-line.cm-md-heading-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-math, 1));
+}
+.cm-editor .cm-line.cm-md-heading-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-code-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-body, 1));
+}
+.cm-editor .cm-line.cm-md-code-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-heading, 1));
+}
+.cm-editor .cm-line.cm-md-code-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
+}
+.cm-editor .cm-line.cm-md-code-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-list, 1));
+}
+.cm-editor .cm-line.cm-md-code-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
+}
+.cm-editor .cm-line.cm-md-code-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-image, 1));
+}
+.cm-editor .cm-line.cm-md-code-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-table, 1));
+}
+.cm-editor .cm-line.cm-md-code-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-math, 1));
+}
+.cm-editor .cm-line.cm-md-code-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-list-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-body, 1));
+}
+.cm-editor .cm-line.cm-md-list-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-heading, 1));
+}
+.cm-editor .cm-line.cm-md-list-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
+}
+.cm-editor .cm-line.cm-md-list-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-list, 1));
+}
+.cm-editor .cm-line.cm-md-list-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
+}
+.cm-editor .cm-line.cm-md-list-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-image, 1));
+}
+.cm-editor .cm-line.cm-md-list-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-table, 1));
+}
+.cm-editor .cm-line.cm-md-list-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-math, 1));
+}
+.cm-editor .cm-line.cm-md-list-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-quote-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-body, 1));
+}
+.cm-editor .cm-line.cm-md-quote-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-heading, 1));
+}
+.cm-editor .cm-line.cm-md-quote-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
+}
+.cm-editor .cm-line.cm-md-quote-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-list, 1));
+}
+.cm-editor .cm-line.cm-md-quote-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
+}
+.cm-editor .cm-line.cm-md-quote-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-image, 1));
+}
+.cm-editor .cm-line.cm-md-quote-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-table, 1));
+}
+.cm-editor .cm-line.cm-md-quote-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-math, 1));
+}
+.cm-editor .cm-line.cm-md-quote-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-image-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-body, 1));
+}
+.cm-editor .cm-line.cm-md-image-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-heading, 1));
+}
+.cm-editor .cm-line.cm-md-image-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
+}
+.cm-editor .cm-line.cm-md-image-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-list, 1));
+}
+.cm-editor .cm-line.cm-md-image-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
+}
+.cm-editor .cm-line.cm-md-image-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-image, 1));
+}
+.cm-editor .cm-line.cm-md-image-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-table, 1));
+}
+.cm-editor .cm-line.cm-md-image-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-math, 1));
+}
+.cm-editor .cm-line.cm-md-image-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-table-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-body, 1));
+}
+.cm-editor .cm-line.cm-md-table-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-heading, 1));
+}
+.cm-editor .cm-line.cm-md-table-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
+}
+.cm-editor .cm-line.cm-md-table-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-list, 1));
+}
+.cm-editor .cm-line.cm-md-table-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
+}
+.cm-editor .cm-line.cm-md-table-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-image, 1));
+}
+.cm-editor .cm-line.cm-md-table-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-table, 1));
+}
+.cm-editor .cm-line.cm-md-table-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-math, 1));
+}
+.cm-editor .cm-line.cm-md-table-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-math-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-body, 1));
+}
+.cm-editor .cm-line.cm-md-math-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-heading, 1));
+}
+.cm-editor .cm-line.cm-md-math-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
+}
+.cm-editor .cm-line.cm-md-math-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-list, 1));
+}
+.cm-editor .cm-line.cm-md-math-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
+}
+.cm-editor .cm-line.cm-md-math-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-image, 1));
+}
+.cm-editor .cm-line.cm-md-math-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-table, 1));
+}
+.cm-editor .cm-line.cm-md-math-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-math, 1));
+}
+.cm-editor .cm-line.cm-md-math-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-mermaid, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-body {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-body, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-body, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-heading {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-heading, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-heading, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-code {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-list {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-list, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-list, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-quote {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-image {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-image, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-image, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-table {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-table, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-table, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-math {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-math, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-math, 1));
+}
+.cm-editor .cm-line.cm-md-mermaid-mermaid {
+  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-mermaid, 1));
+  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-mermaid, 1));
 }
 
-.cm-editor .cm-line.cm-md-block-gap-code-before {
-  --md-block-gap-code-before: var(--md-code-gap-before);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-body-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-code-after {
-  --md-block-gap-code-after: var(--md-code-gap-after);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-heading-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-list-before {
-  --md-block-gap-list-before: var(--md-list-gap-before);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-code-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-list-after {
-  --md-block-gap-list-after: var(--md-list-gap-after);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-list-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-quote-before {
-  --md-block-gap-quote-before: var(--md-quote-gap-before);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-quote-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-quote-after {
-  --md-block-gap-quote-after: var(--md-quote-gap-after);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-image-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-table-before {
-  --md-block-gap-table-before: var(--md-table-gap-before);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-table-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
 }
-
-.cm-editor .cm-line.cm-md-block-gap-table-after {
-  --md-block-gap-table-after: var(--md-table-gap-after);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-math-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
 }
-
-/*
- * 标题前紧挨着的空行:用户主动留出的空行要占一整行,不能按块间距压扁。
- * 普通空行本来就是完整行高。
- *
- * 结构空行的例外:表格与图片的结构空行有自己的档位(见下面的
- * cm-md-image-gap-blank-* 与 block-gap-table-*),不能被这里展开成整行。
- * 用 :not 排除,让它们各自的规则继续生效。注意 :not 会抬高特异度,
- * 所以图片那四条也必须列出来 —— 否则这条会反过来压过它们(图片规则
- * 原本靠"同特异度、文件里更靠后"生效)。
- */
-.cm-editor .cm-line.cm-md-block-gap.cm-md-h-space-before:not(
-    .cm-md-block-gap-table-before
-  ):not(.cm-md-block-gap-table-after):not(.cm-md-image-gap-blank-before-heading):not(
-    .cm-md-image-gap-blank-before-body
-  ):not(.cm-md-image-gap-blank-after-heading):not(.cm-md-image-gap-blank-after-body) {
-  /* 标题前这条是「整行高」的间距,不是压缩档;固定成正文行高 */
-  --md-gap-height: calc((1 + var(--editor-line-space, 1)) * 1em);
-  line-height: inherit;
-}
-
-/*
- * 光标刚离开、仍空着的段落(见 editor/emptyParagraph.ts)。
- *
- * 它要一直按整行留出、能点回去。正常情况下渲染规则已经不把它当结构空行收紧;
- * 这一条是兜底:万一它同时挨着一条段落间距(空行正好夹在两段之间),行高不被
- * 压扁,点击也还能落在这一行上。
- */
-.cm-editor .cm-line.cm-md-empty-paragraph {
-  line-height: inherit;
-}
-
-/*
- * 块紧贴正文(中间没有空行)时,间距做在相邻那一行正文的 padding 上。
- * 落在正文行上而不是块边界上,代码块的底色、留白和复制按钮都不受影响。
- *
- * 行盒的 padding 在别处被 `.cm-editor .cm-line.cm-line { padding: 0 }`(0-3-0)
- * 清零了,这里必须抬到同等特异度才盖得住。
- */
-.cm-editor .cm-line.cm-md-gap-body {
-  padding-bottom: var(--md-body-gap-between);
-}
-
-.cm-editor .cm-line.cm-md-gap-code-before {
-  padding-bottom: var(--md-code-gap-before);
-}
-
-.cm-editor .cm-line.cm-md-gap-code-after {
-  padding-top: var(--md-code-gap-after);
-}
-
-.cm-editor .cm-line.cm-md-gap-list-before {
-  padding-bottom: var(--md-list-gap-before);
-}
-
-.cm-editor .cm-line.cm-md-gap-list-after {
-  padding-top: var(--md-list-gap-after);
-}
-
-.cm-editor .cm-line.cm-md-gap-quote-before {
-  padding-bottom: var(--md-quote-gap-before);
-}
-
-.cm-editor .cm-line.cm-md-gap-quote-after {
-  padding-top: var(--md-quote-gap-after);
-}
-
-/*
- * 标题上下的留白(按 Obsidian 默认主题的 live preview 起手,再补齐下方)。
- *
- * Obsidian 给每个标题行 `padding-top: var(--p-spacing)`(一档正文字号),
- * 标题下方不额外加 —— 下方那条空行本身就是间距。iMark 里那条空行只有
- * 2 × 正文行高(默认行间距 1 档,约 32px),看起来比标题上方窄一截,所以下方也补一档
- * 正文尺寸,让标题与上下正文的距离大致相当。文档里本来有空行时,空行照常
- * 保留,两者叠加起来就是最终观感。
- *
- * 档数来自设置「外观 → 标题间距」(--md-heading-space-*,根元素上的倍数),
- * 乘正文字号得到实际留白;没设过时按 1 档兜底。设置里改档位立即生效。
- *
- * 落在标题行自己的 padding 上:margin 不参与 CodeMirror 的行高测量,而标题行
- * 没有底色 / 边框,加 padding 是安全的(代码块就不行,见 .cm-md-code)。
- * 放在块间距规则之后:标题紧贴代码块时,以标题这一档为准。
- */
-.cm-editor .cm-line.cm-md-h1,
-.cm-editor .cm-line.cm-md-h2,
-.cm-editor .cm-line.cm-md-h3,
-.cm-editor .cm-line.cm-md-h4,
-.cm-editor .cm-line.cm-md-h5,
-.cm-editor .cm-line.cm-md-h6 {
-  /* 「+」按钮也用这个变量定位,必须跟着实际的上留白走 */
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-heading-space-before, 1));
-  padding-top: var(--md-heading-pad);
-  padding-bottom: calc(var(--editor-body-size) * var(--md-heading-space-after, 1));
-}
-
-/*
- * 两个标题紧挨着(中间没有空行)时:
- *   · 上面那个的下留白多余 —— 下面那个的上留白已经把两者隔开;
- *   · 下面那个的上留白改用「标题之间」那一档,而不是普通的「标题上方」。
- * 类由 rules.ts 的 markHeadingEdges 打在行上。改 --md-heading-pad 就够了,
- * padding-top 引用的就是这个变量,行首「+」也跟着走。
- * 只处理"紧挨着"这一种;作者主动写了空行的地方仍按普通标题间距。
- */
-.cm-editor .cm-line.cm-md-h-tight-bottom {
-  padding-bottom: 0;
-}
-
-.cm-editor .cm-line.cm-md-h-tight-top {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-heading-space-between, 1));
-}
-
-/*
- * 标题紧挨着独占一行的图片时(设置「外观 → 块间距 → 图片上方/下方与标题」)。
- *
- * 图片那一侧有自己的档位,标题这一侧的留白清零,两者不叠加 —— 否则把图片间距
- * 拉到 0 档,标题还会留着自己的那一档。类由 rules.ts 的 styleImageGaps 打在
- * 标题行上;必须放在标题间距规则之后,同特异度时后者生效。
- */
-.cm-editor .cm-line.cm-md-h-tight-image-bottom {
-  padding-bottom: 0;
-}
-
-.cm-editor .cm-line.cm-md-h-tight-image-top {
-  /* 「+」按钮跟着 --md-heading-pad 定位,和 padding-top 一起归零 */
-  --md-heading-pad: 0px;
-}
-
-/*
- * 图片(独占一行)与上方 / 下方标题或正文的留白。
- *
- * 紧贴在一起时做在图片行自己的 padding 上;中间只剩一条结构空行时,把空行压到
- * 该档高度(cm-md-image-gap-blank-*)。两种写法同一个观感,和块间距一致。
- * 空行的规则放在标题规则之后:图片下方紧挨标题时,那条空行同时带着
- * cm-md-h-space-before(整行高),这里要把它按图片档收紧。
- */
-.cm-editor .cm-line.cm-md-image-gap-before-heading {
-  padding-top: var(--md-image-gap-before-heading);
-}
-
-.cm-editor .cm-line.cm-md-image-gap-before-body {
-  padding-top: var(--md-image-gap-before-body);
-}
-
-.cm-editor .cm-line.cm-md-image-gap-after-heading {
-  padding-bottom: var(--md-image-gap-after-heading);
-}
-
-.cm-editor .cm-line.cm-md-image-gap-after-body {
-  padding-bottom: var(--md-image-gap-after-body);
-}
-
-.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-heading {
-  --md-gap-height: var(--md-image-gap-before-heading);
-  line-height: var(--md-image-gap-before-heading);
-}
-
-.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-before-body {
-  --md-gap-height: var(--md-image-gap-before-body);
-  line-height: var(--md-image-gap-before-body);
-}
-
-.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-heading {
-  --md-gap-height: var(--md-image-gap-after-heading);
-  line-height: var(--md-image-gap-after-heading);
-}
-
-.cm-editor .cm-line.cm-md-block-gap.cm-md-image-gap-blank-after-body {
-  --md-gap-height: var(--md-image-gap-after-body);
-  line-height: var(--md-image-gap-after-body);
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-mermaid-code {
+  padding-top: 0;
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
 }
 
 .cm-md-link {
@@ -709,41 +818,12 @@
 }
 
 /*
- * 表格间距走两条路:
- *   · 结构空行存在时,空行按 cm-md-block-gap-table-before/after 排,
- *     表格 frame 这一侧归零 —— 不然同一道缝会算两次;
- *   · 紧贴标题时,标题自己的上 / 下留白说了算,frame 这一侧也归零;
- *   · 紧贴代码块 / 列表 / 引用 / 正文时,frame 的 padding 提供间距。
+ * 表格与上下的间距不走 frame:结构空行已经折叠,间距由宿主行上的配对类
+ * (cm-md-<上块>-table 的 padding-top)承担。这里把 frame 的上下 padding
+ * 归零,避免同一道缝算两次;左右 padding 仍用于放置控件。
  */
-.cm-md-table-host.cm-md-table-gap-line-top .cm-md-table-frame,
-.cm-md-table-host.cm-md-table-tight-heading-top .cm-md-table-frame {
-  padding-top: 0;
-}
-
-.cm-md-table-host.cm-md-table-gap-line-bottom .cm-md-table-frame,
-.cm-md-table-host.cm-md-table-tight-heading-bottom .cm-md-table-frame {
-  padding-bottom: 0;
-}
-
-/*
- * 邻居的 cm-md-gap-* 会把 padding 加在表格的宿主行 / 折叠行上:
- * 那些行的行高本来就是 0,padding 却会真的占版式空间。统一清零。
- * 必须放在 gap 规则之后(同特异度,后者生效)。
- */
-.cm-editor .cm-line.cm-md-table-host,
 .cm-editor .cm-line.cm-md-table-void {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.cm-md-table-host .cm-md-table-frame {
-  font-size: var(--editor-body-size);
-  line-height: normal;
-}
-
-/* 表格紧接在段内硬换行之后:行距本身就是间距,不再额外加 frame 顶部留白 */
-.cm-md-table-host.cm-md-table-tight-top .cm-md-table-frame {
-  padding-top: 0;
+  padding: 0;
 }
 
 /*
@@ -758,9 +838,8 @@
   display: inline-block;
   /* 自定义过列宽的表格铺满正文宽度(见 .cm-md-table-frame-sized) */
   box-sizing: border-box;
-  /* 表格与上下的间距:没有结构空行 / 紧贴标题时由这两段 padding 提供 */
-  padding: var(--md-table-gap-top, var(--md-table-gap-before, 12px)) 30px
-    var(--md-table-gap-bottom, var(--md-table-gap-after, 12px)) 24px;
+  /* 上下间距由宿主行的配对 padding 提供,这里只留左右 */
+  padding: 0 30px 0 24px;
   margin: 0 -30px 0 -24px;
   outline: none;
 }

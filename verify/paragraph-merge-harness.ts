@@ -335,11 +335,14 @@ async function main(): Promise<void> {
     const lines = await domLines()
     check('落盘:接缝处回车分出两段', src === '阿\n\n阿\n', JSON.stringify(src))
     check('光标落在新段行首', caret.line === 3 && caret.text === '阿', JSON.stringify(caret))
-    // 上面的正文 36px,所以段间距(结构空行)应当明显矮于一行
-    const bodyH = lines[0]?.height ?? 36
+    // 段与段的间距挂在结构空行上(cm-md-block-gap-body)。正文行已按段落边
+    // 裁切,不再用「比正文行矮」判断 —— 这条空行本身就是一个间距元素。
     check(
       'DOM:中间那条空行仍是收紧的段间距,不是整行空段落',
-      !!lines[1] && lines[1].text === '' && lines[1].height < bodyH - 8,
+      !!lines[1] &&
+        lines[1].text === '' &&
+        /cm-md-block-gap-body/.test(lines[1].cls) &&
+        !/cm-md-empty-paragraph/.test(lines[1].cls),
       dump(lines)
     )
     check(

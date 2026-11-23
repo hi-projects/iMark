@@ -95,40 +95,13 @@ export interface Settings {
   /** 代码块内按 Tab 插入的空格数(2 或 4) */
   codeIndentSize: CodeIndentSize
   /**
-   * 标题上方留白(档,1 档 = 正文字号)。设置面板「外观 → 标题间距」。
-   * 标题前面是正文时生效。
+   * 块与块之间的间距:有序配对 `<上块>-<下块>` → 档数(1 档 = 正文字号)。
+   *
+   * 结构空行在渲染时完全折叠,间距由下方块首行的 padding-top 承担;没出现的
+   * 配对按 1 档处理。块类型:body / heading / code / list / quote / image /
+   * table / math / mermaid。
    */
-  headingSpaceBefore: number
-  /** 标题下方留白(档):标题后面是正文时生效 */
-  headingSpaceAfter: number
-  /** 两个紧挨着的标题之间的留白(档):作用于下面那个标题的上方 */
-  headingSpaceBetween: number
-  /** 段间距:两段正文之间(空一行)的留白(档,1 档 = 正文字号)。设置面板「外观 → 样式」 */
-  bodySpaceBetween: number
-  /** 代码块上方留白(档,1 档 = 正文字号)。设置面板「外观 → 块间距」 */
-  codeSpaceBefore: number
-  /** 代码块下方留白(档):代码块后面是正文时生效 */
-  codeSpaceAfter: number
-  /** 列表上方留白(档):列表前面是正文时生效 */
-  listSpaceBefore: number
-  /** 列表下方留白(档):列表后面是正文时生效 */
-  listSpaceAfter: number
-  /** 引用上方留白(档):引用前面是正文时生效 */
-  quoteSpaceBefore: number
-  /** 引用下方留白(档):引用后面是正文时生效 */
-  quoteSpaceAfter: number
-  /** 表格上方留白(档,1 档 = 正文字号)。设置面板「外观 → 样式」 */
-  tableSpaceBefore: number
-  /** 表格下方留白(档) */
-  tableSpaceAfter: number
-  /** 图片上方紧挨标题时的留白(档,1 档 = 正文字号)。设置面板「外观 → 块间距」 */
-  imageSpaceBeforeHeading: number
-  /** 图片上方紧挨正文时的留白(档) */
-  imageSpaceBeforeBody: number
-  /** 图片下方紧挨标题时的留白(档) */
-  imageSpaceAfterHeading: number
-  /** 图片下方紧挨正文时的留白(档) */
-  imageSpaceAfterBody: number
+  pairGaps: Record<string, number>
   /** 最近打开的仓库列表(最新的在前) */
   vaults: string[]
   /**

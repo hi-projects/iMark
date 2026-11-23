@@ -74,38 +74,8 @@ interface AppState {
   lineSpace: number
   /** 代码块内 Tab 插入的空格数 */
   codeIndentSize: CodeIndentSize
-  /** 标题上方留白(档,× 正文字号) */
-  headingSpaceBefore: number
-  /** 标题下方留白(档) */
-  headingSpaceAfter: number
-  /** 两个紧挨着的标题之间的留白(档) */
-  headingSpaceBetween: number
-  /** 两段正文之间的留白(档,× 正文字号) */
-  bodySpaceBetween: number
-  /** 代码块上方留白(档,× 正文字号) */
-  codeSpaceBefore: number
-  /** 代码块下方留白(档) */
-  codeSpaceAfter: number
-  /** 列表上方留白(档) */
-  listSpaceBefore: number
-  /** 列表下方留白(档) */
-  listSpaceAfter: number
-  /** 引用上方留白(档) */
-  quoteSpaceBefore: number
-  /** 引用下方留白(档) */
-  quoteSpaceAfter: number
-  /** 表格上方留白(档,× 正文字号) */
-  tableSpaceBefore: number
-  /** 表格下方留白(档) */
-  tableSpaceAfter: number
-  /** 图片上方紧挨标题时的留白(档,× 正文字号) */
-  imageSpaceBeforeHeading: number
-  /** 图片上方紧挨正文时的留白(档) */
-  imageSpaceBeforeBody: number
-  /** 图片下方紧挨标题时的留白(档) */
-  imageSpaceAfterHeading: number
-  /** 图片下方紧挨正文时的留白(档) */
-  imageSpaceAfterBody: number
+  /** 块与块之间的配对间距(档,× 正文字号);key 为 `<上块>-<下块>` */
+  pairGaps: Record<string, number>
   /** 最近一次自动保存成功的时刻;null 表示不显示提示 */
   autoSavedAt: number | null
   /** 自动保存失败的说明(状态栏红字);成功后清掉 */
@@ -150,25 +120,10 @@ export const appStore = reactive<AppState>({
   autoSaveMode: 'off',
   autoSaveDelay: 1,
   lineWrapping: true,
-  editorFontSize: 14,
+  editorFontSize: 15,
   lineSpace: 1,
   codeIndentSize: 4,
-  headingSpaceBefore: 1,
-  headingSpaceAfter: 1,
-  headingSpaceBetween: 1,
-  bodySpaceBetween: 1,
-  codeSpaceBefore: 1,
-  codeSpaceAfter: 1,
-  listSpaceBefore: 1,
-  listSpaceAfter: 1,
-  quoteSpaceBefore: 1,
-  quoteSpaceAfter: 1,
-  tableSpaceBefore: 1.7,
-  tableSpaceAfter: 0.7,
-  imageSpaceBeforeHeading: 1,
-  imageSpaceBeforeBody: 1,
-  imageSpaceAfterHeading: 1,
-  imageSpaceAfterBody: 1,
+  pairGaps: {},
   autoSavedAt: null,
   autoSaveError: null,
   expandedDirs: new Set<string>(),

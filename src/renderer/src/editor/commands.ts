@@ -475,9 +475,20 @@ function startParagraphAfterBlock(view: EditorView, state: EditorState, line: Li
   const tail = state.doc.sliceString(line.to)
   const breaks = (tail.match(/\r\n|\r|\n/g) ?? []).length
   const needed = Math.max(0, 2 - breaks)
+  if (needed) {
+    view.dispatch({
+      changes: { from: line.to, insert: lb.repeat(needed) },
+      userEvent: 'input'
+    })
+  }
+  /*
+   * 选区单独设:把它和 changes 放在同一次 dispatch 里时,CM 会按**旧文档**
+   * 映射这个位置(旧长度 + needed 已越界),结果落到分隔空行上 —— 用户接着
+   * 打字就把分隔空行写成了新段落,公式和正文贴在一起,点一下还会位移。
+   * change 落完后再取 doc.length,才是最后那条空行的行首。
+   */
   view.dispatch({
-    changes: needed ? { from: line.to, insert: lb.repeat(needed) } : undefined,
-    selection: EditorSelection.cursor(state.doc.length + needed),
+    selection: EditorSelection.cursor(view.state.doc.length),
     scrollIntoView: true,
     userEvent: 'input',
     annotations: paragraphBreak.of(true)

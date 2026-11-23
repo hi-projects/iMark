@@ -29,16 +29,12 @@
 }
 
 /*
- * 行盒顶上留了结构间距(块与正文贴紧时那段 padding,见 editor.css 的
- * .cm-md-gap-*-after)后,按 top 定位的按钮会被顶到空白里,离正文越来越远。
- * 跟着下移同样的距离,让它继续贴着正文第一行。
+ * 行盒顶上的配对间距(padding-top)会按 top 定位的按钮顶到空白里:
+ * 跟着下移同样的距离,让它继续贴着这一行的文字。配对类在 editor.css 里
+ * 同时写了 --md-heading-pad,这里直接复用。
  */
-.cm-editor .cm-line.cm-md-gap-code-after .line-plus {
-  top: calc(var(--md-code-gap-after) + 0.15em);
-}
-
-.cm-editor .cm-line.cm-md-gap-list-after .line-plus {
-  top: calc(var(--md-list-gap-after) + 0.15em);
+.cm-editor .cm-line.cm-md-block-pair .line-plus {
+  top: calc(var(--md-heading-pad, 0px) + 0.15em);
 }
 
 /*
@@ -48,7 +44,7 @@
 .cm-editor
   .cm-line:is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)
   .line-plus {
-  top: calc(var(--md-heading-pad) + 0.15em);
+  top: calc(var(--md-heading-pad, 0px) + 0.15em);
 }
 
 .line-plus:hover {

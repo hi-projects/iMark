@@ -17,14 +17,6 @@ export const paragraphBreak = Annotation.define<boolean>()
 export const paragraphBreakAfter = Annotation.define<boolean>()
 
 /**
- * 点击文末空白新起的段落(见 build.ts 的 clickBelowDocEnd / openTailParagraph)。
- *
- * 文档里临时补出来的空行只在用户真输入时留下;光标一移开就撤回,
- * 但撤回前这一行也是「空段落」,得按整行留高,否则光标会落进收紧后的间距里。
- */
-export const paragraphClick = Annotation.define<boolean>()
-
-/**
  * 回车创建、还空着的段落行首位置(升序)。没有空段落时是空数组。
  *
  * 「回车 = 新段」在源码里补出来的新段是一条空行。光标停上去时靠
@@ -78,10 +70,7 @@ export const emptyParagraphsField = StateField.define<readonly number[]>({
           if (!/\S/.test(above.text)) add(above.from)
         }
       }
-    } else if (
-      tr.annotation(paragraphBreakAfter) === true ||
-      tr.annotation(paragraphClick) === true
-    ) {
+    } else if (tr.annotation(paragraphBreakAfter) === true) {
       const after = tr.state.selection
       if (after.ranges.length === 1 && after.main.empty) {
         const line = tr.state.doc.lineAt(after.main.head)
