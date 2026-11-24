@@ -934,7 +934,9 @@
   border-radius: 8px;
   background: var(--bg-editor);
   color: var(--text-primary);
-  font-family: var(--font-editor);
+  /* 与编辑器正文同一套字体栈(.cm-scroller 用的是 --font-text),中文回退
+     也走同一条路径 —— 预览和渲染的字形宽度 / 高度才对得上 */
+  font-family: var(--font-text);
   font-size: var(--editor-body-size, 16px);
   line-height: calc(1 + var(--editor-line-space, 1));
   overflow: hidden;
@@ -952,12 +954,15 @@
 }
 
 /*
- * 正文自身预览:抹掉两个样本首行上方 / 末行下方的半份行距,与编辑器里
- * 段与段相接一侧的处理一致(见 editor.css 的 cm-md-para-trim-*)。
- * 这样这条缝就只由「段间距」决定,而样本里两行之间仍按行间距排开 ——
- * 一眼能同时看到两个滑块各自管哪一段。
+ * 正文样本:抹掉首行上方 / 末行下方的半份行距,与编辑器里段落边界的处理
+ * 一致(见 editor.css 的 cm-md-para-trim-* / rules.ts 的 styleParagraphTrim)。
+ *
+ * 编辑器里段落面向任何顶层块(或文档边缘)的一侧都会裁掉这半份行距,所以
+ * 不论预览是「正文自身」还是「正文 ↔ 标题 / 代码 / …」,正文样本都要裁;
+ * 标题 / 代码等样本不裁 —— 它们的行盒不属于段落,编辑器里也保持原样。
+ * 这样预览里两个样本的文字距离才等于编辑器里的实际距离。
  */
-.spacing-preview[data-preview-mode='self'] .spacing-doc-sample[data-sample='body'] {
+.spacing-preview .spacing-doc-sample[data-sample='body'] {
   text-box-trim: trim-both;
 }
 

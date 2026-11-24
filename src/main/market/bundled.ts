@@ -43,6 +43,17 @@ interface BundledPackage {
  * 内置包清单。加新包 = 跑一次 `npm run plugins:build` 再把生成的
  * `builtin/<id>.imkpkg.json` 加进来。
  */
+/**
+ * 改名 / 拆分后遗留在用户数据目录里的旧内置扩展。
+ *
+ * quick-edit 在 50fef78 里改名为 advanced-edit,扩展 ID 也跟着换了
+ * (`imark.quick-edit` → `imark.advanced-edit`)。旧包不会被 BUNDLED 覆盖
+ * 或卸载,于是继续运行:行首「+」菜单里出现两个「表格」,表单和命令各走一套。
+ *
+ * 这里只清理**来源是 bundled** 的旧记录 —— 用户自己从市场装的同 ID 扩展不动。
+ */
+const LEGACY_BUNDLED_IDS = ['imark.quick-edit'] as const
+
 const BUNDLED: BundledPackage[] = [
   // 全新用户也开箱就有「+」:它不配置也能用
   { raw: advancedEditPackage, enable: true },
@@ -125,6 +136,17 @@ export function ensureBundledProvisioned(service: ExtensionService): Promise<voi
       } catch (err) {
         // 单个包失败不该拦着应用启动,也不该影响其它内置包
         console.error('[iMark] 内置扩展补装失败:', err)
+      }
+    }
+    // 先装好现在的包,再清改名前的旧包:中间失败也不会让用户两头都没有
+    for (const id of LEGACY_BUNDLED_IDS) {
+      try {
+        const existing = await service.getExtensionView(id)
+        if (!existing || existing.source !== 'bundled') continue
+        await service.uninstallExtension(id)
+        console.log(`[iMark] 已移除改名前的内置扩展 ${id}`)
+      } catch (err) {
+        console.error(`[iMark] 移除旧内置扩展 ${id} 失败:`, err)
       }
     }
   })().finally(() => {

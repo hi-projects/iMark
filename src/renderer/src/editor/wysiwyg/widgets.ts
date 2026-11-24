@@ -2513,7 +2513,27 @@ function bindTableEvents(state: TableDomState): void {
     const up = (ev: MouseEvent): void => {
       cleanup()
       if (moved) {
-        // 选区已经画好,把焦点交给 frame,接下来按 Delete 就能清空这些格
+        const sel = state.selection
+        /*
+         * 只拖选了一格**空格子**:直接进入编辑,而不是停在结构选区。
+         *
+         * frame 本身不可编辑、只拿到焦点时,输入法会把组字写进最近的
+         * contenteditable 祖先(`.cm-content`),也就是表格背后的隐藏源码:
+         * 字进了文档、格子里却没有。空格子没有可复制的内容,选区在这里没有
+         * 意义;直接进编辑,中文输入才有落点。有内容的格子仍保留选区,
+         * 复制 / 粘贴整格照旧可用;多格选区也保持原样(整块同步输入)。
+         */
+        if (
+          sel?.kind === 'range' &&
+          sel.rowFrom === sel.rowTo &&
+          sel.colFrom === sel.colTo &&
+          !(rowOf(state.model, sel.rowFrom)?.cells[sel.colFrom]?.text ?? '')
+        ) {
+          clearSelection(state)
+          startEdit(state, sel.rowFrom, sel.colFrom, ev.clientX, ev.clientY)
+          return
+        }
+        // 其余情况:把焦点交给 frame,接下来按 Delete 就能清空这些格
         state.frame.focus({ preventScroll: true })
         return
       }

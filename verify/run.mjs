@@ -60,6 +60,7 @@ if (!name) {
         'heading-sizes',
         'block-spacing',
         'spacing-ring',
+        'spacing-preview-match',
         'heading-spacing',
         'inline-code-selection',
         'autospace',

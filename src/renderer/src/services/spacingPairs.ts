@@ -62,17 +62,17 @@ export interface PairView {
 }
 
 function pairRow(top: BlockKind, bottom: BlockKind): SpaceRow {
+  const topLabel = BLOCK_LABELS[top]
+  const bottomLabel = BLOCK_LABELS[bottom]
   return {
     field: pairKey(top, bottom),
     target: { kind: 'pair', key: pairKey(top, bottom) },
-    label:
-      top === bottom
-        ? `${BLOCK_LABELS[top]}与${BLOCK_LABELS[bottom]}`
-        : `${BLOCK_LABELS[top]}在上 · ${BLOCK_LABELS[bottom]}在下`,
+    // 两块配对统一叫「xx 与 yy」；方向放在说明里,标题不再写「在上 / 在下」。
+    label: `${topLabel}与${bottomLabel}`,
     desc:
       top === bottom
-        ? `两个${BLOCK_LABELS[top]}之间的留白(结构空行不占高度,间距由下面那一个承担)。`
-        : `上面是${BLOCK_LABELS[top]}、下面是${BLOCK_LABELS[bottom]}时的留白(结构空行不占高度,间距由下面的块承担)。`
+        ? `两个${topLabel}之间的留白(结构空行不占高度,间距由下面那一个承担)。`
+        : `${topLabel}与${bottomLabel}间距离，其中${topLabel}在上，${bottomLabel}在下`
   }
 }
 
@@ -93,14 +93,21 @@ function selfView(kind: BlockKind): PairView {
     mode: 'self' as const
   }
   if (kind === 'body') {
+    // 正文自身这一组就是用户口中的「段间距」。两行说明保持一句话:
+    // 段与段之间(空行隔开)看第一根,同一段里的换行看第二根。
     return {
       ...base,
       groups: [
         {
           direction: 'self',
-          title: '正文与正文',
-          desc: '段间距管空行隔开的两段；行间距管同一段里的换行。',
-          rows: [pairRow('body', 'body'), lineRow()]
+          title: '段间距',
+          rows: [
+            { ...pairRow('body', 'body'), label: '段间距', desc: '段落间距离' },
+            {
+              ...lineRow(),
+              desc: '行（段内换行/软换行）间距离'
+            }
+          ]
         }
       ]
     }

@@ -6,10 +6,12 @@
  *
  * 行高的模型是 行盒 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分
  * 一半。段落首行 / 末行也会分到这两半,于是调行间距就把段间距一起推大。
- * 现在从段间距空行的高度里扣掉这一份,断言:
+ * 结构空行现在完全折叠,段落面向另一段正文的一侧用 text-box-trim 裁掉这
+ * 半份行距(见 rules.ts 的 styleParagraphTrim 与 editor.css 的
+ * cm-md-para-trim-*),断言:
  *   · 0.6 / 1.0 / 1.4 档下,两段正文的文字距离保持不变;
- *   · 段间距空行的高度随之反向变化(行间距大 → 空行矮);
- *   · 默认 1 档时空行高度仍是「段间距」那一档(不改变现有观感);
+ *   · 两段之间的距离就是配对间距(默认 1 档 = 16px);
+ *   · 结构空行收成零高度,连排空行不会叠出更多间距;
  *   · 同一段内行与行之间的距离仍然随行间距变大(功能没丢);
  *   · 「段间距」滑块照常改变段与段的距离。
  *
@@ -47,7 +49,7 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
-/** 两段正文 + 一条段间距空行 */
+/** 两段正文,中间一条结构空行(渲染时折叠成配对间距) */
 const PARAS = '第一段正文。\n\n第二段正文。\n\n第三段正文。\n'
 /** 同一个段落里的三行(源码行首尾相接,没有空行) */
 const LINES = '同一段第一行\n同一段第二行\n同一段第三行\n'
@@ -55,13 +57,11 @@ const LINES = '同一段第一行\n同一段第二行\n同一段第三行\n'
 interface Metrics {
   /** 相邻依次两段文字之间的空白:上一段文字底 → 下一段文字顶 */
   gaps: number[]
-  /** 每条段间距空行的实际高度 */
-  gapHeights: number[]
   /** 同一段内相邻两行文字的行距(上一行文字顶 → 下一行文字顶) */
   advances: number[]
   /** 文字字形盒的高度(随字体固定,不随行高变) */
   lineHeights: number[]
-  /** 每一行行盒的高度(= (1+行间距档)×字号) */
+  /** 每一行行盒的高度(= (1+行间距档)×字号,段落首尾行按边裁切) */
   boxHeights: number[]
 }
 
@@ -160,11 +160,11 @@ async function main(): Promise<void> {
   }
 
   /** 改根元素上的档位变量(与设置面板写的是同一组变量) */
-  async function setVars(lineSpace: number, bodyBetween: number): Promise<void> {
+  async function setVars(lineSpace: number, bodyGap: number): Promise<void> {
     await evalJs(`(() => {
       const root = document.documentElement
       root.style.setProperty('--editor-line-space', '${lineSpace}')
-      root.style.setProperty('--md-body-space-between', '${bodyBetween}')
+      root.style.setProperty('--md-gap-body-body', '${bodyGap}')
       return true
     })()`)
     await sleep(250)
@@ -189,12 +189,9 @@ async function main(): Promise<void> {
         for (let i = 1; i < textLines.length; i++) {
           advances.push(Math.round((textLines[i].r.top - textLines[i - 1].r.top) * 100) / 100)
         }
-        const gapHeights = lines
-          .filter(el => el.classList.contains('cm-md-block-gap-body'))
-          .map(el => Math.round(el.getBoundingClientRect().height * 100) / 100)
         const lineHeights = textLines.map(t => Math.round(t.r.height * 100) / 100)
         const boxHeights = textLines.map(t => Math.round(t.el.getBoundingClientRect().height * 100) / 100)
-        return { gaps, gapHeights, advances, lineHeights, boxHeights }
+        return { gaps, advances, lineHeights, boxHeights }
       })()`)
 
   const near = (a: number, b: number, tol = 1.5): boolean => Math.abs(a - b) <= tol
@@ -208,11 +205,10 @@ async function main(): Promise<void> {
   const base = await metrics()
   console.log(`     [1.0 档] ${fmt(base)}`)
   check(
-    '默认 1 档:段间距空行 = 1 档(16px)',
-    base.gapHeights.every(h => near(h, 16)),
+    '默认 1 档:两段文字之间的距离 = 1 档(16px)',
+    base.gaps.every(g => near(g, 16)),
     fmt(base)
   )
-  check('默认 1 档:两段文字之间有留白', base.gaps.length === 2 && base.gaps.every(g => g > 0), fmt(base))
 
   await setVars(0.6, 1)
   const small = await metrics()
@@ -223,9 +219,9 @@ async function main(): Promise<void> {
     fmt({ base: base.gaps, small: small.gaps })
   )
   check(
-    '0.6 档:段间距空行高度不变(行间距不再参与段距)',
-    small.gapHeights.every((h, i) => near(h, base.gapHeights[i])),
-    fmt({ base: base.gapHeights, small: small.gapHeights })
+    '0.6 档:段与段之间仍只有 1 档(16px)',
+    small.gaps.every(g => near(g, 16)),
+    fmt(small.gaps)
   )
 
   await setVars(1.4, 1)
@@ -237,9 +233,9 @@ async function main(): Promise<void> {
     fmt({ base: base.gaps, large: large.gaps })
   )
   check(
-    '1.4 档:段间距空行高度不变',
-    large.gapHeights.every((h, i) => near(h, base.gapHeights[i])),
-    fmt({ base: base.gapHeights, large: large.gapHeights })
+    '1.4 档:段与段之间仍只有 1 档(16px)',
+    large.gaps.every(g => near(g, 16)),
+    fmt(large.gaps)
   )
 
   // ---------- 2. 段间距滑块仍能拉开两段 ----------
@@ -249,9 +245,9 @@ async function main(): Promise<void> {
   const body2 = await metrics()
   console.log(`     [段间距 2 档] ${fmt(body2)}`)
   check(
-    '段间距 2 档:空行高度翻倍(32px)',
-    body2.gapHeights.every(h => near(h, 32)),
-    fmt(body2.gapHeights)
+    '段间距 2 档:两段文字之间的距离 = 2 档(32px)',
+    body2.gaps.every(g => near(g, 32)),
+    fmt(body2.gaps)
   )
   check(
     '段间距 2 档:两段文字之间的距离相应变大',
@@ -299,9 +295,9 @@ async function main(): Promise<void> {
     fmt({ tight: blanksTight.gaps, loose: blanksLoose.gaps })
   )
   check(
-    '三条空行仍是三条间距(条数没有被合并掉)',
-    blanksTight.gapHeights.length === 3 && blanksTight.gapHeights.every(h => h > 0),
-    fmt(blanksTight.gapHeights)
+    '连排空行折叠成配对间距本身(16px)',
+    near(blanksTight.gaps[0], 16),
+    fmt(blanksTight.gaps)
   )
 
   console.log('\n【5】回车建出的空段落:两段文字的距离不随行间距变化')

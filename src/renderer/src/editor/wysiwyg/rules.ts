@@ -268,37 +268,39 @@ function addLineRange(ctx: RuleContext, from: number, to: number, cls: string): 
 }
 
 /**
- * 段与段之间:裁掉段落首行上侧 / 末行下侧行盒里的半份行距。
+ * 段落首行上侧 / 末行下侧:裁掉行盒里的半份行距。
  *
- * 行盒高 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分一半。两段
- * 相邻时,上一段末行的下半份 + 下一段首行的上半份会把两段的距离一起加上去——
- * 行间距越大,段与段拉得越开,「段间距」就管不住它了。
+ * 行盒高 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分一半。段落
+ * 的边界上,这半份行距会叠在配对间距(padding-top)外面 —— 行间距越大,
+ * 段与段、段落与标题 / 代码 / 列表 / 引用 / 图片之间的距离都被一起拉大,
+ * 配对间距就管不住那条缝了。
  *
- * 把面向另一段正文的那一侧用 text-box-trim 裁到文字边(行盒本身变矮,
- * CodeMirror 量到的就是裁后的高度,点击 / 光标位置不受影响),段与段之间
- * 就只剩段间距那条空行。文档最前面一段也裁上侧:它上面没有别的块,裁掉后
- * 拖动行间距时整篇正文不会上下滑。
+ * 所以段落面向另一个**顶层块**(标题、代码、列表、引用、图片、表格、公式、
+ * 图表)或文档边缘的一侧,一律用 text-box-trim 裁到文字边(行盒本身变矮,
+ * CodeMirror 量到的就是裁后的高度,点击 / 光标位置不受影响)。边界距离
+ * 从此只由配对间距决定,与行间距无关。文档最前面一段也裁上侧:它上面
+ * 没有别的块,裁掉后拖动行间距时整篇正文不会上下滑。
  *
- * 挨着标题 / 代码 / 列表 / 引用 / 图片的那一侧不裁:那些块各有自己的间距
- * 档位,保持原有排法;独占一行的图片由图片间距管,同样跳过。
+ * 只裁段落自己这一侧:标题 / 代码块的行高是固定档,不随行间距变;列表 /
+ * 引用的行盒留白属于容器内部。段内的其余行不裁,行间距照常管段内节奏。
+ *
+ * 段落自身是独占一行的图片时不裁 —— 那一行由图片间距管。
  */
 function styleParagraphTrim(ctx: RuleContext, para: SyntaxNode): void {
   if (para.parent?.name !== 'Document') return
   const first = ctx.doc.lineAt(para.from)
   const last = ctx.doc.lineAt(para.to)
-  if (!isImageOnlyLineText(first.text)) {
-    const prev = para.prevSibling
-    const prevIsBody =
-      !prev ||
-      (prev.name === 'Paragraph' && !isImageOnlyLineText(ctx.doc.lineAt(prev.to).text))
-    if (prevIsBody) addLine(ctx, first.from, 'cm-md-para-trim-top')
-  }
+  // 文档边缘没有「配对」,但边界留白同样不该由行间距提供,照样裁。
+  const prev = para.prevSibling
   const next = para.nextSibling
-  // 文末段落也裁下侧:它下面没有别的块,裁掉与「回车在文末起新段」保持一致 ——
-  // 新段第一条空行的行盒与它上面的段落不再多出一份行距,输入第一个字时不跳。
-  const nextIsBody =
-    !next || (next.name === 'Paragraph' && !isImageOnlyLineText(ctx.doc.lineAt(next.from).text))
-  if (!isImageOnlyLineText(last.text) && nextIsBody) {
+  // 下一个块不参与配对间距(未知块,如 HTML 块)时留原样:裁掉这半份行距
+  // 会让两段之间只剩一条空行,不认识那种块的人也没法调。
+  const prevPaired = !prev || blockKindOf(ctx, prev) !== null
+  const nextPaired = !next || blockKindOf(ctx, next) !== null
+  if (prevPaired && !isImageOnlyLineText(first.text)) {
+    addLine(ctx, first.from, 'cm-md-para-trim-top')
+  }
+  if (nextPaired && !isImageOnlyLineText(last.text)) {
     addLine(ctx, last.from, 'cm-md-para-trim-bottom')
   }
 }
@@ -377,7 +379,8 @@ function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
  * 补出连排空行 —— 新段先占一条空段落,上下各有一条分隔。不收的话,按一次
  * 回车屏幕上就连出两三行空白;收完正好是「一条空行 + 段间距」。
  *
- * 光标所在的那条不收(得能看见光标、接着打字);已经有行装饰的空行也不动
+ * 光标能停进去的那条不折叠(得能看见光标、接着打字),但会预先挂上正文
+ * 段落的 trim 类,输入第一个字时行盒高度不变;已经有行装饰的空行也不动
  * (代码块里的空行是代码内容,块间距行已经有自己的高度)。
  */
 export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: number) => boolean): void {
@@ -386,13 +389,21 @@ export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: nu
   for (let number = first; number <= last; number++) {
     const line = ctx.doc.line(number)
     if (!isBlankLine(line.text)) continue
-    // 文末空行是新段的落点:留着可编辑
-    if (number === ctx.doc.lines) continue
-    // 容器里的空行(代码块 / 引用 / 列表内部)是内容,已经有自己的行装饰;
-    // 回车建出的空段落是用户要编辑的一行,也不能折
+    // 容器里的空行(代码块 / 引用 / 列表内部)是内容,已经有自己的行装饰
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
+    // 回车建出的空段落已经由 build 的 trimForEmpty 按邻居挂好裁切类
     if (keptEmptyParagraph(ctx, line.from)) continue
+    /*
+     * 文末那一条空行也是新段的落点:先按正文段落挂好 trim 类 —— 空行本身
+     * 不是语法树里的 Paragraph,输入第一个字后才会挂上;不预先挂的话,行盒会
+     * 从 (1+行间距)×字号 突然缩到文字高,光标和整行往上跳一下(用户输入
+     * 「，」时看到的就是这个)。
+     */
+    if (number === ctx.doc.lines) {
+      addLine(ctx, line.from, 'cm-md-para-trim-top cm-md-para-trim-bottom')
+      continue
+    }
     // 结构空行:源码里保留,视觉上完全折叠 —— 间距由下方块的配对 padding 承担
     addLine(ctx, line.from, 'cm-md-structural-blank')
   }

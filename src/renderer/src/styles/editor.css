@@ -712,6 +712,31 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-mermaid, 1));
 }
 
+/*
+ * 段落首行上侧 / 末行下侧面向另一个顶层块时,把行盒里的半份行距裁掉
+ * (类由 rules.ts 的 styleParagraphTrim 挂上,文首 / 文末也算)。
+ *
+ * 行盒高 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分一半。
+ * 两段相邻时,上一段末行的下半份 + 下一段首行的上半份会叠在配对间距的
+ * padding-top 外面 —— 行间距越大,段与段拉得越开,「段间距」就管不住它了。
+ * 段落挨着标题 / 代码 / 列表 / 引用 / 图片时同理:那半份行距也会把正文与
+ * 块之间的距离一起撑大。所以段落面向任何顶层块的一侧都裁,边界距离只由
+ * 配对间距决定。预览里的正文样本用同一套 text-box-trim
+ * (见 settings.css 的 spacing-doc-sample),两边量出来的缝才会一样。
+ */
+.cm-editor .cm-line.cm-md-para-trim-top {
+  text-box-trim: trim-start;
+}
+
+.cm-editor .cm-line.cm-md-para-trim-bottom {
+  text-box-trim: trim-end;
+}
+
+/* 单行段落两侧都面向顶层块:上下都裁 */
+.cm-editor .cm-line.cm-md-para-trim-top.cm-md-para-trim-bottom {
+  text-box-trim: trim-both;
+}
+
 .cm-editor .cm-line.cm-md-pair-bottom.cm-md-body-code {
   padding-top: 0;
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
@@ -852,6 +877,11 @@
   font-family: var(--font-text);
   font-size: 0.95em;
   line-height: 1.45;
+  /*
+   * 每行的最小高度:单行 / 空格子也至少这么高,表格不会被压成一条线。
+   * 按正文字号计,改字号时同比例缩放;多行内容照常自己长高。
+   */
+  --md-table-row-min: calc(var(--editor-body-size) * 2.4);
 }
 
 /*
@@ -880,6 +910,10 @@
  * 带上下标的公式尤其明显,贴边时整张表显得局促。上下各 8px 撑开行高,
  * 仍比段落紧凑。列宽只由内容决定,空格子会挤成窄条,min-width
  * 同时给空格子一块可点击的区域 —— 「+」插出来的新表整张都是空格子。
+ *
+ * height 在这里是**最小高度**语义(表格单元格的规范行为):单行内容和
+ * 空格子也至少有一行文字 + 一点余量,多行 / 高公式照常撑开。border-box
+ * 让我们量到的就是这个下限本身;min-height 对 table-cell 不生效,不能替代。
  */
 .cm-md-table-widget th,
 .cm-md-table-widget td {
@@ -888,6 +922,8 @@
   min-width: 110px;
   vertical-align: top;
   cursor: text;
+  box-sizing: border-box;
+  height: var(--md-table-row-min);
 }
 
 /* 单元格里的链接不抢点击:点哪儿都该进编辑态,而不是跳转 */
@@ -909,10 +945,10 @@
 /*
  * 空格子撑不起行高:里面一个行盒都没有,高度只剩上下 padding + 边框,
  * 整张表看上去是被压扁的 —— 而「+」菜单插出来的表本来就是全空的。
- * 塞一个零宽空格进去,只为把行盒立起来:它不占宽度、不出现在 textContent 里
- * (`::after` 是伪元素,不在 DOM 树上),所以对渲染和取值都没有副作用。
- * 不写死 height 或 min-height:两者都得把 padding 和盒模型算进来才能对上,
- * 而这里量出来的正好就是「有字的那一格有多高」,字体、字号、内边距怎么改都对得上。
+ * 塞一个零宽空格进去,把行盒立起来,让空格子的基线排法与有字的格子一致
+ * (行高下限已由单元格的 height 保证,这里是为了排版一致而不是撑高度):
+ * 它不占宽度、不出现在 textContent 里(`::after` 是伪元素,不在 DOM 树上),
+ * 所以对渲染和取值都没有副作用。
  * 只认 :empty —— 单元格文本先 trim 过再渲染,所以空白格子也是真的空。
  * 已填充的格子绝不能加,零宽空格是合法断行点,会凭空多出一个空行。
  */

@@ -778,6 +778,22 @@ export class WysiwygPlugin {
 
   onCompositionEnd(): void {
     this.composing = false
+    /*
+     * 组合结束本身不产生事务:上屏文字如果在组合态里已经 remap 过,之后就可能
+     * 再没有任何 update —— 装饰(表格 / 公式 widget)会停在旧模型上,表现为
+     * 「源码里有字,页面不显示」。
+     *
+     * 补一次空事务,让 update() 走完整重建。放到下一个任务:先让 CodeMirror
+     * 把 compositionend 之后的上屏 / 选区收尾做完,再按最终文档重画。
+     */
+    window.setTimeout(() => {
+      this.pendingRetry = true
+      try {
+        this.view.dispatch({})
+      } catch {
+        /* 视图已销毁 */
+      }
+    }, 0)
   }
 
   /** 编辑器失焦:组合不可能还活着,把可能丢失的 compositionend 补上 */
@@ -956,7 +972,15 @@ export class WysiwygPlugin {
 
     if (conflicts.length > 0) addConflictDecorations(decos, atomic, state.doc, conflicts)
 
-    for (const { from, to } of view.visibleRanges) {
+    /*
+     * 空文档的 visibleRanges 是空数组 —— 它不是"不需要渲染",而是压根没有
+     * 可渲染区间。若因此跳过整个循环,那一行空格子既拿不到 trim 类,也拿不到
+     * 其它行装饰;用户敲下第一个字后区间才出现,行盒从 (1+行间距) 缩到文字高,
+     * 光标与整行往上跳一下。这里给空文档补一个 0..0 的区间。
+     */
+    const ranges =
+      view.visibleRanges.length > 0 ? view.visibleRanges : [{ from: 0, to: 0 }]
+    for (const { from, to } of ranges) {
       // 惰性行内解析:视口未解析完时先有界强解析,仍不可用则跳过并安排重试
       if (!syntaxTreeAvailable(state, to)) {
         ensureSyntaxTree(state, to, 50)
