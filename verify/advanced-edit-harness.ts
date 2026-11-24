@@ -417,6 +417,124 @@ async function main(): Promise<void> {
   check('表从光标行的下一行开始', got[1] === blank(2), JSON.stringify(got.slice(0, 3)))
   check('分隔行用 `:---:`（默认居中）', got.includes(sep(2)))
 
+  // ---------- 4b. 空文档插入:表格是最后内容 → 自动补新段 ----------
+
+  /*
+   * 用户路径:空文档 → 新建表格。表格后面没有任何内容,预期在表格下方
+   * 自动留出一条新段(与表格之间隔一条结构空行),光标直接落在新段上,
+   * 而不是钻进第一个表头单元格;接着输入的文字落进这条新段。
+   */
+  console.log('\n【4b】空文档新建表格 → 表格后自动补新段,光标落在新段')
+  check('重新载入空文档', await loadDoc(''))
+  check('打开「表格」对话框', await openMenuAndPick('表格'))
+  check('填 3 行 2 列', await setNumbers(3, 2))
+  check('点「插入」', await click('.line-dialog-primary'))
+  check('对话框关掉了', await waitFor(`!document.querySelector('.line-dialog')`, 4000))
+  await sleep(900)
+
+  const editorState = (): Promise<{
+    doc: string
+    selLine: number
+    lineCount: number
+    selText: string
+    cellEditing: boolean
+    activeInWidget: boolean
+  }> =>
+    evalJs(`
+      (() => {
+        const v = document.querySelector('.cm-content').cmTile.root.view
+        const head = v.state.selection.main.head
+        const line = v.state.doc.lineAt(head)
+        const active = document.activeElement
+        return {
+          doc: v.state.doc.toString(),
+          selLine: line.number,
+          lineCount: v.state.doc.lines,
+          selText: line.text,
+          cellEditing: !!document.querySelector('.cm-md-table-cell-editing'),
+          activeInWidget: !!(active && active.closest && active.closest('.cm-md-table-widget'))
+        }
+      })()`)
+  const insertedState = await editorState()
+  check(
+    '没有单元格进入编辑态',
+    !insertedState.cellEditing && !insertedState.activeInWidget,
+    JSON.stringify(insertedState)
+  )
+  check(
+    '光标落在表格后的新段(最后一行,空)',
+    insertedState.selLine === insertedState.lineCount && insertedState.selText === '',
+    JSON.stringify(insertedState)
+  )
+  check(
+    '源码里表格后有一条结构空行 + 新段',
+    insertedState.doc.endsWith('\n\n') && /^\|/.test(insertedState.doc.split('\n').at(-3) ?? ''),
+    JSON.stringify(insertedState.doc)
+  )
+  /*
+   * 表格行上不能再画行首「+」:那个点装饰和表格宿主行的 replace 同处一个
+   * 位置,光标一离开表内就会把它删掉,CM 会连整行一起重建 —— 正在编辑的
+   * 单元格跟着销毁(见 lineMenu.ts 的 NO_PLUS_NODES)。
+   */
+  const plusInfo = await evalJs<{ count: number; onTable: number }>(`
+    (() => {
+      const plus = [...document.querySelectorAll('.line-plus')]
+      const isTableLine = el => {
+        const line = el.closest('.cm-line')
+        const cls = line ? line.className.split(/\\s+/) : []
+        return cls.includes('cm-md-table-host') || cls.includes('cm-md-table-void')
+      }
+      return { count: plus.length, onTable: plus.filter(isTableLine).length }
+    })()`)
+  check('表格行上不画行首「+」', plusInfo.onTable === 0, JSON.stringify(plusInfo))
+
+  // 直接输入:文字落进新段,而不是表格里
+  await focusEditor()
+  await wc.insertText('啊')
+  await sleep(400)
+  const afterType = await editorState()
+  check(
+    '输入的文字落进新段',
+    afterType.doc.endsWith('\n\n啊') && afterType.selText === '啊',
+    JSON.stringify(afterType)
+  )
+  const tableText = await evalJs<string>(`
+    (() => {
+      const t = document.querySelector('.cm-content .cm-md-table-widget table')
+      return t ? t.textContent : ''
+    })()`)
+  check('表格里没有被写进文字', !tableText.includes('啊'), JSON.stringify(tableText))
+
+  const afterSave = await readSource()
+  check(
+    '磁盘源码:表格 + 空行 + 新段',
+    afterSave.length >= 6 &&
+      afterSave[0].startsWith('|') &&
+      afterSave.at(-2) === '' &&
+      afterSave.at(-1) === '啊',
+    JSON.stringify(afterSave)
+  )
+
+  /*
+   * 在新段行首回车:只该多出一条空段落。字段刚记下的空行和「连排空行还原」
+   * 不能各算一次,否则屏上出现两条空段落,看起来像多空了一整段。
+   */
+  await key('Home')
+  await key('Enter')
+  await sleep(450)
+  const stack = await evalJs<{ doc: string; emptyParas: number; caretText: string }>(`
+    (() => {
+      const v = document.querySelector('.cm-content').cmTile.root.view
+      return {
+        doc: v.state.doc.toString(),
+        emptyParas: document.querySelectorAll('.cm-content .cm-line.cm-md-empty-paragraph').length,
+        caretText: v.state.doc.lineAt(v.state.selection.main.head).text
+      }
+    })()`)
+  console.log(`     [行首回车] ${JSON.stringify(stack)}`)
+  check('行首回车只多出一条空段落', stack.emptyParas === 1, JSON.stringify(stack))
+  check('回车后光标仍停在原段里', stack.caretText === '啊', JSON.stringify(stack))
+
   // ---------- 5. 取消不产生改动 ----------
 
   console.log('\n【5】Esc 取消对话框：文档一个字符都不动')
@@ -445,23 +563,37 @@ async function main(): Promise<void> {
   check('点「插入」', await click('.line-dialog-primary'))
   check('对话框关掉了', await waitFor(`!document.querySelector('.line-dialog')`, 4000))
   await sleep(900)
-  const tableGap = await evalJs<{ cls: string; h: number; frameTop: number; firstBottom: number }>(`
+  const tableGap = await evalJs<{
+    cls: string
+    h: number
+    hostCls: string
+    hostPadTop: number
+    frameTop: number
+    firstBottom: number
+  }>(`
     (() => {
       const lines = [...document.querySelectorAll('.cm-content .cm-line')]
       const gap = lines[1]
       const first = lines[0]
+      const host = document.querySelector('.cm-md-table-host')
       const frame = document.querySelector('.cm-md-table-frame')
       const fr = first?.getBoundingClientRect()
       return {
         cls: gap?.className ?? '',
         h: gap ? Math.round(gap.getBoundingClientRect().height) : -1,
+        hostCls: host?.className ?? '',
+        hostPadTop: host ? parseFloat(getComputedStyle(host).paddingTop) : -1,
         frameTop: frame ? Math.round(frame.getBoundingClientRect().top) : -1,
         firstBottom: fr ? Math.round(fr.bottom) : -1
       }
     })()`)
   check(
-    '正文与表格之间按「表格上方」留白(结构空行不再压成零高)',
-    /cm-md-block-gap-table-before/.test(tableGap.cls) && tableGap.h > 0,
+    '正文与表格之间:结构空行折叠为 0 高,间距由表格宿主行的配对 padding 承担',
+    /cm-md-structural-blank/.test(tableGap.cls) &&
+      tableGap.h === 0 &&
+      /cm-md-body-table/.test(tableGap.hostCls) &&
+      tableGap.hostPadTop > 0 &&
+      tableGap.frameTop > tableGap.firstBottom,
     JSON.stringify(tableGap)
   )
   const afterInsert = await readSource()

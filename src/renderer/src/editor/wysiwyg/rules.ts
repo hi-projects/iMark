@@ -77,6 +77,12 @@ export interface RuleContext {
    * 邻居行不一定是正在处理的节点,只能回问一次树。
    */
   blockAt(pos: number): string | null
+  /**
+   * 某一位置所在最外层块的配对类型(见 blockKindOf);不是参与配对的块时为
+   * null。用于按**行**判断邻居 —— 待定围栏这类节点不在自己的装饰规则里,
+   * 但要跟普通正文一样做边界裁切。
+   */
+  blockKindAt(pos: number): BlockKind | null
 }
 
 // ---------- 基础 emit 工具 ----------
@@ -126,6 +132,22 @@ function isLoneDashSetext(ctx: RuleContext, heading: SyntaxNode): boolean {
 function isListDash(ctx: RuleContext, mark: SyntaxNode): boolean {
   const line = ctx.doc.lineAt(mark.from)
   return /^[ \t]+$/.test(ctx.doc.sliceString(mark.to, line.to))
+}
+
+/**
+ * 只敲了 `#` / `##` …、还没补空格的 ATX 标题行。
+ *
+ * CommonMark 把行尾直接结束的 `#` 也解析成标题(内容为空),但编辑时一敲 `#`
+ * 整行就跳成标题版式太突兀 —— 和「> 」引用、单横线列表同一套做法:等补上
+ * 空格(或直接跟文字,那时解析器本来就给正文)再切换。只挡纯 `#`
+ * (`^ {0,3}#{1,6}$`):`# 标题` 已经有空格,照常按标题渲染。
+ */
+function isPendingHeading(ctx: RuleContext, node: SyntaxNode): boolean {
+  if (!node.name.startsWith('ATXHeading')) return false
+  // 从节点自身的位置往后看:引用 / 列表里的 `> #`、`- #` 也只看 # 这一段,
+  // 不带容器前缀。节点后面一旦有空白,说明空格已经敲下去了。
+  const line = ctx.doc.lineAt(node.from)
+  return /^ {0,3}#{1,6}$/.test(line.text.slice(node.from - line.from))
 }
 
 /**
@@ -228,7 +250,7 @@ function outerBlockquote(node: SyntaxNode): SyntaxNode | null {
  * 返回的行同时是「引用下方间距」的落点:紧跟着的懒续行(现在按正文渲染)
  * 才是间距该出现的地方。
  */
-function styleQuotedLines(ctx: RuleContext, quote: SyntaxNode): Line | null {
+function quotedLines(ctx: RuleContext, quote: SyntaxNode): Line[] {
   const lines = new Map<number, Line>()
   const visit = (node: SyntaxNode): void => {
     if (node.name === 'QuoteMark' && nearestBlockquote(node) === quote) {
@@ -239,9 +261,15 @@ function styleQuotedLines(ctx: RuleContext, quote: SyntaxNode): Line | null {
     for (let child = node.firstChild; child; child = child.nextSibling) visit(child)
   }
   visit(quote)
+  return [...lines.values()].sort((a, b) => a.number - b.number)
+}
+
+function styleQuotedLines(ctx: RuleContext, quote: SyntaxNode): Line | null {
   let last: Line | null = null
-  for (const line of [...lines.values()].sort((a, b) => a.number - b.number)) {
+  for (const line of quotedLines(ctx, quote)) {
     addLine(ctx, line.from, 'cm-md-quote')
+    // 引用块的首 / 末行按正文段落裁边:行盒与敲 `>` 之前一致,块外的配对间距才不会被半份行距撑大
+    trimParagraphEdge(ctx, line)
     last = line
   }
   return last
@@ -293,10 +321,21 @@ function styleParagraphTrim(ctx: RuleContext, para: SyntaxNode): void {
   // 文档边缘没有「配对」,但边界留白同样不该由行间距提供,照样裁。
   const prev = para.prevSibling
   const next = para.nextSibling
+  /*
+   * 下一块是「还没有回车补全、且紧贴本段末行」的待定围栏时,它其实还是本段
+   * 的续行:不能按独立块给它裁下侧,否则敲第三个反引号的那一瞬间本段末行
+   * 会矮半档,围栏行跟着往上跳。
+   */
+  const nextIsPendingContinuation =
+    !!next &&
+    ((next.name === 'FencedCode' && isPendingFence(ctx, next)) ||
+      (next.name === 'MathBlock' && isPendingMathFence(ctx, next))) &&
+    !startsParagraphLine(ctx, next.from)
   // 下一个块不参与配对间距(未知块,如 HTML 块)时留原样:裁掉这半份行距
   // 会让两段之间只剩一条空行,不认识那种块的人也没法调。
   const prevPaired = !prev || blockKindOf(ctx, prev) !== null
-  const nextPaired = !next || blockKindOf(ctx, next) !== null
+  const nextPaired =
+    (!next || blockKindOf(ctx, next) !== null) && !nextIsPendingContinuation
   if (prevPaired && !isImageOnlyLineText(first.text)) {
     addLine(ctx, first.from, 'cm-md-para-trim-top')
   }
@@ -323,10 +362,15 @@ export function blockKindOf(ctx: RuleContext, node: SyntaxNode): BlockKind | nul
     case 'ATXHeading4':
     case 'ATXHeading5':
     case 'ATXHeading6':
+      // 只有 # 还没补空格:版式还是正文,配对间距也按正文算
+      return isPendingHeading(ctx, node) ? 'body' : 'heading'
     case 'SetextHeading1':
     case 'SetextHeading2':
       return 'heading'
     case 'FencedCode':
+      // 刚敲出来、还没回车补全的围栏仍是一条正文行:配对间距也按正文算,
+      // 否则第三个反引号一落,整行就换到「代码块上方」的间距上
+      if (isPendingFence(ctx, node)) return 'body'
       return fenceLanguage(ctx.doc, node) === 'mermaid' ? 'mermaid' : 'code'
     case 'CodeBlock':
       return 'code'
@@ -334,14 +378,40 @@ export function blockKindOf(ctx: RuleContext, node: SyntaxNode): BlockKind | nul
     case 'OrderedList':
       return 'list'
     case 'Blockquote':
-      return 'quote'
+      // 裸 `>` 还没补空格:版式仍是正文(见 quoteOpened),配对间距也按正文算,
+      // 否则敲下 `>` 的瞬间下面段落就从「正文之间」换到「引用下方」的间距上了
+      return quoteOpened(ctx.doc, node) ? 'quote' : 'body'
     case 'Table':
       return 'table'
     case 'MathBlock':
-      return 'math'
+      // 同待定代码围栏:刚敲的 `$$` 还是正文行,间距 / 裁切都按正文算
+      return isPendingMathFence(ctx, node) ? 'body' : 'math'
     default:
       return null
   }
+}
+
+/**
+ * 上方紧邻的内容块如果是用户回车建出的空段落(见 emptyParagraph.ts),
+ * 返回它的行首位置;否则返回 null。
+ *
+ * 空段落不是语法树里的块,但对用户来说它就是一个正文段落;下一条真正
+ * 的块挨着它时,间距要按 body → 该块算。
+ */
+function emptyParagraphAbove(ctx: RuleContext, from: number): number | null {
+  const line = ctx.doc.lineAt(from)
+  for (let n = line.number - 1; n >= 1; n--) {
+    const above = ctx.doc.line(n)
+    if (/\S/.test(above.text)) return null
+    if (ctx.emptyParagraphs.has(above.from)) return above.from
+  }
+  return null
+}
+
+/** 这一行是不是一个段落的首行(上一行是空行或文首) */
+function startsParagraphLine(ctx: RuleContext, pos: number): boolean {
+  const line = ctx.doc.lineAt(pos)
+  return line.number === 1 || isBlankLine(ctx.doc.line(line.number - 1).text)
 }
 
 /**
@@ -353,19 +423,47 @@ function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
   if (node.parent?.name !== 'Document') return
   const kind = blockKindOf(ctx, node)
   if (!kind) return
+  /*
+   * 待定围栏在语法树上已经是一块,但它还是用户那一行正文:如果这一行是
+   * 段落的续行(上一行不是空行),它本来就没有配对间距,不能因为敲了第三个
+   * 反引号凭空多出一档。
+   */
+  if (
+    (node.name === 'FencedCode' && isPendingFence(ctx, node)) ||
+    (node.name === 'MathBlock' && isPendingMathFence(ctx, node))
+  ) {
+    if (!startsParagraphLine(ctx, node.from)) return
+  }
   const prev = node.prevSibling
-  const prevKind = prev ? blockKindOf(ctx, prev) : null
-  if (!prevKind) return
+  let prevKind = prev ? blockKindOf(ctx, prev) : null
+  if (!prevKind) {
+    /*
+     * 语法树里上面没有块,但可能有一条用户回车建出来的空段落(它不是语法
+     * 节点)。空段落马上就会被写成正文 / 标题,这里先按正文算配对:否则空着
+     * 时挂了 body-body、敲下第一个字符变成标题后配对突然消失,整行连同行首
+     * 「+」会向上跳一档。
+     */
+    const emptyLine = emptyParagraphAbove(ctx, node.from)
+    if (emptyLine === null) return
+    if (kind === 'code') {
+      // 与下面的代码块分支同理:间距做在空段落的下边,别把底色撑开
+      addLine(ctx, emptyLine, 'cm-md-block-pair cm-md-pair-bottom cm-md-bottom-body-code')
+      return
+    }
+    prevKind = 'body'
+  }
   /*
    * 代码块有自己的底色:间距若做在它的首行 padding 上,会连带把底色撑出一块
    * 空白。这种情况把间距改做在上一块末行的 padding-bottom 上(代码块外面),
    * 其余配对一律做在下方块首行的 padding-top 上。
    */
   if (kind === 'code' && prev) {
+    // 下侧配对单独命名:上一块末行本身可能还挂着它自己的上侧配类
+    // (`cm-md-<x>-body`),两者共用 `cm-md-<x>-code` 会互相覆盖 padding-top
     addLine(
       ctx,
       ctx.doc.lineAt(prev.to).from,
-      `cm-md-block-pair cm-md-${prevKind}-${kind} cm-md-pair-bottom`
+      `cm-md-block-pair cm-md-pair-bottom cm-md-bottom-${prevKind}-${kind}`
     )
     return
   }
@@ -383,12 +481,24 @@ function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
  * 段落的 trim 类,输入第一个字时行盒高度不变;已经有行装饰的空行也不动
  * (代码块里的空行是代码内容,块间距行已经有自己的高度)。
  */
+/**
+ * 裸 `>`(后面还没敲空格)。
+ *
+ * 引用的规则要等 `> ` 才当成引用(见 quoteOpened),这之前它就是一行普通
+ * 文本。不能按空行折叠:折叠后是 0 高 + overflow:hidden,刚敲的 `>` 看不见、
+ * 光标没有高度,下面的段落还会跟着往上跳。
+ */
+function bareQuoteLine(text: string): boolean {
+  return text.includes('>') && !/>[ \t]/.test(text)
+}
+
 export function collapseBlankRuns(ctx: RuleContext, skip?: (from: number, to: number) => boolean): void {
   const first = ctx.doc.lineAt(ctx.visibleFrom).number
   const last = ctx.doc.lineAt(ctx.visibleTo).number
   for (let number = first; number <= last; number++) {
     const line = ctx.doc.line(number)
     if (!isBlankLine(line.text)) continue
+    if (bareQuoteLine(line.text)) continue
     // 容器里的空行(代码块 / 引用 / 列表内部)是内容,已经有自己的行装饰
     if (ctx.decorated.has(line.from)) continue
     if (skip && skip(line.from, line.to)) continue
@@ -852,6 +962,41 @@ function isPendingFence(ctx: RuleContext, code: SyntaxNode): boolean {
 }
 
 /**
+ * 按正文段落的边界裁掉半份行距(text-box-trim)。
+ *
+ * 两类「刚敲出来、语法树已经换了身份」的行要用它,否则行盒会比原来的段落行
+ * 高出半档,敲下下一个字符时整行(连同下面的内容)会往下跳一下:
+ *   - 待定围栏 / 公式开标记(见 isPendingFence):它还是用户刚敲的正文行;
+ *   - 引用行(裸 `>` 与 `> ` 开头的那一行):敲 `>` 的瞬间就变成了 Blockquote。
+ *
+ * 判定与段落首 / 末行一致:上一行是空行(或文首)才是首行,下一行是空行
+ * (或文末)才是末行。夹在段中的续行两侧都不裁 —— 裁了反而会往上跳。
+ */
+function trimParagraphEdge(ctx: RuleContext, line: Line): void {
+  const pairedAt = (pos: number): boolean => ctx.blockKindAt(pos) !== null
+  const blank = (n: number): boolean =>
+    n < 1 || n > ctx.doc.lines || isBlankLine(ctx.doc.line(n).text)
+  /** 最近的另一块(跳过空行) */
+  const blockAt = (n: number, dir: 1 | -1): Line | null => {
+    for (let i = n; i >= 1 && i <= ctx.doc.lines; i += dir) {
+      const l = ctx.doc.line(i)
+      if (!isBlankLine(l.text)) return l
+    }
+    return null
+  }
+  const startsParagraph = blank(line.number - 1)
+  const endsParagraph = blank(line.number + 1)
+  const above = startsParagraph ? blockAt(line.number - 1, -1) : null
+  const below = endsParagraph ? blockAt(line.number + 1, 1) : null
+  const top = startsParagraph && (!above || pairedAt(above.from))
+  const bottom = endsParagraph && (!below || pairedAt(below.from))
+  const cls = [top ? 'cm-md-para-trim-top' : '', bottom ? 'cm-md-para-trim-bottom' : '']
+    .filter(Boolean)
+    .join(' ')
+  if (cls) addLine(ctx, line.from, cls)
+}
+
+/**
  * 是不是用户刚敲出来的公式开标记(`$$` / `\[`,还没按回车补全)。
  *
  * 与代码围栏同一条规则:开标记所在行就是 pendingFence 记下的那一行。
@@ -1016,6 +1161,14 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'ATXHeading4':
     case 'ATXHeading5':
     case 'ATXHeading6': {
+      /*
+       * 还没敲空格:先按普通正文段落排版(含边界裁切),标记字符照常可见。
+       * 补上空格后下一轮重建才会变成标题 —— 不让一次按键把整行撑成标题。
+       */
+      if (isPendingHeading(ctx, node.node)) {
+        styleParagraphTrim(ctx, node.node)
+        return // 下钻:HeaderMark 需要决定露不露出 #
+      }
       addLine(ctx, node.from, `cm-md-h${node.name.slice(-1)}`)
       return // 下钻:HeaderMark 与行内内容
     }
@@ -1033,7 +1186,8 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       const parent = node.node.parent
       if (!parent) return
       if (parent.name.startsWith('ATXHeading')) {
-        if (lineUntouched(ctx, node.from)) {
+        // 还没成标题(只有 #):标记必须一直看得见,光标移到别处也不能藏
+        if (!isPendingHeading(ctx, parent) && lineUntouched(ctx, node.from)) {
           hide(ctx, node.from, endOfTrailingSpaces(ctx.doc, node.to))
         }
       } else if (parent.name === 'SetextHeading2' && ctx.doc.sliceString(node.from, node.to) === '-') {
@@ -1134,7 +1288,10 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'FencedCode': {
       const code = node.node
       // 刚敲出来的围栏先别渲染成代码块,否则后面的正文会立刻被吞进去
-      if (isPendingFence(ctx, code)) return false
+      if (isPendingFence(ctx, code)) {
+        trimParagraphEdge(ctx, ctx.doc.lineAt(code.from))
+        return false
+      }
       // 相邻代码块 → 文件标签页。整组装饰只由视口里最靠前的那一块生成,
       // 否则迭代器每进一块都会把同一组画一遍(装饰重叠会直接抛错)。
       const group = codeGroupAt(ctx.doc, code, ctx.pendingFence)
@@ -1183,8 +1340,11 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'Blockquote': {
       // 嵌套引用由最外层一次性覆盖所有行
       if (node.node.parent?.name === 'Blockquote') return
-      // 裸 `>` 先按普通文本显示(见 quoteOpened)
-      if (!quoteOpened(ctx.doc, node.node)) return
+      // 裸 `>` 先按普通文本显示(见 quoteOpened):行盒也按正文段落裁边,敲 `>` 时下面的正文不跳
+      if (!quoteOpened(ctx.doc, node.node)) {
+        for (const line of quotedLines(ctx, node.node)) trimParagraphEdge(ctx, line)
+        return
+      }
       const lastQuoted = styleQuotedLines(ctx, node.node)
       if (!lastQuoted) return
       return
@@ -1281,7 +1441,10 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     case 'DisplayMath':
     case 'MathBlock': {
       // 刚敲出来的 `$$` / `\[` 先按普通文本显示,回车补全后再当公式块
-      if (node.name === 'MathBlock' && isPendingMathFence(ctx, node.node)) return false
+      if (node.name === 'MathBlock' && isPendingMathFence(ctx, node.node)) {
+        trimParagraphEdge(ctx, ctx.doc.lineAt(node.from))
+        return false
+      }
       const content = mathContentRange(node.node)
       if (!content) return false
       if (showsSource(ctx, node.from, node.to)) {

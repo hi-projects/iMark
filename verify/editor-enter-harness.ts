@@ -166,6 +166,14 @@ async function main(): Promise<void> {
   const looks = (l: LineInfo): string => `${JSON.stringify(l.text)} [${l.cls}] ${l.size}/${l.weight}`
 
   /**
+   * 行上是否有某个**完整**类名。
+   *
+   * 不能用 /cm-md-code/ 这种子串匹配:配对类 `cm-md-code-body` /
+   * `cm-md-code-heading` 也含这段字符,正文会被误判成代码行。
+   */
+  const hasCls = (cls: string, name: string): boolean => cls.split(/\s+/).includes(name)
+
+  /**
    * 注意命名:sendInputEvent 要的是 W3C 旧键名(`Left` / `Down` / `End`),
    * 写成 `ArrowLeft` / `ArrowDown` 它一声不吭地丢掉 —— 光标不动,断言就全歪了。
    */
@@ -395,7 +403,7 @@ async function main(): Promise<void> {
     const before = await domLines()
     check(
       '回车前下面的正文不按代码块渲染(不提前染色)',
-      before.every(l => !/cm-md-code/.test(l.cls)),
+      before.every(l => !hasCls(l.cls, 'cm-md-code')),
       before.map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
     )
     check('围栏行本身仍是原文', before[0].text === '```', looks(before[0]))
@@ -415,12 +423,12 @@ async function main(): Promise<void> {
     const lines = await domLines()
     check(
       '三行都按代码块渲染',
-      lines.slice(0, 3).every(l => /cm-md-code/.test(l.cls)),
+      lines.slice(0, 3).every(l => hasCls(l.cls, 'cm-md-code')),
       lines.slice(0, 3).map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
     )
     check(
       '下面的标题恢复成标题渲染,没有留在代码块里',
-      /cm-md-h1/.test(lines[3].cls) && !/cm-md-code/.test(lines[3].cls),
+      hasCls(lines[3].cls, 'cm-md-h1') && !hasCls(lines[3].cls, 'cm-md-code'),
       looks(lines[3])
     )
   }
@@ -462,7 +470,7 @@ async function main(): Promise<void> {
     const before = await domLines()
     check(
       '回车前整段仍不按代码块渲染',
-      before.every(l => !/cm-md-code/.test(l.cls)),
+      before.every(l => !hasCls(l.cls, 'cm-md-code')),
       before.map(l => `${JSON.stringify(l.text)} [${l.cls}]`).join(' | ')
     )
   }
@@ -488,6 +496,171 @@ async function main(): Promise<void> {
     check('只是在开围栏后断了一行', src.slice(0, 4).join('|') === '```js||code|```', JSON.stringify(src.slice(0, 4)))
     check('围栏数量没变', src.filter(l => l === '```').length === 1, JSON.stringify(src))
   }
+
+  console.log('\n【H】标题等空格:只敲 # 保持正文,补空格才切成标题')
+  // CommonMark 把孤零零的 `#` 也解析成(空)标题;编辑时不能一敲就换版式
+  await loadDoc('')
+  await type('#')
+  {
+    const l = (await domLines())[0]
+    check('只敲 # 时不是标题行', !hasCls(l.cls, 'cm-md-h1'), looks(l))
+    check('只敲 # 时标记仍然显示', l.text.includes('#'), JSON.stringify(l.text))
+  }
+  // 光标移到文末(离开这一行):不能像正式标题那样把 # 藏掉
+  await evalJs(`(() => {
+    const v = document.querySelector('.cm-content').cmTile.root.view
+    v.dispatch({ selection: { anchor: v.state.doc.length } })
+    v.focus()
+    return true
+  })()`)
+  await sleep(300)
+  {
+    const l = (await domLines())[0]
+    check(
+      '光标离开后 # 仍然可见(按正文处理)',
+      l.text.includes('#') && !hasCls(l.cls, 'cm-md-h1'),
+      looks(l)
+    )
+  }
+  await type(' ')
+  {
+    const l = (await domLines())[0]
+    check('补上空格后切成一级标题', hasCls(l.cls, 'cm-md-h1'), looks(l))
+  }
+
+  console.log('\n【I】敲下第三个反引号:待定围栏行不换行盒、位置不跳')
+  await loadDoc('正文\n')
+  await evalJs(`(() => {
+    const v = document.querySelector('.cm-content').cmTile.root.view
+    v.dispatch({ selection: { anchor: v.state.doc.length } })
+    v.focus()
+    return true
+  })()`)
+  await sleep(250)
+  const fenceLine = (): Promise<{ top: number; cls: string; text: string }> =>
+    evalJs(`
+      (() => {
+        const v = document.querySelector('.cm-content').cmTile.root.view
+        const head = v.state.selection.main.head
+        const c = v.coordsAtPos(head)
+        const line = v.state.doc.lineAt(head)
+        const el = document.querySelectorAll('.cm-content .cm-line')[line.number - 1]
+        return {
+          top: c ? Math.round(c.top * 100) / 100 : -1,
+          cls: el ? el.className : '',
+          text: line.text
+        }
+      })()`)
+  await type('``')
+  const twoTicks = await fenceLine()
+  await type('`')
+  const threeTicks = await fenceLine()
+  console.log(`     [\`\`] ${JSON.stringify(twoTicks)}\n     [\`\`\`] ${JSON.stringify(threeTicks)}`)
+  check('两个反引号时还是正文行', /cm-md-para-trim/.test(twoTicks.cls), JSON.stringify(twoTicks))
+  check(
+    '第三个反引号落下去后行位置不变',
+    Math.abs(threeTicks.top - twoTicks.top) <= 0.5,
+    JSON.stringify({ twoTicks, threeTicks })
+  )
+  check(
+    '待定围栏行仍按正文段落裁切,不会立刻换代码样式',
+    /cm-md-para-trim/.test(threeTicks.cls) && !hasCls(threeTicks.cls, 'cm-md-code'),
+    JSON.stringify(threeTicks)
+  )
+
+  // 另起一段输入(上面隔一条空行):配对间距同样不能因为围栏而变
+  await loadDoc('正文\n\n')
+  await evalJs(`(() => {
+    const v = document.querySelector('.cm-content').cmTile.root.view
+    v.dispatch({ selection: { anchor: v.state.doc.length } })
+    v.focus()
+    return true
+  })()`)
+  await sleep(250)
+  await type('``')
+  const paraTwo = await fenceLine()
+  await type('`')
+  const paraThree = await fenceLine()
+  console.log(`     [新段 \`\`] ${JSON.stringify(paraTwo)}\n     [新段 \`\`\`] ${JSON.stringify(paraThree)}`)
+  check(
+    '另起一段输入时第三个反引号落下去后行位置也不变',
+    /cm-md-body-body/.test(paraTwo.cls) &&
+      Math.abs(paraThree.top - paraTwo.top) <= 0.5 &&
+      /cm-md-body-body/.test(paraThree.cls),
+    JSON.stringify({ paraTwo, paraThree })
+  )
+
+  console.log('\n【J】代码块里输入法上屏:光标与文字位置不跳')
+  await loadDoc('')
+  await focusEditor()
+  await type('```')
+  await key('Enter')
+  await sleep(300)
+  const codeCaret = (): Promise<{ top: number; cls: string; pad: number; doc: string }> =>
+    evalJs(`
+      (() => {
+        const v = document.querySelector('.cm-content').cmTile.root.view
+        const head = v.state.selection.main.head
+        const c = v.coordsAtPos(head)
+        const line = v.state.doc.lineAt(head)
+        const el = document.querySelectorAll('.cm-content .cm-line')[line.number - 1]
+        return {
+          top: c ? Math.round(c.top * 100) / 100 : -1,
+          cls: el ? el.className : '',
+          pad: el ? parseFloat(getComputedStyle(el).paddingTop) : -1,
+          doc: v.state.doc.toString()
+        }
+      })()`)
+  const fenceCaret = await codeCaret()
+  check(
+    '代码块里的空行按代码行排版,不被当成空段落撑开',
+    hasCls(fenceCaret.cls, 'cm-md-code') &&
+      !hasCls(fenceCaret.cls, 'cm-md-empty-paragraph') &&
+      fenceCaret.pad === 0,
+    JSON.stringify(fenceCaret)
+  )
+  wc.debugger.attach('1.3')
+  const cdpCode = (method: string, params?: unknown): Promise<unknown> =>
+    wc.debugger.sendCommand(method, params)
+  await cdpCode('Input.imeSetComposition', { text: '啊', selectionStart: 1, selectionEnd: 1 })
+  await sleep(400)
+  const composingCode = await codeCaret()
+  await cdpCode('Input.insertText', { text: '啊' })
+  await sleep(500)
+  const committedCode = await codeCaret()
+  wc.debugger.detach()
+  console.log(`     [组字中] ${JSON.stringify(composingCode)}\n     [上屏后] ${JSON.stringify(committedCode)}`)
+  check(
+    '组字中与上屏后的光标位置一致',
+    composingCode.top > 0 && Math.abs(composingCode.top - committedCode.top) <= 0.5,
+    JSON.stringify({ composingCode, committedCode })
+  )
+  check(
+    '文字落在光标所在的代码行',
+    committedCode.doc === '```\n啊\n```' && hasCls(committedCode.cls, 'cm-md-code'),
+    JSON.stringify(committedCode)
+  )
+
+  console.log('\n【K】代码块里退格把行删空:仍是代码行,光标不下跳')
+  // 退格把这一行删空:不能又被记成「回车空段落」
+  wc.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+  wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+  await sleep(500)
+  const emptiedCode = await codeCaret()
+  console.log(`     [退格后] ${JSON.stringify(emptiedCode)}`)
+  check(
+    '删空后这一行仍是代码行(不是空段落)',
+    emptiedCode.doc === '```\n\n```' &&
+      hasCls(emptiedCode.cls, 'cm-md-code') &&
+      !hasCls(emptiedCode.cls, 'cm-md-empty-paragraph') &&
+      emptiedCode.pad === 0,
+    JSON.stringify(emptiedCode)
+  )
+  check(
+    '删空前后光标位置不变',
+    Math.abs(committedCode.top - emptiedCode.top) <= 0.5,
+    JSON.stringify({ committedCode, emptiedCode })
+  )
 
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })

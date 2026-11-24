@@ -1,4 +1,6 @@
 import { Annotation, StateField, type EditorState } from '@codemirror/state'
+import { syntaxTree } from '@codemirror/language'
+import type { SyntaxNode } from '@lezer/common'
 
 /**
  * 这次事务是「回车 = 新段」补出来的(见 commands.ts 的 breakAt)。
@@ -84,7 +86,9 @@ export const emptyParagraphsField = StateField.define<readonly number[]>({
       const after = tr.state.selection
       if (after.ranges.length === 1 && after.main.empty) {
         const line = tr.state.doc.lineAt(after.main.head)
-        if (!/\S/.test(line.text)) add(line.from)
+        // 代码块 / 公式块里的空行是块内容,不是用户空段落:记下来会让这一行
+        // 额外拿到段落间距和裁切,下一次重绘时行盒缩回、光标跟着跳
+        if (!/\S/.test(line.text) && !insideCodeLikeBlock(tr.state, line.from)) add(line.from)
       }
     }
     return [...kept].sort((a, b) => a - b)
@@ -96,6 +100,22 @@ function isBlankLineStart(state: EditorState, pos: number): boolean {
   if (pos < 0 || pos > state.doc.length) return false
   const line = state.doc.lineAt(pos)
   return line.from === pos && !/\S/.test(line.text)
+}
+
+/**
+ * pos 是否落在代码块 / 缩进代码 / 公式块里。
+ *
+ * 这些块里的空行是块内容,有自己的代码行装饰,不是「回车建出的空段落」。
+ */
+function insideCodeLikeBlock(state: EditorState, pos: number): boolean {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1)
+  while (node) {
+    if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'MathBlock') {
+      return true
+    }
+    node = node.parent
+  }
+  return false
 }
 
 export function getEmptyParagraphs(state: EditorState): readonly number[] {

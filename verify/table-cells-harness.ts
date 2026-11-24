@@ -1013,6 +1013,60 @@ async function main(): Promise<void> {
   )
   wc.debugger.detach()
 
+  // ---------- 10. 单击单元格输入 → 点别处提交:内容不能丢 ----------
+
+  /*
+   * 用户路径:新建表格 → 单击第一个表头格 → 输入法打「啊」(格子里看得见)
+   * → 点别处 → 「啊」消失。
+   *
+   * 与上面各段的区别在**提交路径**:那些都是回车提交,这里走的是失焦
+   * (finishEdit)。失焦时文档可能已经被点击产生的选区事务重画过一轮,
+   * 刷新用的还是旧模型的话,这一笔就会静默失败。
+   */
+  console.log('\n【10】单击单元格输入后点别处:失焦提交不能丢内容')
+  await loadDoc(`开头\n\n${CENTERED_3X3}\n\n末尾\n`)
+  check('点第一个表头格', await clickCell(0, 0), '找不到目标格')
+
+  wc.debugger.attach('1.3')
+  const cdpBlur = (method: string, params?: unknown): Promise<unknown> =>
+    wc.debugger.sendCommand(method, params)
+  await cdpBlur('Input.imeSetComposition', { text: '啊', selectionStart: 1, selectionEnd: 1 })
+  await sleep(300)
+  const composingCell = await evalJs<string | null>(`
+    (() => {
+      const el = document.querySelector('.cm-md-table-cell-editing')
+      return el ? el.textContent : null
+    })()`)
+  check('组字中的「啊」看得见', composingCell === '啊', JSON.stringify(composingCell))
+  await cdpBlur('Input.insertText', { text: '啊' })
+  await sleep(300)
+
+  // 点表格下方的正文,让单元格失焦提交
+  const away = await evalJs<{ x: number; y: number } | null>(`
+    (() => {
+      const line = [...document.querySelectorAll('.cm-content .cm-line')]
+        .find(l => l.textContent.trim() === '末尾')
+      if (!line) return null
+      const r = line.getBoundingClientRect()
+      return { x: Math.round(r.left + 8), y: Math.round(r.top + r.height / 2) }
+    })()`)
+  check('找到表格下方的正文行', !!away, JSON.stringify(away))
+  if (away) {
+    wc.sendInputEvent({ type: 'mouseDown', x: away.x, y: away.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: away.x, y: away.y, button: 'left', clickCount: 1 })
+  }
+  await sleep(600)
+  wc.debugger.detach()
+
+  const committed = await grid()
+  check('点别处后表头第一格仍是「啊」', committed.th[0] === '啊', JSON.stringify(committed.th))
+  const committedSource = await sourceLines()
+  check(
+    '源码里也留下了「啊」',
+    committedSource.some(line => line.includes('啊')),
+    JSON.stringify(committedSource)
+  )
+
   const shots = join(REPO, '.verify-ud', 'shots')
   await mkdir(shots, { recursive: true })
   try {

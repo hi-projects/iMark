@@ -33,7 +33,10 @@ function gitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
     ...process.env,
     ...extra,
     GIT_TERMINAL_PROMPT: '0',
-    GCM_INTERACTIVE: 'never'
+    GCM_INTERACTIVE: 'never',
+    // 只关终端提示不够:GIT_ASKPASS / SSH_ASKPASS / core.askPass 仍会弹出
+    // 图形认证窗口。空值被 git 当成「没有 askpass」,同时盖掉这三个来源。
+    GIT_ASKPASS: ''
   }
 }
 
@@ -192,11 +195,16 @@ export function summarize(text: string, maxLines = 4): string {
 /**
  * 临时挂一个一次性的 credential helper,账号/令牌从环境变量读取。
  * 这样令牌不出现在命令行里,git 的报错也只会回显干净地址。
+ *
+ * 没填令牌时也必须清空系统里配置的 helper:公开仓库根本不需要凭据,而 GCM /
+ * VS Code 之类配置过的 helper 会被 git 调起来弹登录窗口。
  */
-export function credentialArgs(): string[] {
+export function credentialArgs(useCredential: boolean): string[] {
+  const args = ['-c', 'credential.helper=']
+  if (!useCredential) return args
   const helper =
     `!f() { printf 'username=%s\\npassword=%s\\n' "$GIT_IMK_USER" "$GIT_IMK_TOKEN"; }; f`
-  return ['-c', 'credential.helper=', '-c', `credential.helper=${helper}`]
+  return [...args, '-c', `credential.helper=${helper}`]
 }
 
 export function credentialEnv(username: string, token: string): Record<string, string> {
@@ -283,7 +291,7 @@ export async function cloneRepository(opts: CloneOptions): Promise<CloneOutcome>
 
   const useCredential = opts.secret.length > 0
   const args = [
-    ...(useCredential ? credentialArgs() : []),
+    ...credentialArgs(useCredential),
     'clone',
     // 强制输出进度:非 TTY 下 git 默认不打印
     '--progress',

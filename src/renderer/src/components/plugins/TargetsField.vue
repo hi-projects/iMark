@@ -139,20 +139,17 @@ function secretPlaceholder(target: PluginTarget): string {
       : '输入新访问令牌（留空则保留已保存的）'
   }
   return target.auth === 'password'
-    ? '必填（账号对应的密码）'
-    : '必填（私有仓库需要访问令牌）'
+    ? '选填（公开仓库可留空，私有仓库需要密码）'
+    : '选填（公开仓库可留空，私有仓库需要访问令牌）'
 }
 
 /**
  * 这一行远端还缺哪些必填输入。
  *
  * 只判断「填没填」,不判断地址格式 —— 地址能不能用交给 git 自己回答。
- * 凭据是否必填与主进程推送前的校验保持一致:只有 HTTP(S) 远端在
- * token / password 认证下需要密钥(password 另需账号);SSH 与本地路径
- * 不要求凭据。
- *
- * 地址还没填时无法判断凭据要不要,但界面上凭据那一格标着「必填」且就摆在
- * 用户眼前 —— 空着就一起列出来,否则会像是「填了地址、空着令牌」却没人提示。
+ * 令牌 / 密码是**选填**的:公开仓库不需要凭据,私有仓库没填会在同步时由 git
+ * 报认证失败。只有 HTTP(S) 远端选了「账号密码」且确实存了密码时,账号才是
+ * 拼凭据必需的(与主进程同步前的校验保持一致);SSH 与本地路径不要求凭据。
  */
 function missingFields(target: PluginTarget): string[] {
   const url = target.url.trim()
@@ -161,9 +158,12 @@ function missingFields(target: PluginTarget): string[] {
   if (!projectGit.value && !target.localBranch.trim()) missing.push('本地分支')
   if (target.auth === 'ssh') return missing
   if (url && !/^https?:\/\//i.test(url)) return missing
-  if (target.auth === 'password' && !target.username.trim()) missing.push('账号')
-  if (!props.secrets[targetSecretSlot(target)]) {
-    missing.push(target.auth === 'password' ? '密码' : '访问令牌')
+  if (
+    target.auth === 'password' &&
+    props.secrets[targetSecretSlot(target)] &&
+    !target.username.trim()
+  ) {
+    missing.push('账号')
   }
   return missing
 }
@@ -270,7 +270,7 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
         </label>
       </div>
 
-      <!-- 密钥:token / password 需要;ssh 用本机密钥,不显示这一行。
+      <!-- 密钥:token / password 用,选填(公开仓库可留空);ssh 用本机密钥,不显示这一行。
            这一行不能用 <label> 当容器:label 会把非交互区域(掩码、按钮之间的空白)
            的点击转给第一个 labelable 子控件 —— 也就是「更换」按钮,鼠标没对准也会触发。 -->
       <div v-if="target.auth !== 'ssh'" class="plugin-target-row">

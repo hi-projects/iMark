@@ -7,11 +7,10 @@
  * 覆盖：
  *   1 内置包安装、清单贡献点（命令/快捷键/配置/动作/状态栏）
  *   2 `onStartupFinished` 激活、状态栏条目与初始文案
- *   3 首次同步：远端建分支、文件与忽略项写入、提交信息模板生效
+ *   3 首次同步：非 git 目录自动初始化、远端建分支、文件写入、提交信息模板生效
  *   4 无改动不造空提交；有改动 +1 提交
  *   5 `testTarget` 与状态卡结果
- *   6 密钥缺失时在动 git 之前失败，且不写日志/状态卡
- *     （配置问题只由设置页的黄色提示展示）
+ *   6 公开仓库可以不带密钥：令牌选填，不做配置校验拦截
  *   7 远端不可用：同步失败、状态卡标红、日志带原因
  *   8 配置变更 → 防抖后自动补跑一轮（onDidChangeConfiguration）
  *   9 停用释放宿主；重新启用后命令再激活；卸载清目录与贡献点
@@ -23,6 +22,7 @@
 import { app, dialog, protocol, type BrowserWindow } from 'electron'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -320,30 +320,31 @@ async function main(): Promise<void> {
 
   // ---------- 3. 首次同步 ----------
 
-  console.log('\n【3】首次同步：远端真的收到提交')
+  console.log('\n【3】首次同步：自动初始化仓库，远端真的收到提交')
   check(
     '远端此刻还没有 main 分支',
     (await git(remote, ['branch', '--list'])).trim() === ''
   )
-  // 扩展不再替用户初始化仓库:非 git 目录必须明确失败,而不是偷偷 git init
-  const noRepo = (await service.executeCommand('imark.git-sync.syncNow')) as {
-    ok: boolean
-    message: string
-  }
-  check(
-    '不是 git 仓库时同步明确失败',
-    noRepo?.ok === false && noRepo.message === '当前仓库还不是 git 仓库',
-    JSON.stringify(noRepo)
-  )
-  check('失败时没有建出 .git', !existsSync(join(vault, '.git')))
-  await git(vault, ['init', '--initial-branch=main'])
+  check('同步前目录还不是 git 仓库', !existsSync(join(vault, '.git')))
 
+  // 仓库还不存在时直接同步:扩展应当就地 git init,而不是把用户赶去终端
   const first = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
   }
-  check('命令返回 ok', first?.ok === true, JSON.stringify(first))
+  check('不是 git 仓库时自动初始化并同步成功', first?.ok === true, JSON.stringify(first))
   console.log(`      扩展自己说：${first?.message}`)
+  check('自动建出了 .git', existsSync(join(vault, '.git')))
+  check(
+    '初始化在配置的本地分支上（main）',
+    (await git(vault, ['symbolic-ref', '--short', 'HEAD'])).trim() === 'main',
+    (await git(vault, ['symbolic-ref', '--short', 'HEAD'])).trim()
+  )
+  check(
+    '日志说明仓库是自动初始化的',
+    ((await view())?.logs ?? []).some(entry => entry.message.includes('自动初始化')),
+    JSON.stringify(((await view())?.logs ?? []).slice(-3))
+  )
 
   const branches = await git(remote, ['branch', '--list', '--format=%(refname:short)'])
   check('远端有了 main 分支', branches.trim() === 'main', branches.trim())
@@ -411,52 +412,47 @@ async function main(): Promise<void> {
     JSON.stringify(testToasts)
   )
 
-  // ---------- 6. 密钥缺失 ----------
+  // ---------- 6. 公开仓库不带密钥 ----------
 
-  console.log('\n【6】缺密钥：在动 git 之前失败；配置问题只在黄色提示里说')
-  // 先记下配置前的状态:缺密钥属于「远端没填完」,不该把状态卡从 ok 改成 error
-  const beforeMissing = (await view())?.status.status
+  console.log('\n【6】公开仓库可以不带密钥：令牌 / 密码是选填项')
+  // 本机起一个一律 401 的 HTTP 端:没有令牌时 git 必须快速失败,
+  // 不能去调用系统的 credential helper / askpass(那会弹出认证窗口)。
+  const authServer = createServer((_req, res) => {
+    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="imark-harness"' })
+    res.end('auth required')
+  })
+  await new Promise<void>(resolve => authServer.listen(0, '127.0.0.1', () => resolve()))
+  const authPort = (authServer.address() as { port: number }).port
   const tokenTarget: TargetConfig = {
     id: 't2',
-    url: 'https://example.invalid/notes.git',
+    url: `http://127.0.0.1:${authPort}/notes.git`,
     auth: 'token',
     username: '',
     localBranch: 'main',
     remoteBranch: 'main'
   }
   await setRemote(tokenTarget)
-  const opsBeforeMissing = ((await view())?.logs ?? []).filter(
-    entry => entry.level === 'operation'
-  ).length
-  const missing = (await service.executeCommand('imark.git-sync.syncNow')) as {
+  const noSecret = (await service.executeCommand('imark.git-sync.syncNow')) as {
     ok: boolean
     message: string
+    detail?: string
     silent?: boolean
   }
-  check('命令返回失败', missing?.ok === false, JSON.stringify(missing))
-  check('结果标记为 silent（交给设置页的黄色提示）', missing?.silent === true, JSON.stringify(missing))
-  check('错误指向唯一远端', (missing?.message ?? '').includes('远端'), missing?.message)
-  check('错误说明缺的是访问令牌', (missing?.message ?? '').includes('访问令牌'), missing?.message)
-  // 配置变更 3 秒后还会自动试跑一次;等它过去,确认状态卡仍未被这次校验覆盖
-  await sleep(3500)
-  const afterMissing = await view()
   check(
-    '状态卡保持原状态，不因配置未填完变红',
-    afterMissing?.status.status === beforeMissing,
-    `${beforeMissing} → ${afterMissing?.status.status}`
+    '没填令牌不再按「配置未完成」拦下',
+    noSecret?.ok === false && noSecret?.silent !== true,
+    JSON.stringify(noSecret)
   )
-  const missingLogs = afterMissing?.logs ?? []
   check(
-    '不把缺密钥写进扩展日志',
-    !missingLogs.some(entry => entry.level === 'error' && entry.message.includes('访问令牌')),
-    JSON.stringify(missingLogs.slice(-3))
+    '真的走到了认证失败，并提示补凭据',
+    (noSecret?.detail ?? '').includes('需要凭据'),
+    noSecret?.detail
   )
-  const opsAfterMissing = missingLogs.filter(entry => entry.level === 'operation')
-  check(
-    '操作日志不记录这次失败（silent）',
-    opsAfterMissing.length === opsBeforeMissing,
-    JSON.stringify(opsAfterMissing.slice(-2))
-  )
+  await new Promise<void>(resolve => authServer.close(() => resolve()))
+  // 回到可用远端:下一节要从 ok 状态起步
+  await setRemote(target1(remote))
+  const recovered = await waitStatus('ok', 15_000)
+  check('换回可用远端后自动补跑成功', recovered?.status.status === 'ok', JSON.stringify(recovered?.status))
 
   // ---------- 7. 单个远端不可用 ----------
 

@@ -94,11 +94,6 @@
   color: var(--accent);
 }
 
-/* 有远端地址但还没存密钥:在设置页里会显示为「未完成」,这里也给一个弱提示 */
-.vault-row-git-missing {
-  color: var(--warn);
-}
-
 .vault-row-action {
   display: none;
   align-items: center;

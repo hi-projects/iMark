@@ -9,7 +9,9 @@
  * - 光标停在表格里时,落到整张表的下方(在表格中间插内容会把表写坏);
  * - 光标行是空行、上面已经是空行时,表格直接占用这一行,不再补前导空行;
  * - 下一行本来就是空行时,不再补第二个空行;
- * - 光标放进第一个表头单元格。
+ * - 表格后面还有内容时,光标放进第一个表头单元格;
+ * - 表格是文档最后的内容时,自动在表格后补一条空段落(与表格之间隔一条
+ *   结构空行),光标落在新段上,省得用户再点出表格。
  */
 
 import * as imark from 'imark'
@@ -94,9 +96,28 @@ async function insertTable(args: LineMenuArgs | undefined): Promise<void> {
   // 上一行以段内硬换行结束:表格就落在这一段里,不插空行(距离按行间距)
   const prevHardBreak = prev !== null && /(?: {2,}|\\)$/.test(prev.text)
   const lead = tableEnd === null ? (atBlank && (prevBlank || prevHardBreak) ? '' : '\n') : '\n\n'
-  // 下一行本来就是空行时不再补:补了表格与正文之间会多出一条空行
+  // 表格后面还有没有内容:决定要不要补「表格后的新段」
+  let hasContentBelow = false
+  for (let i = at.lineNumber + 1; i < document.lineCount; i++) {
+    if (document.lineAt(i).text.trim().length > 0) {
+      hasContentBelow = true
+      break
+    }
+  }
   const next = at.lineNumber + 1 < document.lineCount ? document.lineAt(at.lineNumber + 1) : null
-  const tail = next && next.text === '' ? '' : '\n'
+  /*
+   * 尾部换行:
+   * - 表格后面还有内容:保持原来的紧凑写法(下一行已是空行就不再补);
+   * - 表格是最后内容:要空出「一条结构空行 + 一条新段落行」。文档末尾
+   *   本来就有换行时(next 是那条空行),只补一条;否则补两条。
+   */
+  const tail = hasContentBelow
+    ? next && next.text === ''
+      ? ''
+      : '\n'
+    : next
+      ? '\n'
+      : '\n\n'
   const insert = `${lead}${text}${tail}`
 
   const ok = await editor.edit(edit => {
@@ -107,7 +128,9 @@ async function insertTable(args: LineMenuArgs | undefined): Promise<void> {
     return
   }
 
-  const cursor = document.positionAt(atOffset + lead.length + Math.min(cursorOffset, text.length))
+  // 最后内容:光标落在新段上;否则仍进第一个表头单元格
+  const offsetInTable = hasContentBelow ? Math.min(cursorOffset, text.length) : text.length + 2
+  const cursor = document.positionAt(atOffset + lead.length + offsetInTable)
   editor.setSelection(cursor)
   editor.revealRange(new imark.Range(cursor, cursor), imark.TextEditorRevealType.InCenterIfOutsideViewport)
 }

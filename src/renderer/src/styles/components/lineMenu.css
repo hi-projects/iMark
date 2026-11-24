@@ -1,17 +1,27 @@
 /* ---------- 光标行行首的「+」按钮 ---------- */
 
 /*
- * 它挂在 .cm-line 里(Decoration.widget),靠绝对定位藏进正文栏左侧的 gutter 里 ——
- * 行内元素是占位的,不脱流就会把整行文字往右推。定位参照是 .cm-line 的 position: relative,
- * 那条写在 editor/setup.ts 的 editorTheme 里(base theme 的特异度只能从那儿盖)。
+ * 「+」的定位锚点:行内的零宽元素,行内盒高度 = 这一行的 line-height,
+ * 位置贴着第一行文字(见 lineMenu.ts 的 toDOM)。
+ *
+ * 按钮绝对定位在锚点里、top:50% 居中,于是落在**文字行**的垂直中线上:
+ * 行盒高度随字号 / 行间距 / text-box-trim / 标题上留白 / 折行怎么变,
+ * 按钮都不用写死偏移量;折行时也对齐第一行,而不是整段中间。
  *
  * 行本身没有左右 padding(见 setup.ts 的说明),所以按钮要越过正文栏左缘,
  * 落在 --editor-line-gutter(28px)这段留白里;2px 是按钮与行左缘的间距。
  */
+.line-plus-anchor {
+  display: inline;
+  position: relative;
+}
+
 .line-plus {
   position: absolute;
   left: calc(2px - var(--editor-line-gutter));
-  top: 0.15em;
+  /* 锚点的行内盒就是文字那一行:50% = 这一行的垂直中线 */
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -26,25 +36,6 @@
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-}
-
-/*
- * 行盒顶上的配对间距(padding-top)会按 top 定位的按钮顶到空白里:
- * 跟着下移同样的距离,让它继续贴着这一行的文字。配对类在 editor.css 里
- * 同时写了 --md-heading-pad,这里直接复用。
- */
-.cm-editor .cm-line.cm-md-block-pair .line-plus {
-  top: calc(var(--md-heading-pad, 0px) + 0.15em);
-}
-
-/*
- * 标题行上方留了一档 padding(见 editor.css 的标题留白),按钮同样跟着下移,
- * 否则会停在标题上方的空白里、离标题文字越来越远。
- */
-.cm-editor
-  .cm-line:is(.cm-md-h1, .cm-md-h2, .cm-md-h3, .cm-md-h4, .cm-md-h5, .cm-md-h6)
-  .line-plus {
-  top: calc(var(--md-heading-pad, 0px) + 0.15em);
 }
 
 .line-plus:hover {

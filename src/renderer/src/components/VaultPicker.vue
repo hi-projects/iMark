@@ -340,7 +340,6 @@ async function onSkipChange(): Promise<void> {
           <span
             v-if="remoteOf(v)"
             class="vault-row-git"
-            :class="{ 'vault-row-git-missing': !remoteOf(v)?.hasSecret && remoteOf(v)?.auth !== 'ssh' }"
             :title="`已配置 Git 远端：${remoteOf(v)?.url}`"
           >
             <GitBranch :size="13" />
@@ -658,8 +657,8 @@ async function onSkipChange(): Promise<void> {
                 gitHasSecret
                   ? '已保存,留空表示不修改'
                   : gitForm.auth === 'password'
-                    ? '必填(私有仓库)'
-                    : '私有仓库需要访问令牌'
+                    ? '私有仓库需要;公开仓库可留空'
+                    : '私有仓库需要访问令牌;公开仓库可留空'
               "
             />
           </label>

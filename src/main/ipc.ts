@@ -49,7 +49,7 @@ import {
 import { claimVault, releaseVault } from './vaultHandoff'
 import { cloneRepository, folderNameFromUrl } from './git'
 import { getExtensionService } from './extensions/service'
-import { readProjectGitRemotes, setProjectGitRemote } from './projectGit'
+import { moveProjectGit, readProjectGitRemotes, setProjectGitRemote } from './projectGit'
 import { launchedForNewWindow } from './launchArgs'
 import {
   ensureUserStylesDir,
@@ -300,6 +300,10 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.VaultRename, async (_e, o: { from: string; to: string }) => {
     await renameVaultPath(o.from, o.to)
+    // 项目 Git 配置按绝对路径索引:目录改名 / 移动后连密钥一起迁到新路径,
+    // 否则仓库选择页里这个项目的 Git 设置会"消失"
+    await moveProjectGit(o.from, o.to)
+    getExtensionService()?.notifyProjectGitChanged()
   })
 
   ipcMain.handle(IPC.VaultDelete, async (_e, o: { path: string }) => {

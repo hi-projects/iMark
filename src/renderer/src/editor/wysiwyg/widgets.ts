@@ -2402,8 +2402,30 @@ export class TableWidget extends WidgetType {
   destroy(dom: HTMLElement): void {
     const state = tableStates.get(dom)
     if (!state) return
+    /*
+     * widget 在编辑过程中被销毁:宿主行滚出视口、同一行上的别的装饰变化让
+     * 这一行重建,都会走到这里。此时单元格里的字还只在 DOM 里 —— 直接
+     * releaseActive 会把刚输入的内容一起丢掉。
+     *
+     * CodeMirror 的更新过程里不能 dispatch,推到微任务;flushActive 自带
+     * 「行源码没变才落笔」的守卫,文档被整个换掉时会拒绝写入。
+     */
+    const pending = state.active
     state.cancelDrag?.()
     releaseActive(state)
+    if (pending) {
+      queueMicrotask(() => {
+        if (state.active) return
+        state.active = pending
+        try {
+          flushActive(state)
+        } catch {
+          /* 视图已销毁 */
+        }
+        state.active = null
+        activeTableStates.delete(state)
+      })
+    }
     state.selection = null
     resizeObservers.get(dom)?.disconnect()
     resizeObservers.delete(dom)
@@ -2754,6 +2776,26 @@ function bindTableEvents(state: TableDomState): void {
  */
 export function flushTableEdits(): void {
   for (const state of [...activeTableStates]) flushActive(state)
+}
+
+/**
+ * 结束所有正在编辑的单元格:先把文字写回文档,再收起输入框。
+ *
+ * 点击表格外的位置时调用。CodeMirror 只在编辑器**没有焦点**时才会调
+ * `contentDOM.focus()`;单元格本身位于 `.cm-content` 内部,`view.hasFocus`
+ * 一直为真,嵌套的 contenteditable 收不到 blur —— 点了别处人还留在编辑态。
+ * 这里在 mousedown 里主动提交,并把焦点交还正文。
+ */
+export function endTableCellEditing(): void {
+  let view: EditorView | null = null
+  for (const state of [...activeTableStates]) {
+    if (!view) view = state.view
+    if (state.active) finishEdit(state, true)
+  }
+  const active = document.activeElement
+  if (view && active instanceof Element && active.closest('.cm-md-table-widget')) {
+    view.contentDOM.focus({ preventScroll: true })
+  }
 }
 
 /**

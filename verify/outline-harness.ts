@@ -103,10 +103,23 @@ const JUMP_MARGIN = 24
  * 本 fixture 每节只有 ~10 行,够用。
  */
 function expectedActive(s: Snap): string {
+  // 标题行的 textContent 里可能带着行首折叠按钮的「+」
+  const clean = (text: string): string => text.replace(/^\+/, '')
   let want = ''
   for (const h of s.headings) if (h.top < JUMP_MARGIN) want = h.text
-  // 没有任何标题落在视口顶边这一带 = 已经在文档最顶部,第一个标题就是当前节
-  return want || (s.headings[0]?.text ?? '')
+  if (want) return clean(want)
+  /*
+   * 视口上方那条标题行可能没挂标题装饰类(预渲染的行不等于可见范围),
+   * 此时 DOM 里找不到「顶边上一条标题」。用大纲顺序回推:视口内第一条
+   * 标题的前一条就是当前节。
+   */
+  const below = s.headings.find(h => h.top >= 0)
+  if (below) {
+    const at = s.outline.indexOf(clean(below.text))
+    if (at > 0) return s.outline[at - 1] ?? ''
+  }
+  // 已经在文档最顶部:第一个标题就是当前节
+  return s.outline[0] ?? ''
 }
 
 async function main(): Promise<void> {

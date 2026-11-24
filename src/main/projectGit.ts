@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { resolve as resolvePath } from 'node:path'
+import { resolve as resolvePath, sep } from 'node:path'
 import type {
   ProjectGitRemoteConfig,
   VaultGitRemote,
@@ -198,4 +198,45 @@ async function clearSecrets(root: string, auth: PluginAuthMode): Promise<void> {
   } catch {
     /* 清不掉也不影响配置本身 */
   }
+}
+
+/**
+ * 重命名 / 移动仓库目录后,把项目 Git 配置与密钥一起迁到新路径。
+ *
+ * 配置按绝对路径索引(settings.projectGit 的键、secrets 里按路径哈希的键)。
+ * 目录改名后旧键永远读不到,表现就是「仓库改名后 Git 设置消失」。被改名
+ * 目录**下面**的项目(前缀匹配)一起搬;只改大小写时键不变,直接返回。
+ */
+export async function moveProjectGit(from: string, to: string): Promise<void> {
+  const fromKey = projectGitKey(from)
+  const toKey = projectGitKey(to)
+  if (fromKey === toKey) return
+  const prefix = fromKey.endsWith(sep) ? fromKey : `${fromKey}${sep}`
+  await queueWrite(async () => {
+    const settings = await loadSettings()
+    const all = { ...(settings.projectGit ?? {}) }
+    const moves: Array<{ oldKey: string; newKey: string }> = []
+    for (const key of Object.keys(all)) {
+      if (key !== fromKey && !key.startsWith(prefix)) continue
+      moves.push({ oldKey: key, newKey: toKey + key.slice(fromKey.length) })
+    }
+    if (moves.length === 0) return
+    for (const { oldKey, newKey } of moves) {
+      all[newKey] = all[oldKey]
+      delete all[oldKey]
+    }
+    await saveSettings({ projectGit: all })
+    /*
+     * 密钥键是路径的哈希,不跟着搬的话:配置还在、地址也对,但令牌读不到
+     * (设置页显示「无令牌」,同步直接鉴权失败)。
+     */
+    for (const { oldKey, newKey } of moves) {
+      for (const auth of ['token', 'password'] as const) {
+        const secret = await getSecret(projectGitSecretKey(oldKey, auth))
+        if (!secret) continue
+        await setSecret(projectGitSecretKey(newKey, auth), secret)
+        await setSecret(projectGitSecretKey(oldKey, auth), null)
+      }
+    }
+  })
 }

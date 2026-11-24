@@ -376,8 +376,6 @@
  * 承担:rules.ts 按「上块 → 下块」挂 `cm-md-<上块>-<下块>` 类,这里用
  * padding-top 加出配对值(0–3 档 × 正文字号)。每个有序配对一条规则、
  * 一个根变量 `--md-gap-<上块>-<下块>`;没设置过的按 1 档。
- *
- * --md-heading-pad 只给行首「+」按钮定位用,跟着同一份值走。
  */
 .cm-editor .cm-line.cm-md-structural-blank {
   height: 0;
@@ -388,327 +386,246 @@
 }
 
 .cm-editor .cm-line.cm-md-body-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-body, 1));
 }
 .cm-editor .cm-line.cm-md-body-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-heading, 1));
 }
 .cm-editor .cm-line.cm-md-body-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
 }
 .cm-editor .cm-line.cm-md-body-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-list, 1));
 }
 .cm-editor .cm-line.cm-md-body-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
 }
 .cm-editor .cm-line.cm-md-body-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-image, 1));
 }
 .cm-editor .cm-line.cm-md-body-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-table, 1));
 }
 .cm-editor .cm-line.cm-md-body-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-math, 1));
 }
 .cm-editor .cm-line.cm-md-body-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-body-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-heading-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-body, 1));
 }
 .cm-editor .cm-line.cm-md-heading-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-heading, 1));
 }
 .cm-editor .cm-line.cm-md-heading-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
 }
 .cm-editor .cm-line.cm-md-heading-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-list, 1));
 }
 .cm-editor .cm-line.cm-md-heading-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
 }
 .cm-editor .cm-line.cm-md-heading-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-image, 1));
 }
 .cm-editor .cm-line.cm-md-heading-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-table, 1));
 }
 .cm-editor .cm-line.cm-md-heading-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-math, 1));
 }
 .cm-editor .cm-line.cm-md-heading-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-heading-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-code-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-body, 1));
 }
 .cm-editor .cm-line.cm-md-code-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-heading, 1));
 }
 .cm-editor .cm-line.cm-md-code-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
 }
 .cm-editor .cm-line.cm-md-code-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-list, 1));
 }
 .cm-editor .cm-line.cm-md-code-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
 }
 .cm-editor .cm-line.cm-md-code-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-image, 1));
 }
 .cm-editor .cm-line.cm-md-code-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-table, 1));
 }
 .cm-editor .cm-line.cm-md-code-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-math, 1));
 }
 .cm-editor .cm-line.cm-md-code-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-code-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-list-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-body, 1));
 }
 .cm-editor .cm-line.cm-md-list-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-heading, 1));
 }
 .cm-editor .cm-line.cm-md-list-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
 }
 .cm-editor .cm-line.cm-md-list-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-list, 1));
 }
 .cm-editor .cm-line.cm-md-list-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
 }
 .cm-editor .cm-line.cm-md-list-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-image, 1));
 }
 .cm-editor .cm-line.cm-md-list-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-table, 1));
 }
 .cm-editor .cm-line.cm-md-list-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-math, 1));
 }
 .cm-editor .cm-line.cm-md-list-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-list-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-quote-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-body, 1));
 }
 .cm-editor .cm-line.cm-md-quote-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-heading, 1));
 }
 .cm-editor .cm-line.cm-md-quote-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
 }
 .cm-editor .cm-line.cm-md-quote-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-list, 1));
 }
 .cm-editor .cm-line.cm-md-quote-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
 }
 .cm-editor .cm-line.cm-md-quote-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-image, 1));
 }
 .cm-editor .cm-line.cm-md-quote-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-table, 1));
 }
 .cm-editor .cm-line.cm-md-quote-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-math, 1));
 }
 .cm-editor .cm-line.cm-md-quote-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-quote-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-image-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-body, 1));
 }
 .cm-editor .cm-line.cm-md-image-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-heading, 1));
 }
 .cm-editor .cm-line.cm-md-image-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
 }
 .cm-editor .cm-line.cm-md-image-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-list, 1));
 }
 .cm-editor .cm-line.cm-md-image-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
 }
 .cm-editor .cm-line.cm-md-image-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-image, 1));
 }
 .cm-editor .cm-line.cm-md-image-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-table, 1));
 }
 .cm-editor .cm-line.cm-md-image-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-math, 1));
 }
 .cm-editor .cm-line.cm-md-image-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-image-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-table-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-body, 1));
 }
 .cm-editor .cm-line.cm-md-table-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-heading, 1));
 }
 .cm-editor .cm-line.cm-md-table-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
 }
 .cm-editor .cm-line.cm-md-table-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-list, 1));
 }
 .cm-editor .cm-line.cm-md-table-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
 }
 .cm-editor .cm-line.cm-md-table-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-image, 1));
 }
 .cm-editor .cm-line.cm-md-table-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-table, 1));
 }
 .cm-editor .cm-line.cm-md-table-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-math, 1));
 }
 .cm-editor .cm-line.cm-md-table-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-table-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-math-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-body, 1));
 }
 .cm-editor .cm-line.cm-md-math-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-heading, 1));
 }
 .cm-editor .cm-line.cm-md-math-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
 }
 .cm-editor .cm-line.cm-md-math-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-list, 1));
 }
 .cm-editor .cm-line.cm-md-math-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
 }
 .cm-editor .cm-line.cm-md-math-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-image, 1));
 }
 .cm-editor .cm-line.cm-md-math-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-table, 1));
 }
 .cm-editor .cm-line.cm-md-math-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-math, 1));
 }
 .cm-editor .cm-line.cm-md-math-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-math-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-mermaid, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-body {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-body, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-body, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-heading {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-heading, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-heading, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-code {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-list {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-list, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-list, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-quote {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-image {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-image, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-image, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-table {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-table, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-table, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-math {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-math, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-math, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-mermaid {
-  --md-heading-pad: calc(var(--editor-body-size) * var(--md-gap-mermaid-mermaid, 1));
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-mermaid, 1));
 }
 
@@ -737,40 +654,39 @@
   text-box-trim: trim-both;
 }
 
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-body-code {
-  padding-top: 0;
+/*
+ * 代码块的上侧间距挂在**上一块末行**的 padding-bottom 上(避免撑开代码底色)。
+ *
+ * 下侧配类必须单独命名(cm-md-bottom-<上块>-code),不能复用
+ * cm-md-<上块>-code:上一块末行自己可能还挂着上侧配类(单行段落的
+ * cm-md-body-body),两个配类同名会互相覆盖 padding-top —— 后者的
+ * padding-top: 0 把这一段的段间距直接清零,两段看起来被压到一起。
+ */
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-body-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-body-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-heading-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-heading-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-heading-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-code-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-code-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-code-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-list-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-list-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-quote-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-quote-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-image-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-image-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-table-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-table-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-table-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-math-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-math-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-math-code, 1));
 }
-.cm-editor .cm-line.cm-md-pair-bottom.cm-md-mermaid-code {
-  padding-top: 0;
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-mermaid-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
 }
 
@@ -840,6 +756,16 @@
 .cm-md-table-host {
   line-height: 0;
   font-size: 0;
+}
+
+/*
+ * 上面的 font-size: 0 会被表格继承。frame 是表格内容的根,在这里把字号复位,
+ * 否则单元格里的文字和输入光标都是 0 高 —— 能点进格子、打字也写进了源码,
+ * 但屏幕上什么都看不见。
+ */
+.cm-md-table-host .cm-md-table-frame {
+  font-size: var(--editor-body-size);
+  line-height: normal;
 }
 
 /*

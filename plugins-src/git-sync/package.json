@@ -83,7 +83,7 @@
             "section": "远端仓库",
             "targetSecret": {
               "label": "访问令牌",
-              "placeholder": "必填（私有仓库需要访问令牌）"
+              "placeholder": "选填（公开仓库可留空，私有仓库需要访问令牌）"
             }
           }
         },

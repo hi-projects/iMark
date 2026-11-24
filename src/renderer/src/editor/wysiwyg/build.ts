@@ -1,5 +1,5 @@
 import { ensureSyntaxTree, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
-import type { SyntaxNode } from '@lezer/common'
+import type { SyntaxNode, Tree } from '@lezer/common'
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { Transaction, type ChangeDesc, type EditorState, type Line, type Range, type Text } from '@codemirror/state'
 import { getPendingFence } from '../pendingFence'
@@ -7,7 +7,12 @@ import { autoTitleChanges, caretGroupRange, codeTabsField } from './codeTabs'
 import { getEmptyParagraphs } from '../emptyParagraph'
 import { isImeComposing } from '../ime'
 import { applyRule, blockKindOf, collapseBlankRuns, type LinkInfo, type RuleContext } from './rules'
-import { caretOutsideRenderedTable, isBlankLine, keepCaretOutOfTables } from './widgets'
+import {
+  caretOutsideRenderedTable,
+  endTableCellEditing,
+  isBlankLine,
+  keepCaretOutOfTables
+} from './widgets'
 import {
   addConflictDecorations,
   findConflictBlocks,
@@ -68,6 +73,18 @@ function endOfLastText(doc: Text): number {
   return pos
 }
 
+/** pos 是否落在代码块 / 缩进代码 / 公式块里(这些块里的空行不是空段落) */
+function insideCodeLikeBlockAt(tree: Tree, pos: number): boolean {
+  let node: SyntaxNode | null = tree.resolveInner(pos, 1)
+  while (node) {
+    if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'MathBlock') {
+      return true
+    }
+    node = node.parent
+  }
+  return false
+}
+
 /**
  * 文末由用户回车创建、还空着的段落位置(行尾);没有就返回 null。
  *
@@ -84,6 +101,62 @@ function trailingEmptyParagraphEnd(state: EditorState): number | null {
     if (kept.has(line.from)) best = line.to
   }
   return best
+}
+
+/**
+ * 从源码里的连排空行还原「空段落」的行(只在渲染时用,不写回字段)。
+ *
+ * 「回车 = 新段」把一条空段落写成三行:**分隔空行 + 空段落行 + 分隔空行**。
+ * 编辑期间 emptyParagraphsField 记着它,但重开文档后字段是空的:连排空行
+ * 会被 collapseBlankRuns 当结构空行折叠,用户敲出来的空行看上去就"消失"了。
+ *
+ * 规则:长度 ≥ 3 的**纯空白**连排里,从第 2 条起每隔一条是空段落
+ * (3 条 → 1 条,5 条 → 2 条)。两侧都要有内容 —— 文档首尾的空行是排版
+ * 余量,不是用户敲出来的空段落。代码块 / 引用 / 列表等容器里的空行不算,
+ * 它们有自己的行样式。
+ *
+ * `known` 是本次已经确认的空段落(字段记录 + 光标行)。编辑期间回车刚写出的
+ * 连排空行已经被字段记着,如果再按规则还原一条,屏上会同时出现两条空段落
+ * (行首回车后「多出一段」的空白)。这一段就交给字段,不再重复还原。
+ */
+function persistedEmptyParagraphs(
+  state: EditorState,
+  tree: Tree,
+  known: ReadonlySet<number>
+): Line[] {
+  const blank = (n: number): boolean =>
+    n >= 1 && n <= state.doc.lines && /^\s*$/.test(state.doc.line(n).text)
+  const content = (n: number): boolean =>
+    n >= 1 && n <= state.doc.lines && /\S/.test(state.doc.line(n).text)
+  const inContainer = (pos: number): boolean => {
+    let node: SyntaxNode | null = tree.resolveInner(pos, 1)
+    while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+    if (!node || node.parent?.name !== 'Document') return false
+    return node.name !== 'Paragraph'
+  }
+  const out: Line[] = []
+  for (let number = 1; number <= state.doc.lines; number++) {
+    if (!blank(number) || inContainer(state.doc.line(number).from)) continue
+    let start = number
+    while (blank(start - 1)) start -= 1
+    let end = number
+    while (blank(end + 1)) end += 1
+    const len = end - start + 1
+    if (len >= 3 && content(start - 1) && content(end + 1)) {
+      let recorded = false
+      for (let n = start; n <= end; n++) {
+        if (known.has(state.doc.line(n).from)) {
+          recorded = true
+          break
+        }
+      }
+      if (!recorded) {
+        for (let i = 2; i <= len - 1; i += 2) out.push(state.doc.line(start + i - 1))
+      }
+    }
+    number = end
+  }
+  return out
 }
 
 /** 这一行是不是被整行替换掉了(代码围栏、表格宿主行、公式、独占一行的图片等) */
@@ -990,48 +1063,46 @@ export class WysiwygPlugin {
           continue
         }
       }
-      const emptyParagraphs = new Set(getEmptyParagraphs(state))
+      // 字段里的记录(用户回车 / 删除造出来的空段落)与本次渲染的空段落分开:
+      // 连排空行还原只避开**字段已知**的那些,光标行这种临时条目不算
+      const recordedEmptyParagraphs = new Set(getEmptyParagraphs(state))
+      const emptyParagraphs = new Set(recordedEmptyParagraphs)
       const tree = syntaxTree(state)
       /*
-       * 空段落行的行盒要与「敲进第一个字之后」完全一致,否则输入第一个字时
-       * 整篇内容会跳一下。段落的行盒会按相邻块裁掉上 / 下侧半份行距
-       * (见 rules.ts 的 styleParagraphTrim),这里先按同样的邻居判断把裁切
-       * 类挂上,空着的时候和变成段落以后高度相同。
+       * 光标停在一条空行上时,这条空行也要按正文段落撑开。
+       *
+       * 空行(不是回车建出的空段落)会被 collapseBlankRuns 折成
+       * cm-md-structural-blank:零高度 + overflow:hidden。光标落在上面时
+       * 行盒高度是 0 —— 光标不闪、行首「+」也被裁掉(空文档或多条空行点进去
+       * 就是这种状态)。这里只把它加进**本次渲染**的空段落集合,不写进
+       * emptyParagraphsField:方向键 / 点击的落点规则不受影响。
+       *
+       * 代码块 / 公式块里的空行除外:它们是块内容,已经有自己的代码行装饰。
+       * 按空段落撑开会多出段落间距和边界裁切 —— 输入法上屏第一个字时行盒
+       * 突然缩回代码行,字和光标一起往上跳。
        */
-      const trimForEmpty = (line: Line): string => {
-        const bodyAt = (pos: number): boolean => {
-          let node: SyntaxNode | null = tree.resolveInner(pos, 1)
-          while (node && node.parent && node.parent.name !== 'Document') node = node.parent
-          if (!node || node.parent?.name !== 'Document' || node.name !== 'Paragraph') return false
-          return !/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(state.doc.lineAt(node.from).text)
-        }
-        let above = line.number - 1
-        while (above >= 1 && !/\S/.test(state.doc.line(above).text)) above -= 1
-        let below = line.number + 1
-        while (below <= state.doc.lines && !/\S/.test(state.doc.line(below).text)) below += 1
-        const top = above < 1 || bodyAt(state.doc.line(above).from)
-        // 文末(new paragraph 后面什么都没有)也按正文裁下侧,与规则里一致:
-        // 回车在文末起的新段,空着时和敲进字后行盒一样高。
-        const bottom = below > state.doc.lines || bodyAt(state.doc.line(below).from)
-        return [top ? 'cm-md-para-trim-top' : '', bottom ? 'cm-md-para-trim-bottom' : '']
-          .filter(Boolean)
-          .join(' ')
+      const caretLine = state.doc.lineAt(state.selection.main.head)
+      if (!/\S/.test(caretLine.text) && !insideCodeLikeBlockAt(tree, caretLine.from)) {
+        emptyParagraphs.add(caretLine.from)
       }
-      // 空段落行挂一个标记类:它可能同时挨着一档段落间距,样式据此保住整行高。
-      // 也方便验收直接看出「这一行被认作空段落」,而不是碰巧没被收紧。
-      for (const pos of emptyParagraphs) {
-        if (pos < from || pos > to) continue
-        const line = state.doc.lineAt(pos)
-        if (line.from === pos) {
-          const trim = trimForEmpty(line)
-          decos.push({
-            from: pos,
-            to: pos,
-            value: Decoration.line({
-              class: trim ? `cm-md-empty-paragraph ${trim}` : 'cm-md-empty-paragraph'
-            })
-          })
-        }
+      /*
+       * 文件里显式留下的空段落:重新打开文档后也要撑成整行。
+       *
+       * 「回车 = 新段」把一条空段落写成「分隔空行 + 空段落行 + 分隔空行」。
+       * 编辑期间 emptyParagraphsField 记着它;重开文档后字段是空的、光标也
+       * 不在行上,连排空行会被当结构空行折叠 —— 用户敲出来的空行看上去就
+       * "消失"了(源码其实还在)。按同样的三行一组把中间那条认回来。
+       */
+      for (const line of persistedEmptyParagraphs(state, tree, recordedEmptyParagraphs)) {
+        emptyParagraphs.add(line.from)
+      }
+      /*
+       * 字段 / 还原记录里落在代码块、缩进代码、公式块内的条目一律不画:
+       * 那些空行是块内容(有代码行装饰)。画成空段落会多出段落间距和裁切,
+       * 在代码块里按一次退格把行删空,光标和卡片高度都会跟着跳。
+       */
+      for (const pos of [...emptyParagraphs]) {
+        if (insideCodeLikeBlockAt(tree, pos)) emptyParagraphs.delete(pos)
       }
       const ctx: RuleContext = {
         sel: state.selection,
@@ -1052,9 +1123,67 @@ export class WysiwygPlugin {
           let node = tree.resolveInner(safe, 1)
           while (node.parent && node.parent.name !== 'Document') node = node.parent
           return node.parent ? node.name : null
+        },
+        blockKindAt: pos => {
+          const safe = Math.min(Math.max(pos, 0), tree.length)
+          let node = tree.resolveInner(safe, 1)
+          while (node.parent && node.parent.name !== 'Document') node = node.parent
+          return node.parent ? blockKindOf(ctx, node) : null
         }
       }
-      // 空段落行的配对间距:按「上一个块 → 正文」挂类,行盒与敲进字以后一致
+      /*
+       * 空段落行的行盒要与「敲进第一个字之后」完全一致,否则输入第一个字时
+       * 整篇内容会跳一下。段落的行盒会按相邻块裁掉上 / 下侧半份行距
+       * (见 rules.ts 的 styleParagraphTrim),这里按同样的邻居判断把裁切
+       * 类挂上,空着的时候和变成段落以后高度相同。
+       *
+       * 邻居认的是「参与配对间距的顶层块」,不只是正文段落:下面那条空行
+       * 敲成标题 / 代码时,空段落的这一侧同样要裁,否则行盒先长高半档,
+       * 整行连同行首「+」会往下一跳。
+       */
+      const trimForEmpty = (line: Line): string => {
+        const pairedBlockAt = (pos: number): boolean => {
+          let node: SyntaxNode | null = tree.resolveInner(pos, 1)
+          while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+          if (!node || node.parent?.name !== 'Document') return false
+          return blockKindOf(ctx, node) !== null
+        }
+        let above = line.number - 1
+        while (above >= 1 && !/\S/.test(state.doc.line(above).text)) above -= 1
+        let below = line.number + 1
+        while (below <= state.doc.lines && !/\S/.test(state.doc.line(below).text)) below += 1
+        const top = above < 1 || pairedBlockAt(state.doc.line(above).from)
+        // 文末(new paragraph 后面什么都没有)也按正文裁下侧,与规则里一致:
+        // 回车在文末起的新段,空着时和敲进字后行盒一样高。
+        const bottom = below > state.doc.lines || pairedBlockAt(state.doc.line(below).from)
+        return [top ? 'cm-md-para-trim-top' : '', bottom ? 'cm-md-para-trim-bottom' : '']
+          .filter(Boolean)
+          .join(' ')
+      }
+      // 空段落行挂一个标记类:它可能同时挨着一档段落间距,样式据此保住整行高。
+      // 也方便验收直接看出「这一行被认作空段落」,而不是碰巧没被收紧。
+      for (const pos of emptyParagraphs) {
+        if (pos < from || pos > to) continue
+        const line = state.doc.lineAt(pos)
+        if (line.from === pos) {
+          const trim = trimForEmpty(line)
+          decos.push({
+            from: pos,
+            to: pos,
+            value: Decoration.line({
+              class: trim ? `cm-md-empty-paragraph ${trim}` : 'cm-md-empty-paragraph'
+            })
+          })
+        }
+      }
+      /*
+       * 空段落行的配对间距:按「上一个块 → 正文」挂类,行盒与敲进字以后一致。
+       *
+       * 空段落本身在语法树里不是块,所以要跳过它(以及其它空行)去找**真正**
+       * 的内容块;但紧挨着的上一条如果是用户回车建出来的空段落,它就是正文
+       * 段落:跳过它会让「空文档里按一次回车」的两条光标贴在一起,和第一行
+       * 有字时的距离对不上。上方连空段落都没有时才是文首,不挂配对。
+       */
       for (const pos of emptyParagraphs) {
         if (pos < from || pos > to) continue
         const line = state.doc.lineAt(pos)
@@ -1062,8 +1191,8 @@ export class WysiwygPlugin {
         let n = line.number - 1
         let aboveIsEmpty = false
         while (n >= 1 && !/\S/.test(state.doc.line(n).text)) {
-          const l = state.doc.line(n)
-          if (emptyParagraphs.has(l.from)) {
+          const above = state.doc.line(n)
+          if (emptyParagraphs.has(above.from)) {
             aboveIsEmpty = true
             break
           }
@@ -1075,19 +1204,19 @@ export class WysiwygPlugin {
             to: pos,
             value: Decoration.line({ class: 'cm-md-block-pair cm-md-body-body' })
           })
-        } else if (n >= 1) {
-          let node: SyntaxNode | null = tree.resolveInner(state.doc.line(n).from, 1)
-          while (node && node.parent && node.parent.name !== 'Document') node = node.parent
-          if (!node || node.parent?.name !== 'Document') continue
-          const kind = blockKindOf(ctx, node)
-          if (kind) {
-            decos.push({
-              from: pos,
-              to: pos,
-              value: Decoration.line({ class: `cm-md-block-pair cm-md-${kind}-body` })
-            })
-          }
+          continue
         }
+        if (n < 1) continue
+        let node: SyntaxNode | null = tree.resolveInner(state.doc.line(n).from, 1)
+        while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+        if (!node || node.parent?.name !== 'Document') continue
+        const kind = blockKindOf(ctx, node)
+        if (!kind) continue
+        decos.push({
+          from: pos,
+          to: pos,
+          value: Decoration.line({ class: `cm-md-block-pair cm-md-${kind}-body` })
+        })
       }
       syntaxTree(state).iterate({
         from,
@@ -1156,6 +1285,14 @@ export const wysiwygViewPlugin = ViewPlugin.fromClass(WysiwygPlugin, {
       if (event.button === 0) view.plugin(wysiwygViewPlugin)?.beginPointerDown()
       if (event.button !== 0) return false
       const target = event.target instanceof Element ? event.target : null
+      /*
+       * 点在表格外面:先把正在编辑的那一格提交并收起。
+       *
+       * 单元格嵌套在 `.cm-content` 里,编辑器本身一直是"有焦点"的,浏览器
+       * 不会为点别处补 blur;不主动结束的话,输入框会一直开着,再点文档
+       * 其它地方也拿不到正文光标。
+       */
+      if (target && !target.closest('.cm-md-table-widget')) endTableCellEditing()
       if (!event.ctrlKey && !event.metaKey) {
         // 单元格/控件自己处理点击;其余落在渲染表格隐藏源码或结构空行上的点击一律挪出去
         if (target?.closest?.('.cm-md-table-widget')) return false

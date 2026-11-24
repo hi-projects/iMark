@@ -49,6 +49,13 @@ export function extractOutline(state: EditorState): OutlineItem[] {
       if (inConflict(node.from)) return
       let level: number | null = null
       if (node.name.startsWith('ATXHeading')) {
+        /*
+         * 只敲了 `#` 还没补空格:编辑区按正文显示(见 wysiwyg/rules.ts 的
+         * isPendingHeading),大纲也先别列 —— 否则刚敲一个 # 侧栏就多出一条
+         * 「(无标题文本)」。
+         */
+        const line = state.doc.lineAt(node.from)
+        if (/^ {0,3}#{1,6}$/.test(line.text.slice(node.from - line.from))) return
         level = Number(node.name.slice(-1))
       } else if (node.name === 'SetextHeading1') {
         level = 1

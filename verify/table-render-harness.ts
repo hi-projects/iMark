@@ -287,6 +287,30 @@ async function main(): Promise<void> {
     JSON.stringify(rowBox)
   )
 
+  /*
+   * 宿主行用 font-size: 0 压掉行盒留白,表格必须自己把字号复位。
+   * 漏了的话格子里所有文字(和输入光标)都是 0 高:能点进格子、能打字,
+   * 但屏幕上什么都看不见,源码里却有内容。
+   */
+  const cellText = await evalJs<{ fontSize: number; lineHeight: number; textHeight: number } | null>(`
+    (() => {
+      const td = document.querySelector('.cm-content table tbody td')
+      if (!td) return null
+      const s = getComputedStyle(td)
+      const range = document.createRange()
+      range.selectNodeContents(td)
+      return {
+        fontSize: parseFloat(s.fontSize),
+        lineHeight: parseFloat(s.lineHeight),
+        textHeight: range.getBoundingClientRect().height
+      }
+    })()`)
+  check(
+    '单元格字号与文字高度都不为 0(宿主行的 font-size: 0 被复位)',
+    !!cellText && cellText.fontSize > 0 && cellText.textHeight > 0,
+    JSON.stringify(cellText)
+  )
+
   // ---------- 1b. 结构控件:数量对、位置在表格外、默认隐藏、靠近才浮现 ----------
 
   console.log('\n【1b】表格四周的结构控件:只在生效范围内出现')
@@ -405,8 +429,8 @@ async function main(): Promise<void> {
   )
 
   // 留白必须被等量负外边距抵消:图标浮在四周,但不把表格往右下顶。
-  // 上下间距改由结构空行 / 标题留白承担后,frame 的上下 padding 在有结构空行
-  // 或紧贴标题时归零 —— 否则同一道缝会算两次。
+  // 上下间距由「上下方块的配对 padding」承担,frame 的上下 padding 恒为 0 ——
+  // 否则同一道缝会算两次(见 40aad14 的间距模型)。
   const spacing = await evalJs<{
     padLeft: number
     padTop: number
@@ -414,8 +438,10 @@ async function main(): Promise<void> {
     marginLeft: number
     marginTop: number
     hostCls: string
-    gapBelowCls: string
-    gapBelowH: number
+    hostPadTop: number
+    blankCls: string
+    blankH: number
+    nextPairPad: number
   } | null>(`
     (() => {
       const f = document.querySelector('.cm-md-table-frame')
@@ -423,14 +449,17 @@ async function main(): Promise<void> {
       const s = getComputedStyle(f)
       const host = f.closest('.cm-md-table-host')
       const lines = [...document.querySelectorAll('.cm-content .cm-line')]
-      const gap = lines.find(l => l.classList.contains('cm-md-block-gap-table-after'))
+      const blank = lines.find(l => l.classList.contains('cm-md-structural-blank'))
+      const nextPair = lines.find(l => l.classList.contains('cm-md-table-body'))
       return {
         padLeft: parseFloat(s.paddingLeft), padTop: parseFloat(s.paddingTop),
         padBottom: parseFloat(s.paddingBottom),
         marginLeft: parseFloat(s.marginLeft), marginTop: parseFloat(s.marginTop),
         hostCls: host?.className ?? '',
-        gapBelowCls: gap?.className ?? '',
-        gapBelowH: gap ? Math.round(gap.getBoundingClientRect().height * 10) / 10 : -1
+        hostPadTop: host ? parseFloat(getComputedStyle(host).paddingTop) : -1,
+        blankCls: blank?.className ?? '',
+        blankH: blank ? Math.round(blank.getBoundingClientRect().height * 10) / 10 : -1,
+        nextPairPad: nextPair ? parseFloat(getComputedStyle(nextPair).paddingTop) : -1
       }
     })()`)
   check(
@@ -442,20 +471,20 @@ async function main(): Promise<void> {
     JSON.stringify(spacing)
   )
   check(
-    '表格紧贴标题:frame 顶部归零,标题自己的留白管这一侧',
+    '表格紧贴标题:frame 上下 padding 归零,间距由宿主行的配对 padding 承担',
     !!spacing &&
-      /cm-md-table-tight-heading-top/.test(spacing.hostCls) &&
-      spacing.padTop === 0,
+      /cm-md-heading-table/.test(spacing.hostCls) &&
+      spacing.padTop === 0 &&
+      spacing.hostPadTop > 0,
     JSON.stringify(spacing)
   )
   check(
-    '表格下方的结构空行按表格下方档排,frame 底部同时归零',
+    '表格下方的结构空行完全折叠,间距由下一段的配对 padding 承担',
     !!spacing &&
-      /cm-md-table-gap-line-bottom/.test(spacing.hostCls) &&
+      /cm-md-structural-blank/.test(spacing.blankCls) &&
+      spacing.blankH === 0 &&
       spacing.padBottom === 0 &&
-      /cm-md-block-gap-table-after/.test(spacing.gapBelowCls) &&
-      spacing.gapBelowH > 0 &&
-      spacing.gapBelowH < 30,
+      spacing.nextPairPad > 0,
     JSON.stringify(spacing)
   )
 
@@ -730,6 +759,22 @@ async function main(): Promise<void> {
     '点一下单元格就进入编辑态(不是翻回源码)',
     clicked?.editable === 'plaintext-only',
     JSON.stringify(clicked)
+  )
+  /*
+   * 光标得看得见:字号被宿主行压成 0 时,焦点在格子里、outline 也在,
+   * 但光标高度是 0 —— 用户看到的是「能选中格子却没有输入光标」。
+   */
+  const caretBox = await evalJs<{ height: number; collapsed: boolean } | null>(`
+    (() => {
+      const sel = document.getSelection()
+      if (!sel || sel.rangeCount === 0) return null
+      const range = sel.getRangeAt(0)
+      return { height: range.getBoundingClientRect().height, collapsed: range.collapsed }
+    })()`)
+  check(
+    '编辑态的光标有可见高度',
+    !!caretBox && caretBox.collapsed && caretBox.height > 0,
+    JSON.stringify(caretBox)
   )
   check('表格仍然渲染着', (await tableCount()) === 1, String(await tableCount()))
   check('光标没有落进表格源码行', !(await cursorInTable()), `第 ${await cursorLine()} 行`)

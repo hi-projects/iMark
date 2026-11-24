@@ -35,7 +35,7 @@ import type { ExtensionContextKeys } from '@shared/extensions'
 import { activeTab, appStore, editorHolder } from '../stores/app'
 import { setEditorUpdateObserver } from '../editor/setup'
 import { setExtensionDecorationsEffect } from '../editor/extensionDecorations'
-import { focusRenderedTableAtPosition } from '../editor/wysiwyg/widgets'
+import { endTableCellEditing, focusRenderedTableAtPosition } from '../editor/wysiwyg/widgets'
 import { renderMarkdownFragment } from './exportHtml'
 import {
   activateTab,
@@ -456,6 +456,15 @@ function applySelection(
     ) {
       return true
     }
+    /*
+     * 选区落在表格外:结束正在编辑的单元格。
+     *
+     * 新建表格时 widget 的 autoFocus 会先按插入事务映射出的光标进入第一格,
+     * 随后扩展再调用 setSelection 把光标放到表格外(例如表格末尾的新段)。
+     * 只 dispatch 选区不会收掉编辑态 —— 单元格仍占着焦点,用户看起来像还
+     * 在表格里。这里和鼠标点表格外一样先提交再交出焦点。
+     */
+    endTableCellEditing()
     return updateTabState(tabId, {
       selection: EditorSelection.create([EditorSelection.range(from, to)])
     })
@@ -490,6 +499,8 @@ function setSelections(
       tab.id === appStore.activeTabId &&
       editorHolder.view !== null &&
       focusRenderedTableAtPosition(editorHolder.view, selection.main.head)
+    // 与 applySelection 一样:光标被移到表格外时收掉单元格编辑态
+    if (!inTable) endTableCellEditing()
     if (!inTable && !updateTabState(tab.id, { selection })) return false
   } finally {
     suppressSelection = false

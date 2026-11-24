@@ -37,6 +37,7 @@ import {
   readProjectGitRemotes
 } from '../src/main/projectGit'
 import { createMainWindow } from '../src/main/window'
+import { credentialArgs } from '../src/main/git'
 import { IPC } from '../src/shared/ipc-channels'
 import type { CloneProgress, ProjectGitRemoteConfig, VaultGitRemote } from '../src/shared/types'
 
@@ -279,6 +280,11 @@ async function main(): Promise<void> {
   // ---------- B. 从远端克隆 ----------
 
   console.log('\n【B】从远端克隆：真克隆 + 自动写入项目远端')
+  check(
+    '没填令牌也清空系统 credential helper（git 不会弹认证窗口）',
+    credentialArgs(false).join(' ') === '-c credential.helper=',
+    credentialArgs(false).join(' ')
+  )
   check('点击「克隆」进入表单', (await click('[data-action="start-clone"]')) && (await waitFor(`document.querySelector('[data-field="clone-url"]')`)))
   check(
     '克隆表单带滑入动画',
@@ -518,6 +524,10 @@ async function main(): Promise<void> {
     JSON.stringify(projectConfigOf(cloned))
   )
 
+  check(
+    '公开仓库没填令牌时不再提示「配置未完成」',
+    await evalJs<boolean>(`!document.querySelector('.plugin-target-problems')`)
+  )
   check('填写访问令牌', await setTargetField('访问令牌', 'plugin-token'))
   check(
     '令牌写进项目级密钥槽位',

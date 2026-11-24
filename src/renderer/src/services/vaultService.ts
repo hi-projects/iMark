@@ -482,6 +482,23 @@ export async function createDir(parentPath: string, name: string): Promise<boole
   return true
 }
 
+/**
+ * 目录改名 / 移动后,最近仓库列表里的路径一起换。
+ *
+ * 仓库可能就嵌套在被改名的目录下(在 A 仓库的文件树里重命名另一个仓库的
+ * 文件夹)。列表里留着旧路径的话,下次选择页会把它当成失效仓库清掉,项目
+ * Git 设置也就跟着看不到了 —— 主进程已经把配置和密钥迁到新路径(见
+ * VaultRename),这里把界面记得的那份路径对齐。
+ */
+function renameVaultList(from: string, to: string): void {
+  const rep = (p: string): string =>
+    p === from || isInside(from, p) ? to + p.slice(from.length) : p
+  const next = appStore.vaults.map(rep)
+  if (next.every((p, i) => p === appStore.vaults[i])) return
+  appStore.vaults = next
+  void api.saveSettings({ vaults: next })
+}
+
 /** 重命名;若涉及当前打开文件(或其所在目录),同步修正状态与 lastFile 记忆 */
 export async function renamePath(node: VaultNode, newName: string): Promise<boolean> {
   // 文件改名同样补扩展名:把「笔记.md」改成「笔记」会让它从树里消失
@@ -501,6 +518,7 @@ export async function renamePath(node: VaultNode, newName: string): Promise<bool
   await refreshVault()
   // 改名可能同时命中多个标签(目录改名时,目录下打开的每一份都要跟着换路径)
   renameTabPaths(node.path, to, node.type === 'dir')
+  if (node.type === 'dir') renameVaultList(node.path, to)
   return true
 }
 
@@ -524,6 +542,8 @@ export async function moveNode(node: VaultNode, targetDir: string): Promise<bool
     fail(err, '移动')
     return false
   }
+  // 最近仓库列表同样按绝对路径记:挪动的目录可能是别的仓库的路径前缀
+  if (node.type === 'dir') renameVaultList(node.path, to)
   // 展开状态记的是绝对路径:目录挪窝后,它和它下面展开的子目录都要换前缀
   const expanded = new Set<string>()
   for (const p of appStore.expandedDirs) {

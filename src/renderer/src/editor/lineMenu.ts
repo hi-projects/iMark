@@ -44,6 +44,16 @@ class LinePlusWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
+    /*
+     * 按钮外面套一个定位锚点(见 lineMenu.css 的 .line-plus-anchor)。
+     *
+     * 按钮直接挂进 .cm-line 时只能靠固定 top 猜文字在哪;行盒高度随字号 /
+     * 行间距 / text-box-trim / 标题上留白 / 代码块上方的下留白变化,固定偏移
+     * 总会在某些行上偏低或偏高。锚点用绝对定位铺满这一行的**文字区**
+     * (上留白 ~ 下留白),按钮在锚点里上下居中,自然落在文字的垂直中线上。
+     */
+    const anchor = document.createElement('span')
+    anchor.className = 'line-plus-anchor'
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'line-plus'
@@ -57,7 +67,14 @@ class LinePlusWidget extends WidgetType {
       const rect = btn.getBoundingClientRect()
       openLineMenu(this.line, rect)
     })
-    return btn
+    /*
+     * 锚点是空的行内元素时浏览器不生成行内盒,绝对定位的按钮会退回以整条
+     * .cm-line 为包含块 —— 折行时就会垂直居中到整段中间。放一个零宽空格
+     * 撑出行内盒:高度 = 这一行的 line-height,位置贴着第一行文字。
+     */
+    anchor.textContent = '\u200b'
+    anchor.appendChild(btn)
+    return anchor
   }
 
   ignoreEvent(): boolean {
@@ -101,15 +118,24 @@ function inBlockquote(state: EditorState, pos: number): boolean {
   return false
 }
 
-/** 这些块里不画行首「+」:代码块,以及同样是原子块的块级公式 */
-const NO_PLUS_NODES = new Set(['FencedCode', 'CodeBlock', 'MathBlock'])
+/**
+ * 这些块里不画行首「+」:代码块、块级公式,以及表格。
+ *
+ * 表格宿主行整行被 widget 替换,「+」落在同一行的行首点上:光标从表内移到
+ * 别处时,这个点装饰被移除,CodeMirror 会重建宿主行 —— 表格 widget 连同
+ * **正在编辑的单元格**一起被销毁(见 TableWidget.destroy),格子里刚输入、
+ * 还没提交的文字直接丢失。表格里的空行 / 行首也没有普通 Markdown 的语义,
+ * 菜单插进去只会把表写坏;要插内容,把光标移到表格外的行上。
+ */
+const NO_PLUS_NODES = new Set(['FencedCode', 'CodeBlock', 'MathBlock', 'Table'])
 
 /**
- * 这一行是否落在不该画「+」的块里(代码块 / 块级公式)。
+ * 这一行是否落在不该画「+」的块里(代码块 / 块级公式 / 表格)。
  *
  * 代码块内不画:菜单里全是 Markdown 块(表格 / 公式 / 引用…),插进代码里
  * 只会变成一段源码;而且代码块左侧那 1.25em 留白正好是按钮的落点,按钮会压在代码上。
  * 块级公式同理:公式是原子块,插入 Markdown 块会破坏公式,左侧留白也是按钮落点。
+ * 表格的原因见 NO_PLUS_NODES 的注释。
  *
  * 不能只拿行首 resolveInner:缩进代码块的节点从第 5 列才开始,行首落在节点外。
  * 用整行的范围去遍历,块内的每一行(包括空行)都会被覆盖到。

@@ -145,6 +145,8 @@ interface FailureContext {
   proxyUrl: string | null
   proxySource: string | null
   remoteUrl: string
+  /** 这次操作是否带了凭据(令牌/密码;SSH 用本机密钥也算有) */
+  hasCredential: boolean
 }
 
 function readConfig(): GitSyncConfig {
@@ -187,6 +189,9 @@ function classifyPushError(stderr: string, ctx?: FailureContext): string {
     return '远端已有本地没有的提交，推送被拒。请先执行「立即同步」合并远端改动，或在仓库目录手动处理后重试。'
   }
   if (/authentication failed|could not read username|403|401|invalid credentials/.test(value)) {
+    if (ctx && !ctx.hasCredential) {
+      return '需要凭据：公开仓库可以直接拉取，但推送 / 私有仓库要在扩展设置里填访问令牌，或改用 SSH。'
+    }
     return '认证失败：请检查访问令牌是否有效、是否有该仓库的写权限。'
   }
   if (
@@ -401,10 +406,10 @@ class GitSyncPlugin {
     }
 
     /**
-     * 远端本身没填完整(缺分支/账号/密钥)。
+     * 远端本身没填完整(缺分支/账号)。
      *
      * 项目 Git 设置页只显示字段,不逐项标红;这类问题仍按「未完成」处理 ——
-     * **不写错误日志**。否则用户刚填了地址、还没填令牌,3 秒后的配置试跑就会
+     * **不写错误日志**。否则用户刚填了地址、还没填账号,3 秒后的配置试跑就会
      * 在日志里留下一条看起来像「同步失败了」的错误。
      */
     const invalid = (message: string, detail?: string): ActionResult => ({
@@ -429,12 +434,6 @@ class GitSyncPlugin {
       if (!vaultPath) return fail(`未打开仓库，无法${action}`)
       if (!existsSync(vaultPath)) return fail('仓库目录不存在')
       if (!(await isGitAvailable())) return fail('未找到 git，请先安装 Git 并确保它在 PATH 中')
-      if (!existsSync(join(vaultPath, '.git'))) {
-        return fail(
-          '当前仓库还不是 git 仓库',
-          '请先在仓库目录执行 git init，或从远端克隆仓库后再同步。'
-        )
-      }
       const noLocalBranch = targets.find(t => !t.localBranch.trim())
       if (noLocalBranch) {
         return invalid(
@@ -442,23 +441,33 @@ class GitSyncPlugin {
           '本地分支是必填项（要同步的那条本地分支，如 main）；远程分支留空则与本地同名。'
         )
       }
-      // 认证必填校验：只对 HTTP(S) 地址要求凭据（file:// 等本地路径不需要）
+      // 认证校验：令牌 / 密码是选填的 —— 公开仓库不需要凭据，私有仓库没填会在
+      // 拉取 / 推送时由 git 明确报认证失败。只有「账号密码」认证且确实存了密码时
+      // 才要求账号，否则 credential helper 拼不出用户名。
       for (const target of targets) {
-        if (target.auth === 'ssh') continue
+        if (target.auth !== 'password') continue
         if (!/^https?:/i.test(target.url.trim())) continue
-        const isPassword = target.auth === 'password'
-        if (isPassword && !target.username.trim()) {
+        if (!target.username.trim() && (await this.secretFor(target))) {
           return invalid(
             `${targetLabel(allTargets, target)}选了账号密码认证，但没填账号`,
-            '把账号填上后重试。'
+            '把账号填上后重试；公开仓库不需要凭据的话，也可以不填密码。'
           )
         }
-        if (!(await this.secretFor(target))) {
-          return invalid(
-            `${targetLabel(allTargets, target)}选了${isPassword ? '账号密码' : '访问令牌'}认证，但还没填${isPassword ? '密码' : '访问令牌'}`,
-            '在扩展设置的「远端仓库」里填好密钥后重试；公开仓库不需要凭据的话，可把认证方式改成 SSH。'
+      }
+
+      // 还不是 git 仓库就地初始化：远端都已经配好，再让用户去终端敲 `git init`
+      // 只是多一道没有信息量的坎。分支用配置的本地分支，后续拉取/推送都围绕它；
+      // 不写 .gitignore / README，也不改动 remote 配置。
+      if (!existsSync(join(vaultPath, '.git'))) {
+        const { local } = this.branchNames(targets[0]!)
+        const init = await runGit(['init', '-b', local], { cwd: vaultPath, signal })
+        if (!init.ok) {
+          return fail(
+            '初始化本地仓库失败',
+            summarize(init.stderr || init.stdout, 4) || `退出码 ${init.code}`
           )
         }
+        this.log('info', `当前目录还不是 git 仓库，已自动初始化（分支 ${local}）`)
       }
 
       this.report({
@@ -1124,7 +1133,9 @@ class GitSyncPlugin {
       mode: setup.mode,
       proxyUrl: setup.proxyUrl,
       proxySource: setup.proxySource,
-      remoteUrl: target.url
+      remoteUrl: target.url,
+      // SSH 由本机密钥认证,「没填令牌」不是它的失败原因
+      hasCredential: target.auth === 'ssh' || Boolean(target.secret)
     }
   }
 

@@ -28,6 +28,7 @@ import { registerImarkProtocol } from '../src/main/protocol'
 import { buildAppMenu } from '../src/main/menu'
 import { loadSettings } from '../src/main/settings'
 import { initExtensions } from '../src/main/extensions/service'
+import { ensureBundledProvisioned } from '../src/main/market/bundled'
 import { createMainWindow } from '../src/main/window'
 
 protocol.registerSchemesAsPrivileged([
@@ -109,7 +110,9 @@ async function main(): Promise<void> {
   registerIpc()
   registerImarkProtocol()
   const settings = await loadSettings()
-  await initExtensions({ appVersion: APP_VERSION })
+  // 行首「+」来自内置 advanced-edit 贡献的菜单条目;不装内置扩展就没有按钮
+  const service = await initExtensions({ appVersion: APP_VERSION })
+  await ensureBundledProvisioned(service)
   buildAppMenu()
   const win = createMainWindow(settings)
   const wc = win.webContents
@@ -176,10 +179,29 @@ async function main(): Promise<void> {
         const lines = [...document.querySelectorAll('.cm-content .cm-line')]
         const textLines = []
         for (const el of lines) {
+          /*
+           * 只量行里的**正文文字**:绝对定位的行首「+」按钮也算在 textContent
+           * 里(它的文字是一个 "+"),整行范围还会被按钮的盒子撑到左上方 ——
+           * 光标行恰好是空行时,会被误当成一条有字的正文行。
+           */
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+          let first = null
+          let last = null
+          let text = ''
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const parent = n.parentElement
+            if (parent && parent.closest('.cm-widget, .line-plus, .line-plus-anchor')) continue
+            text += n.textContent ?? ''
+            if (!n.textContent) continue
+            if (!first) first = n
+            last = n
+          }
+          if (!first || !last || !/\\S/.test(text)) continue
           const range = document.createRange()
-          range.selectNodeContents(el)
+          range.setStart(first, 0)
+          range.setEnd(last, last.textContent.length)
           const r = range.getBoundingClientRect()
-          if ((el.textContent || '').trim() && r.height > 0) textLines.push({ el, r })
+          if (r.height > 0) textLines.push({ el, r })
         }
         const gaps = []
         for (let i = 1; i < textLines.length; i++) {
@@ -280,22 +302,24 @@ async function main(): Promise<void> {
 
   // ---------- 4. 连排空行 / 回车建出的空段落:同样不随行间距移动 ----------
 
-  console.log('\n【4】连排空行:两段文字的距离不随行间距变化')
-  await loadDoc('阿\n\n\n\n阿\n')
+  console.log('\n【4】连排结构空行:两段文字的距离不随行间距变化')
+  // 两条空行 = 普通段落分隔(结构空行);三条以上会还原出空段落,见【5】与
+  // empty-line-persist 用例
+  await loadDoc('阿\n\n\n阿\n')
   await setVars(0.6, 1)
   const blanksTight = await metrics()
   await setVars(1.4, 1)
   const blanksLoose = await metrics()
   console.log(`     [连排 0.6] ${fmt(blanksTight)}\n     [连排 1.4] ${fmt(blanksLoose)}`)
   check(
-    '三条空行连排:行间距变化时两段文字距离不变',
+    '两条结构空行连排:行间距变化时两段文字距离不变',
     blanksTight.gaps.length === 1 &&
       blanksLoose.gaps.length === 1 &&
       near(blanksTight.gaps[0], blanksLoose.gaps[0]),
     fmt({ tight: blanksTight.gaps, loose: blanksLoose.gaps })
   )
   check(
-    '连排空行折叠成配对间距本身(16px)',
+    '结构空行折叠成配对间距本身(16px)',
     near(blanksTight.gaps[0], 16),
     fmt(blanksTight.gaps)
   )
@@ -315,6 +339,374 @@ async function main(): Promise<void> {
       keptLoose.gaps.length === 1 &&
       near(keptTight.gaps[0], keptLoose.gaps[0]),
     fmt({ tight: keptTight.gaps, loose: keptLoose.gaps })
+  )
+
+  /*
+   * 空段落上面还是空段落时,配对间距不能"找不到非空块"就跳过:
+   * 用户在第一行按回车,得到的就是两个空段落,第二条光标的落点必须和
+   * 「第一行有字,再回车」时一样,否则两条光标会贴在一起。
+   */
+  console.log('\n【5b】空文档里按回车:两个空段落之间也要有配对间距')
+  const caretLayout = (): Promise<{
+    gap: number
+    caretLine: number
+    caretCls: string
+    caretPad: number
+  }> =>
+    evalJs(`
+      (() => {
+        const v = document.querySelector('.cm-content').cmTile.root.view
+        const caret = v.state.selection.main.head
+        const caretLine = v.state.doc.lineAt(caret)
+        if (caretLine.number < 2) return { gap: -1, caretLine: caretLine.number, caretCls: '', caretPad: -1 }
+        const first = v.state.doc.line(1)
+        const a = v.coordsAtPos(first.from)
+        const b = v.coordsAtPos(caretLine.from)
+        // .cm-line 与文档行一一对应(折叠行也是元素)
+        const el = document.querySelectorAll('.cm-content .cm-line')[caretLine.number - 1]
+        return {
+          gap: a && b ? Math.round((b.top - a.top) * 100) / 100 : -1,
+          caretLine: caretLine.number,
+          caretCls: el ? el.className : '',
+          caretPad: el ? parseFloat(getComputedStyle(el).paddingTop) : -1
+        }
+      })()`)
+
+  await loadDoc('啊\n')
+  await setCaret(1)
+  await key('Enter')
+  const textGap = await caretLayout()
+
+  await loadDoc('')
+  await setCaret(0)
+  await key('Enter')
+  const emptyGap = await caretLayout()
+  console.log(`     [有字] ${JSON.stringify(textGap)}\n     [空行] ${JSON.stringify(emptyGap)}`)
+  check(
+    '第一行为空时按回车:两行光标的距离与第一行有字时一致',
+    textGap.gap > 0 && emptyGap.gap > 0 && near(textGap.gap, emptyGap.gap, 2),
+    JSON.stringify({ textGap, emptyGap })
+  )
+  check(
+    '回车建出的空段落按 body-body 配对留白(不是零间距)',
+    /cm-md-body-body/.test(emptyGap.caretCls) && emptyGap.caretPad > 0,
+    JSON.stringify(emptyGap)
+  )
+
+  /*
+   * 同一行的下一步:空段落敲成标题。
+   *
+   * 空着时按 body-body 预加了配对间距,敲下 `#` 后必须沿 body-heading
+   * 拿到同一条边的留白(见 rules.ts 的 styleBlockPair 与 build.ts 的
+   * trimForEmpty),否则整行会少一档上留白、行首「+」往上一跳。
+   * 第一行有字时上方有正文块、配对本来就对,只有文首这两条空段落会犯。
+   */
+  console.log('\n【5c】空文档回车后输入 #:标题行不少一档留白、加号仍在文字中线')
+  const plusBox = (): Promise<{
+    dx: number
+    dy: number
+    delta: number
+    cls: string
+    pad: number
+  }> =>
+    evalJs(`
+      (() => {
+        const view = document.querySelector('.cm-content').cmTile.root.view
+        const btn = document.querySelector('.line-plus')
+        const line = btn ? btn.closest('.cm-line') : null
+        if (!btn || !line) return { dx: NaN, dy: NaN, delta: NaN, cls: '', pad: -1 }
+        const lr = line.getBoundingClientRect()
+        const br = btn.getBoundingClientRect()
+        const caret = view.coordsAtPos(view.state.selection.main.head)
+        return {
+          dx: Math.round((br.left - lr.left) * 10) / 10,
+          dy: Math.round((br.top - lr.top) * 10) / 10,
+          delta: caret
+            ? Math.round(((br.top + br.height / 2) - (caret.top + caret.bottom) / 2) * 10) / 10
+            : NaN,
+          cls: line.className,
+          pad: parseFloat(getComputedStyle(line).paddingTop) || 0
+        }
+      })()`)
+
+  await loadDoc('')
+  await setCaret(0)
+  await key('Enter')
+  const plusBefore = await plusBox()
+  wc.sendInputEvent({ type: 'char', keyCode: '#' })
+  await sleep(600)
+  const plusHash = await plusBox()
+  /*
+   * 只敲 `#` 还不是标题(见 rules.ts 的 isPendingHeading):版式和配对间距
+   * 都要停在正文状态,补上空格才切标题。
+   */
+  check(
+    '只敲 # 时仍按正文排版(等空格)',
+    !/(^|\s)cm-md-h1(\s|$)/.test(plusHash.cls),
+    JSON.stringify(plusHash)
+  )
+  check(
+    '只敲 # 时配对间距仍是 body-body',
+    /(^|\s)cm-md-body-body(\s|$)/.test(plusHash.cls) && near(plusHash.pad, plusBefore.pad, 0.5),
+    JSON.stringify({ plusBefore, plusHash })
+  )
+  wc.sendInputEvent({ type: 'char', keyCode: ' ' })
+  await sleep(600)
+  const plusAfter = await plusBox()
+  console.log(
+    `     [空行] ${JSON.stringify(plusBefore)}\n     [# 后] ${JSON.stringify(plusHash)}\n     [标题] ${JSON.stringify(plusAfter)}`
+  )
+  check(
+    '输入 # 前后:加号都在文字行的垂直中线上(标题字号变大也跟着走)',
+    Number.isFinite(plusBefore.delta) &&
+      Number.isFinite(plusAfter.delta) &&
+      Math.abs(plusBefore.delta) <= 1.5 &&
+      Math.abs(plusAfter.delta) <= 1.5,
+    JSON.stringify({ plusBefore, plusAfter })
+  )
+  check(
+    '输入 # 前后:加号相对行首的水平位置不变',
+    Number.isFinite(plusBefore.dx) && near(plusBefore.dx, plusAfter.dx, 0.5),
+    JSON.stringify({ plusBefore, plusAfter })
+  )
+  check(
+    '变成标题后仍按 body-heading 拿到配对间距(行盒没有少一档)',
+    /(^|\s)cm-md-body-heading(\s|$)/.test(plusAfter.cls) &&
+      plusAfter.pad > 0 &&
+      near(plusBefore.pad, plusAfter.pad, 0.5),
+    JSON.stringify({ plusBefore, plusAfter })
+  )
+
+  /*
+   * 空文档 / 文首空行点进去:光标所在的那条空行必须撑成正文行。
+   * 结构空行是 0 高 + overflow:hidden,折叠它会把光标和行首「+」一起裁掉
+   * (用户报过:空文档里点进去,第一行看不到闪烁的光标)。
+   */
+  console.log('\n【5d】空文档 / 文首空行:光标所在行撑开,光标与「+」可见')
+  const caretBox = (): Promise<{ lineH: number; cursorH: number; plusH: number; cls: string }> =>
+    evalJs(`
+      (() => {
+        const cur = document.querySelector('.cm-cursor')
+        const btn = document.querySelector('.line-plus')
+        const line = btn ? btn.closest('.cm-line') : null
+        return {
+          lineH: line ? Math.round(line.getBoundingClientRect().height * 10) / 10 : -1,
+          cursorH: cur ? Math.round(cur.getBoundingClientRect().height * 10) / 10 : -1,
+          plusH: btn ? Math.round(btn.getBoundingClientRect().height * 10) / 10 : -1,
+          cls: line ? line.className : ''
+        }
+      })()`)
+
+  await loadDoc('\n\n')
+  await setCaret(0)
+  const blankCaret = await caretBox()
+  console.log(`     [空行文档] ${JSON.stringify(blankCaret)}`)
+  check(
+    '光标落在文首空行:所在行撑成整行(不是 0 高的结构空行)',
+    blankCaret.lineH > 10 && !/(^|\s)cm-md-structural-blank(\s|$)/.test(blankCaret.cls),
+    JSON.stringify(blankCaret)
+  )
+  check('光标有可见高度', blankCaret.cursorH > 10, JSON.stringify(blankCaret))
+  check('行首「+」没有被折叠行裁掉', blankCaret.plusH > 10, JSON.stringify(blankCaret))
+
+  /*
+   * 行首「+」的垂直位置:必须落在这一行**文字**的垂直中线上。
+   * 行盒高度随字号 / 行间距 / text-box-trim / 标题上留白 / 代码块上方的
+   * 下留白变化,按钮不能写死 top —— 用光标矩形(文字行)当基准。
+   */
+  console.log('\n【5e】行首「+」在文字行里垂直居中(含折行)')
+  await loadDoc(
+    ['正文一行', '', '# 标题', '', '上一行', '', '```ts', 'const x = 1', '```', '', '很长'.repeat(120), ''].join(
+      '\n'
+    )
+  )
+  const plusDelta = (
+    lineNumber: number,
+    at: 'start' | 'end' = 'end'
+  ): Promise<{ delta: number; lineH: number }> =>
+    evalJs(`
+      (() => {
+        const view = document.querySelector('.cm-content').cmTile.root.view
+        const line = view.state.doc.line(${lineNumber})
+        view.dispatch({ selection: { anchor: ${at === 'start' ? 'line.from' : 'line.to'} } })
+        view.focus()
+        return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const btn = document.querySelector('.line-plus')
+          const el = btn ? btn.closest('.cm-line') : null
+          const caret = view.coordsAtPos(view.state.selection.main.head)
+          if (!btn || !el || !caret) return resolve({ delta: NaN, lineH: -1 })
+          const br = btn.getBoundingClientRect()
+          resolve({
+            delta: Math.round(((br.top + br.height / 2) - (caret.top + caret.bottom) / 2) * 10) / 10,
+            lineH: Math.round(el.getBoundingClientRect().height * 10) / 10
+          })
+        })))
+      })()`)
+
+  await sleep(350)
+  const body = await plusDelta(1)
+  const head = await plusDelta(3)
+  const aboveCode = await plusDelta(5)
+  const wrapped = await plusDelta(11, 'start')
+  console.log(
+    `     [正文] ${body.delta}px [标题] ${head.delta}px [代码块上一行] ${aboveCode.delta}px ` +
+      `[折行首行] ${wrapped.delta}px(行高 ${wrapped.lineH})`
+  )
+  check('正文行:加号中心与文字行中心对齐', Math.abs(body.delta) <= 1.5, JSON.stringify(body))
+  check('标题行:加号中心与标题文字行中心对齐', Math.abs(head.delta) <= 1.5, JSON.stringify(head))
+  check('代码块上一行(有下留白):加号仍居中', Math.abs(aboveCode.delta) <= 1.5, JSON.stringify(aboveCode))
+  check(
+    '折行正文:加号对齐第一行文字,不落在整段中间',
+    wrapped.lineH > 30 && Math.abs(wrapped.delta) <= 1.5,
+    JSON.stringify(wrapped)
+  )
+
+  /*
+   * 行首回车得到空段落,再敲 `>`:引用要等 `> ` 才成立(见 rules 的
+   * quoteOpened),在那之前这一行就是普通文本。它不能被当作结构空行折叠 ——
+   * 0 高 + overflow:hidden 会让刚敲的 `>` 和光标一起消失,下面的正文
+   * 也会跟着往上跳(用户报过)。
+   */
+  console.log('\n【5f】行首回车后敲 `>`:这一行要看得见,下面的正文不上移')
+  /*
+   * 把「正文之间」和「引用下方」两组配对间距设成不同的档:裸 `>` 还不算
+   * 引用,下面的正文必须仍按「正文之间」排;一旦按引用算,文字会被垫高一档。
+   */
+  const setQuoteGaps = (): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const root = document.documentElement
+      root.style.setProperty('--md-gap-body-body', '1')
+      root.style.setProperty('--md-gap-quote-body', '2')
+      return true
+    })()`)
+  const quoteLineState = (): Promise<{
+    doc: string
+    gt: { cls: string; h: number; top: number } | null
+    body: { top: number; textTop: number; cls: string } | null
+    caretH: number
+    quotes: number
+  }> =>
+    evalJs(`
+      (() => {
+        const view = document.querySelector('.cm-content').cmTile.root.view
+        const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+        const el = lines[0]
+        const body = lines.find(l => (l.textContent || '').trim() === '啊')
+        const cur = document.querySelector('.cm-cursor')
+        const rect = el ? el.getBoundingClientRect() : null
+        let textTop = -1
+        if (body) {
+          const r = document.createRange()
+          r.selectNodeContents(body)
+          textTop = Math.round(r.getBoundingClientRect().top * 10) / 10
+        }
+        return {
+          doc: JSON.stringify(view.state.doc.toString()),
+          gt: el && rect
+            ? { cls: el.className, h: Math.round(rect.height * 10) / 10, top: Math.round(rect.top) }
+            : null,
+          body: body
+            ? { top: Math.round(body.getBoundingClientRect().top), textTop, cls: body.className }
+            : null,
+          caretH: cur ? Math.round(cur.getBoundingClientRect().height * 10) / 10 : -1,
+          quotes: document.querySelectorAll('.cm-content .cm-md-quote').length
+        }
+      })()`)
+
+  await loadDoc('啊\n')
+  await setQuoteGaps()
+  await setCaret(0)
+  await key('Enter')
+  await sleep(250)
+  const beforeQuote = await quoteLineState()
+  wc.sendInputEvent({ type: 'char', keyCode: '>' })
+  await sleep(500)
+  const bare = await quoteLineState()
+  console.log(
+    `     [敲 > 前] ${JSON.stringify(beforeQuote)}\n     [裸 >] ${JSON.stringify(bare)}`
+  )
+  check(
+    '敲 `>` 时下面的正文不动(文字位置不变)',
+    !!beforeQuote.body && !!bare.body && near(beforeQuote.body.textTop, bare.body.textTop, 1),
+    JSON.stringify({ beforeQuote, bare })
+  )
+  check(
+    '裸 `>` 还不算引用:下面的正文仍按「正文之间」配对',
+    !!bare.body && /(^|\s)cm-md-body-body(\s|$)/.test(bare.body.cls),
+    JSON.stringify(bare.body)
+  )
+  check('裸 `>` 这一行有正常行高(没有被折叠成结构空行)', !!bare.gt && bare.gt.h > 10 &&
+    !/(^|\s)cm-md-structural-blank(\s|$)/.test(bare.gt.cls), JSON.stringify(bare))
+  check('裸 `>` 上有可见光标', bare.caretH > 10, JSON.stringify(bare))
+  check(
+    '下面的正文仍在 `>` 这一行下面(没有跳到第一行)',
+    !!bare.gt && !!bare.body && bare.body.top > bare.gt.top,
+    JSON.stringify(bare)
+  )
+  check('这之前还不按引用渲染', bare.quotes === 0, JSON.stringify(bare))
+
+  wc.sendInputEvent({ type: 'char', keyCode: ' ' })
+  await sleep(500)
+  const opened = await quoteLineState()
+  wc.sendInputEvent({ type: 'char', keyCode: 'x' })
+  await sleep(500)
+  const typed = await quoteLineState()
+  console.log(`     [> 空格] ${JSON.stringify(opened)}\n     [> x] ${JSON.stringify(typed)}`)
+  check('敲出 `> ` 后按引用渲染', opened.quotes >= 1, JSON.stringify(opened))
+  check(
+    '引用成立后按「引用下方」的配对间距排',
+    !!opened.body && /(^|\s)cm-md-quote-body(\s|$)/.test(opened.body.cls),
+    JSON.stringify(opened.body)
+  )
+  check(
+    '继续输入后引用保持渲染,行仍在正文上方',
+    typed.quotes >= 1 && !!typed.body && !!typed.gt && typed.body.top > typed.gt.top,
+    JSON.stringify(typed)
+  )
+
+  /*
+   * 代码块的上侧间距做在上一块末行的 padding-bottom 上。这一行如果同时
+   * 是单行段落(自己还挂着 cm-md-body-body 的 padding-top),两条配类
+   * 不能互相覆盖 —— 否则接入代码块的一瞬间上一段的段间距会被清零。
+   */
+  console.log('\n【5g】两段之后接代码块:上一段的段间距不能被代码配对清零')
+  const paraPair = (): Promise<{ cls: string; padTop: number; padBottom: number; textGap: number } | null> =>
+    evalJs(`
+      (() => {
+        const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+        // 光标行带行首「+」(widget 的 textContent 也是 "+"),按包含 啊 过滤
+        const paras = lines.filter(l => (l.textContent || '').includes('啊'))
+        if (paras.length < 2) return null
+        const info = el => {
+          const s = getComputedStyle(el)
+          const r = el.getBoundingClientRect()
+          const padTop = parseFloat(s.paddingTop)
+          // 段落首行裁过 top,文字顶 = 行盒顶 + padding-top
+          return { padTop, padBottom: parseFloat(s.paddingBottom), textTop: r.top + padTop }
+        }
+        const a = info(paras[0])
+        const b = info(paras[1])
+        return {
+          cls: paras[1].className,
+          padTop: b.padTop,
+          padBottom: b.padBottom,
+          textGap: Math.round((b.textTop - a.textTop) * 100) / 100
+        }
+      })()`)
+  await loadDoc('啊\n\n啊\n')
+  const pairPlain = await paraPair()
+  await loadDoc('啊\n\n啊\n\n```\n\n```\n')
+  const pairWithCode = await paraPair()
+  console.log(`     [无代码块] ${JSON.stringify(pairPlain)}\n     [接代码块] ${JSON.stringify(pairWithCode)}`)
+  check(
+    '接上代码块后两段文字的距离不变',
+    !!pairPlain && !!pairWithCode && near(pairPlain.textGap, pairWithCode.textGap, 1),
+    JSON.stringify({ pairPlain, pairWithCode })
+  )
+  check(
+    '上一段自己仍有上侧段间距,与代码块的间距加在下侧',
+    !!pairWithCode && pairWithCode.padTop > 0 && pairWithCode.padBottom > 0,
+    JSON.stringify(pairWithCode)
   )
 
   // ---------- 6. 设置面板:拖行间距时,正文与预览都不移动 ----------

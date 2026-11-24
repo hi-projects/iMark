@@ -44,7 +44,11 @@ function gitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
     ...process.env,
     ...extra,
     GIT_TERMINAL_PROMPT: '0',
-    GCM_INTERACTIVE: 'never'
+    GCM_INTERACTIVE: 'never',
+    // GIT_TERMINAL_PROMPT=0 只关终端提示;继承了 GIT_ASKPASS / SSH_ASKPASS /
+    // core.askPass 的机器仍会弹图形认证窗口。空值会被 git 当成「没有 askpass」,
+    // 同时盖掉这三个来源 —— 缺凭据时直接失败,绝不弹窗。
+    GIT_ASKPASS: ''
   }
 }
 
@@ -95,13 +99,18 @@ export function redactUrl(text: string): string {
 /**
  * 临时挂一个一次性的 credential helper，用户名/token 从环境变量读取。
  * 这样 token 不出现在子进程命令行里，git 的报错也只会回显干净 URL。
- * 空值先清掉系统上继承的 helper，避免 GCM 接管弹窗。
+ *
+ * 无论有没有 token，都先 `-c credential.helper=` 清空系统里配置的 helper：
+ * 公开仓库不需要凭据，而 GCM / VS Code 之类配置过的 helper 一旦被 git 调用，
+ * 会弹出自己的登录窗口，把「无凭据」变成一次用户可见的认证流程。清空后缺凭据
+ * 时 git 直接报 `could not read Username`，扩展再按认证失败给出提示。
  */
 export function credentialArgs(token: string): string[] {
-  if (!token) return []
+  const args = ['-c', 'credential.helper=']
+  if (!token) return args
   const helper =
     `!f() { printf 'username=%s\\npassword=%s\\n' "$GIT_IMK_USER" "$GIT_IMK_TOKEN"; }; f`
-  return ['-c', 'credential.helper=', '-c', `credential.helper=${helper}`]
+  return [...args, '-c', `credential.helper=${helper}`]
 }
 
 export function credentialEnv(username: string, token: string): Record<string, string> {
