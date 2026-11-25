@@ -274,7 +274,26 @@ onDidChangeTheme: Event<ColorTheme>
 - `renderMarkdown` 复用应用正文的 markdown-it（含 KaTeX / Mermaid / 链接校验）。
 - `flushActiveDocument` 请渲染层把当前文档写盘，适合在读取文件前调用。
 
-### 4.7 工具类
+### 4.7 `imark.project` / `imark.git`
+
+```ts
+// 项目级 Git 远端(与仓库选择页的「Git 设置」、克隆仓库是同一份配置;密钥单独取)
+getGitRemote(): Thenable<ProjectGitRemote | null>
+getGitSecret(): Thenable<string>
+onDidChangeGitRemote: Event<void>
+
+// 应用级 Git 网络能力:系统代理探测、git 代理参数、代理检测
+networkSetup(url: string, proxy?: GitProxyConfig): Thenable<GitNetworkSetup>
+detectProxy(proxy?: GitProxyConfig): Thenable<GitProxyReport>
+```
+
+- 克隆在主进程、同步在扩展宿主,代理探测必须复用应用能力,不要自己读注册表 / gsettings:
+  两边的规则一旦分叉,就会出现「同步能连、克隆超时」。
+- `networkSetup` 返回的 `args` / `env` 直接拼进 git 子进程;`proxyUrl` 已脱敏,可以写日志。
+- 不传 `proxy` 时,应用使用克隆仓库的那份「网络代理」设置;扩展设置页里的模式/地址应显式传进来。
+  手动模式传 `proxyUrl: ''` 表示直连,不会回退到默认地址。
+
+### 4.8 工具类
 
 `Uri`（含 `parse` / `file` / `joinPath`）、`Position`、`Range`、`Selection`、`EventEmitter`、
 `Disposable`、`ThemeColor`、`CancellationTokenSource`，以及

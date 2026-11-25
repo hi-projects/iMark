@@ -70,8 +70,16 @@ interface AppState {
   autoSaveDelay: number
   lineWrapping: boolean
   editorFontSize: number
-  /** 行间距(档,× 正文字号;行高 = 1 + 这一档) */
+  /** 正文行间距(档,× 正文字号;行高 = 1 + 这一档) */
   lineSpace: number
+  /** 代码块内部行间距(档;行高 = 1 + 这一档,× 代码字号) */
+  codeLineSpace: number
+  /** 公式块内部行间距(档;行高 = 1 + 这一档,× 公式字号) */
+  mathLineSpace: number
+  /** 列表内部行间距(档) */
+  listLineSpace: number
+  /** 引用内部行间距(档) */
+  quoteLineSpace: number
   /** 代码块内 Tab 插入的空格数 */
   codeIndentSize: CodeIndentSize
   /** 块与块之间的配对间距(档,× 正文字号);key 为 `<上块>-<下块>` */
@@ -122,6 +130,10 @@ export const appStore = reactive<AppState>({
   lineWrapping: true,
   editorFontSize: 15,
   lineSpace: 1,
+  codeLineSpace: 1,
+  mathLineSpace: 1,
+  listLineSpace: 1,
+  quoteLineSpace: 1,
   codeIndentSize: 4,
   pairGaps: {},
   autoSavedAt: null,

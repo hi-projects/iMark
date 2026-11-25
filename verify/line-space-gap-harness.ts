@@ -1,8 +1,8 @@
 /**
  * 验收:调「行间距」不再改变段与段之间的距离。
  *
- * 用户报告:在设置 → 外观里把行间距从 0.6 档调到 1.4 档,两段正文之间的
- * 距离也跟着变大 —— 行间距本该只管「同一段里行与行之间」。
+ * 用户报告:在设置 → 样式 → 块间间距(连点两次「正文」)里把行间距从 0.6 档
+ * 调到 1.4 档,两段正文之间的距离也跟着变大 —— 行间距本该只管「同一段里行与行之间」。
  *
  * 行高的模型是 行盒 = (1 + 行间距档) × 字号,多出来的那一份在文字上下各分
  * 一半。段落首行 / 末行也会分到这两半,于是调行间距就把段间距一起推大。
@@ -714,6 +714,11 @@ async function main(): Promise<void> {
   console.log('\n【6】设置面板里拖「行间距」:正文位置与预览里的两段距离都不动')
   await loadDoc(PARAS)
   await evalJs(`document.querySelector('button[title^="设置"]')?.click()`)
+  await waitFor(`document.querySelector('.settings-nav-item')`)
+  await evalJs(`
+    [...document.querySelectorAll('.settings-nav-item')]
+      .find(b => b.textContent.trim() === '样式')
+      ?.click()`)
   await waitFor(`document.querySelector('[data-spacing-preview]')`)
   await evalJs(`document.querySelector('.spacing-ring-node[data-block-node="body"]')?.click()`)
   await sleep(150)

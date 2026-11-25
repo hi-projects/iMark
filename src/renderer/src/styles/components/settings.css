@@ -238,7 +238,7 @@
 }
 
 /*
- * 模块与模块之间画一条横线:基础颜色 / 间距 / 自定义样式 … 各自是一个模块。
+ * 模块与模块之间画一条横线:主题 / 间距 / 自定义样式 … 各自是一个模块。
  * 第一个模块紧跟页面标题,不加线。
  */
 .settings-section + .settings-section {
@@ -470,9 +470,14 @@
   padding: 14px;
 }
 
-/* 同一区里的多张卡之间留出间距(间距页:预览卡 → 正文字号卡) */
+/* 同一区里的多张卡之间留出间距(间距页:正文字号卡 → 间距卡 → 块内间距卡) */
 .settings-section .settings-card + .settings-card {
   margin-top: 12px;
+}
+
+/* 两张卡之间隔着「恢复默认」按钮行时,给下一张卡补上同样的呼吸空间 */
+.settings-section .settings-reset-row + .settings-card {
+  margin-top: 18px;
 }
 
 .settings-row {
@@ -587,6 +592,96 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 行内控件(如下拉条):不额外上移,由 .settings-row 的 align-items:center 居中 */
+.settings-control-center {
+  margin-top: 0;
+}
+
+/* 设置页的下拉选择:触发器 + Teleport 到 body 的菜单 */
+.settings-select {
+  position: relative;
+  display: inline-flex;
+}
+
+.settings-select-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 96px;
+  height: 30px;
+  /* 右侧留出箭头:文字只在「去掉箭头」的那块区域里居中 */
+  padding: 0 22px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* 数字和中文走同一套中文字体:混排时数字不会比汉字看起来偏高 / 偏低 */
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC',
+    var(--font-editor);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-trigger:hover,
+.settings-select-trigger[aria-expanded='true'] {
+  border-color: var(--accent);
+}
+
+.settings-select-chevron {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+}
+
+.settings-select-menu {
+  z-index: 200;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  box-shadow: var(--shadow);
+}
+
+.settings-select-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  /* 与触发器同一套字体:数字 + 汉字混排的基线一致 */
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC',
+    var(--font-editor);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-select-option:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.settings-select-option.is-active {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* 行内的小动作(「刷新」):看起来是链接,点起来是按钮 */
@@ -781,9 +876,8 @@
   padding: 14px;
 }
 
-/* 预览 / 滑块 / 正文字号是同一个模块里的三段,用横线隔开 */
-.spacing-pair-section,
-.spacing-font-section {
+/* 圆环与滑块 / 字号分成两段,用横线隔开 */
+.spacing-pair-section {
   border-top: 1px solid var(--border);
 }
 
@@ -869,7 +963,7 @@
   white-space: nowrap;
 }
 
-/* 互换 / 清除放在左栏圆圈下方 */
+/* 交换上下 / 清除放在左栏圆圈下方 */
 .spacing-palette-actions {
   display: flex;
   align-items: center;
@@ -894,6 +988,16 @@
 .spacing-action:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.spacing-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.spacing-action:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-secondary);
 }
 
 /*
@@ -973,15 +1077,17 @@
   line-height: 1.4;
 }
 
+/* 代码块样本:字号 / 行距与编辑器里的 .cm-md-code 相同。不加上下内边距 ——
+   配对预览量的是文字到文字的距离,额外 padding 会把这条缝画大。 */
 .spacing-doc-code {
   margin: 0;
-  padding: 8px 10px;
+  padding: 0 10px;
   border-radius: 5px;
   background: var(--bg-codeblock, var(--bg-code));
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 0.85em;
-  line-height: 1.45;
+  font-size: 0.92em;
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-code-line-space, 1));
 }
 
 .spacing-doc-list {
@@ -1103,6 +1209,15 @@
   padding: 10px 12px;
 }
 
+/* 字号 / 块内行距这类纯数值行:卡片和行都收紧一档 */
+.settings-card-compact {
+  padding: 4px 0;
+}
+
+.settings-card-compact .settings-row {
+  padding: 7px 12px;
+}
+
 .spacing-pair-note {
   margin-top: 6px;
   padding-left: 8px;
@@ -1158,6 +1273,28 @@
 .settings-reset:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 「恢复当前默认」与「恢复全局默认」并排;前者没选中时不可点 */
+.settings-reset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settings-reset-row .settings-reset {
+  margin-top: 0;
+}
+
+.settings-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-reset:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-secondary);
 }
 
 /* 左栏条目上的角标(目前只有「浏览市场」的可用更新数) */

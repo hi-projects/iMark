@@ -23,22 +23,128 @@ import { api } from '../../services/api'
 
 const MAX_RETRY = 20
 
+/** pos 所在的块级公式节点(MathBlock,或段落里的 DisplayMath);不在公式里返回 null */
+function mathBlockAt(state: EditorState, pos: number): SyntaxNode | null {
+  for (const bias of [1, -1] as const) {
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+    while (node) {
+      if (node.name === 'MathBlock' || node.name === 'DisplayMath') return node
+      node = node.parent
+    }
+  }
+  return null
+}
+
+
 /**
  * 光标/选区是否在块级公式里 —— 决定 wysiwyg 显示公式源码还是渲染块。
  * 鼠标拖选时公式保持渲染,与 rules 的 showsSource 保持一致。
  */
 function selectionInMath(state: EditorState, pinRendered = false): boolean {
   if (pinRendered) return false
-  for (const range of state.selection.ranges) {
-    for (const bias of [1, -1] as const) {
-      let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, bias)
-      while (node) {
-        if (node.name === 'MathBlock' || node.name === 'DisplayMath') return true
-        node = node.parent
-      }
-    }
+  return state.selection.ranges.some(range => mathBlockAt(state, range.head) !== null)
+}
+
+/** CJK 表意文字 / 假名 / 谚文 */
+const CJK_CHAR =
+  /[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/
+
+/**
+ * 与中文之间要补空隙的符号:Unicode 的数学 / 货币 / 修饰 / 其他符号,
+ * 外加 % # @ & *(这些在 Unicode 里算标点,但用户按「符号」来用)。
+ * 句读标点(，。！？、；：""''（）等)不在此列。
+ */
+const SPACE_SYMBOL = /[\p{S}%#@&*％＃＠＆＊]/u
+
+/** Markdown 标记节点(隐藏的 # / * / [ 等):不参与留白 */
+const MARK_NODE = /(?:Mark|HTMLTag|Escape)$/
+
+const NO_AUTOSPACE_NODES = new Set([
+  'InlineCode',
+  'FencedCode',
+  'CodeBlock',
+  'MathBlock',
+  'DisplayMath',
+  'InlineMath',
+  'Table',
+  'HTMLBlock',
+  'Image'
+])
+
+/** 这个位置在代码 / 公式 / 表格 / 隐藏标记里:不做符号留白 */
+function inNoAutospaceContext(state: EditorState, pos: number): boolean {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1)
+  if (!node) return true
+  if (MARK_NODE.test(node.name)) return true
+  for (; node; node = node.parent) {
+    if (NO_AUTOSPACE_NODES.has(node.name)) return true
   }
   return false
+}
+
+const symbolGapCache = new Map<string, Decoration>()
+function symbolGapDeco(cls: string): Decoration {
+  let d = symbolGapCache.get(cls)
+  if (!d) {
+    d = Decoration.mark({ class: cls })
+    symbolGapCache.set(cls, d)
+  }
+  return d
+}
+
+/**
+ * 中文与符号之间补 1/8em 空隙(与 Chromium text-autospace 的宽度一致)。
+ *
+ * text-autospace 只处理汉字和拉丁字母 / 数字;`+`、`$`、`≈` 这类符号
+ * 不会自动留白。这里在装饰层给相邻的符号字符挂 class,不改源码。
+ */
+function addSymbolAutospace(
+  state: EditorState,
+  ctx: RuleContext,
+  from: number,
+  to: number,
+  inConflict: (from: number, to: number) => boolean
+): void {
+  if (to <= from) return
+  const text = ctx.doc.sliceString(from, to)
+  for (let i = 0; i + 1 < text.length; i++) {
+    const left = text[i]!
+    const right = text[i + 1]!
+    if (left === '\n' || right === '\n') continue
+    const leftCjk = CJK_CHAR.test(left)
+    const rightCjk = CJK_CHAR.test(right)
+    if (leftCjk === rightCjk) continue
+    const symbol = leftCjk ? right : left
+    if (!SPACE_SYMBOL.test(symbol)) continue
+    const pos = from + i + (leftCjk ? 1 : 0)
+    if (inConflict(pos, pos + 1)) continue
+    if (inNoAutospaceContext(state, pos)) continue
+    ctx.decos.push({
+      from: pos,
+      to: pos + 1,
+      value: symbolGapDeco(leftCjk ? 'cm-md-symbol-gap-left' : 'cm-md-symbol-gap-right')
+    })
+  }
+}
+
+/** pos 所在的渲染行 DOM;pos 不在当前已渲染的 DOM 里时返回 null */
+function domLineAt(view: EditorView, pos: number): HTMLElement | null {
+  try {
+    const { node } = view.domAtPos(pos, 1)
+    const el = node.nodeType === 1 ? (node as HTMLElement) : node.parentElement
+    return el?.closest<HTMLElement>('.cm-line') ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 切态前钉住的一行:文档位置 + 它当时的屏幕 top。
+ * 文档不变,切态只改高度,位置在切态后仍然有效。
+ */
+interface MathScrollAnchor {
+  pos: number
+  top: number
 }
 
 /** 这一批变更是否全部由输入法组合产生(CM 给组合派发的输入打的标记是 input.type.compose) */
@@ -226,10 +332,23 @@ export class WysiwygPlugin {
   private pointerSelection = false
   /** 左键按住期间:结构空行不因光标落上去而展开(拖选途中也不跳) */
   private pointerDown = false
+  /**
+   * 这次拖选是从公式 / 图表的源码块内部起手的。
+   *
+   * 这种手势是在选源码;不能按渲染块的原子选区规则把整块选中,
+   * 否则鼠标一动就全选 / 切回渲染态,全选、全不选来回闪。
+   * 在按下左键时重置,松手后的最后一次修正完成后再清掉。
+   */
+  private pointerStartedInSource = false
   /** 指针选区正在排队修正(避免每个 mousemove 都叠加一次) */
   private snapScheduled = false
   private onWindowMouseUp = (): void => this.endPointerDown()
   private mathRepaintScheduled = false
+  /**
+   * 公式切态(渲染块 ↔ 源码)前钉住的那一行,重绘后把滚动条校正回来。
+   * 见 captureMathScrollAnchor / restoreMathScrollAnchor。
+   */
+  private mathScrollAnchor: MathScrollAnchor | null = null
 
   constructor(readonly view: EditorView) {
     this.mathSource = selectionInMath(view.state)
@@ -266,11 +385,15 @@ export class WysiwygPlugin {
 
   beginPointerDown(): void {
     this.pointerDown = true
+    this.pointerStartedInSource = false
   }
 
   /** 松开左键(可能在编辑器外):按最终选区修正一次,再重算装饰 */
   endPointerDown(): void {
-    if (!this.pointerDown) return
+    if (!this.pointerDown) {
+      this.pointerStartedInSource = false
+      return
+    }
     this.pointerDown = false
     // 等 MouseSelection.up 把最终选区写完再处理;只靠 update 有时会漏掉这一帧
     window.setTimeout(() => {
@@ -280,6 +403,8 @@ export class WysiwygPlugin {
         this.view.dispatch(snapped ? { selection: snapped, userEvent: 'select.pointer' } : {})
       } catch {
         /* 视图已销毁 */
+      } finally {
+        this.pointerStartedInSource = false
       }
     }, 0)
   }
@@ -654,6 +779,7 @@ export class WysiwygPlugin {
     if (update.docChanged) {
       this.pinRendered = false
       this.pointerSelection = false
+      this.pointerStartedInSource = false
       return
     }
     if (!update.selectionSet) return
@@ -661,12 +787,32 @@ export class WysiwygPlugin {
     const keyboard = update.transactions.some(
       tr => tr.isUserEvent('select') && !tr.isUserEvent('select.pointer')
     )
-    // 不是指针产生的选区(键盘 / 程序化)意味着上一轮鼠标状态已经结束,
-    // 否则 mousedown 没收到 mouseup 时 pointerDown 会卡住,结构空行再也展不开
-    if (!pointer) this.pointerDown = false
     this.pointerSelection = pointer && !keyboard
+    /*
+     * 第一次指针选区就定下这次拖选从哪里起手。
+     *
+     * 不能用「不是 select.pointer」结束鼠标状态:鼠标按下后 CM 常先派发
+     * 一次普通选区,清掉 pointerDown 会让后面的拖选判定失真。指针状态
+     * 统一由 window 的 mouseup / blur 收尾(endPointerDown)。
+     */
+    if (this.pointerSelection && !this.pointerStartedInSource) {
+      const anchor = update.state.selection.main.anchor
+      /*
+       * 看锚点那一行**当前**是什么样子:公式源码行 / 围栏代码(含 Mermaid)
+       * 的源码行。此时还没 rebuild,DOM 反映的正是用户按下鼠标时看到的状态。
+       * 渲染态的宿主行是 cm-md-math-host / cm-md-mermaid-host,不会命中这里,
+       * 所以「从渲染块外面拖进来」仍走整块原子选中。
+       */
+      const cls = domLineAt(this.view, anchor)?.className ?? ''
+      if (/\bcm-md-math-src-line\b/.test(cls) || /\bcm-md-code\b/.test(cls)) {
+        this.pointerStartedInSource = true
+      }
+    }
     this.pinRendered =
-      this.pointerSelection && update.state.selection.ranges.some(range => !range.empty)
+      this.pointerSelection &&
+      update.state.selection.ranges.some(range => !range.empty) &&
+      // 从公式 / 图表源码里起手的拖选:保持源码态,让选区跟着鼠标走
+      !this.pointerStartedInSource
   }
 
   update(update: ViewUpdate): void {
@@ -723,10 +869,21 @@ export class WysiwygPlugin {
       )
       // 方向键落点是不是间距行,必须在 rebuild 之前判断(见 gapLineLanding)
       const gapLine = gapNav && !update.docChanged ? this.gapLineLanding(update.state) : null
+      // 公式切态会让整块高度骤变(渲染块 ↔ 多行源码)。锚点必须在 rebuild
+      // 之前取:那一刻 DOM 还是切态前的样子,量到的 screen top 才是用户
+      // 切换前看到的画面。
+      const nextMathSource = selectionInMath(update.state, this.pinRendered)
+      const mathToggled = nextMathSource !== this.mathSource
+      // 文档同时变了的时候不能拿新位置去量旧 DOM(行号已经对不上);
+      // 这时光标就在用户正在输入的地方,交给 CM 自己维持可见即可。
+      const mathAnchor =
+        mathToggled && !update.docChanged
+          ? this.captureMathScrollAnchor(nextMathSource, this.pointerSelection)
+          : null
       this.rebuild()
-      const mathSource = selectionInMath(update.state, this.pinRendered)
-      if (mathSource !== this.mathSource) {
-        this.mathSource = mathSource
+      if (mathToggled) {
+        this.mathSource = nextMathSource
+        this.mathScrollAnchor = mathAnchor
         // 公式块高度从「整块 widget」变成多行源码,先让 CM 立刻重测一次行高,
         // 再排一帧强制重绘(见 scheduleMathRepaint)。
         this.remeasureContent()
@@ -735,6 +892,48 @@ export class WysiwygPlugin {
       this.scheduleCaretGuard(update.startState.selection.main.head, gapNav, gapLine)
       if (update.docChanged) this.scheduleAutoTitle(update)
     }
+  }
+
+  /**
+   * 公式切态前,记下「应当钉住」的那一行在屏幕上的位置。
+   *
+   * - 鼠标点进源码态:钉**公式块首行**。点 widget 时光标映射到块内哪一行
+   *   并不直观(可能是块尾),按光标钉会把整块长源码甩到视口外 —— 钉块首行,
+   *   点击的公式才留在原地。
+   * - 键盘移进源码态:钉**光标行**,让光标继续停在原来的屏幕位置。
+   * - 回到渲染态:钉**光标行**(用户刚点的那一行)。长源码折叠后,它下面的
+   *   内容会整体上移;钉住它,用户眼前的落点不动。
+   *
+   * 锚点行不在视口里时返回 null:程序化换文档、很远的选区变化不该动滚动条。
+   */
+  private captureMathScrollAnchor(
+    enteringSource: boolean,
+    pinBlockStart: boolean
+  ): MathScrollAnchor | null {
+    const view = this.view
+    const head = view.state.selection.main.head
+    const pos =
+      enteringSource && pinBlockStart ? (mathBlockAt(view.state, head)?.from ?? head) : head
+    const line = domLineAt(view, pos)
+    if (!line) return null
+    const rect = line.getBoundingClientRect()
+    const box = view.scrollDOM.getBoundingClientRect()
+    if (rect.bottom < box.top || rect.top > box.bottom) return null
+    return { pos, top: rect.top }
+  }
+
+  /**
+   * 把锚点行挪回切态前的屏幕位置。
+   *
+   * 直接改 scrollTop 的差值,而不是恢复一个绝对滚动值:块长高/变矮后,
+   * 绝对滚动值对应的内容已经换了,只有「这一行还在原来的 y」才是用户要的。
+   */
+  private restoreMathScrollAnchor(anchor: MathScrollAnchor): void {
+    const line = domLineAt(this.view, anchor.pos)
+    if (!line) return
+    const drift = line.getBoundingClientRect().top - anchor.top
+    if (Math.abs(drift) < 1) return
+    this.view.scrollDOM.scrollTop += drift
   }
 
   /** 让 CodeMirror 丢掉行高缓存、重新量一遍内容(公式态切换后整块高度会骤变) */
@@ -775,11 +974,28 @@ export class WysiwygPlugin {
       const scrollTop = scroller.scrollTop
       const scrollLeft = scroller.scrollLeft
       const focused = view.hasFocus
+      // 切态锚点:setState 之后按它把公式（或光标行）挪回原来的屏幕位置
+      const anchor = this.mathScrollAnchor
+      this.mathScrollAnchor = null
       try {
         view.setState(view.state)
         scroller.scrollTop = scrollTop
         scroller.scrollLeft = scrollLeft
+        // focus() 可能把光标滚进视口(长公式的光标可能落在块尾)
         if (focused) view.focus()
+        if (anchor) {
+          /*
+           * 必须等 CodeMirror 这一轮测量**完全结束**再校正(下一个动画帧)。
+           *
+           * setState 之后 CM 还要重测行高,并按它自己的视口锚定(钉住视口
+           * 最上面那一行)调一次 scrollTop;在测量过程中改滚动会被随后的
+           * 测量覆盖。下一帧时高度图已经稳定,这次校正只会触发一轮
+           * 「diff 为 0」的测量,不会再被拉走。
+           */
+          requestAnimationFrame(() => {
+            if (view.dom.isConnected) this.restoreMathScrollAnchor(anchor)
+          })
+        }
       } catch {
         /* 视图已销毁 */
       }
@@ -1228,6 +1444,7 @@ export class WysiwygPlugin {
         }
       })
       collapseBlankRuns(ctx, inConflict)
+      addSymbolAutospace(state, ctx, from, to, inConflict)
     }
 
     // sort=true:自动排序 + RangeSet 校验(重叠的 replace 会在此抛错,便于开发期暴露)

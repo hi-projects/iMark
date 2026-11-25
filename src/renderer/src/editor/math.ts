@@ -330,6 +330,62 @@ export function mathSource(
   return tex
 }
 
+/** 上一行以这些收尾时,下一行是同一表达式的延续,不能断行 */
+const MATH_TRAIL_CONTINUES =
+  /(?:[+\-*/=<>.,;:|&{(\[]|\\(?:cdot|times|div|pm|mp|le|ge|ne|approx|to|rightarrow|Rightarrow|quad|qquad|,|;|!))$/
+
+/** 下一行以这些开头时,它是上一行的延续,不能断行 */
+const MATH_LEAD_CONTINUES =
+  /^(?:[+\-*/=<>.,;:|&)\]}]|\\(?:right|end|cdot|times|div|pm|mp|le|ge|ne|approx|to|rightarrow|Rightarrow|quad|qquad))/
+
+/** `\left` / `\right` 的配对深度(`\leftarrow` 这类命令不算) */
+function leftRightDepth(text: string): number {
+  return (text.match(/\\left(?![a-zA-Z])/g)?.length ?? 0) -
+    (text.match(/\\right(?![a-zA-Z])/g)?.length ?? 0)
+}
+
+/**
+ * 把块级公式源码里的换行转成 KaTeX 的换行(`\\`),渲染成多行。
+ *
+ * TeX 的数学模式把换行当空白,KaTeX 也一样 —— 用户在本编辑器里敲出两行
+ * 公式,看到的却是一行,和源码对不上。给除最后一行外的每一行补 `\\`;
+ * 行尾本来就是 `\\` 的不重复补。
+ *
+ * 但源码换行也常被用来「折行」:AI 生成的长公式、手写的多步推导,会把
+ * 一个完整表达式拆成多行只为了好读。下面几种情况保持原样(换行当空白):
+ *   · 公式里含 `\begin{...}` / `\end{...}`(align、cases、matrix…):
+ *     环境自己有换行语义,而且行首行尾的 `\\` 会变成空行;
+ *   · 上一行以运算符 / 左括号收尾,或下一行以运算符 / 右括号开头;
+ *   · 处在 `\left( ... \right)` 中间(括号没闭合,断行会把排版拆坏);
+ *   · 空行(多半是编辑时的随手换行,不制造空白行)。
+ * 其余情况才把换行当作显式断行 —— 例如用户写的两行独立式子。
+ * 行内公式不处理。
+ */
+export function mathForKatex(tex: string, display: boolean): string {
+  if (!display) return tex
+  const lines = tex.split('\n')
+  if (lines.length < 2) return tex
+  if (/\\begin\s*\{/.test(tex) || /\\end\s*\{/.test(tex)) return tex
+
+  const out: string[] = []
+  let depth = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    depth += leftRightDepth(line)
+    out.push(line)
+    if (i === lines.length - 1) break
+
+    const prev = line.trimEnd()
+    const next = lines[i + 1]!.trimStart()
+    if (!prev || !next) continue
+    if (prev.endsWith('\\\\')) continue
+    if (depth > 0) continue
+    if (MATH_TRAIL_CONTINUES.test(prev) || MATH_LEAD_CONTINUES.test(next)) continue
+    out[out.length - 1] = `${prev}\\\\`
+  }
+  return out.join('\n')
+}
+
 export const mathExtension: MarkdownExtension = {
   defineNodes: [
     'InlineMath',

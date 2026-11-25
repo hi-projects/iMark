@@ -13,7 +13,7 @@ import { syntaxTree } from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view'
 import katex from 'katex'
-import { mathSource } from './math'
+import { mathForKatex, mathSource } from './math'
 import { getPendingFence } from './pendingFence'
 
 /** 源码与预览之间、预览与编辑区边缘之间的距离(px) */
@@ -206,7 +206,7 @@ const mathPreviewPlugin = ViewPlugin.fromClass(
     private render(hit: MathHit): void {
       this.el.classList.remove('cm-md-math-preview-error')
       try {
-        katex.render(hit.tex, this.el, {
+        katex.render(mathForKatex(hit.tex, hit.display), this.el, {
           displayMode: hit.display,
           throwOnError: false,
           output: 'html',

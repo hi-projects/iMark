@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { dialog, ipcMain, shell } from 'electron'
@@ -50,7 +50,7 @@ import { claimVault, releaseVault } from './vaultHandoff'
 import { cloneRepository, folderNameFromUrl } from './git'
 import { getExtensionService } from './extensions/service'
 import { moveProjectGit, readProjectGitRemotes, setProjectGitRemote } from './projectGit'
-import { launchedForNewWindow } from './launchArgs'
+import { launchedForNewWindow, startsAtPicker } from './launchArgs'
 import {
   ensureUserStylesDir,
   importUserStyle,
@@ -83,8 +83,12 @@ export function registerIpc(): void {
   // 启动参数里带的文件(双击 .md 启动时那条路);渲染层初始化完后主动来取
   ipcMain.handle(IPC.OpenFileTake, () => takePendingOpenFile())
 
-  // 任务栏中键 / Shift+点击「新开一个」:渲染层据此跳过自动恢复上次仓库
-  ipcMain.handle(IPC.LaunchIntent, () => ({ newWindow: launchedForNewWindow }))
+  // 任务栏中键 / Shift+点击「新开一个」、或上次仓库已开在别的窗口:
+  // 渲染层据此跳过自动恢复上次仓库、停在选择页
+  ipcMain.handle(IPC.LaunchIntent, () => ({
+    newWindow: launchedForNewWindow,
+    startAtPicker: startsAtPicker()
+  }))
 
   // ---------- 系统(设置 → 系统) ----------
   ipcMain.handle(IPC.SystemDefaultEditorStatus, () => defaultEditorStatus())
@@ -191,6 +195,30 @@ export function registerIpc(): void {
     const error = await shell.openPath(path)
     return error || null
   })
+
+  /**
+   * 「在资源管理器中打开」:文件就打开所在目录并选中它,目录就打开目录本身。
+   * 文件名 / 目录名是渲染层给的,存在性在这里确认(文件管理器对不存在的路径
+   * 只会静默无反应,不如把错误带给用户)。
+   */
+  ipcMain.handle(
+    IPC.RevealInFileManager,
+    async (_e, target: unknown): Promise<string | null> => {
+      if (typeof target !== 'string' || !target.trim()) return '路径为空'
+      const path = target.trim()
+      try {
+        const info = await stat(path)
+        if (info.isDirectory()) {
+          const error = await shell.openPath(path)
+          return error || null
+        }
+        shell.showItemInFolder(path)
+        return null
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
+    }
+  )
 
   // ---------- 仓库 ----------
 

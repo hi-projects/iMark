@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Cpu, Info, PackageCheck, Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
+import { Brush, Cpu, Info, PackageCheck, Palette, RotateCcw, Settings2, Store, TextCursorInput, X } from 'lucide-vue-next'
 import HelpTip from './HelpTip.vue'
 import { computed } from 'vue'
 import type { AutoSaveMode } from '@shared/types'
@@ -8,19 +8,33 @@ import {
   AUTO_SAVE_DELAY_MIN,
   CODE_INDENT_OPTIONS,
   delayLabel,
+  EDITOR_DEFAULTS,
   EDITOR_FONT_SIZE_MAX,
-  EDITOR_FONT_SIZE_MIN
+  EDITOR_FONT_SIZE_MIN,
+  LINE_SPACE_MAX,
+  LINE_SPACE_MIN,
+  LINE_SPACE_STEP,
+  PAIR_SPACE_DEFAULT
 } from '@shared/editorSettings'
 import { appStore, closeSettings, setTheme, THEME_LABELS, THEME_ORDER } from '../stores/app'
 import {
+  previewCodeLineSpace,
   previewFontSize,
-  resetEditorSettings,
+  previewListLineSpace,
+  previewMathLineSpace,
+  previewQuoteLineSpace,
+  resetBlockSpacingSettings,
+  resetSpacingSelection,
   resetSpacingSettings,
   setAutoSaveDelay,
   setAutoSaveMode,
   setCodeIndentSize,
+  setCodeLineSpace,
   setEditorFontSize,
-  setLineWrapping
+  setLineWrapping,
+  setListLineSpace,
+  setMathLineSpace,
+  setQuoteLineSpace
 } from '../services/editorSettings'
 import { remoteStore } from '../services/marketService'
 import { openMarketSettings, settingsNav, type MarketNav } from '../services/settingsNav'
@@ -32,6 +46,8 @@ import SystemSettings from './SystemSettings.vue'
 import AboutSettings from './AboutSettings.vue'
 import UserStyleSettings from './UserStyleSettings.vue'
 import SpacingSettings from './SpacingSettings.vue'
+import SettingsSelect from './SettingsSelect.vue'
+import type { PairView } from '../services/spacingPairs'
 import MarketPage from './market/MarketPage.vue'
 import MarketHosts from './market/MarketHosts.vue'
 import MarketInstalled from './market/MarketInstalled.vue'
@@ -64,6 +80,7 @@ const title = computed(() => {
     if (tab === 'browse') return settingsNav.market.detailId ? '扩展详情' : '浏览市场'
     return '发布扩展'
   }
+  if (settingsNav.page === 'style') return '样式'
   if (settingsNav.page === 'editor') return '编辑器'
   if (settingsNav.page === 'system') return '系统'
   if (settingsNav.page === 'about') return '关于'
@@ -108,6 +125,44 @@ function onDelayChange(e: Event): void {
 /** 读数就是滑块值本身:正文字号所见即所得(与 tokens.css 一致) */
 const bodyFontLabel = computed(() => `${appStore.editorFontSize} px`)
 
+/** 圆环里当前选中的边界;没选全时为 null,「恢复默认样式」不可点 */
+const spacingSelection = ref<PairView | null>(null)
+
+/** 选中的这条边界是否偏离默认(没偏离时恢复按钮同样不可点) */
+const selectionChanged = computed(() => {
+  const selection = spacingSelection.value
+  if (!selection) return false
+  return selection.groups.some(group =>
+    group.rows.some(row =>
+      row.target.kind === 'pair'
+        ? (appStore.pairGaps[row.target.key] ?? PAIR_SPACE_DEFAULT) !== PAIR_SPACE_DEFAULT
+        : appStore.lineSpace !== EDITOR_DEFAULTS.lineSpace
+    )
+  )
+})
+
+/** 块内间距是否有改动 */
+const blockSpacingChanged = computed(
+  () =>
+    appStore.codeLineSpace !== EDITOR_DEFAULTS.codeLineSpace ||
+    appStore.mathLineSpace !== EDITOR_DEFAULTS.mathLineSpace ||
+    appStore.listLineSpace !== EDITOR_DEFAULTS.listLineSpace ||
+    appStore.quoteLineSpace !== EDITOR_DEFAULTS.quoteLineSpace
+)
+
+/** 「间距」模块里是否还有非默认值(决定「恢复全局默认样式」是否可点) */
+const globalSpacingChanged = computed(
+  () =>
+    appStore.editorFontSize !== EDITOR_DEFAULTS.editorFontSize ||
+    appStore.lineSpace !== EDITOR_DEFAULTS.lineSpace ||
+    blockSpacingChanged.value ||
+    Object.values(appStore.pairGaps).some(value => value !== PAIR_SPACE_DEFAULT)
+)
+
+function resetCurrentSpacing(): void {
+  if (spacingSelection.value) void resetSpacingSelection(spacingSelection.value)
+}
+
 /** 拖滑块时即时预览字号(只改画面),松手才写盘 */
 function onFontSizeInput(e: Event): void {
   previewFontSize(Number((e.target as HTMLInputElement).value))
@@ -115,6 +170,66 @@ function onFontSizeInput(e: Event): void {
 
 function onFontSizeCommit(e: Event): void {
   void setEditorFontSize(Number((e.target as HTMLInputElement).value))
+}
+
+/** 代码块 Tab 缩进的下拉选项 */
+const CODE_INDENT_SELECT_OPTIONS = CODE_INDENT_OPTIONS.map(size => ({
+  value: size,
+  label: `${size} 个空格`
+}))
+
+/** 块内间距读数:一档 = 一个正文字号,与块间距用同一把尺子 */
+const codeLineSpaceLabel = computed(
+  () =>
+    `${appStore.codeLineSpace.toFixed(1)} 档 · ` +
+    `${Math.round(appStore.codeLineSpace * appStore.editorFontSize)} px`
+)
+const mathLineSpaceLabel = computed(
+  () =>
+    `${appStore.mathLineSpace.toFixed(1)} 档 · ` +
+    `${Math.round(appStore.mathLineSpace * appStore.editorFontSize)} px`
+)
+const listLineSpaceLabel = computed(
+  () =>
+    `${appStore.listLineSpace.toFixed(1)} 档 · ` +
+    `${Math.round(appStore.listLineSpace * appStore.editorFontSize)} px`
+)
+const quoteLineSpaceLabel = computed(
+  () =>
+    `${appStore.quoteLineSpace.toFixed(1)} 档 · ` +
+    `${Math.round(appStore.quoteLineSpace * appStore.editorFontSize)} px`
+)
+
+function onCodeLineSpaceInput(e: Event): void {
+  previewCodeLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onCodeLineSpaceCommit(e: Event): void {
+  void setCodeLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onMathLineSpaceInput(e: Event): void {
+  previewMathLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onMathLineSpaceCommit(e: Event): void {
+  void setMathLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onListLineSpaceInput(e: Event): void {
+  previewListLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onListLineSpaceCommit(e: Event): void {
+  void setListLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onQuoteLineSpaceInput(e: Event): void {
+  previewQuoteLineSpace(Number((e.target as HTMLInputElement).value))
+}
+
+function onQuoteLineSpaceCommit(e: Event): void {
+  void setQuoteLineSpace(Number((e.target as HTMLInputElement).value))
 }
 
 /**
@@ -405,6 +520,14 @@ onBeforeUnmount(() => {
         </button>
         <button
           class="settings-nav-item"
+          :class="{ 'settings-nav-active': settingsNav.page === 'style' }"
+          @click="settingsNav.page = 'style'"
+        >
+          <Brush :size="15" />
+          <span>样式</span>
+        </button>
+        <button
+          class="settings-nav-item"
           :class="{ 'settings-nav-active': settingsNav.page === 'editor' }"
           @click="settingsNav.page = 'editor'"
         >
@@ -591,7 +714,7 @@ onBeforeUnmount(() => {
                 <div class="settings-row-info">
                   <div class="settings-row-title">自动换行</div>
                   <div class="settings-row-desc">
-                    关闭后长段落不折行，靠横向滚动看完整行；表格、公式这类宽内容更适合关闭。
+                    关闭/开启长段落自动折行
                   </div>
                 </div>
                 <label
@@ -611,43 +734,31 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="settings-card">
-              <div class="settings-row settings-row-stack">
+              <div class="settings-row">
                 <div class="settings-row-info">
                   <div class="settings-row-title">代码块 Tab 缩进</div>
                   <div class="settings-row-desc">
-                    在代码块里按 Tab 时插入的空格数；正文中 Tab 仍用于切换焦点。
+                    代码块中 Tab 插入的空格数，正文中 Tab 用于切换焦点
                   </div>
                 </div>
-                <div class="settings-control">
-                  <span class="settings-presets">
-                    <button
-                      v-for="size in CODE_INDENT_OPTIONS"
-                      :key="size"
-                      class="settings-preset"
-                      :class="{ 'settings-preset-active': appStore.codeIndentSize === size }"
-                      @click="setCodeIndentSize(size)"
-                    >
-                      {{ size }} 个空格
-                    </button>
-                  </span>
+                <div class="settings-control settings-control-center">
+                  <SettingsSelect
+                    data-code-indent="codeIndentSize"
+                    :model-value="appStore.codeIndentSize"
+                    :options="CODE_INDENT_SELECT_OPTIONS"
+                    @update:model-value="setCodeIndentSize(Number($event))"
+                  />
                 </div>
               </div>
             </div>
           </div>
-
-          <div class="settings-section">
-            <button class="settings-reset" @click="resetEditorSettings()">
-              <RotateCcw :size="13" />
-              <span>恢复默认设置</span>
-            </button>
-          </div>
         </div>
 
-        <div v-else class="settings-body">
+        <div v-else-if="settingsNav.page === 'appearance'" class="settings-body">
           <div class="settings-section">
             <div class="settings-section-head">
-              <div class="settings-section-title">基础颜色</div>
-              <div class="settings-section-desc">设置界面主题。选择后立即生效，并保存到本地设置。</div>
+              <div class="settings-section-title">主题</div>
+              <div class="settings-section-desc">设置界面主题，选择后立即生效。</div>
             </div>
             <div class="settings-card settings-card-pad">
               <div class="settings-themes">
@@ -669,20 +780,19 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+        </div>
 
+        <div v-else-if="settingsNav.page === 'style'" class="settings-body">
           <div class="settings-section">
             <div class="settings-section-head">
               <div class="settings-section-title">间距</div>
-              <div class="settings-section-desc">
-                调整实时渲染结果中各类文字的间距
-              </div>
             </div>
 
-            <SpacingSettings>
+            <div class="settings-card settings-card-compact">
               <div class="settings-row">
                 <div class="settings-row-info">
                   <div class="settings-row-title">正文字号</div>
-                  <div class="settings-row-desc">其他各类文字根据正文字号按比例缩放，只影响显示，不影响导出。</div>
+                  <div class="settings-row-desc">调整正文字号。其他各类文字根据正文字号等比缩放，只影响显示，不影响导出</div>
                 </div>
                 <div class="settings-control">
                   <input
@@ -698,12 +808,165 @@ onBeforeUnmount(() => {
                   <span class="settings-readout">{{ bodyFontLabel }}</span>
                 </div>
               </div>
-            </SpacingSettings>
+            </div>
 
-            <button class="settings-reset" @click="resetSpacingSettings()">
-              <RotateCcw :size="13" />
-              <span>恢复默认设置</span>
-            </button>
+            <div class="settings-reset-row">
+              <button
+                class="settings-reset"
+                data-spacing-reset="all"
+                :disabled="!globalSpacingChanged"
+                :title="globalSpacingChanged ? '恢复全部间距默认' : '间距已经是默认样式'"
+                @click="resetSpacingSettings()"
+              >
+                <RotateCcw :size="13" />
+                <span>恢复全局默认样式</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">块间间距</div>
+              <div class="settings-section-desc">
+                调整块与块之间的距离，先后点击上下块
+              </div>
+            </div>
+
+            <SpacingSettings @selection="spacingSelection = $event" />
+
+            <div class="settings-reset-row">
+              <button
+                class="settings-reset"
+                data-spacing-reset="selection"
+                :disabled="!spacingSelection || !selectionChanged"
+                :title="
+                  !spacingSelection
+                    ? '先在左侧选择一个块或一对块'
+                    : selectionChanged
+                      ? '只恢复当前选中部分的默认样式'
+                      : '当前边界已经是默认样式'
+                "
+                @click="resetCurrentSpacing"
+              >
+                <RotateCcw :size="13" />
+                <span>恢复默认样式</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-head">
+              <div class="settings-section-title">块内间距</div>
+              <div class="settings-section-desc">
+                调整块内行距
+              </div>
+            </div>
+
+            <div class="settings-card settings-card-compact">
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">代码块行距</div>
+                  <div class="settings-row-desc">
+                    调整代码块内行距
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    data-code-line-space="codeLineSpace"
+                    :min="LINE_SPACE_MIN"
+                    :max="LINE_SPACE_MAX"
+                    :step="LINE_SPACE_STEP"
+                    :value="appStore.codeLineSpace"
+                    @input="onCodeLineSpaceInput"
+                    @change="onCodeLineSpaceCommit"
+                  />
+                  <span class="settings-readout">{{ codeLineSpaceLabel }}</span>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">公式块行距</div>
+                  <div class="settings-row-desc">
+                    调整公式块内行距
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    data-math-line-space="mathLineSpace"
+                    :min="LINE_SPACE_MIN"
+                    :max="LINE_SPACE_MAX"
+                    :step="LINE_SPACE_STEP"
+                    :value="appStore.mathLineSpace"
+                    @input="onMathLineSpaceInput"
+                    @change="onMathLineSpaceCommit"
+                  />
+                  <span class="settings-readout">{{ mathLineSpaceLabel }}</span>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">列表行距</div>
+                  <div class="settings-row-desc">
+                    调整列表内行距
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    data-list-line-space="listLineSpace"
+                    :min="LINE_SPACE_MIN"
+                    :max="LINE_SPACE_MAX"
+                    :step="LINE_SPACE_STEP"
+                    :value="appStore.listLineSpace"
+                    @input="onListLineSpaceInput"
+                    @change="onListLineSpaceCommit"
+                  />
+                  <span class="settings-readout">{{ listLineSpaceLabel }}</span>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div class="settings-row-info">
+                  <div class="settings-row-title">引用行距</div>
+                  <div class="settings-row-desc">
+                    调整引用内行距
+                  </div>
+                </div>
+                <div class="settings-control">
+                  <input
+                    class="settings-range"
+                    type="range"
+                    data-quote-line-space="quoteLineSpace"
+                    :min="LINE_SPACE_MIN"
+                    :max="LINE_SPACE_MAX"
+                    :step="LINE_SPACE_STEP"
+                    :value="appStore.quoteLineSpace"
+                    @input="onQuoteLineSpaceInput"
+                    @change="onQuoteLineSpaceCommit"
+                  />
+                  <span class="settings-readout">{{ quoteLineSpaceLabel }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-reset-row">
+              <button
+                class="settings-reset"
+                :disabled="!blockSpacingChanged"
+                :title="blockSpacingChanged ? '恢复块内间距默认' : '块内间距已经是默认样式'"
+                @click="resetBlockSpacingSettings()"
+              >
+                <RotateCcw :size="13" />
+                <span>恢复默认样式</span>
+              </button>
+            </div>
           </div>
 
           <UserStyleSettings />

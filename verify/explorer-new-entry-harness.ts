@@ -188,6 +188,7 @@ async function main(): Promise<void> {
   await mk('ros2/ros2-moveit2/管线.md', '# 管线\n')
   await mk('ros2/ros2-moveit2/配置打包器.md', '# 配置打包器\n')
   await mk('vla/pi0.5.md', '# pi0.5\n')
+  await mk('说明.md', '# 说明\n')
   const lastFile = join(vault, 'ros2/ros2-moveit2/管线.md')
   await writeFile(
     join(ud, 'settings.json'),
@@ -307,8 +308,11 @@ async function main(): Promise<void> {
   {
     const firstLevel = await rowNames()
     check(
-      '目录默认收起:只看到第一层(ros2 / vla)',
-      firstLevel.length === 2 && firstLevel.includes('ros2') && firstLevel.includes('vla'),
+      '目录默认收起:只看到第一层(ros2 / vla / 说明.md)',
+      firstLevel.length === 3 &&
+        firstLevel.includes('ros2') &&
+        firstLevel.includes('vla') &&
+        firstLevel.includes('说明.md'),
       JSON.stringify(firstLevel)
     )
   }
@@ -576,6 +580,59 @@ async function main(): Promise<void> {
   })()
   check('调用系统文件管理器打开 .assets', openedOk && openedDir === assetsDir, String(openedDir))
   check('目录不存在时先创建出来', existsSync(assetsDir))
+
+  // ---------- I ----------
+  console.log('\n【I】右键「在资源管理器中打开」:文件定位所在目录,目录打开自身')
+  let shownItem: string | null = null
+  ;(shell as unknown as { showItemInFolder: unknown }).showItemInFolder = (path: string) => {
+    shownItem = path
+  }
+  const openMenuFor = (name: string): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const row = [...document.querySelectorAll('.explorer-list .explorer-item')]
+        .find(el => el.querySelector('.explorer-name')?.textContent === ${JSON.stringify(name)})
+      if (!row) return false
+      row.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 220, clientY: 260 })
+      )
+      return true
+    })()`)
+  const clickReveal = (): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const item = [...document.querySelectorAll('.explorer-menu-item')]
+        .find(el => el.querySelector('.explorer-menu-label')?.textContent === '在资源管理器中打开')
+      if (!item) return false
+      item.click()
+      return true
+    })()`)
+
+  openedDir = null
+  check('文件行右键打开菜单', await openMenuFor('说明.md'))
+  await waitFor(`document.querySelector('.explorer-menu')`)
+  check(
+    '文件右键菜单有「在资源管理器中打开」',
+    await evalJs<boolean>(`!![...document.querySelectorAll('.explorer-menu-label')]
+      .find(el => el.textContent === '在资源管理器中打开')`)
+  )
+  check('点击文件菜单项', await clickReveal())
+  await sleep(400)
+  check('文件:在资源管理器中选中该文件', shownItem === join(vault, '说明.md'), String(shownItem))
+
+  openedDir = null
+  check('目录行右键打开菜单', await openMenuFor('ros2-moveit2'))
+  await waitFor(`document.querySelector('.explorer-menu')`)
+  check(
+    '目录右键菜单有「在资源管理器中打开」',
+    await evalJs<boolean>(`!![...document.querySelectorAll('.explorer-menu-label')]
+      .find(el => el.textContent === '在资源管理器中打开')`)
+  )
+  check('点击目录菜单项', await clickReveal())
+  await sleep(400)
+  check(
+    '目录:打开目录本身',
+    openedDir === join(vault, 'ros2/ros2-moveit2'),
+    String(openedDir)
+  )
 
   console.log(`\n结果:${pass} 通过,${fail} 失败`)
   for (const w of BrowserWindow.getAllWindows()) w.destroy()

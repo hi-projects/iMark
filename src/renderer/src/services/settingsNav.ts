@@ -21,9 +21,18 @@ export interface MarketNav {
   hasMain: boolean | null
 }
 
-/** 设置面板当前选中项:外观、编辑器、系统、关于、某个扩展的配置、扩展市场、扩展分配或已安装 */
+/** 设置面板当前选中项:外观、样式、编辑器、系统、关于、某个扩展的配置、扩展市场、扩展分配或已安装 */
 export const settingsNav = reactive<{
-  page: 'appearance' | 'editor' | 'system' | 'about' | 'plugin' | 'market' | 'hosts' | 'installed'
+  page:
+    | 'appearance'
+    | 'style'
+    | 'editor'
+    | 'system'
+    | 'about'
+    | 'plugin'
+    | 'market'
+    | 'hosts'
+    | 'installed'
   pluginId: string | null
   /**
    * 市场内部的子导航放在这里,而不是继续往 page 联合里塞 ——

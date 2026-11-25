@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionContextKeys } from './extensions'
+import type { GitProxyConfig } from './extensionApi'
 import type { ExtensionManifest } from './extensionPackage'
 
 export const EXTENSION_WEBVIEW_SCHEME = 'imark-webview'
@@ -439,6 +440,20 @@ export type HostRequestMessage =
       kind: 'project.gitSecret'
       requestId: string
       extensionId: string
+    }
+  | {
+      kind: 'git.networkSetup'
+      requestId: string
+      extensionId: string
+      url: string
+      /** 不传 = 用应用里克隆使用的那份代理设置 */
+      proxy?: GitProxyConfig
+    }
+  | {
+      kind: 'git.detectProxy'
+      requestId: string
+      extensionId: string
+      proxy?: GitProxyConfig
     }
   | {
       kind: 'editor.applyEdits'

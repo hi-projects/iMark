@@ -378,7 +378,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   await waitFor(`document.querySelector('[data-spacing-ring]')`)
 
@@ -543,7 +543,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)

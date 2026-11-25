@@ -17,22 +17,10 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import * as imark from 'imark'
-import {
-  credentialArgs,
-  credentialEnv,
-  isGitAvailable,
-  redactUrl,
-  runGit,
-  summarize
-} from './git'
-import {
-  detectSystemProxy,
-  normalizeProxyUrl,
-  probeProxy,
-  proxyForUrl,
-  type DetectedProxy,
-  type ProxyMode
-} from './proxy'
+import { credentialArgs, credentialEnv, isGitAvailable, runGit, summarize } from './git'
+
+/** 代理类型定义在应用能力里(`imark.git`),扩展只复用类型,不自己探测 */
+type ProxyMode = imark.GitProxyMode
 
 const SECTION = 'imark.git-sync'
 /** 「从远端下载」创建的 stash 用这个前缀标记,同步时据此自动恢复 */
@@ -126,17 +114,9 @@ interface ActionResult {
   silent?: boolean
 }
 
-/** 一次网络操作实际用到的代理参数 */
-interface NetworkSetup {
-  /** 追加到 git 命令行（在子命令之前）的 -c 参数 */
-  args: string[]
-  /** 追加到子进程环境变量的部分（NO_PROXY 等） */
-  env: Record<string, string>
+/** 一次网络操作实际用到的代理参数(由应用探测,这里补一份 mode 给日志/失败提示) */
+interface NetworkSetup extends imark.GitNetworkSetup {
   mode: ProxyMode
-  /** 实际生效的代理地址；null = 直连（已脱敏，可直接展示） */
-  proxyUrl: string | null
-  /** 代理来源，用于日志与失败提示 */
-  proxySource: string | null
 }
 
 /** 失败原因的分类现场：同样的 timeout，「没代理」「代理挂了」「SSH」要说不同的话 */
@@ -1011,45 +991,15 @@ class GitSyncPlugin {
   /**
    * 为一次网络操作准备代理参数。
    *
-   * 不能只靠环境变量：git/libcurl 不读操作系统的「系统代理」，而 Clash / FlClash
-   * 开启系统代理时写的正是那里（Windows 注册表、Linux GNOME gsettings）。
-   * 这里把探测结果显式拼成 `-c http.proxy=…`。
+   * 探测由**应用**完成(`imark.git.networkSetup`):git/libcurl 不读操作系统的
+   * 「系统代理」,而 Clash / FlClash 开启系统代理时写的正是那里(Windows 注册表、
+   * Linux GNOME gsettings)。应用把结果显式拼成 `-c http.proxy=…`,与克隆仓库
+   * 走完全相同的规则;扩展这里只负责把自己的设置传过去。
    */
   private async networkSetup(url: string, cfg: GitSyncConfig): Promise<NetworkSetup> {
     const mode = this.proxyMode(cfg)
-    let detected: DetectedProxy | null = null
-    if (mode === 'manual') {
-      const normalized = normalizeProxyUrl(cfg.proxyUrl)
-      if (normalized) detected = { url: normalized, source: '扩展设置', bypass: [] }
-    } else {
-      const scheme = /^https:/i.test(url.trim()) ? 'https' : /^http:/i.test(url.trim()) ? 'http' : null
-      // SSH / 本地路径：没有 HTTP 代理可用，也不必白跑一次系统代理查询
-      if (scheme) detected = await detectSystemProxy(scheme)
-    }
-    const effective = proxyForUrl(url, detected)
-    if (!effective) {
-      // 没有可用代理就直连；显式清空，避免宿主环境里的 HTTP_PROXY 又被 git 捡起来。
-      return {
-        args: ['-c', 'http.proxy='],
-        env: { NO_PROXY: '*', no_proxy: '*' },
-        mode,
-        proxyUrl: null,
-        proxySource: null
-      }
-    }
-    const env: Record<string, string> = {}
-    if (detected && detected.bypass.length > 0) {
-      const bypass = detected.bypass.join(',')
-      env.NO_PROXY = bypass
-      env.no_proxy = bypass
-    }
-    return {
-      args: ['-c', `http.proxy=${effective}`],
-      env,
-      mode,
-      proxyUrl: redactUrl(effective),
-      proxySource: detected?.source ?? null
-    }
+    const setup = await imark.git.networkSetup(url, { mode, proxyUrl: cfg.proxyUrl })
+    return { ...setup, mode }
   }
 
   /** 每次网络操作留一行日志 —— 「到底走没走代理」只看界面是看不出来的 */
@@ -1070,49 +1020,34 @@ class GitSyncPlugin {
   /** 「检测本机代理」命令：结果用通知展示，不覆盖同步状态卡 */
   private async detectProxy(): Promise<ActionResult> {
     const cfg = readConfig()
-    const mode = this.proxyMode(cfg)
+    // 探测本身是应用能力;扩展只把设置传过去并把事实翻译成界面文案。
+    const report = await imark.git.detectProxy({
+      mode: this.proxyMode(cfg),
+      proxyUrl: cfg.proxyUrl
+    })
 
     let result: ActionResult
-    if (mode === 'manual') {
-      const url = normalizeProxyUrl(cfg.proxyUrl)
-      if (!url) {
-        result = {
-          ok: false,
-          message: `手动代理地址无法识别：${cfg.proxyUrl?.trim() || '(空)'}`,
-          detail: '示例：http://127.0.0.1:7890、socks5://127.0.0.1:7891'
-        }
-      } else {
-        const reachable = await probeProxy(url)
-        result = {
-          ok: true,
-          message: `手动代理：${redactUrl(url)}（${reachable ? '端口可连接' : '端口连不上'}）`,
-          ...(reachable ? {} : { detail: '请确认代理客户端正在运行，或检查地址与端口。' })
-        }
+    if (report.invalidManualUrl !== undefined) {
+      result = {
+        ok: false,
+        message: `手动代理地址无法识别：${report.invalidManualUrl || '(空)'}`,
+        detail: '示例：http://127.0.0.1:7890、socks5://127.0.0.1:7891'
+      }
+    } else if (!report.proxyUrl) {
+      result = {
+        ok: true,
+        message: `未检测到本机代理（已检查${report.checked}）`,
+        detail:
+          '可在扩展设置里把「连接方式」改为「手动指定代理」；Clash / FlClash 的默认混合端口是 http://127.0.0.1:7890。'
       }
     } else {
-      // 大多数远端是 HTTPS，先按它探；没有再按 HTTP 探（只设了 HTTP_PROXY 的情况）
-      const found = (await detectSystemProxy('https')) ?? (await detectSystemProxy('http'))
-      if (!found) {
-        // Windows 读注册表、Linux 读 GNOME gsettings;macOS 目前只看环境变量
-        const checked =
-          process.platform === 'win32'
-            ? '环境变量与 Windows 系统代理'
-            : process.platform === 'linux'
-              ? '环境变量与 GNOME 系统代理'
-              : '环境变量'
-        result = {
-          ok: true,
-          message: `未检测到本机代理（已检查${checked}）`,
-          detail:
-            '可在扩展设置里把「连接方式」改为「手动指定代理」；Clash / FlClash 的默认混合端口是 http://127.0.0.1:7890。'
-        }
-      } else {
-        const reachable = await probeProxy(found.url)
-        result = {
-          ok: true,
-          message: `检测到本机代理：${redactUrl(found.url)}（${found.source}${reachable ? '，端口可连接' : '，但端口连不上'}）`,
-          ...(reachable ? {} : { detail: '代理已配置但连接不上：请确认代理客户端正在运行。' })
-        }
+      const prefix = report.mode === 'manual' ? '手动代理' : '检测到本机代理'
+      result = {
+        ok: true,
+        message: `${prefix}：${report.proxyUrl}（${report.proxySource ?? '来源未知'}${report.reachable ? '，端口可连接' : '，但端口连不上'}）`,
+        ...(report.reachable
+          ? {}
+          : { detail: '代理已配置但连接不上：请确认代理客户端正在运行，或检查地址与端口。' })
       }
     }
 

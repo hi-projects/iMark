@@ -80,16 +80,27 @@
   padding: 64px 0 40vh;
   max-width: calc(var(--editor-line-width) - 2 * var(--editor-line-gutter));
   margin: 0 auto;
-  /* 中英文/数字之间由浏览器自动留白;只影响排版,源码不增加空格 */
+  /* 中英文 / 数字之间由浏览器自动留白;符号与汉字之间由 cm-md-symbol-gap-* 补 */
   text-autospace: normal;
 }
 
-/* 代码与公式源码是字面内容,不做中英文自动留白 */
+/* 代码与公式源码是字面内容,不做自动留白 */
 .cm-md-code,
 .cm-md-inlinecode,
 .cm-md-math-src-line,
 .cm-md-math-src {
   text-autospace: no-autospace;
+}
+
+/*
+ * 中文与符号(数学 / 货币 / 符号类,不含句读标点)之间的空隙。
+ * 宽度与 Chromium text-autospace 一致(1/8em);只影响渲染,源码不加空格。
+ */
+.cm-editor .cm-md-symbol-gap-left {
+  margin-left: 0.125em;
+}
+.cm-editor .cm-md-symbol-gap-right {
+  margin-right: 0.125em;
 }
 
 /*
@@ -116,17 +127,32 @@
  * 没被选中"。这里改用 margin-left(不参与那段计算),竖线用绝对定位伪元素画回
  * 正文栏左缘。
  */
+/*
+ * 列表 / 引用的行距独立于正文,各走「块内间距」里自己的变量。
+ * 标题 / 代码 / 公式源码的规则在后面,会按更内层的块覆盖这里的行高。
+ */
+.cm-md-list-line {
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-list-line-space, 1));
+}
+
 .cm-md-quote {
   position: relative;
   margin-left: 1em;
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-quote-line-space, 1));
 }
 
 .cm-md-quote::before {
   content: '';
   position: absolute;
   left: -1em;
-  top: 0;
-  bottom: 0;
+  /*
+   * 配对间距是**块之间**的留白,不是引用行自己的高度:它挂在首行的 padding-top /
+   * 末行的 padding-bottom 上。绝对定位的 top/bottom 从 padding 盒算起,直接用
+   * 0 会把竖线拉进这段间距里 —— 引用上方留白越大,竖线越"冒头"。
+   * 配对规则在设置 padding 的同时写了这两个变量,这里减掉,竖线就只盖住行盒。
+   */
+  top: var(--quote-bar-inset-top, 0);
+  bottom: var(--quote-bar-inset-bottom, 0);
   width: 2px;
   background: var(--quote-bar);
   pointer-events: none;
@@ -170,14 +196,32 @@
   text-decoration: line-through;
 }
 
+/*
+ * 行内代码只加底色:字体、字号继承正文,左右默认也不留内边距/外边距。
+ *
+ * 带左右 padding 时,行首的代码会把整行文字往右推,和后面对不齐
+ * (源码里的零宽反引号 widget 也补不出这份差)。底色贴着文字本身即可。
+ * 上下留一点点,让底色不至于紧贴字形上下沿。
+ */
 .cm-md-inlinecode {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
   background: var(--bg-code);
   border-radius: 4px;
-  padding: 0.12em 0.4em;
-  /* 自动留白跨不过行内代码两侧的零宽 widget,这里补一点外边距 */
-  margin-inline: 0.15em;
+  padding: 0.12em 0;
+}
+
+/*
+ * 中文与行内代码之间的自动留白。
+ *
+ * 浏览器的 text-autospace 跨不过 CM 插在反引号位置上的零宽 widget ——
+ * 紧贴中文的英文代码会少掉普通英文才有的那个空格。这里只在与中文相邻的
+ * 一侧补 1/8em(与 Chromium 的自动留白同宽)。行首的代码没有左侧相邻中文,
+ * 不会挂这个类,所以不会被推离左边界。
+ */
+.cm-md-inlinecode.cm-md-inlinecode-space-before {
+  margin-left: 0.125em;
+}
+.cm-md-inlinecode.cm-md-inlinecode-space-after {
+  margin-right: 0.125em;
 }
 
 /* ---------- 行内 HTML 白名单(services/inlineHtml) ---------- */
@@ -228,6 +272,10 @@
   font-size: 0.92em;
   background: var(--bg-codeblock);
   border-left: 1.25em solid transparent;
+  /* 代码块内部行距独立于正文:「块内间距 → 代码块行距」写这个变量。
+     多出来的一档按**正文字号**算(1 档 = 15px),不是按 0.92em 的代码字号 ——
+     与设置里的「档 · px」读数、以及块间距的尺子保持同一个含义。 */
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-code-line-space, 1));
 }
 
 /*
@@ -398,7 +446,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-list, 1));
 }
 .cm-editor .cm-line.cm-md-body-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-body-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-body-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-body-image, 1));
@@ -425,7 +474,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-list, 1));
 }
 .cm-editor .cm-line.cm-md-heading-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-heading-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-heading-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-heading-image, 1));
@@ -452,7 +502,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-list, 1));
 }
 .cm-editor .cm-line.cm-md-code-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-code-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-code-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-code-image, 1));
@@ -479,7 +530,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-list, 1));
 }
 .cm-editor .cm-line.cm-md-list-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-list-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-list-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-list-image, 1));
@@ -506,7 +558,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-list, 1));
 }
 .cm-editor .cm-line.cm-md-quote-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-quote-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-quote-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-quote-image, 1));
@@ -533,7 +586,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-list, 1));
 }
 .cm-editor .cm-line.cm-md-image-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-image-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-image-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-image-image, 1));
@@ -560,7 +614,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-list, 1));
 }
 .cm-editor .cm-line.cm-md-table-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-table-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-table-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-table-image, 1));
@@ -587,7 +642,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-list, 1));
 }
 .cm-editor .cm-line.cm-md-math-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-math-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-math-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-math-image, 1));
@@ -614,7 +670,8 @@
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-list, 1));
 }
 .cm-editor .cm-line.cm-md-mermaid-quote {
-  padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
+  --quote-bar-inset-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-quote, 1));
+  padding-top: var(--quote-bar-inset-top);
 }
 .cm-editor .cm-line.cm-md-mermaid-image {
   padding-top: calc(var(--editor-body-size) * var(--md-gap-mermaid-image, 1));
@@ -675,7 +732,8 @@
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-list-code, 1));
 }
 .cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-quote-code {
-  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
+  --quote-bar-inset-bottom: calc(var(--editor-body-size) * var(--md-gap-quote-code, 1));
+  padding-bottom: var(--quote-bar-inset-bottom);
 }
 .cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-image-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-image-code, 1));
@@ -688,6 +746,35 @@
 }
 .cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-mermaid-code {
   padding-bottom: calc(var(--editor-body-size) * var(--md-gap-mermaid-code, 1));
+}
+/* 公式块同理:间距做在上一块末行,公式源码 / 渲染块的底色不会被撑开 */
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-body-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-body-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-heading-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-heading-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-code-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-code-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-list-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-list-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-quote-math {
+  --quote-bar-inset-bottom: calc(var(--editor-body-size) * var(--md-gap-quote-math, 1));
+  padding-bottom: var(--quote-bar-inset-bottom);
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-image-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-image-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-table-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-table-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-math-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-math-math, 1));
+}
+.cm-editor .cm-line.cm-md-pair-bottom.cm-md-bottom-mermaid-math {
+  padding-bottom: calc(var(--editor-body-size) * var(--md-gap-mermaid-math, 1));
 }
 
 .cm-md-link {
@@ -710,6 +797,17 @@
   color: color-mix(in oklch, var(--text-primary) 62%, transparent);
 }
 
+/*
+ * 渲染态隐藏的引用标记:字符本身保留,只把字号设成 0。
+ * 不要换成 CodeMirror 的 replace 零宽 widget —— 它会在行里留下 inline 盒,
+ * 行距小于字号时会撑高行盒,光标切行(标记显隐)时竖线与文字会跳。
+ */
+.cm-md-quotemark-hidden {
+  font-size: 0;
+  /* 不参与行高:隐藏标记的 inline 盒在行距小于字号时会把行盒撑高 */
+  line-height: 0;
+}
+
 .cm-md-listmark {
   color: var(--list-marker-color);
   font-weight: 600;
@@ -719,6 +817,9 @@
    字符本身仍在文档里,光标/删除等编辑行为不受影响 */
 .cm-md-listmark-bullet {
   font-size: 0;
+  /* 字号归零后如果还继承一份正常行高,半份行距会落在基线下,把列表行
+     撑得比引用还高(0 档时贴不住)。标记本身不参与行高计算。 */
+  line-height: 0;
 }
 
 .cm-md-listmark-bullet::after {
@@ -727,7 +828,7 @@
      但要跟着正文字号缩放,所以直接算 —— 写死 1.2rem 的话调大字号后圆点会明显偏小。
      1.2 倍正文:圆点本身比正文小一圈,缩到 0.95 倍时几乎看不清 */
   font-size: calc(var(--editor-body-size) * 1.2);
-  line-height: 1;
+  line-height: 0;
   color: var(--list-marker-color);
   /* 源码里圆点后只有一个空格,视觉上离正文太挤:再补一段字距。
      0.35em 相对这段伪元素自己的字号,随编辑器字号一起缩放 */
@@ -1092,10 +1193,28 @@
   padding: 0 2px;
 }
 
-/* 块级公式:独占一行并居中(内容行由 cm-md-math-void 折叠) */
+/*
+ * 渲染态的公式宿主行:高度完全交给 widget(按公式内容撑起),不再额外
+ * 叠一份正文行高。
+ */
+.cm-editor .cm-line.cm-md-math-host {
+  line-height: 0;
+  /* CM 会在公式前插一个 0 宽的 widgetBuffer,高度按当前字号算;字号归零
+     才能让这一行只剩公式盒子本身的高度(公式自己的字号在下面补回来) */
+  font-size: 0;
+}
+
+/*
+ * 块级公式:独占一行并居中(内容行由 cm-md-math-void 折叠)。
+ * 高度完全由 KaTeX 排出来的内容决定 —— 不再拿源码行数预留高度:
+ * 多行源码渲染成一行、或公式比源码矮时,块就该缩到公式本身的大小。
+ */
 .cm-md-math-display {
-  display: block;
-  margin: 2px 0;
+  display: flex;
+  flex-direction: column;
+  /* 宿主行字号归零后在这里补回正文尺寸(KaTeX 按 1.21em 继续缩放) */
+  font-size: var(--editor-body-size);
+  margin: 0;
   /* 上下留白随字号缩放:KaTeX 的 vlist/strut 会带来约 0.25em 的滚动溢出,
      写死 4px 时字号一过 18px 就兜不住(见下面的 overflow-y) */
   padding: 0.25em 0;
@@ -1113,6 +1232,16 @@
 /* KaTeX 自带 1em 上下外边距,编辑器内叠加上去留白过大 */
 .cm-md-math-display .katex-display {
   margin: 0;
+}
+
+/*
+ * 多行公式的每一行落在 .katex-html 的行盒里(行之间由 .katex-newline 断开)。
+ * 行盒高度由 line-height 决定 —— 这里让它走「块内间距 → 公式块行距」,
+ * 与正文行间距、浮窗预览完全分开。调正文行距不会再拉动公式里的行。
+ */
+.cm-md-math-display .katex-html,
+.cm-md-math-preview .katex-html {
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-math-line-space, 1));
 }
 
 /* 多行公式的后续行为空并折叠高度 */
@@ -1142,6 +1271,9 @@
 .cm-md-math-src-line {
   background: var(--bg-codeblock);
   border-left: 1.25em solid transparent;
+  /* 公式源码行的行距走「块内间距 → 公式块行距」,不再跟随正文行间距。
+     一档同样按正文字号算 */
+  line-height: calc(1em + var(--editor-body-size) * var(--editor-math-line-space, 1));
 }
 
 .cm-md-math-src-line::before {
@@ -1237,10 +1369,29 @@
 
 /* ---------- Mermaid 图表 ---------- */
 
-/* 渲染态:widget 挂在围栏首行,后续行由 cm-md-mermaid-void 折叠 */
+/*
+ * 渲染态的图表宿主行:高度完全交给 widget。
+ *
+ * 不归零时,宿主行自己的行距(strut)会在 widget 上下各撑出一截 —— 即使把
+ * 「正文与图表」「图表与标题」的配对间距设成 0,边界上仍各有 30px 的空白,
+ * 看起来永远贴不到一起。font-size 归零后由 .cm-md-mermaid 补回。
+ */
+.cm-editor .cm-line.cm-md-mermaid-host {
+  line-height: 0;
+  font-size: 0;
+}
+
+/*
+ * 渲染态:widget 挂在围栏首行,后续行由 cm-md-mermaid-void 折叠。
+ *
+ * margin 必须是 0:块与块之间的距离只由配对间距决定,卡片自己的 padding /
+ * border 是卡片内部的事。留着 4px 的 margin,0 档也会离一条缝。
+ */
 .cm-md-mermaid {
   display: block;
-  margin: 4px 0;
+  margin: 0;
+  /* 宿主行字号归零后补回,loading / error 文案才有字号 */
+  font-size: var(--editor-body-size);
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1257,19 +1408,25 @@
   pointer-events: none;
 }
 
+/*
+ * 字号用 calc(正文字号 × 比例),不要写 em:
+ * 这两个类与 .cm-md-mermaid 在同一个元素上,em 会按**继承来的**字号算 ——
+ * 宿主行 font-size: 0,继承值就是 0,加载 / 报错文案会变成看不见的 0px,
+ * 整张卡片只剩 padding 与边框,看起来就是一条扁条。
+ */
 .cm-md-mermaid-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 48px;
   color: var(--text-tertiary);
-  font-size: 0.9em;
+  font-size: calc(var(--editor-body-size) * 0.9);
 }
 
 .cm-md-mermaid-error {
   color: var(--danger);
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: calc(var(--editor-body-size) * 0.88);
   text-align: left;
   white-space: pre-wrap;
 }

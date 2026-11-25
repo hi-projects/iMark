@@ -54,6 +54,9 @@ import type {
   DecorationRenderOptions,
   Event,
   FileStat,
+  GitNetworkSetup,
+  GitProxyConfig,
+  GitProxyReport,
   MessageOptions,
   ProjectGitRemote,
   QuickPickItem,
@@ -2165,6 +2168,24 @@ export class ExtensionHostRuntime {
         subscribe(ext.events.projectGitChanged, listener)
     }
 
+    const gitApi = {
+      networkSetup: (url: string, proxy?: GitProxyConfig): Promise<GitNetworkSetup> =>
+        runtime.request<GitNetworkSetup>(r => ({
+          kind: 'git.networkSetup',
+          requestId: r,
+          extensionId: ext.id,
+          url,
+          ...(proxy ? { proxy } : {})
+        })),
+      detectProxy: (proxy?: GitProxyConfig): Promise<GitProxyReport> =>
+        runtime.request<GitProxyReport>(r => ({
+          kind: 'git.detectProxy',
+          requestId: r,
+          extensionId: ext.id,
+          ...(proxy ? { proxy } : {})
+        }))
+    }
+
     const imarkApi = {
       reportStatus: (update: {
         status: string
@@ -2217,6 +2238,7 @@ export class ExtensionHostRuntime {
       workspace: workspaceApi,
       extensions: extensionsApi,
       project: projectApi,
+      git: gitApi,
       imark: imarkApi,
       env,
       Uri,

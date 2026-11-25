@@ -13,7 +13,26 @@ import {
   Workflow,
   X
 } from 'lucide-vue-next'
-import { BLOCK_KINDS, BLOCK_LABELS, type BlockKind } from '../services/spacingPairs'
+import { BLOCK_LABELS, type BlockKind } from '../services/spacingPairs'
+
+/**
+ * 圆圈在网格里的显示顺序(3 × 3):
+ *   正文 / 标题 / 表格
+ *   列表 / 引用 / 图片
+ *   代码块 / 公式 / 图表
+ * 只影响摆放位置,配对 key、已保存的间距都按块名走,不受它影响。
+ */
+const RING_ORDER: BlockKind[] = [
+  'body',
+  'heading',
+  'table',
+  'list',
+  'quote',
+  'image',
+  'code',
+  'math',
+  'mermaid'
+]
 
 /**
  * 左栏的块调色板:九个圆圈排成网格。
@@ -48,6 +67,13 @@ const ICONS = {
   mermaid: Workflow
 } as const
 
+/** 圆环里用更短的叫法(配对面板 / 说明里仍写「代码块」) */
+const RING_LABELS: Partial<Record<BlockKind, string>> = { code: '代码' }
+
+function ringLabel(kind: BlockKind): string {
+  return RING_LABELS[kind] ?? BLOCK_LABELS[kind]
+}
+
 function roleOf(kind: BlockKind): 'top' | 'bottom' | 'none' {
   if (props.top === kind) return 'top'
   if (props.bottom === kind) return 'bottom'
@@ -75,7 +101,7 @@ const hint = computed(() => {
   <div class="spacing-palette" data-spacing-ring :data-ring-state="ringState">
     <div class="spacing-palette-grid">
       <button
-        v-for="kind in BLOCK_KINDS"
+        v-for="kind in RING_ORDER"
         :key="kind"
         class="spacing-ring-node"
         :class="{
@@ -86,25 +112,32 @@ const hint = computed(() => {
         :data-block-node="kind"
         :data-block-role="roleOf(kind)"
         :aria-pressed="roleOf(kind) !== 'none'"
-        :title="BLOCK_LABELS[kind]"
+        :title="ringLabel(kind)"
         type="button"
         @click="emit('pick', kind)"
       >
         <component :is="ICONS[kind]" :size="18" />
-        <span class="spacing-ring-label">{{ BLOCK_LABELS[kind] }}</span>
+        <span class="spacing-ring-label">{{ ringLabel(kind) }}</span>
       </button>
     </div>
 
     <div v-if="top" class="spacing-palette-actions">
       <button
-        v-if="bottom && !self"
         class="spacing-action"
         data-ring-swap
         type="button"
+        :disabled="!bottom || self"
+        :title="
+          self
+            ? '同类块之间无需交换上下'
+            : !bottom
+              ? '再点一个块作为下面的内容'
+              : '交换上下'
+        "
         @click="emit('swap')"
       >
         <ArrowUpDown :size="13" />
-        <span>互换上下</span>
+        <span>交换上下</span>
       </button>
       <button
         class="spacing-action"

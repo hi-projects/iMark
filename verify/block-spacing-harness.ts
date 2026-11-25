@@ -417,7 +417,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   check(
     '「样式」区里是九个块的圆环,初始没有中心',
@@ -615,7 +615,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   check('外观页里有「恢复默认设置」按钮', await waitFor(`document.querySelector('.settings-reset')`))
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
@@ -992,7 +992,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   check(
     '「样式」区里:正文自身配对里有「段间距」滑块',
@@ -1043,7 +1043,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)
@@ -1104,7 +1104,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   check(
     '「样式」区里:正文自身配对里有「行间距」滑块',
@@ -1202,7 +1202,7 @@ async function main(): Promise<void> {
   await waitFor(`document.querySelector('.settings-nav-item')`)
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   await waitFor(`document.querySelector('.settings-reset')`)
   await evalJs(`document.querySelector('.settings-reset')?.click()`)

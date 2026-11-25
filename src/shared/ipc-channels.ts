@@ -78,6 +78,8 @@ export const IPC = {
   PickDirectory: 'app:pick-directory',
   /** 渲染→主:在系统文件管理器里打开一个目录(不存在时先创建) */
   OpenDirectory: 'app:open-directory',
+  /** 渲染→主:在资源管理器中打开文件所在目录 / 目录本身 */
+  RevealInFileManager: 'app:reveal-in-file-manager',
   VaultSelectDialog: 'vault:select-dialog',
   /**
    * 渲染→主:认领一个要打开的仓库。
@@ -245,3 +247,5 @@ export type MenuCommandId =
   | 'view:settings'
   | 'view:market'
   | 'view:command-palette'
+  /** 仅开发构建:原生菜单的 F12 除了开 DevTools 外,再切换一次选区诊断面板 */
+  | 'view:toggle-selection-debug'

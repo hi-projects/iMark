@@ -1,7 +1,12 @@
 /**
  * 临时诊断:在 dev 窗口右下角显示编辑器选区与每一行的 class / 高度。
  * 排查「选中无法编辑的空行」用,定位后删除。
+ *
+ * 默认隐藏,F12 才显示 —— F12 是原生菜单里的「开发者工具」快捷键,主进程
+ * 在打开 DevTools 的同时会发一条 `view:toggle-selection-debug` 菜单命令过来。
  */
+import { api } from './services/api'
+
 const box = document.createElement('pre')
 box.id = 'imark-debug-selection'
 box.style.cssText = [
@@ -19,13 +24,15 @@ box.style.cssText = [
   'color:#6f6',
   'font:11px/1.45 Consolas,monospace',
   'white-space:pre-wrap',
-  'pointer-events:none'
+  'pointer-events:none',
+  // 默认不显示:按 F12 才打开
+  'display:none'
 ].join(';')
 document.body.appendChild(box)
 
-export {}
+let visible = false
 
-window.setInterval(() => {
+function render(): void {
   const content = document.querySelector<HTMLElement & { cmTile?: { root?: { view?: unknown } } }>(
     '.cm-content'
   )
@@ -50,4 +57,20 @@ window.setInterval(() => {
     `text=${JSON.stringify(view.state.doc.sliceString(sel.from, sel.to))}\n` +
     `snap=${JSON.stringify(snap)}\n` +
     head.join('\n')
+}
+
+function toggle(): void {
+  visible = !visible
+  box.style.display = visible ? 'block' : 'none'
+  if (visible) render()
+}
+
+api.onMenuCommand(id => {
+  if (id === 'view:toggle-selection-debug') toggle()
+})
+
+window.setInterval(() => {
+  if (visible) render()
 }, 300)
+
+export {}

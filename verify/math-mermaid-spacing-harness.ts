@@ -159,7 +159,7 @@ async function main(): Promise<void> {
   check('设置面板打开', await waitFor(`document.querySelector('[data-spacing-preview]')`))
   await evalJs(`
     [...document.querySelectorAll('.settings-nav-item')]
-      .find(b => b.textContent.trim() === '外观')
+      .find(b => b.textContent.trim() === '样式')
       ?.click()`)
   await sleep(300)
   check(

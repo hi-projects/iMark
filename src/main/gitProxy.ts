@@ -1,16 +1,19 @@
 /**
- * 本机代理探测 —— 给 git 的网络操作找一条能出去的路。
+ * 本机代理探测 —— 给 git 找一条能出去的路。
  *
  * 为什么需要这一层:操作系统里的「系统代理」浏览器会读,而 git 用的 libcurl
  * **不读它**。于是会出现一个很迷惑的状态:浏览器能打开 GitHub,扩展的
- * 「测试连接」却一律超时。这里把系统代理查出来(Windows 注册表 / Linux GNOME
- * gsettings),通过 `-c http.proxy=…` 显式交给 git。
+ * 「测试连接」/ 应用里的克隆却一律超时。这里把系统代理查出来(Windows 注册表 /
+ * Linux GNOME gsettings),通过 `-c http.proxy=…` 显式交给 git。
  *
- * 只依赖 Node 内置模块(扩展独立打包,除 Node 与注入的 imk 外什么都 require 不到)。
+ * 这是**应用能力**,不属于任何扩展:克隆在主进程直接用;同步扩展通过
+ * `imark.git.*`(见 extensionApi.ts)向宿主请求,不自己再实现一套探测,
+ * 否则会出现「同步能连、克隆超时」。只依赖 Node 内置模块,不要在渲染层引用。
  */
 
 import { execFile } from 'node:child_process'
 import { connect } from 'node:net'
+import process from 'node:process'
 
 /** 一次探测的结果 */
 export interface DetectedProxy {
@@ -24,6 +27,11 @@ export interface DetectedProxy {
 
 /** auto = 自动寻找本机代理；manual = 用设置里填的地址；两者找不到可用代理时都直连 */
 export type ProxyMode = 'auto' | 'manual'
+
+/** 把 `scheme://user:token@host` 洗成 `scheme://user:***@host`(代理地址可能带认证) */
+export function redactUrl(text: string): string {
+  return text.replace(/:\/\/([^/@\s:]+):([^/@\s]+)@/g, '://$1:***@')
+}
 
 const WINDOWS_INTERNET_SETTINGS =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
@@ -212,7 +220,7 @@ function envProxyKeys(scheme: 'http' | 'https'): string[] {
 /** 环境变量里的代理(这是 git/libcurl 本来就会读的;读出来是为了报告来源与统一处理) */
 export function proxyFromEnvironment(
   scheme: 'http' | 'https',
-  env: NodeJS.ProcessEnv = process.env
+  env: Record<string, string | undefined> = process.env
 ): DetectedProxy | null {
   for (const key of envProxyKeys(scheme)) {
     const url = normalizeProxyUrl(env[key])

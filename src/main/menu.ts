@@ -225,10 +225,14 @@ function baseMenuTemplate(): MenuItemConstructorOptions[] {
         { label: '重置缩放', role: 'resetZoom' },
         { type: 'separator' },
         {
-          // Ctrl+Shift+I 留给"插入图片",devtools 只绑 F12
+          // Ctrl+Shift+I 留给"插入图片",devtools 只绑 F12。
+          // 同一个按键顺带通知渲染层切换选区诊断面板(只有开发构建会加载它)。
           label: '开发者工具',
           accelerator: 'F12',
-          click: () => getMainWindow()?.webContents.toggleDevTools()
+          click: () => {
+            getMainWindow()?.webContents.toggleDevTools()
+            send('view:toggle-selection-debug')
+          }
         }
       ]
     },

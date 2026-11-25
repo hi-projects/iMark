@@ -200,13 +200,14 @@ onMounted(async () => {
   window.addEventListener('drop', e => e.preventDefault())
   // Ctrl + 滚轮调正文字号:全窗口生效,不要求焦点在编辑器里
   offFontWheelZoom = installFontSizeWheelZoom()
-  // 启动意图与设置一起取:任务栏中键「新开一个」要停在选择页,不能恢复上次仓库
+  // 启动意图与设置一起取:任务栏中键「新开一个」、或上次仓库已开在别的窗口时,
+  // 要停在选择页,不能恢复上次仓库
   let settings: Settings | null = null
-  let launch: LaunchIntent = { newWindow: false }
+  let launch: LaunchIntent = { newWindow: false, startAtPicker: false }
   try {
     ;[settings, launch] = await Promise.all([
       api.getSettings(),
-      api.getLaunchIntent().catch(() => ({ newWindow: false }))
+      api.getLaunchIntent().catch(() => ({ newWindow: false, startAtPicker: false }))
     ])
   } catch (err) {
     // 连设置都读不到:按默认亮色启动(主进程此时用的也是默认值)。
@@ -234,7 +235,8 @@ onMounted(async () => {
       // openFileFromSystem 会自己决定要不要顺带载入文件所属的仓库。
       const pending = await api.takePendingOpenFile()
       // 启动流程:默认先进入仓库选择界面;勾选「直接打开上次仓库」时才自动恢复。
-      // 任务栏中键/Shift+点击明确要的是新窗口,即使勾了也不恢复。
+      // 任务栏中键/Shift+点击明确要的是新窗口,即使勾了也不恢复;上次仓库已开在
+      // 另一个窗口时同理(主进程已经把这次启动当成新窗口,停在选择页)。
       const resumePath = settings.vaultPath
       // 上次的仓库可能已经被删掉:确认不在了就不要再自动打开(否则会进一个空仓库),
       // 同时忘掉它并退掉主进程启动时占用的仓库,停在选择页。
@@ -247,7 +249,7 @@ onMounted(async () => {
         void api.releaseVault(resumePath)
       }
       const canResume =
-        !launch.newWindow &&
+        !launch.startAtPicker &&
         settings.skipVaultPicker &&
         !!resumePath &&
         resumePath.length > 0 &&

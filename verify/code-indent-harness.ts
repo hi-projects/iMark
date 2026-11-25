@@ -248,40 +248,58 @@ async function main(): Promise<void> {
   check('切到「编辑器」页', navClicked)
   await sleep(400)
 
-  const presets = await evalJs<{ label: string; active: boolean }[]>(`
-    (() => {
-      const row = [...document.querySelectorAll('.settings-row')].find(
-        r => r.querySelector('.settings-row-title')?.textContent.trim() === '代码块 Tab 缩进'
-      )
-      return row
-        ? [...row.querySelectorAll('button')].map(b => ({
-            label: b.textContent.trim(),
-            active: b.classList.contains('settings-preset-active')
-          }))
-        : []
-    })()`)
-  check(
-    '提供 2 / 4 两个档位,且当前选中 2(来自启动时读的设置)',
-    presets.length === 2 &&
-      presets[0].label === '2 个空格' &&
-      presets[1].label === '4 个空格' &&
-      presets[0].active &&
-      !presets[1].active,
-    JSON.stringify(presets)
-  )
+  const triggerValue = (): Promise<string> =>
+    evalJs<string>(`
+      (() => {
+        const row = [...document.querySelectorAll('.settings-row')].find(
+          r => r.querySelector('.settings-row-title')?.textContent.trim() === '代码块 Tab 缩进'
+        )
+        return row
+          ?.querySelector('[data-code-indent] .settings-select-value')
+          ?.textContent.trim() ?? ''
+      })()`)
 
-  const clicked = await evalJs<boolean>(`
+  check('下拉条当前显示「2 个空格」', (await triggerValue()) === '2 个空格')
+
+  const opened = await evalJs<boolean>(`
     (() => {
       const row = [...document.querySelectorAll('.settings-row')].find(
         r => r.querySelector('.settings-row-title')?.textContent.trim() === '代码块 Tab 缩进'
       )
-      const btn = row && [...row.querySelectorAll('button')].find(b => b.textContent.trim() === '4 个空格')
-      if (!btn) return false
-      btn.click()
+      const trigger = row?.querySelector('[data-code-indent] .settings-select-trigger')
+      if (!trigger) return false
+      trigger.click()
       return true
     })()`)
-  check('点击「4 个空格」', clicked)
+  check('打开下拉菜单', opened)
+  await sleep(300)
+
+  const options = await evalJs<{ label: string; active: boolean }[]>(`
+    [...document.querySelectorAll('.settings-select-menu .settings-select-option')].map(b => ({
+      label: b.textContent.trim(),
+      active: b.classList.contains('is-active')
+    }))`)
+  check(
+    '菜单提供 2 / 4 两个档位,当前选中 2',
+    options.length === 2 &&
+      options[0].label === '2 个空格' &&
+      options[1].label === '4 个空格' &&
+      options[0].active &&
+      !options[1].active,
+    JSON.stringify(options)
+  )
+
+  const picked = await evalJs<boolean>(`
+    (() => {
+      const option = [...document.querySelectorAll('.settings-select-menu .settings-select-option')]
+        .find(b => b.textContent.trim() === '4 个空格')
+      if (!option) return false
+      option.click()
+      return true
+    })()`)
+  check('选择「4 个空格」', picked)
   await sleep(500)
+  check('下拉条更新为「4 个空格」', (await triggerValue()) === '4 个空格')
 
   await key('Escape') // 关设置面板
   await sleep(300)

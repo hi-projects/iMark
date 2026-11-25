@@ -1,10 +1,12 @@
 /**
- * 验收:中文与英文 / 行内代码之间的自动留白。
+ * 验收:中文与英文 / 符号之间的自动留白。
  *
- * 需求是「渲染时留一个空格,源码里不要多出空格」,所以断言分三层:
- *   1. `.cm-content` 打开 `text-autospace`,由浏览器排版时插入间距;
- *   2. 行内代码、代码块与公式源码显式关掉自动留白;
- *   3. 关掉后行宽确实变窄,且文档文本与磁盘内容里没有多出来的空格。
+ * 需求是「渲染时留出空隙,源码里不要多出空格」:
+ *   1. `.cm-content` 开启 `text-autospace`,处理中文 ↔ 英文 / 数字;
+ *   2. 中文 ↔ 符号(数学 / 货币 / 符号类)由 `cm-md-symbol-gap-*` 补 1/8em,
+ *      句读标点(，。！？等)不补;
+ *   3. 行内代码 / 代码块 / 公式源码仍是字面内容,不自动留白;
+ *   4. 文档文本与磁盘内容里没有多出来的空格。
  *
  * 跑法(先 `npx electron-vite build`):
  *   node verify/run.mjs autospace
@@ -35,6 +37,10 @@ const DOC = [
   '这是a中文',
   '这是a',
   '默认`abc`间距',
+  '中文+符号',
+  '中文，符号',
+  '中文≈符号',
+  '中文$符号',
   '',
   '```text',
   '中文abc',
@@ -101,7 +107,7 @@ async function main(): Promise<void> {
 
   const evalJs = <T>(code: string): Promise<T> => wc.executeJavaScript(code, true) as Promise<T>
 
-  console.log('\n【A】自动留白已开启,代码类内容显式关闭')
+  console.log('\n【A】自动留白全部关闭')
   const styles = await evalJs<{
     supported: boolean
     content: string
@@ -133,7 +139,7 @@ async function main(): Promise<void> {
     JSON.stringify(noSpaceLines)
   )
 
-  console.log('\n【B】关掉自动留白后行宽确实变窄')
+  console.log('\n【B】中文与英文之间保留浏览器自动留白')
   const widths = await evalJs<{ on: number; off: number; codeMargin: number; codePadding: number }>(`
     (() => {
       const content = document.querySelector('.cm-content')
@@ -168,9 +174,75 @@ async function main(): Promise<void> {
     JSON.stringify(widths)
   )
   check(
-    '行内代码自带内边距与外侧留白',
-    widths.codePadding > 0 && widths.codeMargin > 0,
+    '行内代码没有左右内边距,只在紧邻中文的一侧补自动留白',
+    widths.codePadding === 0 && widths.codeMargin > 0,
     JSON.stringify(widths)
+  )
+
+  const inlineSpace = await evalJs<{ cls: string; left: number; right: number } | null>(`
+    (() => {
+      const code = document.querySelector('.cm-md-inlinecode')
+      if (!code) return null
+      const cs = getComputedStyle(code)
+      return {
+        cls: code.className,
+        left: parseFloat(cs.marginLeft),
+        right: parseFloat(cs.marginRight)
+      }
+    })()`)
+  check(
+    '紧贴中文的行内代码两侧都挂了留白类',
+    !!inlineSpace &&
+      inlineSpace.cls.includes('cm-md-inlinecode-space-before') &&
+      inlineSpace.cls.includes('cm-md-inlinecode-space-after') &&
+      inlineSpace.left > 0 &&
+      inlineSpace.right > 0,
+    JSON.stringify(inlineSpace)
+  )
+
+  console.log('\n【B2】中文与符号之间补空隙;句读标点不补')
+  const symbolGaps = await evalJs<{
+    plus: { left: number; right: number; text: string } | null
+    approx: { left: number; right: number; text: string } | null
+    dollar: { left: number; right: number; text: string } | null
+    punctuationMarked: boolean
+    texts: string[]
+  }>(`
+    (() => {
+      const lineOf = text =>
+        [...document.querySelectorAll('.cm-content .cm-line')]
+          .find(el => (el.textContent || '').includes(text))
+      const gap = (text, cls) => {
+        const el = lineOf(text)?.querySelector('.' + cls)
+        if (!el) return null
+        const cs = getComputedStyle(el)
+        return {
+          left: parseFloat(cs.marginLeft),
+          right: parseFloat(cs.marginRight),
+          text: el.textContent || ''
+        }
+      }
+      return {
+        plus: gap('中文+符号', 'cm-md-symbol-gap-left'),
+        approx: gap('中文≈符号', 'cm-md-symbol-gap-left'),
+        dollar: gap('中文$符号', 'cm-md-symbol-gap-left'),
+        punctuationMarked: !!lineOf('中文，符号')?.querySelector(
+          '.cm-md-symbol-gap-left, .cm-md-symbol-gap-right'
+        ),
+        texts: ['中文+符号', '中文，符号', '中文≈符号', '中文$符号'].map(text =>
+          lineOf(text)?.textContent ?? ''
+        )
+      }
+    })()`)
+  console.log(`     ${JSON.stringify(symbolGaps)}`)
+  check('中文与 `+` 之间补了空隙', !!symbolGaps.plus && symbolGaps.plus.left > 0, JSON.stringify(symbolGaps.plus))
+  check('中文与 `≈` 之间补了空隙', !!symbolGaps.approx && symbolGaps.approx.left > 0, JSON.stringify(symbolGaps.approx))
+  check('中文与 `$` 之间补了空隙', !!symbolGaps.dollar && symbolGaps.dollar.left > 0, JSON.stringify(symbolGaps.dollar))
+  check('句读标点（，）不补空隙', !symbolGaps.punctuationMarked)
+  check(
+    '符号行文本没有被写入空格',
+    symbolGaps.texts.every(text => !/\\s/.test(text)),
+    JSON.stringify(symbolGaps.texts)
   )
 
   console.log('\n【D】光标停在中文与英文交界处仍然留白')

@@ -87,6 +87,25 @@ export interface RuleContext {
 
 // ---------- 基础 emit 工具 ----------
 
+/**
+ * 行内代码与相邻中文之间补自动留白用。
+ *
+ * CJK 表意文字 / 假名 / 谚文:只有这类字符和拉丁字母相邻时,浏览器的
+ * text-autospace 才会插空格。代码那一侧则要求是拉丁字母/数字,`$`、`\`
+ * 这类符号开头的代码不补 —— 与原生自动留白的判断保持一致。
+ */
+const CJK_CHAR =
+  /[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/
+const LATIN_WORD_CHAR = /[A-Za-z0-9]/
+
+/** 两个方向都算:中文 ↔ 英文(自动留白不区分谁在左谁在右) */
+function needsAutoSpace(neighbor: string, codeEdge: string): boolean {
+  return (
+    (CJK_CHAR.test(neighbor) && LATIN_WORD_CHAR.test(codeEdge)) ||
+    (LATIN_WORD_CHAR.test(neighbor) && CJK_CHAR.test(codeEdge))
+  )
+}
+
 const markCache = new Map<string, Decoration>()
 
 function markDeco(cls: string): Decoration {
@@ -269,7 +288,7 @@ function styleQuotedLines(ctx: RuleContext, quote: SyntaxNode): Line | null {
   for (const line of quotedLines(ctx, quote)) {
     addLine(ctx, line.from, 'cm-md-quote')
     // 引用块的首 / 末行按正文段落裁边:行盒与敲 `>` 之前一致,块外的配对间距才不会被半份行距撑大
-    trimParagraphEdge(ctx, line)
+    trimParagraphEdge(ctx, line, quote)
     last = line
   }
   return last
@@ -435,34 +454,28 @@ function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
     if (!startsParagraphLine(ctx, node.from)) return
   }
   const prev = node.prevSibling
-  let prevKind = prev ? blockKindOf(ctx, prev) : null
-  if (!prevKind) {
-    /*
-     * 语法树里上面没有块,但可能有一条用户回车建出来的空段落(它不是语法
-     * 节点)。空段落马上就会被写成正文 / 标题,这里先按正文算配对:否则空着
-     * 时挂了 body-body、敲下第一个字符变成标题后配对突然消失,整行连同行首
-     * 「+」会向上跳一档。
-     */
-    const emptyLine = emptyParagraphAbove(ctx, node.from)
-    if (emptyLine === null) return
-    if (kind === 'code') {
-      // 与下面的代码块分支同理:间距做在空段落的下边,别把底色撑开
-      addLine(ctx, emptyLine, 'cm-md-block-pair cm-md-pair-bottom cm-md-bottom-body-code')
-      return
-    }
-    prevKind = 'body'
-  }
   /*
-   * 代码块有自己的底色:间距若做在它的首行 padding 上,会连带把底色撑出一块
-   * 空白。这种情况把间距改做在上一块末行的 padding-bottom 上(代码块外面),
+   * 语法树里上面最近的块,可能隔着一条用户回车建出来的空段落(它不是语法
+   * 节点)。紧挨着的上一块是那条空段落:配对要按 body→本块算。否则空段落
+   * 写成正文的那一刻,配对类会从上面的旧块挪到空段落行上,整段上下跳一档
+   * —— 光标在空段落里闪,一打字字就换了位置(空段落后面跟代码块时最明显)。
+   */
+  const emptyLine = emptyParagraphAbove(ctx, node.from)
+  const prevKind = emptyLine !== null ? 'body' : prev ? blockKindOf(ctx, prev) : null
+  if (!prevKind) return
+  /*
+   * 代码块 / 公式块有自己的底色:间距若做在它们的首行 padding 上,会连带把
+   * 底色撑出一块空白 —— 上方看着贴住正文、下方却空出一档。这种情况把间距
+   * 改做在上一块末行的 padding-bottom 上(有色块的背景外面),两侧观感才对称。
    * 其余配对一律做在下方块首行的 padding-top 上。
    */
-  if (kind === 'code' && prev) {
+  if ((kind === 'code' || kind === 'math') && (prev || emptyLine !== null)) {
     // 下侧配对单独命名:上一块末行本身可能还挂着它自己的上侧配类
     // (`cm-md-<x>-body`),两者共用 `cm-md-<x>-code` 会互相覆盖 padding-top
+    const prevLine = emptyLine !== null ? ctx.doc.lineAt(emptyLine) : ctx.doc.lineAt(prev!.to)
     addLine(
       ctx,
-      ctx.doc.lineAt(prev.to).from,
+      prevLine.from,
       `cm-md-block-pair cm-md-pair-bottom cm-md-bottom-${prevKind}-${kind}`
     )
     return
@@ -972,10 +985,28 @@ function isPendingFence(ctx: RuleContext, code: SyntaxNode): boolean {
  * 判定与段落首 / 末行一致:上一行是空行(或文首)才是首行,下一行是空行
  * (或文末)才是末行。夹在段中的续行两侧都不裁 —— 裁了反而会往上跳。
  */
-function trimParagraphEdge(ctx: RuleContext, line: Line): void {
+function trimParagraphEdge(ctx: RuleContext, line: Line, quote?: SyntaxNode): void {
   const pairedAt = (pos: number): boolean => ctx.blockKindAt(pos) !== null
-  const blank = (n: number): boolean =>
-    n < 1 || n > ctx.doc.lines || isBlankLine(ctx.doc.line(n).text)
+  const blank = (n: number): boolean => {
+    if (n < 1 || n > ctx.doc.lines) return true
+    const target = ctx.doc.line(n)
+    if (!isBlankLine(target.text)) return false
+    /*
+     * 引用里只写了 `>` 的一行(`>` / `> ` / `>> `)在源码上算空行,但它仍然是
+     * 引用的一行:有竖线、有行盒,用户在它上面接着打字时它就会变成正文。
+     * 对同一条引用的邻居来说,它不能算「段落之间的结构空行」—— 否则上一行
+     * 先按段尾裁掉半份行距,下一行一敲字裁切消失,整块会往下跳一截。
+     */
+    if (
+      quote &&
+      /^\s*>[\s>]*$/.test(target.text) &&
+      target.from >= quote.from &&
+      target.to <= quote.to
+    ) {
+      return false
+    }
+    return true
+  }
   /** 最近的另一块(跳过空行) */
   const blockAt = (n: number, dir: 1 | -1): Line | null => {
     for (let i = n; i >= 1 && i <= ctx.doc.lines; i += dir) {
@@ -1262,17 +1293,30 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
     // ----- 行内代码 -----
     case 'InlineCode': {
       /*
-       * 样式**不随选区收起**:行内代码用的是等宽字体 + 0.9em + 内边距,
-       * 行盒比普通正文高约 1px。以前光标/选区碰进来就摘掉这个类,整行
-       * 立刻矮 1px —— 选中一条含行内代码的列表项时,后面所有项跟着上移,
-       * 看起来像"列表间距变小了"。反引号该露还是露(见 CodeMark),只让
-       * 字体度量保持不变。
+       * 样式**不随选区收起**:行内代码的底色与内边距一直挂着,光标进入时
+       * 只让反引号露出来(见 CodeMark)。以前光标/选区碰进来就摘掉这个
+       * 类,选中一条含行内代码的列表项时,整行样式来回切换、后面各项跟着
+       * 动一下 —— 看起来像"列表间距变了"。
+       *
+       * 中文与代码之间要补自动留白:浏览器的 text-autospace 跨不过 CM 插在
+       * 反引号位置上的零宽 widget,紧贴中文时那个空格会消失。只在实际相邻
+       * 中文的一侧挂类(见 editor.css),行首 / 行尾 / 已经隔了空格的代码
+       * 不会被推离位置。
        */
       const n = node.node
       const first = n.firstChild
       const last = n.lastChild
       if (first && last && last.from > first.to) {
-        addMark(ctx, first.to, last.from, 'cm-md-inlinecode')
+        let cls = 'cm-md-inlinecode'
+        if (!showsSource(ctx, node.from, node.to)) {
+          const head = ctx.doc.sliceString(first.to, first.to + 1)
+          const tail = ctx.doc.sliceString(last.from - 1, last.from)
+          const before = node.from > 0 ? ctx.doc.sliceString(node.from - 1, node.from) : ''
+          const after = node.to < ctx.doc.length ? ctx.doc.sliceString(node.to, node.to + 1) : ''
+          if (needsAutoSpace(before, head)) cls += ' cm-md-inlinecode-space-before'
+          if (needsAutoSpace(after, tail)) cls += ' cm-md-inlinecode-space-after'
+        }
+        addMark(ctx, first.to, last.from, cls)
       }
       return // CodeMark 子节点单独处理
     }
@@ -1315,6 +1359,9 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
         const firstLineVisible = firstLine.from >= ctx.visibleFrom && firstLine.to <= ctx.visibleTo
         if (firstLineVisible && !showsSourceLines(ctx, node.from, node.to)) {
           const widget = new MermaidWidget(readCodeSource(ctx.doc, code), currentMermaidTheme())
+          // 宿主行行高归零(见 CSS):图表块的高度完全交给 widget,别让一行
+          // 正文的行距在边界上凭空多出上下各一截
+          addLine(ctx, firstLine.from, 'cm-md-mermaid-host')
           hideWithWidget(ctx, firstLine.from, firstLine.to, widget)
           for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
             const line = ctx.doc.line(n)
@@ -1358,8 +1405,18 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
          * 连标记后的空格一起藏掉。竖线到正文的间距由引用行的 1em 左内边距保证
          * (见 setup.ts 的 editorTheme),不靠源码里的这个空格 —— 否则隐藏态
          * 的间距会变成 1em + 一个空格,和光标在行上时的观感对不上。
+         *
+         * 用 0 号字隐藏,而不是 replace 成零宽 widget:后者会在行里插入
+         * cm-widgetBuffer 与一个空 inline 盒,行距小于字号时会把行盒撑高,
+         * 光标在两行之间切换(标记显 / 隐)时竖线和文字就跟着跳。
+         * 和列表圆点同一套做法:字符留在文档里,行内盒高度不变。
          */
-        hide(ctx, node.from, endOfTrailingSpaces(ctx.doc, node.to))
+        addMark(
+          ctx,
+          node.from,
+          endOfTrailingSpaces(ctx.doc, node.to),
+          'cm-md-quotemark-hidden'
+        )
       } else {
         // 光标在这行时标记显形(源码态);弱化成灰色,和 Obsidian 一样不抢正文
         ctx.decos.push({ from: node.from, to: node.to, value: markDeco('cm-md-quotemark') })
@@ -1394,7 +1451,45 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       }
       if (!nested) {
         const firstMark = node.node.getChild('ListItem')?.getChild('ListMark') ?? null
-        if (!markerComplete(ctx, firstMark)) return
+        if (!markerComplete(ctx, firstMark)) {
+          /*
+           * 还只是个裸标记(`-` / `*` / `1.`,还没敲空格):语法上已经是空列表项,
+           * 但渲染层按普通正文显示。
+           *
+           * 裁边要和它替换掉的那条空段落一致(空段落上下都按文字边裁),
+           * 否则敲下 `-` 的那一瞬间行盒高度会变,上下相邻的标题 / 正文跟着跳。
+           */
+          const line = ctx.doc.lineAt(node.node.from)
+          addLine(ctx, line.from, 'cm-md-para-trim-top')
+          addLine(ctx, line.from, 'cm-md-para-trim-bottom')
+          return
+        }
+        /*
+         * 列表行距只覆盖到**最后一个列表标记**为止。
+         *
+         * 列表项后面没有空行时,Lezer 会把紧跟的正文当成最后一项的懒续行、
+         * 算进列表节点里;块间距本来就是按「最后一个列表标记」位置算的
+         * (见上面的注释),行距也要对齐这个边界 —— 否则那段正文会被带上
+         * 列表行距,调列表行距连「列表 ↔ 正文」的距离一起变。
+         */
+        let lastMarker = ctx.doc.lineAt(node.node.from)
+        const visit = (n: typeof node.node): void => {
+          if (n.name === 'ListMark') {
+            const line = ctx.doc.lineAt(n.from)
+            if (line.number > lastMarker.number) lastMarker = line
+          }
+          for (let child = n.firstChild; child; child = child.nextSibling) visit(child)
+        }
+        visit(node.node)
+        addLineRange(ctx, node.node.from, lastMarker.to, 'cm-md-list-line')
+        /*
+         * 列表首行 / 最后一个标记行面向块外的一侧裁掉半份行距:列表内部
+         * 行距不能把「列表 ↔ 正文」的配对间距一起撑大。后随的懒续行正文
+         * 不再挂列表行距,这一段缝就只剩配对间距。
+         */
+        const firstLine = ctx.doc.lineAt(node.node.from)
+        addLine(ctx, firstLine.from, 'cm-md-para-trim-top')
+        addLine(ctx, lastMarker.from, 'cm-md-para-trim-bottom')
       }
       return
     }
@@ -1456,6 +1551,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       const lastLine = ctx.doc.lineAt(node.to)
       if (firstLine.number === lastLine.number) {
         // 单行 $$...$$:直接整体替换
+        addLine(ctx, firstLine.from, 'cm-md-math-host')
         hideWithWidget(ctx, node.from, node.to, new MathWidget(tex, true))
         return false
       }
@@ -1470,6 +1566,7 @@ export function applyRule(node: SyntaxNodeRef, ctx: RuleContext): boolean | void
       }
       // 多行:首行渲染公式,其余行清空内容并折叠高度
       // (扩展的装饰不能跨行 replace,故逐行处理)
+      addLine(ctx, firstLine.from, 'cm-md-math-host')
       hideWithWidget(ctx, firstLine.from, firstLine.to, new MathWidget(tex, true))
       for (let n = firstLine.number + 1; n <= lastLine.number; n++) {
         const line = ctx.doc.line(n)

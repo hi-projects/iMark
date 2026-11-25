@@ -99,8 +99,8 @@ export interface WindowApi {
    */
   takePendingOpenFile(): Promise<string | null>
   /**
-   * 本次启动的意图:任务栏中键 / Shift+点击「新开一个」时 `newWindow` 为 true,
-   * 渲染层不要自动恢复上次仓库,停在仓库选择页。
+   * 本次启动的意图。`startAtPicker` 为 true 时(任务栏「新开一个」,或上次仓库
+   * 已开在另一个窗口),渲染层不要自动恢复上次仓库,停在仓库选择页。
    */
   getLaunchIntent(): Promise<LaunchIntent>
   /**
@@ -123,6 +123,11 @@ export interface WindowApi {
    * 成功返回 null,失败返回错误说明。
    */
   openDirectory(path: string): Promise<string | null>
+  /**
+   * 在系统资源管理器中打开:文件 → 所在目录并选中该文件;目录 → 目录本身。
+   * 成功返回 null,失败返回错误说明。
+   */
+  revealInFileManager(path: string): Promise<string | null>
   /**
    * 认领仓库:同一个仓库已经开在另一个窗口时,会把那个窗口叫到前面并返回
    * `forwarded`(filePath 给了就同时打开它);联系不上主人返回 `busy`。

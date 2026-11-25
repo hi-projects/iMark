@@ -374,7 +374,7 @@ async function main(): Promise<void> {
     check('单独一个 `-` 仍是普通文本(没有圆点)', !!marker && marker.bullet === '' && marker.mark === '', marker ? looks(marker) : '缺行')
     check(
       '敲下短横线后光标行位置不动(上面空行仍按段间距收起)',
-      marker !== undefined && Math.abs(marker.top - topBefore) <= 1 && /cm-md-block-gap/.test(lines[1]?.cls ?? ''),
+      marker !== undefined && Math.abs(marker.top - topBefore) <= 1 && /cm-md-structural-blank/.test(lines[1]?.cls ?? ''),
       JSON.stringify({ topBefore, after: marker?.top, gap: lines[1]?.cls })
     )
   }
@@ -384,6 +384,65 @@ async function main(): Promise<void> {
     const marker = lines[lines.length - 1]
     check('补上空格后立刻显示圆点', !!marker && marker.bullet === '"•"', marker ? looks(marker) : '缺行')
   }
+
+  // ---------- H2 ----------
+  console.log('\n【H2】空文档首行敲 `-`:行位置不动')
+  await loadDoc('')
+  await sleep(400)
+  const emptyLine = (await domLines())[0]
+  await type('-')
+  {
+    const line = (await domLines())[0]
+    check(
+      '空文档首行敲 `-` 后行顶位置不变',
+      !!emptyLine && !!line && Math.abs(line.top - emptyLine.top) <= 1,
+      JSON.stringify({ before: emptyLine?.top, after: line?.top, cls: line?.cls })
+    )
+    check(
+      '裸 `-` 按正文裁边(有段落 trim)',
+      !!line && /cm-md-para-trim-top/.test(line.cls) && /cm-md-para-trim-bottom/.test(line.cls),
+      line ? line.cls : '缺行'
+    )
+  }
+
+  // ---------- H3 ----------
+  console.log('\n【H3】标题上方一行敲 `-`:标题行不移动')
+  await loadDoc('')
+  await sleep(300)
+  await key('Enter')
+  await sleep(250)
+  await type('# 阿')
+  await sleep(500)
+  await evalJs(`(() => {
+    const view = document.querySelector('.cm-content').cmTile.root.view
+    view.dispatch({ selection: { anchor: 0 } })
+    view.focus()
+    return true
+  })()`)
+  await sleep(250)
+  const h3BeforeLines = await domLines()
+  const headingBefore = h3BeforeLines.find(l => l.text.includes('阿'))?.top ?? -1
+  await type('-')
+  await sleep(300)
+  const h3lines = await domLines()
+  const headingLine = h3lines.find(l => l.text.includes('阿'))
+  const dashLine = h3lines[0]
+  console.log(
+    `     before=${JSON.stringify(h3BeforeLines.map(l => `${l.text}|${l.cls}|h=${l.height}`))}`
+  )
+  console.log(
+    `     after =${JSON.stringify(h3lines.map(l => `${l.text}|${l.cls}|h=${l.height}`))}`
+  )
+  check(
+    '敲下 `-` 后标题行位置不动',
+    headingBefore >= 0 && headingLine !== undefined && Math.abs(headingLine.top - headingBefore) <= 1,
+    JSON.stringify({ before: headingBefore, after: headingLine?.top })
+  )
+  check(
+    '第一行仍是裸 `-`(没有圆点)',
+    dashLine?.text.trim() === '-' && dashLine.bullet === '',
+    dashLine ? looks(dashLine) : '缺行'
+  )
 
   // ---------- I ----------
   console.log('\n【I】删除空的有序列表项后光标顶格')
@@ -439,7 +498,7 @@ async function main(): Promise<void> {
     check('光标落在列表项上,没有停在空行', selection?.text === '- 啊', JSON.stringify(selection))
     check(
       '空行仍保持收起(没有被光标撑开)',
-      !!blank && blank.cls.includes('cm-md-block-gap') && blank.height < bodySizePx * 2 - 1,
+      !!blank && blank.cls.includes('cm-md-structural-blank') && blank.height < bodySizePx * 2 - 1,
       blank ? JSON.stringify(blank) : '缺行'
     )
   }
@@ -459,7 +518,7 @@ async function main(): Promise<void> {
       last ? looks(last) : '缺行'
     )
     check('落盘:列表后只剩空段落,没有残留的空项', src.join('|') === '啊||1. 啊', JSON.stringify(src))
-    check('列表和空段落之间仍有一条分隔空行', lines.length === 5 && /cm-md-block-gap/.test(lines[3]?.cls ?? ''), JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}[${l.cls}]`)))
+    check('列表和空段落之间仍有一条分隔空行', lines.length === 5 && /cm-md-structural-blank/.test(lines[3]?.cls ?? ''), JSON.stringify(lines.map(l => `${JSON.stringify(l.text)}[${l.cls}]`)))
   }
 
   // ---------- M ----------

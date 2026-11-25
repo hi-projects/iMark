@@ -15,7 +15,11 @@ import { ensureUserStylesDir, startUserStylesWatch, stopUserStylesWatch } from '
 import { describeDataPaths, prepareDataDirs } from './dataDir'
 import { prepareTaskbarIcon } from './system'
 import { fileFromArgv, setPendingOpenFile } from './openFile'
-import { APP_USER_MODEL_ID, launchedForNewWindow } from './launchArgs'
+import {
+  APP_USER_MODEL_ID,
+  launchedForNewWindow,
+  markStartAtPicker
+} from './launchArgs'
 import {
   claimVault,
   flushPendingFocus,
@@ -194,23 +198,42 @@ if (!prepareDataDirs()) {
       startupVault = settings.vaultPath
     }
 
-    // 先看别的窗口是不是已经开着它。是的话把那个窗口叫到前面(文件也递过去),
-    // 本实例连窗口都不建。没勾「直接打开上次仓库」且没带文件时不认领:用户可能
-    // 只是要停在选择页,真正打开哪个仓库由渲染层在打开时再认领。
+    // 先看别的窗口是不是已经开着它。没勾「直接打开上次仓库」且没带文件时不认领:
+    // 用户可能只是要停在选择页,真正打开哪个仓库由渲染层在打开时再认领。
     // `--new-window` 是任务栏中键/Shift+点击明确要求的新窗口:不恢复、不转交。
+    //
+    // 认领结果分三种处理:
+    //   - ok:本实例拿到了仓库,照常恢复它;
+    //   - forwarded 且带了文件:文件已经递到那个窗口,本实例没有存在的理由,退出;
+    //   - forwarded 但没带文件:用户只是又启动了一次应用。这时退出的话,多开
+    //     就永远只剩一个窗口(勾了「直接打开上次仓库」的人尤其如此)—— 改为
+    //     不恢复、不转交,新开一个停在仓库选择页的窗口。
+    // busy 仍然继续建窗:渲染层打开仓库时会被拒,停在选择页并提示。
+    let startAtPicker = launchedForNewWindow && !pendingFile
     if (startupVault && !launchedForNewWindow) {
-      const claim = await claimVault(startupVault, pendingFile)
+      // 带文件:让已有窗口聚焦并接文件。没带文件:只问一句仓库在不在 ——
+      // 本实例接下来自己开选择页,不该把用户原来开着的窗口弹到前台。
+      const claim = await claimVault(startupVault, pendingFile, {
+        focusIfTaken: pendingFile !== null
+      })
       if (claim === 'forwarded') {
-        if (!app.isPackaged) {
-          console.log('[iMark] 仓库已在另一个窗口打开,已切换过去;本实例退出')
+        if (pendingFile) {
+          if (!app.isPackaged) {
+            console.log('[iMark] 仓库已在另一个窗口打开,已切换过去并交付文件;本实例退出')
+          }
+          app.quit()
+          return
         }
-        app.quit()
-        return
+        startAtPicker = true
+        if (!app.isPackaged) {
+          console.log('[iMark] 上次仓库已在另一个窗口打开,本实例新开窗口停在仓库选择页')
+        }
       }
       if (claim === 'busy' && !app.isPackaged) {
         console.warn('[iMark] 仓库已被另一个窗口占用,但联系不上那个窗口,本实例不打开它')
       }
     }
+    if (startAtPicker) markStartAtPicker()
 
     // 扩展服务要先于窗口就绪:渲染层首个 editor.ready 到达时它必须已经在听。
     const service = await initExtensions({
@@ -230,8 +253,8 @@ if (!prepareDataDirs()) {
     await prepareTaskbarIcon()
     const win = createMainWindow(
       settings,
-      // 任务栏「新开一个」要的是仓库选择页,而不是恢复上次仓库
-      launchedForNewWindow && !pendingFile ? { startAtPicker: true } : undefined
+      // 任务栏「新开一个」/ 上次仓库已开在别的窗口:要的是仓库选择页,不恢复
+      startAtPicker ? { startAtPicker: true } : undefined
     )
     // 冷启动竞态:本实例占到仓库记录时窗口可能还没建好,另一个实例的切换请求
     // 会先存在 pendingFocus 里。等首帧就绪再聚焦/投递文件,别把窗口提前 show 出来

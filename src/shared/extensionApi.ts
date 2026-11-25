@@ -990,6 +990,57 @@ export interface ProjectApi {
   readonly onDidChangeGitRemote: Event<void>
 }
 
+// ---------- 应用级 Git 网络能力 ----------
+
+/** auto = 自动探测本机代理；manual = 用调用方给的地址；找不到可用代理时都直连 */
+export type GitProxyMode = 'auto' | 'manual'
+
+/** 扩展设置里的「网络代理」两项;不传则由应用自己读克隆用的那份设置 */
+export interface GitProxyConfig {
+  mode?: GitProxyMode
+  /** 手动模式的代理地址；空串 = 手动模式但不走代理 */
+  proxyUrl?: string
+}
+
+/** 一次 git 网络操作实际要用的参数(由应用探测后给出) */
+export interface GitNetworkSetup {
+  /** 追加到 git 命令行(在子命令之前)的 `-c` 参数 */
+  args: string[]
+  /** 追加到子进程环境变量的部分(NO_PROXY 等) */
+  env: Record<string, string>
+  /** 实际生效的代理地址(已脱敏,可直接展示);null = 直连 */
+  proxyUrl: string | null
+  /** 代理来源(如「环境变量 HTTP_PROXY」「Linux 系统代理（GNOME）」) */
+  proxySource: string | null
+}
+
+/** 「检测代理」的结果;措辞交给扩展,这里只给事实 */
+export interface GitProxyReport {
+  mode: GitProxyMode
+  /** 手动模式下地址无法识别时,原样带回来给用户核对 */
+  invalidManualUrl?: string
+  /** 检测到的代理地址(已脱敏);null = 没检测到 */
+  proxyUrl: string | null
+  proxySource: string | null
+  /** 代理端口是否可连接;没有代理可测时为 null */
+  reachable: boolean | null
+  /** 自动模式实际检查过的来源(平台相关) */
+  checked: string
+}
+
+/**
+ * `imark.git`:git 的网络能力由**应用**提供,扩展不要自己实现系统代理探测。
+ *
+ * 克隆发生在主进程,同步发生在扩展宿主;两边必须用同一套代理规则。代理地址
+ * 可能带认证,返回的 `proxyUrl` 已脱敏,可以直接写进日志或状态文本。
+ */
+export interface GitApi {
+  /** 为一次 git 网络操作准备 `-c http.proxy=…` 与 NO_PROXY;找不到代理时返回直连参数 */
+  networkSetup(url: string, proxy?: GitProxyConfig): Thenable<GitNetworkSetup>
+  /** 只探测不改设置:手动地址是否可识别、系统代理在哪、端口能不能连 */
+  detectProxy(proxy?: GitProxyConfig): Thenable<GitProxyReport>
+}
+
 // ---------- 模块级命名空间 ----------
 //
 // 这些是**声明**:运行时由宿主进程按扩展归属构造并注入,扩展工程只拿它们做类型检查。
@@ -1001,6 +1052,7 @@ export declare const window: WindowApi
 export declare const workspace: WorkspaceApi
 export declare const extensions: ExtensionsApi
 export declare const project: ProjectApi
+export declare const git: GitApi
 export declare const imark: ImarkApi
 export declare const env: {
   readonly appName: string

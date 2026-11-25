@@ -2,13 +2,15 @@
  * 多实例协调:**同一个仓库只保留一个窗口**。
  *
  * 多开之后,用户很可能通过「再点一次应用 / 双击仓库里的 .md」把同一个仓库开第二遍。
- * 这时新实例不该再冒出一个窗口,而应该把已有窗口叫到前面来 —— 两个窗口同时编辑
- * 同一个仓库只会让「谁最后保存谁赢」变得更难理解。
+ * 这时不能让新实例也去写这个仓库 —— 两个窗口同时编辑同一个仓库只会让「谁最后保存
+ * 谁赢」变得更难理解。带文件启动时把已有窗口叫到前面、文件递过去,新实例退出;
+ * 没带文件时新实例改为停在仓库选择页(index.ts),它本身就是用户多开出来的窗口。
  *
  * 协调靠数据根下的**占用记录**:打开仓库的实例写 `<数据根>/instances/<仓库哈希>.json`,
  * 里面有自己的 PID 与一个本机 IPC 端点。另一个实例要打开同一个仓库时读到它,
- * 直接连端点请求「聚焦你的窗口」(如果带文件,把文件也递过去);对方回 ok:true
- * 就说明它确实还开着这个仓库,本实例退出。记录在切回仓库选择页、关窗或退出时删除。
+ * 连端点问一句(需要时请它聚焦窗口、把文件递过去);对方回 ok:true 就说明它确实
+ * 还开着这个仓库:带文件的新实例退出,没带文件的改停在仓库选择页,只问不打扰。
+ * 记录在切回仓库选择页、关窗或退出时删除。
  *
  * 几个必须讲清楚的取舍:
  *   - 用**文件**做跨进程互斥:`open(..., 'wx')` 原子创建,崩溃后靠 PID 探活回收,
@@ -66,8 +68,10 @@ let claimedVault: string | null = null
  * 两个实例几乎同时冷启动时,先占到记录的实例可能还在初始化扩展/建菜单;
  * 这时不能让它等窗口(等多久都不保险),也不能回 not-owner(对方会再开一个窗口)。
  * 先答应下来,建窗完成后由 flushPendingFocus() 补上聚焦与文件投递。
+ * `focus` 为 false 时不打扰窗口 —— 对方只是问「这个仓库还开着吗」,不需要
+ * 把本窗口弹到前台(用户可能正在别的应用里)。
  */
-let pendingFocus: { vaultPath: string; filePath: string | null } | null = null
+let pendingFocus: { vaultPath: string; filePath: string | null; focus: boolean } | null = null
 
 function claimDir(): string {
   return join(dataRoot(), CLAIM_DIR)
@@ -196,11 +200,18 @@ function connectOrNull(endpoint: string): Socket | null {
   }
 }
 
-/** 请记录里的实例把窗口叫到前面(带文件时顺便打开)。一句话请求、一句话应答 */
+/**
+ * 问记录里的实例「这个仓库还开着吗」。
+ *
+ * `focus` 为 true 时请它把窗口叫到前面(带文件时顺便打开);为 false 时只问不打扰,
+ * 用于「再次启动应用」那条路:本实例只是想知道能不能恢复上次仓库,不能恢复就
+ * 自己开选择页,不该把用户原来开着的窗口弹到前台。
+ */
 function askOwner(
   owner: ClaimRecord,
   vaultPath: string,
-  filePath?: string | null
+  filePath?: string | null,
+  focus = true
 ): Promise<OwnerAnswer> {
   if (!owner.endpoint) return Promise.resolve('unreachable')
   return new Promise<OwnerAnswer>(resolveAnswer => {
@@ -225,7 +236,7 @@ function askOwner(
     socket.setEncoding('utf8')
     socket.on('connect', () => {
       socket.write(
-        `${JSON.stringify({ type: 'focus-vault', vaultPath, filePath: filePath ?? null })}\n`
+        `${JSON.stringify({ type: 'focus-vault', vaultPath, filePath: filePath ?? null, focus })}\n`
       )
     })
     socket.on('data', chunk => {
@@ -326,7 +337,7 @@ function deliverFile(win: BrowserWindow, vaultPath: string, filePath: string | n
 }
 
 function handleRequest(raw: string): { ok: boolean } {
-  let req: { type?: unknown; vaultPath?: unknown; filePath?: unknown }
+  let req: { type?: unknown; vaultPath?: unknown; filePath?: unknown; focus?: unknown }
   try {
     req = JSON.parse(raw) as typeof req
   } catch {
@@ -336,17 +347,26 @@ function handleRequest(raw: string): { ok: boolean } {
   const vaultPath = req.vaultPath
   if (!claimedVault || !sameVault(claimedVault, vaultPath)) return { ok: false }
   const filePath = typeof req.filePath === 'string' ? req.filePath : null
+  // 老版本实例的请求里没有 focus 字段:按 true 处理(它要的就是聚焦)
+  const focus = req.focus !== false
 
   const win = getMainWindow()
   if (!win || win.isDestroyed()) {
-    // 窗口还没建好:先答应,建窗完成后再补聚焦与文件
-    pendingFocus = { vaultPath, filePath }
+    // 窗口还没建好:先答应,建窗完成后再补聚焦与文件。只问不聚焦且没文件时
+    // 没有任何后续动作,不必挂 pending。
+    if (focus || filePath) pendingFocus = { vaultPath, filePath, focus }
     return { ok: true }
   }
 
-  focusWindow(win)
+  if (focus) focusWindow(win)
   deliverFile(win, vaultPath, filePath)
-  if (!app.isPackaged) console.log(`[iMark] 另一个实例请求打开已开着的仓库,已聚焦窗口:${vaultPath}`)
+  if (!app.isPackaged) {
+    console.log(
+      focus
+        ? `[iMark] 另一个实例请求打开已开着的仓库,已聚焦窗口:${vaultPath}`
+        : `[iMark] 另一个实例查询已开着的仓库,已应答(不聚焦窗口):${vaultPath}`
+    )
+  }
   return { ok: true }
 }
 
@@ -363,7 +383,7 @@ export function flushPendingFocus(): void {
   if (!claimedVault || !sameVault(claimedVault, pending.vaultPath)) return
   const win = getMainWindow()
   if (!win || win.isDestroyed()) return
-  focusWindow(win)
+  if (pending.focus) focusWindow(win)
   deliverFile(win, pending.vaultPath, pending.filePath)
   if (!app.isPackaged) {
     console.log(`[iMark] 窗口就绪,补做另一个实例的切换请求:${pending.vaultPath}`)
@@ -459,15 +479,21 @@ function cleanupStaleClaims(): void {
 /**
  * 认领一个仓库。返回:
  *   - `ok`        本实例现在拥有它,可以打开;
- *   - `forwarded` 另一个实例开着它,已把那个窗口叫到前面(带文件时也递过去了),
- *                 调用方不应再打开;
+ *   - `forwarded` 另一个实例开着它,调用方不应再打开。按 `focusIfTaken` 决定
+ *                 要不要把那个窗口叫到前面(带文件时文件也递过去了);
  *   - `busy`      记录在,但联系不上主人(端口没起来/超时)。**不抢**:宁可提示,
  *                 也不制造两个窗口同时写同一批文件。
+ *
+ * `options.focusIfTaken` 默认 true(渲染层「打开仓库」:用户明确要切过去);
+ * 为 false 时只是问一句「还开着吗」,不让已有窗口弹到前台 —— 启动流程在没带
+ * 文件时用这个:新实例接下来会自己开选择页,没必要打扰用户正看着的那个窗口。
  */
 export async function claimVault(
   vaultPath: string,
-  filePath?: string | null
+  filePath?: string | null,
+  options?: { focusIfTaken?: boolean }
 ): Promise<VaultClaimResult> {
+  const focusIfTaken = options?.focusIfTaken ?? true
   const target = normalizePath(vaultPath)
   // 同一个窗口从 A 仓库切到 B 仓库:先释放 A,再认领 B
   if (claimedVault && claimedVault !== target) releaseVault()
@@ -518,7 +544,7 @@ export async function claimVault(
       continue
     }
 
-    const answer = await askOwner(owner, vaultPath, filePath)
+    const answer = await askOwner(owner, vaultPath, filePath, focusIfTaken)
     if (answer === 'ok') return 'forwarded'
     if (answer === 'not-owner') {
       // 对方说它已经不开了(切回选择页的释放恰好慢了一拍):回收,自己开

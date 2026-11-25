@@ -1013,6 +1013,62 @@ async function main(): Promise<void> {
   )
   wc.debugger.detach()
 
+  // ---------- 9b. 单元格里 Ctrl+A ----------
+
+  console.log('\n【9b】单元格里 Ctrl+A:选中当前格全部内容,不整篇全选')
+  await loadDoc(`开头\n\n${FILLED_3X3}\n\n末尾\n`)
+  check('点进数据格编辑', await clickCell(1, 0), '找不到目标格')
+  await hotkey('a')
+  const ctrlA = await evalJs<{
+    active: boolean
+    editable: string | null
+    cellText: string
+    selText: string
+    collapsed: boolean
+    editorAll: boolean
+  }>(`
+    (() => {
+      const cell = document.querySelector('.cm-md-table-cell-editing')
+      const selection = window.getSelection()
+      const view = document.querySelector('.cm-content').cmTile.root.view
+      const range = view.state.selection.main
+      return {
+        active: !!cell && document.activeElement === cell,
+        editable: cell?.getAttribute('contenteditable') ?? null,
+        cellText: cell?.textContent ?? '',
+        selText: selection?.toString() ?? '',
+        collapsed: selection?.isCollapsed ?? true,
+        editorAll:
+          !range.empty && range.from === 0 && range.to === view.state.doc.length
+      }
+    })()`)
+  check(
+    '仍在单元格编辑态、没有失焦',
+    ctrlA.active && ctrlA.editable === 'plaintext-only',
+    JSON.stringify(ctrlA)
+  )
+  check(
+    '选区覆盖整格文字',
+    !ctrlA.collapsed && ctrlA.selText === ctrlA.cellText,
+    JSON.stringify(ctrlA)
+  )
+  check('没有变成编辑器整篇全选', !ctrlA.editorAll, JSON.stringify(ctrlA))
+
+  wc.sendInputEvent({ type: 'char', keyCode: 'X' })
+  await sleep(300)
+  const afterChar = await evalJs<string>(
+    `document.querySelector('.cm-md-table-cell-editing')?.textContent ?? ''`
+  )
+  check('继续输入替换整格内容', afterChar === 'X', afterChar)
+  await hotkey('Enter')
+  await sleep(400)
+  const ctrlAGrid = await grid()
+  check(
+    '提交后单元格就是替换内容',
+    ctrlAGrid.rows[0]?.[0] === 'X',
+    JSON.stringify(ctrlAGrid.rows)
+  )
+
   // ---------- 10. 单击单元格输入 → 点别处提交:内容不能丢 ----------
 
   /*

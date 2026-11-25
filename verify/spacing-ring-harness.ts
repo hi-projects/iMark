@@ -15,8 +15,9 @@
  *   G 表格配对:正文在上给表格上方,互换后给表格下方;写盘;
  *   H 表格排版:有结构空行时空行承担间距、frame 归零;紧贴标题时 frame
  *     再归零;紧贴代码块时 frame 提供间距,邻居 padding 不落在 host/void 上;
- *   I 恢复默认:所有间距根变量与 settings.json 回到默认(含表格 1.7 / 0.7);
- *   J 可访问性:节点是真 button、aria-pressed 正确、提示是 role=status。
+ *   I 恢复当前默认:只重置选中那条边界,没选中的配对保持原值;
+ *   J 恢复全局默认:字号、行间距与 81 条配对全部回到默认并写盘;
+ *   K 可访问性:节点是真 button、aria-pressed 正确、提示是 role=status。
  *
  * 跑法(先 `npm run build`,再在仓库根目录):
  *   xvfb-run -a node verify/run.mjs spacing-ring
@@ -244,7 +245,7 @@ async function main(): Promise<void> {
     await waitFor(`document.querySelector('.settings-nav-item')`)
     await evalJs(`
       [...document.querySelectorAll('.settings-nav-item')]
-        .find(b => b.textContent.trim() === '外观')
+        .find(b => b.textContent.trim() === '样式')
         ?.click()`)
     return waitFor(`document.querySelector('[data-spacing-ring]')`)
   }
@@ -866,96 +867,121 @@ async function main(): Promise<void> {
   }
 
   // ---------- I ----------
-  console.log('\n【I】「恢复默认设置」:所有间距根变量与 settings.json 回到默认')
+  console.log('\n【I】「恢复当前默认样式」:只重置选中那条边界')
   check('重新打开设置 → 外观', await openAppearance())
-  check('外观页里有「恢复默认设置」', await waitFor(`document.querySelector('.settings-reset')`))
-  await evalJs(`document.querySelector('.settings-reset')?.click()`)
+  check('选「正文自身」并把段间距 / 行间距都调到 2 档', (await selectSelf('body')) && (await setRange('[data-pair-space="body-body"]', 2)) && (await setRange('[data-line-space="lineSpace"]', 2)))
+  await sleep(500)
+  check(
+    '选「标题自身」调到 2 档(作为不该被重置的对照)',
+    (await selectSelf('heading')) && (await setRange('[data-pair-space="heading-heading"]', 2))
+  )
+  await sleep(500)
+  check('回到「正文自身」', await selectSelf('body'))
+  check(
+    '「恢复当前默认样式」此时可点',
+    await waitFor(`!document.querySelector('[data-spacing-reset="selection"]')?.disabled`, 2000)
+  )
+  await evalJs(`document.querySelector('[data-spacing-reset="selection"]')?.click()`)
+  await sleep(700)
+  check('正文段间距回到 1 档', (await rootVar('--md-gap-body-body')) === '1', await rootVar('--md-gap-body-body'))
+  check('正文行间距也跟着回到 1 档', (await rootVar('--editor-line-space')) === '1', await rootVar('--editor-line-space'))
+  check(
+    '没选中的「标题自身」保持 2 档',
+    (await rootVar('--md-gap-heading-heading')) === '2',
+    await rootVar('--md-gap-heading-heading')
+  )
+  {
+    const localSaved = JSON.parse(
+      await readFile(join(ud, 'settings.json'), 'utf8')
+    ) as Record<string, unknown>
+    const gaps = (localSaved.pairGaps ?? {}) as Record<string, number>
+    check(
+      '只把选中的正文边界写回默认，标题边界仍是 2',
+      localSaved.lineSpace === 1 && gaps['body-body'] === 1 && gaps['heading-heading'] === 2,
+      JSON.stringify({ lineSpace: localSaved.lineSpace, body: gaps['body-body'], heading: gaps['heading-heading'] })
+    )
+  }
+  {
+    await resetRing()
+    const afterClear = await evalJs<{
+      state: string
+      disabled: boolean
+      hasPanel: boolean
+    }>(`
+      (() => {
+        const ring = document.querySelector('[data-spacing-ring]')
+        const btn = document.querySelector('[data-spacing-reset="selection"]')
+        return {
+          state: ring?.getAttribute('data-ring-state') ?? '',
+          disabled: btn?.disabled ?? false,
+          hasPanel: !!document.querySelector('[data-pair-panel]')
+        }
+      })()`)
+    check(
+      '没有选中时「恢复当前默认样式」不可点',
+      afterClear.state === 'empty' && afterClear.disabled && !afterClear.hasPanel,
+      JSON.stringify(afterClear)
+    )
+  }
+
+  // ---------- J ----------
+  console.log('\n【J】「恢复全局默认样式」:字号、行间距与全部配对回到默认')
+  check(
+    '外观页里有「恢复全局默认样式」',
+    await waitFor(`document.querySelector('[data-spacing-reset="all"]')`)
+  )
+  await evalJs(`document.querySelector('[data-spacing-reset="all"]')?.click()`)
   await sleep(800)
   {
-    const vars = await evalJs<Record<string, string>>(`
+    const vars = await evalJs<{
+      fontSize: string
+      lineSpace: string
+      gaps: Record<string, string>
+    }>(`
       (() => {
         const cs = getComputedStyle(document.documentElement)
-        const names = {
-          fontSize: '--editor-font-size',
-          lineSpace: '--editor-line-space',
-          headingBefore: '--md-heading-space-before',
-          headingAfter: '--md-heading-space-after',
-          headingBetween: '--md-heading-space-between',
-          bodyBetween: '--md-body-space-between',
-          codeBefore: '--md-code-space-before',
-          codeAfter: '--md-code-space-after',
-          listBefore: '--md-list-space-before',
-          listAfter: '--md-list-space-after',
-          quoteBefore: '--md-quote-space-before',
-          quoteAfter: '--md-quote-space-after',
-          imageBeforeHeading: '--md-image-space-before-heading',
-          imageBeforeBody: '--md-image-space-before-body',
-          imageAfterHeading: '--md-image-space-after-heading',
-          imageAfterBody: '--md-image-space-after-body',
-          tableBefore: '--md-table-space-before',
-          tableAfter: '--md-table-space-after'
+        const kinds = ['body','heading','code','list','quote','image','table','math','mermaid']
+        const gaps = {}
+        for (const a of kinds) {
+          for (const b of kinds) {
+            gaps[a + '-' + b] = cs.getPropertyValue('--md-gap-' + a + '-' + b).trim()
+          }
         }
-        const out = {}
-        for (const [key, name] of Object.entries(names)) out[key] = cs.getPropertyValue(name).trim()
-        return out
+        return {
+          fontSize: cs.getPropertyValue('--editor-font-size').trim(),
+          lineSpace: cs.getPropertyValue('--editor-line-space').trim(),
+          gaps
+        }
       })()`)
     console.log(`     [实测] ${JSON.stringify(vars)}`)
-    const ones = [
-      'lineSpace',
-      'headingBefore',
-      'headingAfter',
-      'headingBetween',
-      'bodyBetween',
-      'codeBefore',
-      'codeAfter',
-      'listBefore',
-      'listAfter',
-      'quoteBefore',
-      'quoteAfter',
-      'imageBeforeHeading',
-      'imageBeforeBody',
-      'imageAfterHeading',
-      'imageAfterBody'
-    ]
-    check(
-      '十五个 1 档的根变量都回到 1',
-      ones.every(key => vars[key] === '1'),
-      JSON.stringify(vars)
-    )
-    check(
-      '正文字号也回到默认',
-      vars.fontSize === `${EDITOR_DEFAULTS.editorFontSize}px`,
-      JSON.stringify(vars.fontSize)
-    )
-    check(
-      '表格回到默认 1.7 / 0.7 档',
-      vars.tableBefore === '1.7' && vars.tableAfter === '0.7',
-      JSON.stringify({ before: vars.tableBefore, after: vars.tableAfter })
-    )
+    const off = Object.entries(vars.gaps).filter(([, v]) => v !== '1')
+    check('正文字号也回到默认', vars.fontSize === `${EDITOR_DEFAULTS.editorFontSize}px`, vars.fontSize)
+    check('行间距回到 1 档', vars.lineSpace === '1', vars.lineSpace)
+    check('81 条配对间距全部回到 1 档', off.length === 0, JSON.stringify(off.slice(0, 5)))
     const nodes = await evalJs<number>(`document.querySelectorAll('[data-block-node]').length`)
     check('重置后九个块仍在', nodes === 9, String(nodes))
   }
   await sleep(400)
-  const resetSaved = JSON.parse(await readFile(join(ud, 'settings.json'), 'utf8')) as Record<string, unknown>
-  check(
-    '恢复默认也写回了 settings.json(含字号与表格默认)',
-    resetSaved.editorFontSize === EDITOR_DEFAULTS.editorFontSize &&
-      resetSaved.lineSpace === 1 &&
-      resetSaved.headingSpaceAfter === 1 &&
-      resetSaved.codeSpaceBefore === 1 &&
-      resetSaved.tableSpaceBefore === 1.7 &&
-      resetSaved.tableSpaceAfter === 0.7,
-    JSON.stringify({
-      lineSpace: resetSaved.lineSpace,
-      headingAfter: resetSaved.headingSpaceAfter,
-      codeBefore: resetSaved.codeSpaceBefore,
-      tableBefore: resetSaved.tableSpaceBefore,
-      tableAfter: resetSaved.tableSpaceAfter
-    })
-  )
+  {
+    const resetSaved = JSON.parse(
+      await readFile(join(ud, 'settings.json'), 'utf8')
+    ) as Record<string, unknown>
+    const gaps = (resetSaved.pairGaps ?? {}) as Record<string, number>
+    check(
+      '恢复全局默认也写回了 settings.json',
+      resetSaved.editorFontSize === EDITOR_DEFAULTS.editorFontSize &&
+        resetSaved.lineSpace === 1 &&
+        Object.keys(gaps).length === 0,
+      JSON.stringify({
+        fontSize: resetSaved.editorFontSize,
+        lineSpace: resetSaved.lineSpace,
+        gaps: Object.keys(gaps).length
+      })
+    )
+  }
 
-  // ---------- J ----------
-  console.log('\n【J】可访问性:真 button、aria-pressed、role=status')
+  // ---------- K ----------
+  console.log('\n【K】可访问性:真 button、aria-pressed、role=status')
   await resetRing()
   {
     const a11y = await evalJs<{

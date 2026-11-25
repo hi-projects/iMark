@@ -1,5 +1,5 @@
 /**
- * 「外观 → 间距」圆环的纯数据模型。
+ * 「样式 → 块间间距」圆环的纯数据模型。
  *
  * 间距的唯一来源是**有序配对** `<上块>-<下块>`(共 9 × 9 条),例如
  * `body-heading`(正文在上、标题在下)、`heading-body`(反过来)。
@@ -71,7 +71,7 @@ function pairRow(top: BlockKind, bottom: BlockKind): SpaceRow {
     label: `${topLabel}与${bottomLabel}`,
     desc:
       top === bottom
-        ? `两个${topLabel}之间的留白(结构空行不占高度,间距由下面那一个承担)。`
+        ? `两个${topLabel}之间的距离`
         : `${topLabel}与${bottomLabel}间距离，其中${topLabel}在上，${bottomLabel}在下`
   }
 }
@@ -93,8 +93,7 @@ function selfView(kind: BlockKind): PairView {
     mode: 'self' as const
   }
   if (kind === 'body') {
-    // 正文自身这一组就是用户口中的「段间距」。两行说明保持一句话:
-    // 段与段之间(空行隔开)看第一根,同一段里的换行看第二根。
+    // 正文自身这一组:段间距管空行隔开的两段,行间距管同一段里的换行。
     return {
       ...base,
       groups: [
@@ -102,11 +101,11 @@ function selfView(kind: BlockKind): PairView {
           direction: 'self',
           title: '段间距',
           rows: [
-            { ...pairRow('body', 'body'), label: '段间距', desc: '段落间距离' },
             {
               ...lineRow(),
-              desc: '行（段内换行/软换行）间距离'
-            }
+              desc: '行（段内换行/软换行）间距'
+            },
+            { ...pairRow('body', 'body'), label: '段间距', desc: '段落间距离' }
           ]
         }
       ]

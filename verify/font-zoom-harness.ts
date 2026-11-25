@@ -146,7 +146,7 @@ async function main(): Promise<void> {
     if (!(await waitFor(`document.querySelector('.settings-nav-item')`))) return false
     await evalJs(`
       [...document.querySelectorAll('.settings-nav-item')]
-        .find(b => b.textContent.trim() === '外观')
+        .find(b => b.textContent.trim() === '样式')
         ?.click()`)
     return waitFor(`document.querySelector('.settings-range[type="range"]')`)
   }

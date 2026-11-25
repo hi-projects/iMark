@@ -44,6 +44,13 @@ const gapPx = computed(() => {
   const [a, b] = key.split('-') as [BlockKind, BlockKind]
   return clampGap(pairGapOf(appStore.pairGaps, a, b) * appStore.editorFontSize)
 })
+
+/**
+ * 「正文自身」预览的三行标签:前两行是同一段里的两次换行(看行间距),
+ * 第三行是下一段(看段间距)。默认的「正文内容。」看不出这层结构。
+ */
+const SELF_BODY_TOP_TEXTS = ['第一段第一行', '第一段第二行']
+const SELF_BODY_BOTTOM_TEXTS = ['第二段']
 </script>
 
 <template>
@@ -65,9 +72,16 @@ const gapPx = computed(() => {
 
       <template v-else-if="mode === 'self'">
         <!-- 上块画两行(同一段里的段内换行),看行间距;下面一块看配对间距 -->
-        <SpacingSample :kind="topKind" :lines="topKind === 'body' ? 2 : 1" />
+        <SpacingSample
+          :kind="topKind"
+          :lines="topKind === 'body' ? 2 : 1"
+          :texts="topKind === 'body' ? SELF_BODY_TOP_TEXTS : undefined"
+        />
         <div class="spacing-doc-gap" data-preview-gap :style="{ height: `${gapPx}px` }"></div>
-        <SpacingSample :kind="topKind" />
+        <SpacingSample
+          :kind="topKind"
+          :texts="topKind === 'body' ? SELF_BODY_BOTTOM_TEXTS : undefined"
+        />
       </template>
 
       <template v-else>

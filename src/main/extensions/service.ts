@@ -67,6 +67,7 @@ import {
 } from '@shared/plugins'
 import { deleteSecretsByPrefix, getSecret, secretHints, setSecret } from '../secrets'
 import { getSettingsSync, loadSettings, onSettingsChanged, saveSettings } from '../settings'
+import { detectProxyReport, gitNetworkSetup } from '../gitNetwork'
 import { readProjectGitRemoteSecret } from '../projectGit'
 import { buildContributions, type ExtensionEntry, type RuntimeCommandRegistration } from './contributions'
 import { DocumentRegistry } from './documents'
@@ -1981,6 +1982,22 @@ export class ExtensionService {
           const root = this.workspaceRootForProject()
           const remote = root ? await readProjectGitRemoteSecret(root) : null
           host.respond(requestId, true, remote?.secret ?? '')
+          return
+        }
+        case 'git.networkSetup': {
+          // 探测会跑 gsettings / reg.exe,给足超时;主进程里没有可弹的窗口。
+          host.respond(
+            requestId,
+            true,
+            await gitNetworkSetup(
+              typeof message.url === 'string' ? message.url : '',
+              message.proxy ?? null
+            )
+          )
+          return
+        }
+        case 'git.detectProxy': {
+          host.respond(requestId, true, await detectProxyReport(message.proxy ?? null))
           return
         }
         case 'editor.applyEdits': {

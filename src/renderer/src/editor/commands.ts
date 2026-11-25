@@ -443,11 +443,11 @@ export function insertParagraph(view: EditorView): boolean {
     })
     return true
   }
-  // 文档最前面回车(光标在第一行行首):新段就是文件第一行,光标直接落到它
-  // 上面。它和下面原来的正文之间仍要隔一条空行 —— 只补一条的话源码里就是
-  // 「空行 + 正文」,新段和正文贴在一起,看着成了段内换行。分隔空行因此留在
-  // 新段下面(光标偏移 0),不像其它行首那样把光标留在正文行上。
-  if (pos === 0) return breakAt(view, pos, lb + lb, 0)
+  // 文档最前面回车(光标在第一行行首):和其它行首一样,两条新换行插在
+  // 光标前,新段是紧挨光标上面那条空行,光标留在原来那一行的行首 ——
+  // 标题 / 正文向下让出一行,光标仍贴着它,不会跳到新空行上。只补一条的话
+  // 源码里就是「空行 + 正文」,新段和正文贴在一起,看着成了段内换行。
+  if (pos === 0) return breakAt(view, pos, lb + lb, lb.length * 2)
   // 段尾(下一行是空行或文末)/ 行中间:补一条空行,光标落到空行下面
   return selfEnding
     ? breakAt(view, pos, lb, lb.length)
@@ -655,7 +655,21 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
   // 上一块:跳过段落分隔空行
   let n = line.number - 1
   while (n >= 1 && !/\S/.test(state.doc.line(n).text)) n--
-  if (n < 1) return false
+  if (n < 1) {
+    /*
+     * 文档开头:上面只有分段空行(空文档回车 → 新段写成标题时的常见形态)。
+     * 默认退格一次只删掉一条换行,要按两次才能把第一行删掉;这里一次把开头
+     * 连续的空行全部收掉,当前块直接成为第一行,光标停在行首。
+     */
+    if (line.from === 0) return false
+    view.dispatch({
+      changes: { from: 0, to: line.from },
+      selection: EditorSelection.cursor(0),
+      scrollIntoView: true,
+      userEvent: 'delete'
+    })
+    return true
+  }
   const target = state.doc.line(n)
   if (bodyLineKind(state, target) !== 'plain') return false
   // 紧贴着的上一行是同一段的软换行续行:两行本来就在一段里,不是分段
@@ -689,6 +703,24 @@ export function deleteParagraphBreakForward(view: EditorView): boolean {
   if (state.selection.ranges.length > 1 || !sel.empty) return false
   const line = state.doc.lineAt(sel.head)
   if (sel.head !== line.to) return false
+  /*
+   * 文档第一行就是空行(空文档回车、再把新段写成标题,上面会剩下一条):
+   * 默认 Delete 一次只删一条换行,看起来要按两次才能把第一行删掉。这里一次
+   * 把开头连续的空行收掉,下面的块直接顶到第一行。
+   */
+  if (line.number === 1 && bodyLineKind(state, line) === 'blank') {
+    let n = 2
+    while (n <= state.doc.lines && bodyLineKind(state, state.doc.line(n)) === 'blank') n++
+    if (n > state.doc.lines) return false
+    const target = state.doc.line(n)
+    view.dispatch({
+      changes: { from: 0, to: target.from },
+      selection: EditorSelection.cursor(0),
+      scrollIntoView: true,
+      userEvent: 'delete'
+    })
+    return true
+  }
   if (bodyLineKind(state, line) !== 'plain') return false
 
   // 跳过段落分隔空行,找下一块

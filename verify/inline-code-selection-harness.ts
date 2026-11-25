@@ -2,15 +2,16 @@
  * 选中行内代码时,列表项之间的间距不能抖动。
  *
  * 现象:选中一条含行内代码的列表项(整行选中 / 拖选两个代码)时,那一行会
- * 矮约 1px —— 行内代码用等宽字体 + 0.9em + 内边距,行盒本来就比普通正文高
- * 一点;选中时 `.cm-md-inlinecode` 被摘掉,字体度量退回普通正文,行盒缩回
- * 普通高度,后面所有列表项跟着上移,看起来像"列表间距变小了"。
+ * 矮一点 —— 行内代码原来用等宽字体 + 0.9em,行盒本来就比普通正文高;选中时
+ * `.cm-md-inlinecode` 被摘掉,字体度量退回普通正文,行盒缩回普通高度,后面
+ * 所有列表项跟着上移,看起来像"列表间距变小了"。
  *
  * 修法:选中时仍给代码内容挂 `.cm-md-inlinecode`(反引号照常露出,选区图层
- * 在正文之上,不会挡住高亮),字体度量恒定。
+ * 在正文之上,不会挡住高亮)。现在行内代码只加底色、不改字体,行高本来就
+ * 与正文一致。
  *
  * 断言:
- *   A 未选中:含代码的行比普通行高约 1px(这是设计,不是抖动)
+ *   A 未选中:含代码的行与普通行等高(只加底色,不改字体)
  *   B 整行选中(同一行两处代码都被碰触)→ 所有行 top / height 不变
  *   C 只选中其中一处代码 → 不变
  *   D 选中只有一处代码的行 → 不变
@@ -71,6 +72,8 @@ interface LineMetrics {
   text: string
   top: number
   height: number
+  /** 配对间距等带来的 padding-top(比较行盒高度时要扣掉) */
+  padTop: number
   codes: number
 }
 
@@ -89,6 +92,7 @@ const SNAP = `
         text: el.textContent.slice(0, 48),
         top: round(r.top),
         height: round(r.height),
+        padTop: parseFloat(getComputedStyle(el).paddingTop) || 0,
         codes: el.querySelectorAll('.cm-md-inlinecode').length
       }
     })
@@ -190,7 +194,7 @@ async function main(): Promise<void> {
     JSON.stringify(s.items.map(l => [l.text.slice(0, 10), l.top, l.height, l.codes]))
 
   // ---------- A ----------
-  console.log('\n【A】未选中:含行内代码的行比普通行高约 1px(字体度量,属于设计)')
+  console.log('\n【A】未选中:含行内代码的行与普通行等高(只加底色,不改字体)')
   const base = await snap()
   const twoCode = item(base, 'URDF')
   const oneCode = item(base, 'ompl_planning')
@@ -198,12 +202,63 @@ async function main(): Promise<void> {
   console.log(
     `     [实测] 两处代码 ${twoCode?.height}px / 一处代码 ${oneCode?.height}px / 普通 ${plain?.height}px`
   )
+  /*
+   * 拿「一处代码」和普通行比:两处代码那行是列表首行,还挂着
+   * body→list 的配对间距和边界裁切,高度天然不同,不能拿来说事。
+   */
   check(
-    '含代码的行确实略高,且两种含代码的行等高',
-    !!twoCode && !!oneCode && !!plain && twoCode.height > plain.height + 0.5 && Math.abs(twoCode.height - oneCode.height) < 0.5,
+    '含代码的行与普通行等高(只加底色,不改字体)',
+    !!oneCode && !!plain && Math.abs(oneCode.height - plain.height) < 0.5,
     dump(base)
   )
   check('未选中时行内代码挂了样式类', (twoCode?.codes ?? 0) === 2 && (oneCode?.codes ?? 0) === 1, dump(base))
+
+  // 行内代码只加底色,不改字体:字号、字体必须与正文完全一样
+  const codeStyle = await evalJs<{
+    codeFont: string
+    bodyFont: string
+    codeSize: string
+    bodySize: string
+    bg: string
+    padX: number
+    marginX: number
+  } | null>(`
+    (() => {
+      const code = document.querySelector('.cm-content .cm-md-inlinecode')
+      const content = document.querySelector('.cm-content')
+      if (!code || !content) return null
+      const cs = getComputedStyle(code)
+      const bs = getComputedStyle(content)
+      return {
+        codeFont: cs.fontFamily,
+        bodyFont: bs.fontFamily,
+        codeSize: cs.fontSize,
+        bodySize: bs.fontSize,
+        bg: cs.backgroundColor,
+        padX: parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight),
+        marginX: parseFloat(cs.marginLeft) + parseFloat(cs.marginRight)
+      }
+    })()`)
+  check(
+    '行内代码的字体与正文一致',
+    !!codeStyle && codeStyle.codeFont === codeStyle.bodyFont,
+    JSON.stringify(codeStyle)
+  )
+  check(
+    '行内代码的字号与正文一致',
+    !!codeStyle && codeStyle.codeSize === codeStyle.bodySize,
+    JSON.stringify(codeStyle)
+  )
+  check(
+    '行内代码仍有底色',
+    !!codeStyle && codeStyle.bg !== 'rgba(0, 0, 0, 0)' && codeStyle.bg !== 'transparent',
+    JSON.stringify(codeStyle?.bg)
+  )
+  check(
+    '这里的代码两侧是空格:没有内边距,也不再额外补留白',
+    !!codeStyle && codeStyle.padX === 0 && codeStyle.marginX === 0,
+    JSON.stringify(codeStyle)
+  )
 
   // ---------- B ----------
   console.log('\n【B】整行选中同一行里的两处代码:所有行位置不变')

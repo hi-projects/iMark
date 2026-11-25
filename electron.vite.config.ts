@@ -60,10 +60,15 @@ export default defineConfig({
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version)
     },
-    // Mermaid 自带的动态 chunk 会被 Vite 预打包拆成 dist-*.js,运行时请求的
-    // 文件名与优化产物对不上;让它走原生 ESM,不再进依赖预打包。
+    // Mermaid 必须进依赖预打包。
+    //
+    // 它内部依赖 dayjs、@braintree/sanitize-url 这类 CJS 包:走原生 ESM
+    // (exclude)时,开发服务器把 dayjs.min.js 原样发给浏览器,报
+    // "does not provide an export named 'default'",图表渲染失败只剩一条空框。
+    // 预打包后这些依赖由 esbuild 做 ESM interop,dev 与构建产物行为一致。
+    // (旧注释担心动态 chunk 文件名对不上;Vite 6 实测 dev 渲染正常。)
     optimizeDeps: {
-      exclude: ['mermaid']
+      include: ['mermaid']
     },
     resolve: {
       alias: {

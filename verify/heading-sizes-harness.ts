@@ -185,7 +185,7 @@ async function main(): Promise<void> {
       win,
       `(() => {
         const nav = [...document.querySelectorAll('.settings-nav-item')]
-          .find(el => el.textContent.trim() === '外观')
+          .find(el => el.textContent.trim() === '样式')
         if (!nav) return false
         nav.click()
         return true

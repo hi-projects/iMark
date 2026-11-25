@@ -37,6 +37,9 @@ export const EDITOR_FONT_SIZE_VERSION = 2
  * 0 档时行贴在一起(行高 = 字号),不会重叠。档位跟着正文字号缩放,
  * 调字号时行距同比例变化。标题有自己的 1.4 倍行高(见 editor.css),
  * 不受这根滑块影响。
+ *
+ * 只作用于正文(以及同样按正文排的列表 / 引用)。代码块与公式块内部的
+ * 行距各自独立(codeLineSpace / mathLineSpace),见「块内间距」。
  */
 export const LINE_SPACE_MIN = 0
 export const LINE_SPACE_MAX = 3
@@ -51,7 +54,7 @@ export function clampLineSpace(value: unknown, fallback: number = LINE_SPACE_DEF
 }
 
 /**
- * 块与块之间的间距(设置面板「外观 → 间距」的圆环),单位是「档」:
+ * 块与块之间的间距(设置面板「样式 → 块间间距」的圆环),单位是「档」:
  * 1 档 = 一个正文字号。每条边界由一个**有序配对**决定 ——
  * `<上块>-<下块>`,例如 `body-heading`(正文在上、标题在下)、
  * `heading-body`(反过来)、`body-code`、`code-body`……
@@ -108,8 +111,16 @@ export const EDITOR_DEFAULTS = {
   editorFontSize: 15,
   /** 见 EDITOR_FONT_SIZE_VERSION:2 = 设置值即实际正文字号 */
   editorFontSizeVersion: EDITOR_FONT_SIZE_VERSION,
-  /** 行间距(档,× 正文字号);行高 = 1 + 这一档 */
+  /** 正文行间距(档,× 正文字号);行高 = 1 + 这一档 */
   lineSpace: LINE_SPACE_DEFAULT,
+  /** 代码块内部行间距(档);与正文行间距独立 */
+  codeLineSpace: LINE_SPACE_DEFAULT,
+  /** 公式块内部行间距(档);同时管多行公式渲染与编辑时的源码行。默认 1 档 */
+  mathLineSpace: LINE_SPACE_DEFAULT,
+  /** 列表内部行间距(档);与正文行间距独立 */
+  listLineSpace: LINE_SPACE_DEFAULT,
+  /** 引用内部行间距(档);与正文行间距独立 */
+  quoteLineSpace: LINE_SPACE_DEFAULT,
   /** 与 Obsidian 的 Tab size 默认档一致 */
   codeIndentSize: 4,
   /** 块与块之间的配对间距(档);未出现的配对按 1 档 */

@@ -48,7 +48,11 @@ function gitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
     // GIT_TERMINAL_PROMPT=0 只关终端提示;继承了 GIT_ASKPASS / SSH_ASKPASS /
     // core.askPass 的机器仍会弹图形认证窗口。空值会被 git 当成「没有 askpass」,
     // 同时盖掉这三个来源 —— 缺凭据时直接失败,绝不弹窗。
-    GIT_ASKPASS: ''
+    GIT_ASKPASS: '',
+    // ssh 不认 GIT_ASKPASS,它读自己的 SSH_ASKPASS。显式关掉并声明「从不使用」,
+    // 主机密钥未确认或私钥有口令时让 ssh 直接失败,而不是弹出验证窗口。
+    SSH_ASKPASS: '',
+    SSH_ASKPASS_REQUIRE: 'never'
   }
 }
 

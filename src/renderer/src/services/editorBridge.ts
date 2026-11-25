@@ -35,7 +35,11 @@ import type { ExtensionContextKeys } from '@shared/extensions'
 import { activeTab, appStore, editorHolder } from '../stores/app'
 import { setEditorUpdateObserver } from '../editor/setup'
 import { setExtensionDecorationsEffect } from '../editor/extensionDecorations'
-import { endTableCellEditing, focusRenderedTableAtPosition } from '../editor/wysiwyg/widgets'
+import {
+  endTableCellEditing,
+  focusRenderedTableAtPosition,
+  noteProgrammaticEdit
+} from '../editor/wysiwyg/widgets'
 import { renderMarkdownFragment } from './exportHtml'
 import {
   activateTab,
@@ -412,6 +416,12 @@ function applyEdits(
     return { ok: false, reason: 'version-mismatch' }
   }
   const wasActive = tab.id === appStore.activeTabId && !!editorHolder.view
+  /*
+   * 扩展的编辑可能新建一张表格:这一次变更映射出的选区停在插入点(表内),
+   * 表格 widget 的 autoFocus 会先抢第一格,而扩展紧接着还会 setSelection。
+   * 先标记一个短窗口,让 autoFocus 等最终选区,别闪一下。
+   */
+  if (wasActive) noteProgrammaticEdit()
   if (!applyTabChanges(tab.id, request.edits)) {
     return { ok: false, reason: 'invalid-edit' }
   }
@@ -473,6 +483,28 @@ function applySelection(
   }
 }
 
+/**
+ * 扩展用 `setSelection` 把光标放进编辑器后,把焦点还给编辑器。
+ *
+ * 真实路径里,插入表格的命令由「+」对话框触发:对话框一关,焦点落到 body。
+ * 选区虽然更新到了表格后面的新段上,但编辑器没有焦点 —— 光标不闪,整篇
+ * 看起来像丢了光标。只在焦点确实不在任何控件上(或本来就在编辑器里)时
+ * 接管:面板输入框、设置对话框正在输入时不能抢焦点。
+ */
+function focusEditorIfUnfocused(): void {
+  if (!document.hasFocus()) return
+  const view = editorHolder.view
+  if (!view || view.hasFocus) return
+  const active = document.activeElement
+  const free =
+    !active ||
+    active === document.body ||
+    active === document.documentElement ||
+    view.dom.contains(active)
+  if (!free) return
+  view.focus()
+}
+
 function setSelections(
   request: Extract<EditorRequestDto, { op: 'setSelections' }>
 ): boolean {
@@ -491,11 +523,12 @@ function setSelections(
   if (ranges.length === 0) ranges.push(EditorSelection.cursor(0))
   const selection = EditorSelection.create(ranges, 0)
 
+  let inTable = false
   suppressSelection = true
   try {
     // 与 applySelection 一样:选区落进已渲染的表格时,立刻进入单元格编辑态,
     // 不能先 dispatch —— 光标护栏会在微任务里把它挪回表格外。
-    const inTable =
+    inTable =
       tab.id === appStore.activeTabId &&
       editorHolder.view !== null &&
       focusRenderedTableAtPosition(editorHolder.view, selection.main.head)
@@ -507,6 +540,9 @@ function setSelections(
   }
   // 后台标签没有视图,选区只在 state 里;切换回来时自然可见
   if (tab.id === appStore.activeTabId) sendSelection()
+  // 落在表格外(例如插入表格后自动补的新段):对话框关闭时焦点已经落到
+  // body,选区更新了却没有光标闪烁 —— 把焦点还给编辑器。
+  if (!inTable) focusEditorIfUnfocused()
   sendContext()
   return true
 }

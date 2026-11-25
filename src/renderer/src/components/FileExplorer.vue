@@ -70,6 +70,12 @@ async function openAssetsDir(): Promise<void> {
   if (error) notifyError('打开图像目录', new Error(error))
 }
 
+/** 在系统资源管理器中打开:文件定位到所在目录,目录直接打开它自己 */
+async function revealInFileManager(node: VaultNode): Promise<void> {
+  const error = await api.revealInFileManager(node.path)
+  if (error) notifyError('在资源管理器中打开', new Error(error))
+}
+
 function toggleDir(node: VaultNode): void {
   if (appStore.expandedDirs.has(node.path)) {
     appStore.expandedDirs.delete(node.path)
@@ -328,6 +334,10 @@ const menuEntries = computed<MenuEntry[]>(() => {
   } else {
     entries.push({ label: '导出 HTML...', run: () => void exportHtmlForPath(node.path, node.name) })
   }
+  entries.push({
+    label: '在资源管理器中打开',
+    run: () => void revealInFileManager(node)
+  })
   entries.push({ label: '重命名', run: () => startEdit('rename', '', node, node.name) })
   entries.push({ label: '删除', danger: true, run: () => void onDelete(node) })
   return entries

@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     if (!(await waitFor(`document.querySelector('.settings-nav-item')`))) return false
     await evalJs(`
       [...document.querySelectorAll('.settings-nav-item')]
-        .find(b => b.textContent.trim() === '外观')
+        .find(b => b.textContent.trim() === '样式')
         ?.click()`)
     return waitFor(`document.querySelector('[data-spacing-ring]')`)
   }
@@ -255,6 +255,15 @@ async function main(): Promise<void> {
   check('设置面板打开并进入「正文与正文」', opened)
   const m = await metrics()
   check('能同时量到编辑器与预览', !!m, JSON.stringify(m))
+  const previewTexts = await evalJs<string[]>(`
+    [...document.querySelectorAll('.spacing-doc-sample[data-sample="body"] .spacing-doc-body > div')]
+      .map(el => (el.textContent || '').trim())`)
+  check(
+    '预览三行依次标出「第一段第一行 / 第一段第二行 / 第二段」',
+    JSON.stringify(previewTexts) ===
+      JSON.stringify(['第一段第一行', '第一段第二行', '第二段']),
+    JSON.stringify(previewTexts)
+  )
   if (!m) {
     console.log(`\n结果:${pass} 通过,${fail} 失败\n`)
     app.exit(1)

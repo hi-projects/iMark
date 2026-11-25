@@ -18,6 +18,7 @@
 
 import { app, dialog, protocol } from 'electron'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -36,6 +37,7 @@ import {
   type ExtensionService
 } from '../src/main/extensions/service'
 import { setProjectGitRemote } from '../src/main/projectGit'
+import { cloneRepository } from '../src/main/git'
 import {
   normalizeProxyUrl,
   parseGnomeProxy,
@@ -44,7 +46,7 @@ import {
   parseWindowsProxyServer,
   proxyForUrl,
   proxyFromGnome
-} from '../plugins-src/git-sync/proxy'
+} from '../src/main/gitProxy'
 
 const run = promisify(execFile)
 const REPO = join(__dirname, '..', '..')
@@ -354,7 +356,15 @@ async function main(): Promise<void> {
   await mkdir(remote, { recursive: true })
   await git(remote, ['init', '--bare', '--initial-branch=main'])
   await writeFile(note, '# 代理验收\n\n经代理上传。\n', 'utf8')
-  // dumb http 的 ls-remote 读的是 update-server-info 写的 info/refs
+  // 给远端造一个真实提交：克隆验收要真的取 objects，而不是只读一个空仓库
+  const seed = join(ud, 'proxy-seed')
+  await mkdir(seed, { recursive: true })
+  await git(seed, ['init', '--initial-branch=main'])
+  await writeFile(join(seed, '从代理克隆.md'), '# 经代理克隆\n', 'utf8')
+  await git(seed, ['add', '-A'])
+  await git(seed, ['-c', 'user.name=harness', '-c', 'user.email=harness@local', 'commit', '-m', 'seed'])
+  await git(seed, ['push', remote, 'main'])
+  // dumb http 的 ls-remote / 克隆读的是 update-server-info 写的 info/refs 与 objects
   await git(remote, ['update-server-info'])
 
   const proxy = await startForwardProxy(remote)
@@ -578,6 +588,65 @@ async function main(): Promise<void> {
   )
 
   await settle()
+
+  // ---------- 五、应用原生能力：克隆与同步共用同一份代理设置 ----------
+
+  console.log('\n【5】克隆仓库：读同一份「网络代理」设置')
+  const cloneParent = join(ud, 'clone-parent')
+  const cloneUrl = 'http://imk-proxy-test.invalid/notes.git'
+  await mkdir(cloneParent, { recursive: true })
+
+  await service.setExtensionConfig(EXT_ID, configOf('manual', proxy.url))
+  await sleep(300)
+  const beforeClone = proxy.seen.length
+  const cloned = await cloneRepository({
+    url: cloneUrl,
+    parentDir: cloneParent,
+    name: 'cloned-via-proxy',
+    branch: '',
+    username: '',
+    secret: ''
+  })
+  const cloneSeen = proxy.seen.slice(beforeClone)
+  check('克隆成功（远端域名解析不了，只能经代理）', cloned.ok, cloned.detail)
+  check(
+    '克隆请求确实经过代理',
+    cloneSeen.some(r => r.url.startsWith(`${cloneUrl}/`)),
+    JSON.stringify(cloneSeen.slice(0, 5))
+  )
+  check(
+    '克隆下来的文件在磁盘上',
+    existsSync(join(cloneParent, 'cloned-via-proxy', '从代理克隆.md'))
+  )
+  check(
+    '克隆结果带回实际检出的分支',
+    cloned.branch === 'main',
+    cloned.branch
+  )
+
+  // 手动模式 + 空地址 = 直连；即使环境变量里还留着 HTTP_PROXY 也不许用。
+  await service.setExtensionConfig(EXT_ID, configOf('manual', ''))
+  await sleep(300)
+  const beforeDirectClone = proxy.seen.length
+  const directClone = await cloneRepository({
+    url: cloneUrl,
+    parentDir: cloneParent,
+    name: 'cloned-direct',
+    branch: '',
+    username: '',
+    secret: ''
+  })
+  check('没有可用代理时克隆失败（.invalid 解析不了）', !directClone.ok, directClone.detail)
+  check(
+    '没有可用代理时没向代理发请求',
+    proxy.seen.length === beforeDirectClone,
+    `${beforeDirectClone} → ${proxy.seen.length}`
+  )
+  check(
+    '失败目录已清理，没留下半截仓库',
+    !existsSync(join(cloneParent, 'cloned-direct'))
+  )
+
   proxy.close()
   await shutdownExtensions()
   console.log(`\n${pass} 通过，${fail} 失败\n`)

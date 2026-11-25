@@ -80,11 +80,19 @@ export interface Settings {
   /** 编辑器正文字号(px):就是实际渲染大小,标题/代码块按 em 跟着缩放 */
   editorFontSize: number
   /**
-   * 行间距(档,1 档 = 正文字号):同一段里行与行之间额外留出的空白(含折行)。
+   * 正文行间距(档,1 档 = 正文字号):同一段里行与行之间额外留出的空白(含折行)。
    * 实际行高 = 1 个字号 + 这一档。设置面板「外观 → 样式」里可调;
-   * 标题有自己的行高,不受它影响。
+   * 标题有自己的行高,代码块 / 公式块也有各自的行距,都不受它影响。
    */
   lineSpace: number
+  /** 代码块内部行间距(档);与正文行间距独立,「块内间距」里可调 */
+  codeLineSpace: number
+  /** 公式块内部行间距(档);管多行公式渲染与编辑时的源码行 */
+  mathLineSpace: number
+  /** 列表内部行间距(档);与正文行间距独立 */
+  listLineSpace: number
+  /** 引用内部行间距(档);与正文行间距独立 */
+  quoteLineSpace: number
   /**
    * 字号设置的语义版本。
    *
@@ -172,15 +180,21 @@ export interface VaultNode {
 export interface LaunchIntent {
   /**
    * true = 任务栏中键 / Shift+点击「新开一个」拉起的进程。
-   * 渲染层据此跳过「自动恢复上次仓库」,把窗口停在选择页。
    */
   newWindow: boolean
+  /**
+   * true = 本实例必须停在仓库选择页。除了上面的「新开一个」,还包括
+   * 「上次仓库已经开在别的窗口」—— 本实例恢复不了它,就作为多开出来的
+   * 新窗口让用户另选仓库。渲染层据此跳过「自动恢复上次仓库」。
+   */
+  startAtPicker: boolean
 }
 
 /**
  * 多实例下认领仓库的结果(见 main/vaultHandoff.ts):
  * - `ok`        本窗口可以打开;
- * - `forwarded` 另一个窗口已经开着它,已把那个窗口叫到前面,本窗口不要再打开;
+ * - `forwarded` 另一个窗口已经开着它,本窗口不要再打开(渲染层打开时那个窗口
+ *               会被叫到前面;启动流程只问状态时不会);
  * - `busy`      记录在,但联系不上那个窗口(端口没起来/超时),暂时不要打开。
  */
 export type VaultClaimResult = 'ok' | 'forwarded' | 'busy'

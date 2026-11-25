@@ -1,5 +1,6 @@
 import type MarkdownIt from 'markdown-it'
 import katex from 'katex'
+import { mathForKatex } from '../editor/math'
 
 /**
  * markdown-it 的 LaTeX 支持:行内 $...$ / \(...\) 与块级 $$...$$ / \[...\](可跨行)。
@@ -175,9 +176,12 @@ export function installMath(md: MarkdownIt): void {
     })
 
   md.renderer.rules.imath_block = (tokens, idx) =>
-    `<div class="katex-block">${katex.renderToString(tokens[idx]!.content, {
-      displayMode: true,
-      throwOnError: false,
-      output: 'html'
-    })}</div>`
+    `<div class="katex-block">${katex.renderToString(
+      mathForKatex(tokens[idx]!.content, true),
+      {
+        displayMode: true,
+        throwOnError: false,
+        output: 'html'
+      }
+    )}</div>`
 }

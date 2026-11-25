@@ -11,6 +11,7 @@ import { execFile, spawn } from 'node:child_process'
 import { mkdir, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import type { CloneProgress } from '@shared/types'
+import { gitNetworkSetup } from './gitNetwork'
 
 export interface GitRunOptions {
   cwd: string
@@ -36,7 +37,12 @@ function gitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
     GCM_INTERACTIVE: 'never',
     // 只关终端提示不够:GIT_ASKPASS / SSH_ASKPASS / core.askPass 仍会弹出
     // 图形认证窗口。空值被 git 当成「没有 askpass」,同时盖掉这三个来源。
-    GIT_ASKPASS: ''
+    GIT_ASKPASS: '',
+    // GIT_ASKPASS 管不到 ssh:OpenSSH 有自己的一套 SSH_ASKPASS。设成空串、
+    // 并声明「从不使用 askpass」,缺凭据 / 主机密钥没确认时 ssh 直接失败,
+    // 不会在用户桌面上弹验证窗口。
+    SSH_ASKPASS: '',
+    SSH_ASKPASS_REQUIRE: 'never'
   }
 }
 
@@ -289,9 +295,12 @@ export async function cloneRepository(opts: CloneOptions): Promise<CloneOutcome>
     }
   }
 
+  // 与「远程同步」共用同一份「网络代理」设置。探测在后台完成,不弹任何窗口。
+  const network = await gitNetworkSetup(url)
   const useCredential = opts.secret.length > 0
   const args = [
     ...credentialArgs(useCredential),
+    ...network.args,
     'clone',
     // 强制输出进度:非 TTY 下 git 默认不打印
     '--progress',
@@ -305,7 +314,7 @@ export async function cloneRepository(opts: CloneOptions): Promise<CloneOutcome>
   let lastProgressAt = 0
   const run = await runGitStreaming(args, {
     cwd: opts.parentDir,
-    env: credentialEnv(opts.username, opts.secret),
+    env: { ...network.env, ...credentialEnv(opts.username, opts.secret) },
     onLine: line => {
       const progress = parseCloneProgress(line)
       if (!progress) return
@@ -320,7 +329,12 @@ export async function cloneRepository(opts: CloneOptions): Promise<CloneOutcome>
     await rm(target, { recursive: true, force: true }).catch(() => {})
     const detail =
       summarize(withoutProgress(run.stderr) || run.stdout) || `git clone 退出码 ${run.code}`
-    return { ok: false, path: '', branch: '', detail: `克隆失败:${detail}` }
+    // 走代理失败与直连失败的原因完全不同:把「试过哪条路」告诉用户,
+    // 否则「连不上」会被误判成代理没生效。
+    const via = network.proxyUrl
+      ? `(已尝试经代理 ${network.proxyUrl}${network.proxySource ? `,来源:${network.proxySource}` : ''})`
+      : ''
+    return { ok: false, path: '', branch: '', detail: `克隆失败:${detail}${via}` }
   }
 
   const head = await runGit(['symbolic-ref', '--short', '-q', 'HEAD'], {

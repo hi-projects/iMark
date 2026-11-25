@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import SpacingRing from './SpacingRing.vue'
 import SpacingPreview from './SpacingPreview.vue'
 import SpacingPairPanel from './SpacingPairPanel.vue'
-import { pairView, type BlockKind } from '../services/spacingPairs'
+import { pairView, type BlockKind, type PairView } from '../services/spacingPairs'
 
 /**
  * 「外观 → 样式」的两栏状态机。
@@ -25,6 +25,10 @@ const self = ref(false)
 const pair = computed(() =>
   top.value ? pairView(top.value, bottom.value, self.value) : null
 )
+
+/** 把当前选中的边界交给设置页:面板下方的「恢复当前默认」要知道重置哪一条 */
+const emit = defineEmits<{ selection: [pair: PairView | null] }>()
+watch(pair, value => emit('selection', value), { immediate: true })
 
 function clear(): void {
   top.value = null
@@ -86,10 +90,6 @@ function swap(): void {
 
     <div v-if="pair" class="spacing-pair-section">
       <SpacingPairPanel :pair="pair" />
-    </div>
-
-    <div class="spacing-font-section">
-      <slot />
     </div>
   </div>
 </template>

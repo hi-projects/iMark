@@ -154,6 +154,8 @@ const api = {
     request(IPC.PickDirectory, defaultPath ?? null),
   openDirectory: (path: string): Promise<string | null> =>
     request(IPC.OpenDirectory, path),
+  revealInFileManager: (path: string): Promise<string | null> =>
+    request(IPC.RevealInFileManager, path),
   // ---------- 仓库 ----------
   selectVaultDialog: (): Promise<string | null> => request(IPC.VaultSelectDialog),
   claimVault: (vaultPath: string, filePath?: string | null): Promise<VaultClaimResult> =>

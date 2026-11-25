@@ -15,6 +15,7 @@ import { applyWrapping, setWrappingPreference } from '../editor/setup'
 import { setCodeIndentPreference } from '../editor/codeIndent'
 import { restartAutoSave } from './autoSave'
 import { api } from './api'
+import { pairKey, type BlockKind } from './spacingPairs'
 
 /**
  * 设置面板「编辑器」页背后的一组偏好:读设置套用、改设置落盘。
@@ -36,6 +37,31 @@ function applyFontSize(px: number): void {
 function applyLineSpace(value: number): void {
   appStore.lineSpace = value
   document.documentElement.style.setProperty('--editor-line-space', String(value))
+}
+
+/**
+ * 块内行间距(代码块 / 公式块)。与正文行间距分开挂变量:
+ * editor.css 用 --editor-code-line-space / --editor-math-line-space 算行高,
+ * 调正文行间距时这两块不动,反过来也一样。
+ */
+function applyCodeLineSpace(value: number): void {
+  appStore.codeLineSpace = value
+  document.documentElement.style.setProperty('--editor-code-line-space', String(value))
+}
+
+function applyMathLineSpace(value: number): void {
+  appStore.mathLineSpace = value
+  document.documentElement.style.setProperty('--editor-math-line-space', String(value))
+}
+
+function applyListLineSpace(value: number): void {
+  appStore.listLineSpace = value
+  document.documentElement.style.setProperty('--editor-list-line-space', String(value))
+}
+
+function applyQuoteLineSpace(value: number): void {
+  appStore.quoteLineSpace = value
+  document.documentElement.style.setProperty('--editor-quote-line-space', String(value))
 }
 
 /** 全部有序配对 key,如 body-heading、heading-body……共 9 × 9 条 */
@@ -80,6 +106,10 @@ export function initEditorSettings(s: Settings): void {
   applyLineWrapping(s.lineWrapping)
   applyFontSize(clampFontSize(s.editorFontSize))
   applyLineSpace(clampLineSpace(s.lineSpace, EDITOR_DEFAULTS.lineSpace))
+  applyCodeLineSpace(clampLineSpace(s.codeLineSpace, EDITOR_DEFAULTS.codeLineSpace))
+  applyMathLineSpace(clampLineSpace(s.mathLineSpace, EDITOR_DEFAULTS.mathLineSpace))
+  applyListLineSpace(clampLineSpace(s.listLineSpace, EDITOR_DEFAULTS.listLineSpace))
+  applyQuoteLineSpace(clampLineSpace(s.quoteLineSpace, EDITOR_DEFAULTS.quoteLineSpace))
   applyCodeIndent(clampCodeIndentSize(s.codeIndentSize))
   applyPairGaps(s.pairGaps ?? {})
   restartAutoSave()
@@ -129,6 +159,47 @@ export async function setLineSpace(value: number): Promise<void> {
   await api.saveSettings({ lineSpace: next })
 }
 
+/** 拖「块内间距」滑块时的即时预览:只改画面,松手才落盘 */
+export function previewCodeLineSpace(value: number): void {
+  applyCodeLineSpace(clampLineSpace(value))
+}
+
+export function previewMathLineSpace(value: number): void {
+  applyMathLineSpace(clampLineSpace(value))
+}
+
+export async function setCodeLineSpace(value: number): Promise<void> {
+  const next = clampLineSpace(value)
+  applyCodeLineSpace(next)
+  await api.saveSettings({ codeLineSpace: next })
+}
+
+export async function setMathLineSpace(value: number): Promise<void> {
+  const next = clampLineSpace(value)
+  applyMathLineSpace(next)
+  await api.saveSettings({ mathLineSpace: next })
+}
+
+export function previewListLineSpace(value: number): void {
+  applyListLineSpace(clampLineSpace(value))
+}
+
+export function previewQuoteLineSpace(value: number): void {
+  applyQuoteLineSpace(clampLineSpace(value))
+}
+
+export async function setListLineSpace(value: number): Promise<void> {
+  const next = clampLineSpace(value)
+  applyListLineSpace(next)
+  await api.saveSettings({ listLineSpace: next })
+}
+
+export async function setQuoteLineSpace(value: number): Promise<void> {
+  const next = clampLineSpace(value)
+  applyQuoteLineSpace(next)
+  await api.saveSettings({ quoteLineSpace: next })
+}
+
 export async function setCodeIndentSize(size: number): Promise<void> {
   const value = clampCodeIndentSize(size)
   applyCodeIndent(value)
@@ -146,18 +217,67 @@ export async function setPairGap(key: string, value: number): Promise<void> {
 }
 
 /**
- * 「外观 → 间距」的恢复默认:重置正文字号、行间距与全部配对间距,
+ * 「样式」页的恢复默认:重置正文字号、正文行间距、块内行间距与全部配对间距,
  * 不动主题、自定义样式与「编辑器」页的偏好。
  */
 export async function resetSpacingSettings(): Promise<void> {
   applyFontSize(EDITOR_DEFAULTS.editorFontSize)
   applyLineSpace(EDITOR_DEFAULTS.lineSpace)
+  applyCodeLineSpace(EDITOR_DEFAULTS.codeLineSpace)
+  applyMathLineSpace(EDITOR_DEFAULTS.mathLineSpace)
+  applyListLineSpace(EDITOR_DEFAULTS.listLineSpace)
+  applyQuoteLineSpace(EDITOR_DEFAULTS.quoteLineSpace)
   applyPairGaps({})
   await api.saveSettings({
     editorFontSize: EDITOR_DEFAULTS.editorFontSize,
     lineSpace: EDITOR_DEFAULTS.lineSpace,
+    codeLineSpace: EDITOR_DEFAULTS.codeLineSpace,
+    mathLineSpace: EDITOR_DEFAULTS.mathLineSpace,
+    listLineSpace: EDITOR_DEFAULTS.listLineSpace,
+    quoteLineSpace: EDITOR_DEFAULTS.quoteLineSpace,
     pairGaps: {}
   })
+}
+
+/** 「块内间距」的恢复默认:重置代码块 / 公式块 / 列表 / 引用行距 */
+export async function resetBlockSpacingSettings(): Promise<void> {
+  applyCodeLineSpace(EDITOR_DEFAULTS.codeLineSpace)
+  applyMathLineSpace(EDITOR_DEFAULTS.mathLineSpace)
+  applyListLineSpace(EDITOR_DEFAULTS.listLineSpace)
+  applyQuoteLineSpace(EDITOR_DEFAULTS.quoteLineSpace)
+  await api.saveSettings({
+    codeLineSpace: EDITOR_DEFAULTS.codeLineSpace,
+    mathLineSpace: EDITOR_DEFAULTS.mathLineSpace,
+    listLineSpace: EDITOR_DEFAULTS.listLineSpace,
+    quoteLineSpace: EDITOR_DEFAULTS.quoteLineSpace
+  })
+}
+
+/**
+ * 「样式 → 块间间距 → 恢复当前默认」:只重置圆环里选中的那条边界。
+ *
+ * 两块配对只把这一条有序配对(`上块-下块`)的间距改回默认;同类配对改回
+ * 该块与自身的间距;选中「正文」时,段内的「行间距」也一起恢复 ——
+ * 它属于正文这一组,而不是整个应用。
+ *
+ * 正文字号是所有块共用的刻度,不在「当前」范围里,由全局恢复负责。
+ */
+export async function resetSpacingSelection(selection: {
+  top: BlockKind
+  /** 同类配对时与 top 相同 */
+  bottom: BlockKind
+  mode: 'self' | 'cross'
+}): Promise<void> {
+  const pairGaps = { ...appStore.pairGaps }
+  // 删掉覆盖值,应用层就会落回「没设置过的配对 = 默认档」
+  delete pairGaps[pairKey(selection.top, selection.bottom)]
+  applyPairGaps(pairGaps)
+  const patch: Partial<Settings> = { pairGaps: { ...appStore.pairGaps } }
+  if (selection.mode === 'self' && selection.top === 'body') {
+    applyLineSpace(EDITOR_DEFAULTS.lineSpace)
+    patch.lineSpace = EDITOR_DEFAULTS.lineSpace
+  }
+  await api.saveSettings(patch)
 }
 
 /**
@@ -215,6 +335,10 @@ export async function resetEditorSettings(): Promise<void> {
   applyLineWrapping(EDITOR_DEFAULTS.lineWrapping)
   applyFontSize(EDITOR_DEFAULTS.editorFontSize)
   applyLineSpace(EDITOR_DEFAULTS.lineSpace)
+  applyCodeLineSpace(EDITOR_DEFAULTS.codeLineSpace)
+  applyMathLineSpace(EDITOR_DEFAULTS.mathLineSpace)
+  applyListLineSpace(EDITOR_DEFAULTS.listLineSpace)
+  applyQuoteLineSpace(EDITOR_DEFAULTS.quoteLineSpace)
   applyCodeIndent(EDITOR_DEFAULTS.codeIndentSize)
   applyPairGaps({})
   appStore.autoSaveMode = EDITOR_DEFAULTS.autoSaveMode

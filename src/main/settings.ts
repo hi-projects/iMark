@@ -154,6 +154,11 @@ function normalize(raw: Partial<Settings>): Settings {
   merged.editorFontSize = normalizeEditorFontSize(raw)
   merged.editorFontSizeVersion = EDITOR_FONT_SIZE_VERSION
   merged.lineSpace = clampLineSpace(merged.lineSpace, EDITOR_DEFAULTS.lineSpace)
+  // 块内行间距:代码块 / 公式块各自一份,与正文 lineSpace 独立
+  merged.codeLineSpace = clampLineSpace(merged.codeLineSpace, EDITOR_DEFAULTS.codeLineSpace)
+  merged.mathLineSpace = clampLineSpace(merged.mathLineSpace, EDITOR_DEFAULTS.mathLineSpace)
+  merged.listLineSpace = clampLineSpace(merged.listLineSpace, EDITOR_DEFAULTS.listLineSpace)
+  merged.quoteLineSpace = clampLineSpace(merged.quoteLineSpace, EDITOR_DEFAULTS.quoteLineSpace)
   // 旧版「行间距」存的是行高倍数(1.9 = 1.9 × 字号),现在改成档位(行高 = 1 + 档)。
   // 该字段只在本轮开发里出现过、没有发布,读到就丢掉,由 lineSpace 的默认 1 档接手。
   delete (merged as Record<string, unknown>).lineHeight

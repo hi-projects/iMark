@@ -3,6 +3,7 @@ import { type Line, type Text, type Transaction, type TransactionSpec } from '@c
 import { redo, undo } from '@codemirror/commands'
 import { syntaxTree } from '@codemirror/language'
 import katex from 'katex'
+import { mathForKatex } from '../math'
 import { renderInline } from './inline'
 import { mermaidErrorMessage, renderMermaid, type MermaidTheme } from '../../services/mermaid'
 import { runExtensionCommand } from '../../services/extensionService'
@@ -31,7 +32,7 @@ export class MathWidget extends WidgetType {
       ? 'cm-md-math cm-md-math-display cm-md-widget'
       : 'cm-md-math cm-md-math-inline cm-md-widget'
     try {
-      katex.render(this.tex, el, {
+      katex.render(mathForKatex(this.tex, this.displayMode), el, {
         displayMode: this.displayMode,
         throwOnError: false,
         output: 'html',
@@ -1053,6 +1054,22 @@ function syncCells(state: TableDomState): void {
  *   2. 如果光标原来在表内,把焦点放进对应的单元格,接着输入。
  * 顺序不能反:先挪选区,再让单元格拿走焦点。
  */
+/**
+ * 扩展刚做过一次程序化编辑的时间点。
+ *
+ * 扩展插入表格走「先 edit、再 setSelection」两条 RPC:edit 落下后表格 widget
+ * 立刻创建,而选区还停在编辑插入点(表内),autoFocus 会先把焦点塞进第一个
+ * 单元格;紧接着 setSelection 又把光标挪到表外 —— 用户看到的就是光标在第一格
+ * 闪一下。程序化编辑后的这个小窗口里先别抢单元格:扩展马上会给最终选区。
+ * 窗口过后照常执行,没有 setSelection 的扩展仍能落进单元格。
+ */
+let programmaticEditUntil = 0
+
+/** 编辑桥在应用扩展的程序化编辑前调用(配合 autoFocus) */
+export function noteProgrammaticEdit(ms = 200): void {
+  programmaticEditUntil = Date.now() + ms
+}
+
 function autoFocus(state: TableDomState): void {
   if (state.active) return
   state.autoFocusPending = true
@@ -1066,6 +1083,15 @@ function autoFocus(state: TableDomState): void {
       // 不用 requestAnimationFrame 等首帧 —— 窗口被遮挡时它可能一直不触发。
       if (attempt < 20) setTimeout(() => run(attempt + 1), 32)
       else state.autoFocusPending = false
+      return
+    }
+    /*
+     * 扩展的程序化编辑刚落下(典型:插入表格):它紧接着会用 setSelection 把
+     * 光标放到最终位置。先等这个小窗口结束 —— 此刻选区还停在表内的插入点,
+     * 直接抢第一格会让光标闪一下。窗口过后照常处理。
+     */
+    if (Date.now() < programmaticEditUntil) {
+      setTimeout(() => run(attempt), Math.max(16, programmaticEditUntil - Date.now()))
       return
     }
     const view = state.view
@@ -2580,6 +2606,24 @@ function bindTableEvents(state: TableDomState): void {
       // 可能落到编辑器那个**被隐藏的**选区上,删掉看不见的源码
       e.stopPropagation()
       if (e.isComposing) return
+      /*
+       * Ctrl/Cmd+A:只选中当前单元格的内容。
+       *
+       * 单元格是嵌套在外层 contenteditable 里的 plaintext-only 区域,浏览器的
+       * 默认全选会落到外层编辑器上(整篇被选中、单元格失焦)。这里自己把
+       * Range 设成整格内容,焦点留在单元格里,继续输入可直接替换。
+       */
+      if (!e.altKey && !e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        const selection = window.getSelection()
+        if (selection) {
+          const range = document.createRange()
+          range.selectNodeContents(active.cell)
+          selection.removeAllRanges()
+          selection.addRange(range)
+        }
+        return
+      }
       if (e.key === 'Escape') {
         e.preventDefault()
         cancelEdit(state)
