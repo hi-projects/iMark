@@ -413,7 +413,10 @@ async function main(): Promise<void> {
       (() => {
         const view = document.querySelector('.cm-content').cmTile.root.view
         const btn = document.querySelector('.line-plus')
-        const line = btn ? btn.closest('.cm-line') : null
+        const plusLine = Number(btn?.dataset.line || 0)
+        let node = plusLine ? view.domAtPos(view.state.doc.line(plusLine).from).node : null
+        while (node && node.nodeType !== 1) node = node.parentNode
+        const line = node ? node.closest('.cm-line') : null
         if (!btn || !line) return { dx: NaN, dy: NaN, delta: NaN, cls: '', pad: -1 }
         const lr = line.getBoundingClientRect()
         const br = btn.getBoundingClientRect()
@@ -486,9 +489,13 @@ async function main(): Promise<void> {
   const caretBox = (): Promise<{ lineH: number; cursorH: number; plusH: number; cls: string }> =>
     evalJs(`
       (() => {
+        const view = document.querySelector('.cm-content').cmTile.root.view
         const cur = document.querySelector('.cm-cursor')
         const btn = document.querySelector('.line-plus')
-        const line = btn ? btn.closest('.cm-line') : null
+        const plusLine = Number(btn?.dataset.line || 0)
+        let node = plusLine ? view.domAtPos(view.state.doc.line(plusLine).from).node : null
+        while (node && node.nodeType !== 1) node = node.parentNode
+        const line = node ? node.closest('.cm-line') : null
         return {
           lineH: line ? Math.round(line.getBoundingClientRect().height * 10) / 10 : -1,
           cursorH: cur ? Math.round(cur.getBoundingClientRect().height * 10) / 10 : -1,
@@ -532,7 +539,10 @@ async function main(): Promise<void> {
         view.focus()
         return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
           const btn = document.querySelector('.line-plus')
-          const el = btn ? btn.closest('.cm-line') : null
+          const plusLine = Number(btn?.dataset.line || 0)
+          let node = plusLine ? view.domAtPos(view.state.doc.line(plusLine).from).node : null
+          while (node && node.nodeType !== 1) node = node.parentNode
+          const el = node ? node.closest('.cm-line') : null
           const caret = view.coordsAtPos(view.state.selection.main.head)
           if (!btn || !el || !caret) return resolve({ delta: NaN, lineH: -1 })
           const br = btn.getBoundingClientRect()

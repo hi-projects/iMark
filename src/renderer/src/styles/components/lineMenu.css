@@ -1,27 +1,32 @@
 /* ---------- 光标行行首的「+」按钮 ---------- */
 
 /*
- * 「+」的定位锚点:行内的零宽元素,行内盒高度 = 这一行的 line-height,
- * 位置贴着第一行文字(见 lineMenu.ts 的 toDOM)。
+ * 「+」的定位锚点:挂在 .cm-scroller 上的绝对定位覆盖层,left / top / height
+ * 由 lineMenu.ts 按光标行第一个文字行的矩形写入(内容坐标,随内容滚动)。
  *
- * 按钮绝对定位在锚点里、top:50% 居中,于是落在**文字行**的垂直中线上:
- * 行盒高度随字号 / 行间距 / text-box-trim / 标题上留白 / 折行怎么变,
- * 按钮都不用写死偏移量;折行时也对齐第一行,而不是整段中间。
+ * 按钮在锚点里上下居中,于是落在**文字行**的垂直中线上:行盒高度随字号 /
+ * 行间距 / text-box-trim / 标题上留白 / 折行怎么变,都不用写死偏移量;
+ * 折行时也对齐第一行,而不是整段中间。
  *
+ * 锚点本身零宽、不吃鼠标事件 —— 它只是按钮的定位基准,不能挡住正文。
  * 行本身没有左右 padding(见 setup.ts 的说明),所以按钮要越过正文栏左缘,
  * 落在 --editor-line-gutter(28px)这段留白里;2px 是按钮与行左缘的间距。
  */
 .line-plus-anchor {
-  display: inline;
-  position: relative;
+  position: absolute;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  pointer-events: none;
 }
 
 .line-plus {
   position: absolute;
   left: calc(2px - var(--editor-line-gutter));
-  /* 锚点的行内盒就是文字那一行:50% = 这一行的垂直中线 */
+  /* 锚点的高度 = 这一行文字的行盒:50% = 文字行的垂直中线 */
   top: 50%;
   transform: translateY(-50%);
+  pointer-events: auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -32,10 +37,21 @@
   border-radius: 5px;
   background: transparent;
   color: var(--text-tertiary);
-  font-family: var(--font-editor);
-  font-size: 16px;
-  line-height: 1;
   cursor: pointer;
+}
+
+/*
+ * 加号用两条几何线画,不用 `+` 字形:字形墨迹在行盒里按字体基线摆放,
+ * 实际视觉中心比 flex 居中的卡片低 1.5px(实测),不同字体还会漂。
+ * 两条线按几何中心交叉,卡片怎么缩都居中。
+ */
+.line-plus::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  background:
+    linear-gradient(currentColor, currentColor) center / 100% 1.5px no-repeat,
+    linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat;
 }
 
 .line-plus:hover {

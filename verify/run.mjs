@@ -66,6 +66,7 @@ if (!name) {
         'heading-spacing',
         'inline-code-selection',
         'inline-math-drag-flicker',
+        'inline-math-backward-select',
         'multi-instance-vaults',
         'autospace',
         'paragraph-selection',

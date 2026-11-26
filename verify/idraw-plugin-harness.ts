@@ -284,9 +284,8 @@ async function main(): Promise<void> {
   check(
     '「+」在光标行(第 1 行)',
     (await evalJs<number>(`(() => {
-      const i = [...document.querySelectorAll('.cm-content .cm-line')]
-        .findIndex(el => el.querySelector('.line-plus'))
-      return i < 0 ? -1 : i + 1
+      const plus = document.querySelector('.line-plus')
+      return plus ? Number(plus.dataset.line) : -1
     })()`)) === 1
   )
   check('「+」点得开', await click('.line-plus'))

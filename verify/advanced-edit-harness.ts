@@ -181,12 +181,11 @@ async function main(): Promise<void> {
       `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true })()`
     )
 
-  /** 「+」当前挂在第几行（1 起；没有按钮返回 -1） */
+  /** 「+」当前挂在第几行（1 起；没有按钮返回 -1）。按钮是 .cm-scroller 的覆盖层，行号写在 data-line 上 */
   const plusLine = (): Promise<number> =>
     evalJs<number>(`(() => {
-      const i = [...document.querySelectorAll('.cm-content .cm-line')]
-        .findIndex(el => el.querySelector('.line-plus'))
-      return i < 0 ? -1 : i + 1
+      const plus = document.querySelector('.line-plus')
+      return plus ? Number(plus.dataset.line) : -1
     })()`)
 
   const menuLabels = (): Promise<string[]> =>
@@ -472,15 +471,20 @@ async function main(): Promise<void> {
     JSON.stringify(insertedState.doc)
   )
   /*
-   * 表格行上不能再画行首「+」:那个点装饰和表格宿主行的 replace 同处一个
-   * 位置,光标一离开表内就会把它删掉,CM 会连整行一起重建 —— 正在编辑的
-   * 单元格跟着销毁(见 lineMenu.ts 的 NO_PLUS_NODES)。
+   * 表格行上不能画行首「+」:光标在单元格里时没有对应的文档正文行,按钮
+   * 贴在表格旁边、菜单动作也说不清目标(见 lineMenu.ts 的 NO_PLUS_NODES)。
+   * 按钮现在是 .cm-scroller 的覆盖层,靠 data-line 找回它挂的那一行。
    */
   const plusInfo = await evalJs<{ count: number; onTable: number }>(`
     (() => {
+      const v = document.querySelector('.cm-content').cmTile.root.view
       const plus = [...document.querySelectorAll('.line-plus')]
       const isTableLine = el => {
-        const line = el.closest('.cm-line')
+        const n = Number(el.dataset.line || 0)
+        if (!n || n > v.state.doc.lines) return false
+        let node = v.domAtPos(v.state.doc.line(n).from).node
+        while (node && node.nodeType !== 1) node = node.parentNode
+        const line = node ? node.closest('.cm-line') : null
         const cls = line ? line.className.split(/\\s+/) : []
         return cls.includes('cm-md-table-host') || cls.includes('cm-md-table-void')
       }

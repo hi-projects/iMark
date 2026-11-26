@@ -393,9 +393,10 @@ async function main(): Promise<void> {
   await sleep(250)
   const plusGeo = await evalJs<{ pad: number; offset: number } | null>(`
     (() => {
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
       const line = document.querySelector('.cm-line.cm-md-h1')
-      const btn = line?.querySelector('.line-plus')
-      if (!line || !btn) return null
+      const btn = document.querySelector('.line-plus')
+      if (!line || !btn || Number(btn.dataset.line) !== lines.indexOf(line) + 1) return null
       return {
         pad: parseFloat(getComputedStyle(line).paddingTop),
         offset: Math.round((btn.getBoundingClientRect().top - line.getBoundingClientRect().top) * 10) / 10
@@ -531,9 +532,10 @@ async function main(): Promise<void> {
   await sleep(250)
   const adjPlus = await evalJs<{ pad: number; offset: number } | null>(`
     (() => {
+      const lines = [...document.querySelectorAll('.cm-content .cm-line')]
       const line = document.querySelector('.cm-line.cm-md-h2')
-      const btn = line?.querySelector('.line-plus')
-      if (!line || !btn) return null
+      const btn = document.querySelector('.line-plus')
+      if (!line || !btn || Number(btn.dataset.line) !== lines.indexOf(line) + 1) return null
       return {
         pad: parseFloat(getComputedStyle(line).paddingTop),
         offset: Math.round((btn.getBoundingClientRect().top - line.getBoundingClientRect().top) * 10) / 10
