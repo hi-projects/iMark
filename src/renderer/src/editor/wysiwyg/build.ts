@@ -23,16 +23,37 @@ import { api } from '../../services/api'
 
 const MAX_RETRY = 20
 
+/** 刚敲出来、还没回车补全的 `$$` / `\[`:不能算「在公式里」 */
+function isPendingMathBlock(state: EditorState, node: SyntaxNode): boolean {
+  const pending = getPendingFence(state)
+  if (pending === null) return false
+  const first = node.firstChild
+  return !!first && first.name === 'MathMark' && state.doc.lineAt(first.from).from === pending
+}
+
 /** pos 所在的块级公式节点(MathBlock,或段落里的 DisplayMath);不在公式里返回 null */
 function mathBlockAt(state: EditorState, pos: number): SyntaxNode | null {
   for (const bias of [1, -1] as const) {
     let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
     while (node) {
-      if (node.name === 'MathBlock' || node.name === 'DisplayMath') return node
+      if (node.name === 'MathBlock') return isPendingMathBlock(state, node) ? null : node
+      if (node.name === 'DisplayMath') return node
       node = node.parent
     }
   }
   return null
+}
+
+/** pos 是否落在行内公式 `$...$` 里(含紧贴 `$` 的边界) */
+function inlineMathAt(state: EditorState, pos: number): boolean {
+  for (const bias of [1, -1] as const) {
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+    while (node) {
+      if (node.name === 'InlineMath') return true
+      node = node.parent
+    }
+  }
+  return false
 }
 
 
@@ -344,6 +365,15 @@ export class WysiwygPlugin {
   private snapScheduled = false
   private onWindowMouseUp = (): void => this.endPointerDown()
   private mathRepaintScheduled = false
+  /**
+   * 打开文档时按「连排空行」还原出来的空段落位置。
+   *
+   * 只在文档**载入后第一次重建**时算一次,之后跟着改动平移。不能在每次重建时
+   * 重新扫描:编辑期间临时出现的连排空行(例如行首回车插进来的分隔空行)长得
+   * 和「存盘的空段落」一模一样,重新识别会把一条结构空行撑成整行,下面内容
+   * 整片往下跳(输入一个 `#` 就能触发)。
+   */
+  private persistedEmpty: number[] | null = null
   /**
    * 公式切态(渲染块 ↔ 源码)前钉住的那一行,重绘后把滚动条校正回来。
    * 见 captureMathScrollAnchor / restoreMathScrollAnchor。
@@ -804,7 +834,17 @@ export class WysiwygPlugin {
        * 所以「从渲染块外面拖进来」仍走整块原子选中。
        */
       const cls = domLineAt(this.view, anchor)?.className ?? ''
-      if (/\bcm-md-math-src-line\b/.test(cls) || /\bcm-md-code\b/.test(cls)) {
+      /*
+       * 行内公式没有「源码行类」:点 `$...$` 左边/里面时,空光标让公式立刻
+       * 翻成源码,但第一次指针更新时 DOM 还是渲染态。只看行类会漏掉它,拖选
+       * 一开始被 pinRendered 压回渲染、下一次更新又翻回源码 —— 就是拖动途中
+       * 一直闪的原因。这里用语法树认行内公式,整段拖动保持源码态。
+       */
+      if (
+        /\bcm-md-math-src-line\b/.test(cls) ||
+        /\bcm-md-code\b/.test(cls) ||
+        inlineMathAt(update.state, anchor)
+      ) {
         this.pointerStartedInSource = true
       }
     }
@@ -861,6 +901,10 @@ export class WysiwygPlugin {
     }
     if (update.docChanged || update.viewportChanged || update.selectionSet || this.pendingRetry) {
       this.pendingRetry = false
+      if (update.docChanged && this.persistedEmpty !== null) {
+        // 跟着改动平移;位置是否仍是空行行首在 rebuild 里校验
+        this.persistedEmpty = this.persistedEmpty.map(pos => update.changes.mapPos(pos, -1))
+      }
       // 把"移动之前"的光标位置交给护栏:从表格上面往下走、从下面往上走
       // 都会落在隐藏源码/结构空行的边界上,护栏得知道该把光标送到表格的哪一侧。
       // 块间距空行只对**键盘方向键**做跨越;回车/输入产生的空白行要留给用户继续输入。
@@ -928,12 +972,13 @@ export class WysiwygPlugin {
    * 直接改 scrollTop 的差值,而不是恢复一个绝对滚动值:块长高/变矮后,
    * 绝对滚动值对应的内容已经换了,只有「这一行还在原来的 y」才是用户要的。
    */
-  private restoreMathScrollAnchor(anchor: MathScrollAnchor): void {
+  private restoreMathScrollAnchor(anchor: MathScrollAnchor): boolean {
     const line = domLineAt(this.view, anchor.pos)
-    if (!line) return
+    if (!line) return false
     const drift = line.getBoundingClientRect().top - anchor.top
-    if (Math.abs(drift) < 1) return
+    if (Math.abs(drift) < 1) return false
     this.view.scrollDOM.scrollTop += drift
+    return true
   }
 
   /** 让 CodeMirror 丢掉行高缓存、重新量一遍内容(公式态切换后整块高度会骤变) */
@@ -948,10 +993,10 @@ export class WysiwygPlugin {
   /**
    * 公式在渲染块和源码态之间切换时整块高度会骤变。
    *
-   * 可横向滚动的公式块在部分 GPU 合成状态下会把旧的绘制层留在原地 ——
-   * 看起来像凭空多了一个一模一样的公式块,点它又没有任何反应(它已经不在 DOM 里)。
-   * 这里让 CodeMirror 重新量一次内容,并给滚动容器一帧极小的不透明度变化,
-   * 强制整层重绘,把残留的旧绘制层清掉。
+   * 这里**不整份 setState**。整份重建会把可见区域里的表格 / 公式 / 图片
+   * 全部重排重绘一遍,长文档上肉眼就是「内容闪一下」;浮动预览也被拆掉重建,
+   * 又闪一次。旧公式 widget 的子树在 MathWidget.destroy 里已清空,残余的
+   * 合成层用「滚动容器换一次合成层」清掉(下一帧还原),不动布局。
    */
   private scheduleMathRepaint(): void {
     if (this.mathRepaintScheduled) return
@@ -961,44 +1006,34 @@ export class WysiwygPlugin {
       const view = this.view
       if (!view.dom.isConnected) return
       this.remeasureContent()
-      /*
-       * 整份内容重画一次。
-       *
-       * 公式块从「渲染 widget」翻回源码时,行高、DOM 子树和合成层要同时换掉;
-       * 只 requestMeasure / 局部重绘在部分 GPU 合成状态下仍会留下旧公式块的
-       * DOM 高度和绘制层 —— 表现就是源码出现在旧公式下面、旧公式还杵在上面。
-       * setState(同一个 state) 会强制整份文档重画,把旧的 widget 子树、
-       * 高度缓存和合成层一起丢掉。光标/选区在 state 里,滚动位置手动还原。
-       */
       const scroller = view.scrollDOM
       const scrollTop = scroller.scrollTop
       const scrollLeft = scroller.scrollLeft
       const focused = view.hasFocus
-      // 切态锚点:setState 之后按它把公式（或光标行）挪回原来的屏幕位置
       const anchor = this.mathScrollAnchor
       this.mathScrollAnchor = null
-      try {
-        view.setState(view.state)
-        scroller.scrollTop = scrollTop
-        scroller.scrollLeft = scrollLeft
-        // focus() 可能把光标滚进视口(长公式的光标可能落在块尾)
-        if (focused) view.focus()
-        if (anchor) {
-          /*
-           * 必须等 CodeMirror 这一轮测量**完全结束**再校正(下一个动画帧)。
-           *
-           * setState 之后 CM 还要重测行高,并按它自己的视口锚定(钉住视口
-           * 最上面那一行)调一次 scrollTop;在测量过程中改滚动会被随后的
-           * 测量覆盖。下一帧时高度图已经稳定,这次校正只会触发一轮
-           * 「diff 为 0」的测量,不会再被拉走。
-           */
-          requestAnimationFrame(() => {
-            if (view.dom.isConnected) this.restoreMathScrollAnchor(anchor)
-          })
-        }
-      } catch {
-        /* 视图已销毁 */
+      // focus() 可能把光标滚进视口(长公式的光标可能落在块尾)
+      if (focused) view.focus()
+      // 让这一层重建一次,把旧公式块可能残留的绘制层丢掉
+      scroller.style.transform = 'translateZ(0)'
+      /*
+       * 滚动锚点分几帧校正:CM 重测行高时会按它自己的视口锚定微调 scrollTop,
+       * 一帧可能还没稳定。每帧量一次,没偏差就停,最多试 3 帧。
+       */
+      const settle = (tries: number): void => {
+        requestAnimationFrame(() => {
+          if (!view.dom.isConnected) return
+          scroller.style.transform = ''
+          if (anchor) {
+            const adjusted = this.restoreMathScrollAnchor(anchor)
+            if (adjusted && tries > 1) settle(tries - 1)
+          } else {
+            scroller.scrollTop = scrollTop
+            scroller.scrollLeft = scrollLeft
+          }
+        })
       }
+      settle(3)
     })
   }
 
@@ -1308,9 +1343,22 @@ export class WysiwygPlugin {
        * 编辑期间 emptyParagraphsField 记着它;重开文档后字段是空的、光标也
        * 不在行上,连排空行会被当结构空行折叠 —— 用户敲出来的空行看上去就
        * "消失"了(源码其实还在)。按同样的三行一组把中间那条认回来。
+       *
+       * 只认载入时的那一份(第一次重建时算出来,之后跟着改动平移)。每次重建
+       * 都重新扫描的话,编辑期间临时出现的连排空行(行首回车插进来的分隔空行)
+       * 会被误认成存盘的空段落,结构空行突然撑成整行 —— 输入一个 `#` 就会让
+       * 下面整片内容往下跳。
        */
-      for (const line of persistedEmptyParagraphs(state, tree, recordedEmptyParagraphs)) {
-        emptyParagraphs.add(line.from)
+      if (this.persistedEmpty === null) {
+        this.persistedEmpty = persistedEmptyParagraphs(state, tree, recordedEmptyParagraphs).map(
+          line => line.from
+        )
+      }
+      for (const pos of this.persistedEmpty) {
+        if (pos > state.doc.length) continue
+        const line = state.doc.lineAt(pos)
+        if (line.from !== pos || /\S/.test(line.text)) continue
+        emptyParagraphs.add(pos)
       }
       /*
        * 字段 / 还原记录里落在代码块、缩进代码、公式块内的条目一律不画:

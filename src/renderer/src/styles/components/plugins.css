@@ -531,6 +531,97 @@
   border-color: var(--accent);
 }
 
+/*
+ * 带候选列表的输入框(项目远程地址)。
+ *
+ * 不用原生 datalist:它的箭头只在悬停时出现,弹层由 UA 着色,深色主题下
+ * 永远是一块白底。这里自绘:输入框右侧常驻一个主题化箭头,点开是
+ * Teleport 到 body 的主题化候选菜单(见 SuggestInput.vue)。
+ */
+.plugin-suggest {
+  position: relative;
+  /* 参与标签行的 flex 布局:标签占 4em,输入框吃掉剩下的宽度,
+     与卡片里其他行(远程分支 / 认证方式)左右两端对齐 */
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.plugin-suggest .plugin-input {
+  width: 100%;
+}
+
+.plugin-suggest-has-options .plugin-suggest-input {
+  padding-right: 30px;
+}
+
+.plugin-suggest-chevron {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.plugin-suggest-chevron:hover {
+  color: var(--text-primary);
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.plugin-suggest-menu {
+  z-index: 260;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-editor);
+  box-shadow: var(--shadow);
+}
+
+.plugin-suggest-item {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.plugin-suggest-item:hover {
+  background: var(--bg-toolbar-btn-hover);
+}
+
+.plugin-suggest-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-suggest-meta {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
 .plugin-input-num {
   max-width: 140px;
 }
@@ -649,7 +740,9 @@
   text-align: center;
 }
 
-.plugin-target-cell .plugin-input {
+/* 只作用于格子的直接子输入框;包在 .plugin-suggest / .plugin-secret-wrap
+   里的输入框由各自的容器负责宽度 */
+.plugin-target-cell > .plugin-input {
   flex: 1 1 auto;
   width: auto;
   min-width: 64px;

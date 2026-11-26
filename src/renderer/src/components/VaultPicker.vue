@@ -16,6 +16,7 @@ import {
   cloneVaultAndOpen,
   createVaultAt,
   forgetVault,
+  initVaultList,
   loadVaultGitRemotes,
   openVaultFromPicker,
   openVaultViaDialog,
@@ -73,11 +74,30 @@ async function refreshGitRemotes(): Promise<void> {
 
 watch(recentVaults, () => void refreshGitRemotes(), { deep: true })
 
+/**
+ * 多开:另一个窗口可能刚打开 / 克隆了仓库,最近仓库列表只写进了磁盘。
+ * 选择页出现、窗口回到前台时读一次,别让「历史仓库」停在启动时的快照。
+ */
+async function refreshVaultsFromDisk(): Promise<void> {
+  const fresh = await api.reloadSettings().catch(() => null)
+  if (!fresh) return
+  if (JSON.stringify(fresh.vaults) === JSON.stringify(appStore.vaults)) return
+  initVaultList(fresh.vaults)
+}
+
+function onWindowFocus(): void {
+  void refreshVaultsFromDisk().then(() => refreshGitRemotes())
+}
+
 // 选择页每次出现都清理一遍:文件夹可能在上次使用之后被删掉或移走了
 onMounted(async () => {
+  await refreshVaultsFromDisk()
   await pruneMissingVaults()
   await refreshGitRemotes()
+  window.addEventListener('focus', onWindowFocus)
 })
+
+onUnmounted(() => window.removeEventListener('focus', onWindowFocus))
 
 function remoteOf(path: string): VaultGitRemote | null {
   return gitRemotes.value[path] ?? null

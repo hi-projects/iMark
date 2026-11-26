@@ -642,6 +642,38 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
   if (sel.head !== line.from || !/\S/.test(line.text) || line.number <= 1) return false
   const kind = bodyLineKind(state, line)
   if (kind !== 'plain' && kind !== 'heading') return false
+  /*
+   * 光标行上面紧挨着一条回车建出的空段落:一次删掉「空段落 + 它与上一块之间
+   * 的分隔」,当前段留在原地、光标仍在它的行首。
+   *
+   * 行首回车会在光标前插两条换行:光标留在原行行首,新空段落落在它上面。
+   * 默认退格一次只删一条换行,新行看上去要按两次;而「并回上一段」那条路
+   * 在上一块是表格 / 代码等非正文块时不适用(那类块不能并),默认退格就
+   * 要按两次。这里沿用 deleteParagraphBreakBackward 的边界,只收掉上面
+   * 那条空段落。
+   */
+  const kept = getEmptyParagraphs(state)
+  const above = line.number > 1 ? state.doc.line(line.number - 1) : null
+  if (above && kept.includes(above.from)) {
+    const prev = above.number > 1 ? state.doc.line(above.number - 1) : null
+    const target = prev
+      ? /\S/.test(prev.text) || above.number <= 2
+        ? prev
+        : above.number > 2
+          ? state.doc.line(above.number - 2)
+          : null
+      : null
+    if (target) {
+      const shift = above.to - target.to
+      view.dispatch({
+        changes: { from: target.to, to: above.to },
+        selection: EditorSelection.cursor(line.from - shift),
+        scrollIntoView: true,
+        userEvent: 'delete'
+      })
+      return true
+    }
+  }
   // ATX 标题的 `#` / `# ` 是块语法,并段时一起删掉。`#` 后面还没有空格、
   // 整行就是标记本身(光标停在 # 前面准备接着敲)时也是合法的空标题 ——
   // 标记后面允许直接行尾,不能因为没空格就当成正文留下来。

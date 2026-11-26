@@ -8,6 +8,9 @@ import {
   type PluginTarget,
   type PluginTargetResult
 } from '@shared/plugins'
+import type { KnownProjectGitRemote } from '@shared/types'
+import SuggestInput from './SuggestInput.vue'
+import type { SuggestOption } from './suggest'
 
 const props = withDefaults(
   defineProps<{
@@ -19,8 +22,10 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** 每个目标的最近一次操作结果:卡片边框的颜色由它决定 */
     targetResults?: Record<string, PluginTargetResult>
+    /** 项目级 Git 远端:所有已经配置过的远程(供「已有远程」下拉) */
+    knownRemotes?: KnownProjectGitRemote[]
   }>(),
-  { targetResults: () => ({}) }
+  { targetResults: () => ({}), knownRemotes: () => [] }
 )
 
 const emit = defineEmits<{
@@ -28,6 +33,7 @@ const emit = defineEmits<{
   (e: 'save-secret', targetId: string, value: string): void
   (e: 'clear-secret', targetId: string): void
   (e: 'run-action', targetId: string, actionId: string): void
+  (e: 'use-remote', targetId: string, remote: KnownProjectGitRemote): void
 }>()
 
 /** 只支持一个远端时(`imark.single`),列表里永远只显示一行 */
@@ -40,6 +46,9 @@ const isSingle = computed(() => props.field.single === true)
  * 那就显示本地分支(两者本来就同名)。
  */
 const projectGit = computed(() => props.field.projectGit === true)
+
+/** 远程地址示例;放在脚本里而不是模板属性里(vue-tsc 对带 URL 的组件属性字符串会丢 v-for 作用域) */
+const REMOTE_PLACEHOLDER = '必填（如 https://gitlab.com/用户名/仓库.git）'
 
 function branchOf(target: PluginTarget): string {
   const remote = target.remoteBranch.trim()
@@ -112,6 +121,35 @@ function onSecretInput(target: PluginTarget, e: Event): void {
   input.value = ''
   replacing.value[target.id] = false
   revealed.value[target.id] = false
+}
+
+/**
+ * 「远程仓库」输入框的候选:地址 + 分支 + 是否有已保存的令牌。
+ * 只在项目级 Git 远端字段上出现(普通扩展的地址没有「已有远程」的概念)。
+ */
+const remoteOptions = computed<SuggestOption[]>(() => {
+  if (!projectGit.value) return []
+  return props.knownRemotes.map(remote => {
+    const meta = [remote.localBranch.trim(), remote.hasSecret ? '已保存令牌' : '']
+      .filter(Boolean)
+      .join(' · ')
+    return { value: remote.url, meta: meta || undefined }
+  })
+})
+
+/**
+ * 远程地址输入完成 / 从候选里选中:如果填的是已有远程,连分支 / 认证方式 /
+ * 令牌一起沿用;否则只更新地址。这样「已有远程」不再单独占一行,而是这个
+ * 输入框右侧箭头展开的候选。
+ */
+function commitUrl(index: number, target: PluginTarget, url: string): void {
+  const trimmed = url.trim()
+  const known = props.knownRemotes.find(remote => remote.url === trimmed)
+  if (known) {
+    emit('use-remote', target.id, known)
+    return
+  }
+  update(index, { url: trimmed })
 }
 
 function clearSecret(target: PluginTarget): void {
@@ -208,13 +246,13 @@ const text = (e: Event): string => (e.target as HTMLInputElement | HTMLSelectEle
       <div class="plugin-target-row">
         <label class="plugin-target-cell plugin-target-cell-wide">
           <span>远程仓库</span>
-          <input
-            class="plugin-input"
-            type="text"
-            placeholder="必填（如 https://gitlab.com/用户名/仓库.git）"
-            :value="target.url"
-            @change="update(i, { url: text($event) })"
-          />
+          <SuggestInput
+            :model-value="target.url"
+            :options="remoteOptions"
+            :placeholder="REMOTE_PLACEHOLDER"
+            @select="url => commitUrl(i, target, url)"
+            @commit="url => commitUrl(i, target, url)"
+          ></SuggestInput>
         </label>
       </div>
 

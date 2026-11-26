@@ -11,6 +11,7 @@ import type {
   Settings,
   Theme,
   VaultClaimResult,
+  KnownProjectGitRemote,
   VaultGitRemote,
   VaultGitRemoteInput
 } from '@shared/types'
@@ -127,6 +128,7 @@ const api = {
   confirmDiscard: (fileName: string) => request(IPC.ConfirmDiscard, { fileName }),
   getSettings: (): Promise<Settings> => request(IPC.SettingsGet),
   saveSettings: (s: Partial<Settings>): Promise<Settings> => request(IPC.SettingsSet, s),
+  reloadSettings: (): Promise<Settings> => request(IPC.SettingsReload),
   openExternal: (url: string): Promise<void> => request(IPC.OpenExternal, url),
   setWindowTitle: (name: string | null, dirty: boolean, vaultName?: string | null): void =>
     ipcRenderer.send(IPC.SetTitle, { name, dirty, vaultName }),
@@ -169,6 +171,8 @@ const api = {
     request(IPC.VaultGitList, paths),
   setVaultGitRemote: (path: string, remote: VaultGitRemoteInput | null): Promise<void> =>
     request(IPC.VaultGitSet, { path, remote }),
+  knownProjectGitRemotes: (): Promise<KnownProjectGitRemote[]> =>
+    request(IPC.ProjectGitKnown),
   listVault: (path: string) => request(IPC.VaultList, path),
   missingVaults: (paths: string[]): Promise<string[]> => request(IPC.VaultMissing, paths),
   createFile: (path: string, content = ''): Promise<void> =>

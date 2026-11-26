@@ -34,7 +34,8 @@ import { installExtensionPackage } from '../src/main/extensions/installer'
 import {
   projectGitKey,
   projectGitSecretKey,
-  readProjectGitRemotes
+  readProjectGitRemotes,
+  setProjectGitRemote
 } from '../src/main/projectGit'
 import { createMainWindow } from '../src/main/window'
 import { credentialArgs } from '../src/main/git'
@@ -590,6 +591,203 @@ async function main(): Promise<void> {
         }
         return false
       })())
+  )
+
+  // ---------- G. 远程仓库候选 ----------
+
+  console.log('\n【G】远程仓库输入框:候选里列出全部已配置远程,选中后沿用')
+
+  const sharedUrl = 'https://example.com/shared/notes.git'
+  const sharedSource = join(ud, 'existing-project')
+  await setProjectGitRemote(sharedSource, {
+    url: sharedUrl,
+    auth: 'token',
+    username: '',
+    localBranch: 'release',
+    remoteBranch: 'release',
+    secret: 'shared-token'
+  })
+
+  /**
+   * 自绘候选框(SuggestInput.vue)的驱动:输入框右侧常驻箭头,点开是
+   * Teleport 到 body 的 `.plugin-suggest-menu`。
+   */
+  const remoteCellExpr = `[...document.querySelectorAll('.plugin-target-cell')]
+    .find(c => (c.querySelector('span')?.textContent ?? '').trim() === '远程仓库')`
+
+  const remoteValue = (): Promise<string | null> =>
+    evalJs<string | null>(`(() => {
+      const input = (${remoteCellExpr})?.querySelector('input')
+      return input ? input.value : null
+    })()`)
+
+  const openRemoteMenu = async (): Promise<boolean> => {
+    const clicked = await evalJs<boolean>(`(() => {
+      const btn = (${remoteCellExpr})?.querySelector('.plugin-suggest-chevron')
+      if (!btn) return false
+      btn.click()
+      return true
+    })()`)
+    if (!clicked) return false
+    return waitFor(`document.querySelectorAll('.plugin-suggest-item').length > 0`)
+  }
+
+  const remoteMenuItems = (): Promise<{ value: string; meta: string }[]> =>
+    evalJs<{ value: string; meta: string }[]>(`(() =>
+      [...document.querySelectorAll('.plugin-suggest-item')].map(item => ({
+        value: (item.querySelector('.plugin-suggest-url')?.textContent ?? '').trim(),
+        meta: (item.querySelector('.plugin-suggest-meta')?.textContent ?? '').trim()
+      }))
+    )()`)
+
+  const pickRemote = (url: string): Promise<boolean> =>
+    evalJs<boolean>(`(() => {
+      const item = [...document.querySelectorAll('.plugin-suggest-item')]
+        .find(i => (i.querySelector('.plugin-suggest-url')?.textContent ?? '').trim() === ${JSON.stringify(url)})
+      if (!item) return false
+      item.click()
+      return true
+    })()`)
+
+  // 关掉再打开,让 ExtensionSettings 重新拉一次 knownRemotes
+  await evalJs(`(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    return true
+  })()`)
+  await waitFor(`!document.querySelector('.settings-mask')`)
+  check('重新打开设置页', await openGitSyncSettings())
+  check('远程仓库输入框有常驻的候选箭头', await waitFor(`!!(${remoteCellExpr})?.querySelector('.plugin-suggest-chevron')`))
+  check(
+    '远程仓库输入框与下面的输入框左右对齐',
+    await evalJs<boolean>(`(() => {
+      const remote = (${remoteCellExpr})?.querySelector('input')
+      const branchCell = [...document.querySelectorAll('.plugin-target-cell')]
+        .find(c => (c.querySelector('span')?.textContent ?? '').trim() === '远程分支')
+      const branch = branchCell?.querySelector('input')
+      if (!remote || !branch) return false
+      const a = remote.getBoundingClientRect()
+      const b = branch.getBoundingClientRect()
+      return Math.abs(a.left - b.left) <= 1 && Math.abs(a.right - b.right) <= 1
+    })()`)
+  )
+  check(
+    '展开箭头在输入框内部',
+    await evalJs<boolean>(`(() => {
+      const cell = ${remoteCellExpr}
+      const input = cell?.querySelector('input')
+      const arrow = cell?.querySelector('.plugin-suggest-chevron')
+      if (!input || !arrow) return false
+      const a = input.getBoundingClientRect()
+      const b = arrow.getBoundingClientRect()
+      return b.left >= a.left && b.right <= a.right && b.top >= a.top && b.bottom <= a.bottom
+    })()`)
+  )
+  check('点开候选菜单', await openRemoteMenu())
+
+  const configuredOptions = await remoteMenuItems()
+  console.log(`     [候选] ${JSON.stringify(configuredOptions)}`)
+  check(
+    '候选里能看到全部已配置远程',
+    configuredOptions.some(o => o.value === sharedUrl) &&
+      configuredOptions.some(o => o.value === pluginUrl),
+    JSON.stringify(configuredOptions)
+  )
+  check(
+    '已保存令牌的远程在候选里有标记',
+    configuredOptions.some(o => o.value === sharedUrl && o.meta.includes('已保存令牌')),
+    JSON.stringify(configuredOptions)
+  )
+  check(
+    '已有远端时输入框就是当前地址',
+    (await remoteValue()) === pluginUrl,
+    String(await remoteValue())
+  )
+
+  check('选择候选里的已有远程', await pickRemote(sharedUrl))
+  check(
+    '地址 / 分支 / 认证方式写进新项目',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        const t = projectConfigOf(cloned)
+        if (
+          t?.url === sharedUrl &&
+          t?.localBranch === 'release' &&
+          t?.remoteBranch === 'release' &&
+          t?.auth === 'token'
+        ) {
+          return true
+        }
+        await sleep(60)
+      }
+      return false
+    })(),
+    JSON.stringify(projectConfigOf(cloned))
+  )
+  check(
+    '令牌也从原项目沿用过来',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        if ((await getSecret(projectGitSecretKey(cloned, 'token'))) === 'shared-token') return true
+        await sleep(80)
+      }
+      return false
+    })(),
+    String(await getSecret(projectGitSecretKey(cloned, 'token')))
+  )
+  check(
+    '界面回填新地址与已保存令牌',
+    await waitFor(`(() => {
+      const cell = [...document.querySelectorAll('.plugin-target-cell')]
+        .find(c => (c.querySelector('span')?.textContent ?? '').trim() === '远程仓库')
+      return (
+        cell?.querySelector('input')?.value === ${JSON.stringify(sharedUrl)} &&
+        !!document.querySelector('.plugin-target .plugin-secret-on')
+      )
+    })()`)
+  )
+
+  // ---------- H. 没有远端时仍可从候选里挑 ----------
+
+  console.log('\n【H】没有配置远端时,候选列表仍可用来挑已有远程')
+  await setProjectGitRemote(cloned, null)
+  await evalJs(`(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    return true
+  })()`)
+  await waitFor(`!document.querySelector('.settings-mask')`)
+  check('重新打开设置页', await openGitSyncSettings())
+  check('远程仓库输入框有常驻的候选箭头', await waitFor(`!!(${remoteCellExpr})?.querySelector('.plugin-suggest-chevron')`))
+  check('没有远端:输入框为空', (await remoteValue()) === '')
+  check('没有远端:仍能点开候选菜单', await openRemoteMenu())
+  const emptyOptions = await remoteMenuItems()
+  console.log(`     [空配置] ${JSON.stringify(emptyOptions)}`)
+  check(
+    '没有远端:候选里仍有已配置远程',
+    emptyOptions.some(o => o.value === sharedUrl),
+    JSON.stringify(emptyOptions)
+  )
+  check('从候选里挑一个即可填入', await pickRemote(sharedUrl))
+  check(
+    '新项目也能沿用地址与令牌',
+    await (async () => {
+      const until = Date.now() + 8000
+      while (Date.now() < until) {
+        if (
+          projectConfigOf(cloned)?.url === sharedUrl &&
+          (await getSecret(projectGitSecretKey(cloned, 'token'))) === 'shared-token'
+        ) {
+          return true
+        }
+        await sleep(80)
+      }
+      return false
+    })(),
+    JSON.stringify({
+      config: projectConfigOf(cloned),
+      secret: await getSecret(projectGitSecretKey(cloned, 'token'))
+    })
   )
 
   console.log(`\n结果：${pass} 通过，${fail} 失败`)

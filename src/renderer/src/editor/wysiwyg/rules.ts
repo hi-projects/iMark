@@ -442,18 +442,21 @@ function styleBlockPair(ctx: RuleContext, node: SyntaxNode): void {
   if (node.parent?.name !== 'Document') return
   const kind = blockKindOf(ctx, node)
   if (!kind) return
+  const prev = node.prevSibling
   /*
-   * 待定围栏在语法树上已经是一块,但它还是用户那一行正文:如果这一行是
-   * 段落的续行(上一行不是空行),它本来就没有配对间距,不能因为敲了第三个
-   * 反引号凭空多出一档。
+   * 待定围栏在语法树上已经是一块,但它还是用户那一行正文:
+   *   - 这一行是**段落的续行**(上一块就是正文、上一行非空)时,它本来就没有
+   *     配对间距,不能因为敲了第三个反引号 / `$$` 凭空多出一档;
+   *   - 上一块是标题这类**自己结束**的块时,这一行已经是新段落的开始,该拿的
+   *     配对间距要照给 —— 否则敲下 `$$` 的瞬间这一行会丢掉上方的段间距、往上跳。
    */
   if (
     (node.name === 'FencedCode' && isPendingFence(ctx, node)) ||
     (node.name === 'MathBlock' && isPendingMathFence(ctx, node))
   ) {
-    if (!startsParagraphLine(ctx, node.from)) return
+    const prevBlockKind = prev ? blockKindOf(ctx, prev) : null
+    if (prevBlockKind === 'body' && !startsParagraphLine(ctx, node.from)) return
   }
-  const prev = node.prevSibling
   /*
    * 语法树里上面最近的块,可能隔着一条用户回车建出来的空段落(它不是语法
    * 节点)。紧挨着的上一块是那条空段落:配对要按 body→本块算。否则空段落

@@ -286,3 +286,35 @@ export function saveSettings(partial: Partial<Settings>): Promise<Settings> {
   saveChain = run.catch(() => undefined)
   return run
 }
+
+/**
+ * 从磁盘重读一次设置(多开协调)。
+ *
+ * 多开时另一个实例可能刚写过 `settings.json`(比如它打开/克隆了一个仓库,
+ * 把最近仓库列表推到了磁盘上)。本进程的 cache 只认自己写的那份,不会知道。
+ * 选择页出现、窗口重新获得焦点时调一下,「历史仓库」就能带上别的窗口刚开的
+ * 那个仓库。
+ *
+ * 串在 `saveChain` 后面:先等本进程排队的写入落盘再读,读到的一定是完整
+ * 快照(写盘本身也是原子的)。
+ *
+ * **不通知订阅者**:这是一次「回到前台时的轻量刷新」,调用方只取它需要的
+ * 字段(最近仓库)。若顺手通知,别的窗口改的主题 / 扩展配置会只同步到主进程
+ * 这一半(渲染层并不会跟着换),反而制造不一致;那些改动仍按原来的节奏,
+ * 等本进程下一次保存设置时统一生效。
+ */
+export async function reloadSettingsFromDisk(): Promise<Settings> {
+  const run = saveChain.then(async () => {
+    const prev = cache
+    let next: Settings
+    try {
+      next = normalize(JSON.parse(await readFile(settingsPath(), 'utf8')) as Partial<Settings>)
+    } catch {
+      return prev ?? (await loadSettings())
+    }
+    cache = next
+    return next
+  })
+  saveChain = run.catch(() => undefined)
+  return run
+}

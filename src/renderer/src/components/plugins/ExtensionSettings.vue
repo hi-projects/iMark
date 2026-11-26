@@ -33,7 +33,7 @@ import { settingsNav } from '../../services/settingsNav'
 import { notifyError } from '../../services/notice'
 import { appStore } from '../../stores/app'
 import { loadVaultGitRemotes, saveVaultGitRemote } from '../../services/vaultService'
-import type { VaultGitRemote } from '@shared/types'
+import type { KnownProjectGitRemote, VaultGitRemote } from '@shared/types'
 import {
   pluginStatusLabel,
   pluginStatusMessage,
@@ -58,11 +58,23 @@ const selected = computed(() => extensionById(settingsNav.pluginId ?? ''))
 const PROJECT_TARGET_ID = 'project'
 
 const projectRemote = ref<VaultGitRemote | null>(null)
+/** 已经配置过的项目远程:设置页里的「已有远程」下拉 */
+const knownRemotes = ref<KnownProjectGitRemote[]>([])
 
 /** 选中扩展的配置里有项目远端字段吗;没有就不必去读 */
 const projectGitField = computed(
   () => selected.value?.descriptor.settingsFields.find(field => field.projectGit) ?? null
 )
+
+async function refreshKnownRemotes(): Promise<void> {
+  try {
+    knownRemotes.value = await api.knownProjectGitRemotes()
+  } catch (err) {
+    // 读不到不影响当前配置的编辑,下拉先按空处理
+    console.error('[iMark] 读取已有远程失败', err)
+    knownRemotes.value = []
+  }
+}
 
 async function refreshProjectRemote(): Promise<void> {
   const path = appStore.vaultPath
@@ -82,14 +94,20 @@ async function refreshProjectRemote(): Promise<void> {
 watch(
   projectGitField,
   field => {
-    if (field) void refreshProjectRemote()
+    if (field) {
+      void refreshProjectRemote()
+      void refreshKnownRemotes()
+    }
   },
   { immediate: true }
 )
 watch(
   () => appStore.vaultPath,
   () => {
-    if (projectGitField.value) void refreshProjectRemote()
+    if (projectGitField.value) {
+      void refreshProjectRemote()
+      void refreshKnownRemotes()
+    }
   }
 )
 
@@ -146,6 +164,7 @@ async function commitProjectTarget(value: unknown): Promise<void> {
   try {
     if (!remote) {
       await saveVaultGitRemote(path, null)
+      await refreshKnownRemotes()
       return
     }
     await saveVaultGitRemote(path, {
@@ -155,6 +174,42 @@ async function commitProjectTarget(value: unknown): Promise<void> {
       localBranch: remote.localBranch,
       remoteBranch: remote.remoteBranch
     })
+    await refreshKnownRemotes()
+  } catch (err) {
+    notifyError('保存远端配置', err)
+    await refreshProjectRemote()
+  }
+}
+
+/**
+ * 从「已有远程」里挑一个:地址 / 分支 / 认证方式一起填上,
+ * 并让主进程把这个项目的令牌也沿用过来。
+ */
+async function useKnownRemote(remote: KnownProjectGitRemote): Promise<void> {
+  const path = appStore.vaultPath
+  if (!path) {
+    notifyError('保存远端配置', new Error('未打开仓库'))
+    return
+  }
+  projectRemote.value = {
+    url: remote.url,
+    auth: remote.auth,
+    username: remote.username,
+    localBranch: remote.localBranch || 'main',
+    remoteBranch: remote.remoteBranch,
+    hasSecret: remote.hasSecret
+  }
+  try {
+    await saveVaultGitRemote(path, {
+      url: remote.url,
+      auth: remote.auth,
+      username: remote.username,
+      localBranch: remote.localBranch || 'main',
+      remoteBranch: remote.remoteBranch,
+      reuseSecretFrom: remote.path
+    })
+    await refreshProjectRemote()
+    await refreshKnownRemotes()
   } catch (err) {
     notifyError('保存远端配置', err)
     await refreshProjectRemote()
@@ -179,6 +234,7 @@ async function commitProjectSecret(value: string | null): Promise<void> {
       secret: value ?? ''
     })
     projectRemote.value = { ...remote, hasSecret: Boolean(value) }
+    await refreshKnownRemotes()
   } catch (err) {
     notifyError('保存远端密钥', err)
     await refreshProjectRemote()
@@ -554,7 +610,9 @@ const busy = computed(() => extensionStore.busy !== null)
             :target-actions="targetActionsFor(field)"
             :target-results="selected.status.targetResults ?? {}"
             :default-directory="selected.storagePath"
+            :known-remotes="field.projectGit ? knownRemotes : []"
             @change="v => commit(field, v)"
+            @use-known-remote="useKnownRemote"
             @run-action="runTargetAction"
             @save-secret="v => saveSecret(field, null, v)"
             @clear-secret="saveSecret(field, null, null)"

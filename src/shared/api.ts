@@ -23,6 +23,7 @@ import type {
   Settings,
   Theme,
   VaultClaimResult,
+  KnownProjectGitRemote,
   VaultGitRemote,
   VaultGitRemoteInput,
   VaultNode
@@ -70,6 +71,11 @@ export interface WindowApi {
   confirmDiscard(fileName: string): Promise<'save' | 'discard' | 'cancel'>
   getSettings(): Promise<Settings>
   saveSettings(s: Partial<Settings>): Promise<Settings>
+  /**
+   * 从磁盘重读一次设置(多开):另一个实例可能刚打开过仓库,最近仓库列表
+   * 只写进了磁盘。选择页出现 / 窗口重新获得焦点时调用,拿到的是最新快照。
+   */
+  reloadSettings(): Promise<Settings>
   openExternal(url: string): Promise<void>
   /** name 传 null 表示没有文档上下文(仓库选择页),标题只显示应用名 */
   setWindowTitle(name: string | null, dirty: boolean, vaultName?: string | null): void
@@ -152,6 +158,8 @@ export interface WindowApi {
   vaultGitRemotes(paths: string[]): Promise<Record<string, VaultGitRemote | null>>
   /** 写一个仓库的 Git 远端;传 null 清除(只清配置,不删本地仓库) */
   setVaultGitRemote(path: string, remote: VaultGitRemoteInput | null): Promise<void>
+  /** 所有已经配置过的项目远程,供设置页「已有远程」下拉选择 */
+  knownProjectGitRemotes(): Promise<KnownProjectGitRemote[]>
   listVault(path: string): Promise<VaultNode>
   /**
    * 这些路径里**确认已经不是目录**的那些(保持传入顺序):路径不存在,或被同名

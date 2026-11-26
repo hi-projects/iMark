@@ -27,6 +27,7 @@ export const IPC = {
   ConfirmDiscard: 'dialog:confirm-discard',
   SettingsGet: 'settings:get',
   SettingsSet: 'settings:set',
+  SettingsReload: 'settings:reload',
   OpenExternal: 'shell:open-external',
   SetTitle: 'window:set-title',
   SetView: 'window:set-view',
@@ -105,6 +106,8 @@ export const IPC = {
   VaultGitList: 'vault:git-list',
   /** 渲染→主:写/清除某个仓库的 Git 远端;null 表示清除 */
   VaultGitSet: 'vault:git-set',
+  /** 渲染→主:列出所有已配置的项目远程(设置页「已有远程」) */
+  ProjectGitKnown: 'project-git:known-remotes',
   VaultCreateFile: 'vault:create-file',
   VaultCreateDir: 'vault:create-dir',
   VaultRename: 'vault:rename',

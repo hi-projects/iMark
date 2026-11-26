@@ -178,8 +178,20 @@ async function main(): Promise<void> {
   console.log(
     `     [定位] blankPos=${blankPos} doc=${JSON.stringify(await evalJs<string>(`document.querySelector('.cm-content').cmTile.root.view.state.doc.toString()`))} anchor=${await evalJs<number>(`document.querySelector('.cm-content').cmTile.root.view.state.selection.main.head`)}`
   )
+  await evalJs(`(() => {
+    const view = document.querySelector('.cm-content').cmTile.root.view
+    window.__setStateCalls = 0
+    const original = view.setState.bind(view)
+    view.setState = (...args) => {
+      window.__setStateCalls += 1
+      return original(...args)
+    }
+    return true
+  })()`)
   await type('$$')
   await sleep(400)
+  const setStateCalls = await evalJs<number>(`window.__setStateCalls`)
+  check('输入 $$ 不触发整篇重绘(setState)', setStateCalls === 0, String(setStateCalls))
   {
     const s = await dom()
     check('文档里确实有 $$', /^\$\$$/m.test(s.doc), JSON.stringify(s.doc))

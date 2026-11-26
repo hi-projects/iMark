@@ -11,8 +11,9 @@
  */
 
 import { createHash } from 'node:crypto'
-import { resolve as resolvePath, sep } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import type {
+  KnownProjectGitRemote,
   ProjectGitRemoteConfig,
   VaultGitRemote,
   VaultGitRemoteInput
@@ -144,6 +145,41 @@ export async function readProjectGitRemotes(
 }
 
 /**
+ * 列出所有已经配置过的项目远程,供设置页「已有远程」下拉选择。
+ *
+ * 同一个地址 + 认证方式 + 账号 + 分支的组合只保留一条(优先保留有密钥的),
+ * 避免多个仓库共用同一个远端时列表里出现一排完全一样的项。
+ */
+export async function listProjectGitRemotes(): Promise<KnownProjectGitRemote[]> {
+  const settings = await loadSettings()
+  const all = settings.projectGit ?? {}
+  const byConfig = new Map<string, KnownProjectGitRemote>()
+  for (const [path, raw] of Object.entries(all)) {
+    const config = normalizeConfig(raw)
+    if (!config) continue
+    let hasSecret = false
+    if (config.auth !== 'ssh') {
+      try {
+        hasSecret = Boolean(await getSecret(projectGitSecretKey(path, config.auth)))
+      } catch {
+        hasSecret = false
+      }
+    }
+    const remote: KnownProjectGitRemote = { path, ...config, hasSecret }
+    const key = [
+      config.url,
+      config.auth,
+      config.username,
+      config.localBranch,
+      config.remoteBranch
+    ].join('\n')
+    const previous = byConfig.get(key)
+    if (!previous || (!previous.hasSecret && hasSecret)) byConfig.set(key, remote)
+  }
+  return [...byConfig.values()].sort((a, b) => a.url.localeCompare(b.url))
+}
+
+/**
  * 写 / 清除某个仓库的项目远端。
  *
  * `secret` 的三种状态:
@@ -189,6 +225,24 @@ export async function setProjectGitRemote(
     await setSecret(projectGitSecretKey(root, auth), input.secret || null)
     // 换认证方式时清掉另一种槽位,避免旧密钥被误认为仍然有效
     await clearSecrets(root, auth === 'password' ? 'token' : 'password')
+    return
+  }
+  /*
+   * 设置页选择「已有远程」:从源项目沿用同一认证方式下的密钥。
+   * 只复制地址与认证方式都一致的配置;源项目没有密钥时清掉当前槽位,
+   * 让「选了公开远程」和「令牌未配置」保持一致。
+   */
+  if (input.reuseSecretFrom && input.reuseSecretFrom !== root) {
+    try {
+      const source = await readStored(input.reuseSecretFrom)
+      if (source && source.url === url && source.auth === auth) {
+        const secret = await getSecret(projectGitSecretKey(input.reuseSecretFrom, auth))
+        await setSecret(projectGitSecretKey(root, auth), secret || null)
+        await clearSecrets(root, auth === 'password' ? 'token' : 'password')
+      }
+    } catch {
+      /* 源配置读不到就不复制;当前项目的配置已经保存 */
+    }
   }
 }
 
@@ -198,45 +252,4 @@ async function clearSecrets(root: string, auth: PluginAuthMode): Promise<void> {
   } catch {
     /* 清不掉也不影响配置本身 */
   }
-}
-
-/**
- * 重命名 / 移动仓库目录后,把项目 Git 配置与密钥一起迁到新路径。
- *
- * 配置按绝对路径索引(settings.projectGit 的键、secrets 里按路径哈希的键)。
- * 目录改名后旧键永远读不到,表现就是「仓库改名后 Git 设置消失」。被改名
- * 目录**下面**的项目(前缀匹配)一起搬;只改大小写时键不变,直接返回。
- */
-export async function moveProjectGit(from: string, to: string): Promise<void> {
-  const fromKey = projectGitKey(from)
-  const toKey = projectGitKey(to)
-  if (fromKey === toKey) return
-  const prefix = fromKey.endsWith(sep) ? fromKey : `${fromKey}${sep}`
-  await queueWrite(async () => {
-    const settings = await loadSettings()
-    const all = { ...(settings.projectGit ?? {}) }
-    const moves: Array<{ oldKey: string; newKey: string }> = []
-    for (const key of Object.keys(all)) {
-      if (key !== fromKey && !key.startsWith(prefix)) continue
-      moves.push({ oldKey: key, newKey: toKey + key.slice(fromKey.length) })
-    }
-    if (moves.length === 0) return
-    for (const { oldKey, newKey } of moves) {
-      all[newKey] = all[oldKey]
-      delete all[oldKey]
-    }
-    await saveSettings({ projectGit: all })
-    /*
-     * 密钥键是路径的哈希,不跟着搬的话:配置还在、地址也对,但令牌读不到
-     * (设置页显示「无令牌」,同步直接鉴权失败)。
-     */
-    for (const { oldKey, newKey } of moves) {
-      for (const auth of ['token', 'password'] as const) {
-        const secret = await getSecret(projectGitSecretKey(oldKey, auth))
-        if (!secret) continue
-        await setSecret(projectGitSecretKey(newKey, auth), secret)
-        await setSecret(projectGitSecretKey(oldKey, auth), null)
-      }
-    }
-  })
 }

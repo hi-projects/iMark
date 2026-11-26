@@ -244,6 +244,17 @@ export interface VaultGitRemoteInput {
    * 这样只改分支/地址时不必重新输入令牌。
    */
   secret?: string
+  /**
+   * 从哪个项目路径沿用已保存的密钥(设置页选择「已有远程」时)。
+   * 只在 `secret === undefined` 时生效;源项目地址 / 认证方式与本次一致才复制。
+   */
+  reuseSecretFrom?: string
+}
+
+/** 已经配置过的项目远程:设置页「已有远程」下拉里的候选项 */
+export interface KnownProjectGitRemote extends VaultGitRemote {
+  /** 配置来源项目路径;选中后从这个路径沿用密钥 */
+  path: string
 }
 
 /** 从远端克隆一个仓库作为项目 */

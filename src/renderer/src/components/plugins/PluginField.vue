@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { FolderOpen, Plus, RotateCcw, X } from 'lucide-vue-next'
 import HelpTip from '../HelpTip.vue'
 import type { PluginEndpoint, PluginField, PluginTarget, PluginTargetResult } from '@shared/plugins'
+import type { KnownProjectGitRemote } from '@shared/types'
 import { api } from '../../services/api'
 import { notifyError } from '../../services/notice'
 import EndpointsField from './EndpointsField.vue'
@@ -23,6 +24,8 @@ const props = withDefaults(
     targetActions: { id: string; label: string }[]
     /** targets 字段:每个目标的最近一次操作结果(id → ok/error;没有条目 = 还没操作过) */
     targetResults?: Record<string, PluginTargetResult>
+    /** targets 字段(projectGit):所有已配置过的项目远程 */
+    knownRemotes?: KnownProjectGitRemote[]
     /** directory 字段:留空时实际使用的目录(作为占位文字与选择器的起始位置) */
     defaultDirectory?: string
   }>(),
@@ -36,6 +39,7 @@ const emit = defineEmits<{
   (e: 'save-target-secret', targetId: string, value: string): void
   (e: 'clear-target-secret', targetId: string): void
   (e: 'run-action', targetId: string, actionId: string): void
+  (e: 'use-known-remote', remote: KnownProjectGitRemote): void
 }>()
 
 /** 已配置的密钥默认收起输入框,点「更换」才展开 */
@@ -188,10 +192,12 @@ function removeListItem(index: number): void {
       :secrets="targetSecrets"
       :target-actions="targetActions"
       :target-results="targetResults"
+      :known-remotes="knownRemotes ?? []"
       @change="emit('change', $event)"
       @save-secret="(id, v) => emit('save-target-secret', id, v)"
       @clear-secret="id => emit('clear-target-secret', id)"
       @run-action="(id, actionId) => emit('run-action', id, actionId)"
+      @use-remote="(_id, remote) => emit('use-known-remote', remote)"
     />
   </div>
 
