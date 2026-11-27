@@ -1817,7 +1817,16 @@ function deleteTable(state: TableDomState): void {
   else if (from > 0) from -= 1
   state.selection = null
   if (from >= to) return
-  view.dispatch({ changes: { from, to, insert: '' }, selection: { anchor: from } })
+  /*
+   * userEvent 标成 delete:emptyParagraphsField 会把光标落到的这条空行记成
+   * 「用户空段落」,删表后原位置留下的那条空行才不会在光标移走时被当成结构
+   * 空行收紧掉(用户看到的是第二行凭空消失、两个段落贴在一起)。
+   */
+  view.dispatch({
+    changes: { from, to, insert: '' },
+    selection: { anchor: from },
+    userEvent: 'delete'
+  })
   view.focus()
 }
 

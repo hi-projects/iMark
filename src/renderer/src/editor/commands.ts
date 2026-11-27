@@ -630,9 +630,9 @@ export function deleteParagraphBreakBackward(view: EditorView): boolean {
  * 永远并不回上一段。这里一次删掉「段落分隔 + 块标记」,标题文字接在上一段
  * 行尾,光标落到接缝处,继续退格就是正常删字。
  *
- * 只处理自己这一行是正文 / ATX 标题、上一块是正文段落的情况。列表、引用、
- * 代码、表格里的行首有自己的语义;上一块是标题 / 列表 / 引用时也不并入,
- * 仍交给默认退格。源码里本来就是同一段的软换行不是分段,也交给默认命令。
+ * 上面有回车建出的空段落时先把它收掉(一次一条,光标行整体上移一行);两行
+ * 已经相邻时再把这一行并回上一段。列表、引用、代码、表格里的行首有自己的
+ * 语义;源码里本来就是同一段的软换行不是分段,也交给默认命令。
  */
 export function deleteBlockStartBackward(view: EditorView): boolean {
   const state = view.state
@@ -643,36 +643,36 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
   const kind = bodyLineKind(state, line)
   if (kind !== 'plain' && kind !== 'heading') return false
   /*
-   * 光标行上面紧挨着一条回车建出的空段落:一次删掉「空段落 + 它与上一块之间
-   * 的分隔」,当前段留在原地、光标仍在它的行首。
+   * 光标行上面那串空行里有回车建出的空段落(屏幕上看得见的那条空行):一次
+   * 退格把它连同它到光标行之间的空行一起收掉,只留上面那条换行,光标行整体
+   * 上移一行;多条空段落则一次收一条,与回车建段的节奏一致。
    *
-   * 行首回车会在光标前插两条换行:光标留在原行行首,新空段落落在它上面。
-   * 默认退格一次只删一条换行,新行看上去要按两次;而「并回上一段」那条路
-   * 在上一块是表格 / 代码等非正文块时不适用(那类块不能并),默认退格就
-   * 要按两次。这里沿用 deleteParagraphBreakBackward 的边界,只收掉上面
-   * 那条空段落。
+   * 空段落和光标行之间可能隔着零高的纯分隔空行,扫描时跳过;表格 / 代码块
+   * 后面的结构空行没有记录,仍交给下面的块边界逻辑。手写的空行也走默认逻辑。
    */
   const kept = getEmptyParagraphs(state)
-  const above = line.number > 1 ? state.doc.line(line.number - 1) : null
-  if (above && kept.includes(above.from)) {
-    const prev = above.number > 1 ? state.doc.line(above.number - 1) : null
-    const target = prev
-      ? /\S/.test(prev.text) || above.number <= 2
-        ? prev
-        : above.number > 2
-          ? state.doc.line(above.number - 2)
-          : null
-      : null
-    if (target) {
-      const shift = above.to - target.to
-      view.dispatch({
-        changes: { from: target.to, to: above.to },
-        selection: EditorSelection.cursor(line.from - shift),
-        scrollIntoView: true,
-        userEvent: 'delete'
-      })
-      return true
+  let above: Line | null = null
+  for (let k = line.number - 1; k >= 1; k--) {
+    const cand = state.doc.line(k)
+    if (/\S/.test(cand.text)) break
+    if (kept.includes(cand.from)) {
+      above = cand
+      break
     }
+  }
+  if (above) {
+    /*
+     * 删到光标行行首,只留上面那条换行:空段落(以及它和光标行之间那些零高
+     * 分隔行)一次收掉,光标行整体上移一行 —— 再按一次才是把两行接成一行。
+     */
+    const from = Math.max(0, above.from - 1)
+    view.dispatch({
+      changes: { from, to: line.from },
+      selection: EditorSelection.cursor(from),
+      scrollIntoView: true,
+      userEvent: 'delete'
+    })
+    return true
   }
   // ATX 标题的 `#` / `# ` 是块语法,并段时一起删掉。`#` 后面还没有空格、
   // 整行就是标记本身(光标停在 # 前面准备接着敲)时也是合法的空标题 ——
@@ -703,7 +703,39 @@ export function deleteBlockStartBackward(view: EditorView): boolean {
     return true
   }
   const target = state.doc.line(n)
-  if (bodyLineKind(state, target) !== 'plain') return false
+  const targetKind = bodyLineKind(state, target)
+  if (targetKind !== 'plain') {
+    /*
+     * 引用 / 列表的末尾还能继续接字:一次退格直接把这一行并进容器的最后一行
+     * (标题的 `#` 标记一起删掉),不先删空行再按一次。用户把光标放到引用后面
+     * 的正文 / 标题行首时,意图就是「并回引用」。
+     */
+    if (isContainerBlockAt(state, target)) {
+      view.dispatch({
+        changes: { from: target.to, to: line.from + markerLen },
+        selection: EditorSelection.cursor(target.to),
+        scrollIntoView: true,
+        userEvent: 'delete'
+      })
+      return true
+    }
+    /*
+     * 其余非正文块(围栏 / 表格 / 分隔线 / HTML 等)行末自结束,不能把文字塞
+     * 进行末:一次删掉全部「分隔空行」,只留一条换行,文字落到块后面;已经
+     * 紧贴的块(围栏 / 表格)原地不动,免得把公式、代码、表格写坏。
+     */
+    const from = target.to + 1
+    if (from >= line.from) return isSelfEndingBlockAt(state, target)
+    // 中间必须全是空白,别误删别的块
+    if (/\S/.test(state.doc.sliceString(from, line.from))) return false
+    view.dispatch({
+      changes: { from, to: line.from },
+      selection: EditorSelection.cursor(from),
+      scrollIntoView: true,
+      userEvent: 'delete'
+    })
+    return true
+  }
   // 紧贴着的上一行是同一段的软换行续行:两行本来就在一段里,不是分段
   if (n === line.number - 1 && inSameParagraph(state, target, line)) return false
   view.dispatch({
@@ -880,6 +912,32 @@ function bodyLineKind(state: EditorState, line: Line): 'plain' | 'heading' | 'bl
 function nodeAtLineStart(state: EditorState, line: Line): SyntaxNode | null {
   const offset = line.text.search(/\S/)
   return syntaxTree(state).resolveInner(line.from + (offset < 0 ? 0 : offset), 1)
+}
+
+/** 这一行所属的顶层块的节点名(不在顶层块里时返回 null) */
+function topBlockNameAt(state: EditorState, line: Line): string | null {
+  let node: SyntaxNode | null = nodeAtLineStart(state, line)
+  while (node && node.parent && node.parent.name !== 'Document') node = node.parent
+  return node && node.parent?.name === 'Document' ? node.name : null
+}
+
+/** 行末自结束、后面可直接接新段落的块(围栏 / 公式 / 表格 / 分隔线 / HTML) */
+function isSelfEndingBlockAt(state: EditorState, line: Line): boolean {
+  const name = topBlockNameAt(state, line)
+  return (
+    name === 'FencedCode' ||
+    name === 'CodeBlock' ||
+    name === 'MathBlock' ||
+    name === 'Table' ||
+    name === 'HorizontalRule' ||
+    name === 'HTMLBlock'
+  )
+}
+
+/** 末尾还能继续接字的容器块(引用 / 列表) */
+function isContainerBlockAt(state: EditorState, line: Line): boolean {
+  const name = topBlockNameAt(state, line)
+  return name === 'Blockquote' || name === 'BulletList' || name === 'OrderedList'
 }
 
 function hasAncestor(node: SyntaxNode | null, names: ReadonlySet<string>): boolean {
